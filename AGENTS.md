@@ -58,3 +58,4 @@ Pre-approved dependencies are listed in `.claude/temper.json`; any other is an H
 | 2026-10-11 | No `license` field in `[workspace.package]` (private code); `deny.toml` ignores unpublished workspace crates in the license check. | ARC-12 | Story #46, to confirm |
 | 2026-10-11 | Root `CLAUDE.md` only imports this charter and adds Claude Code specifics; it repeats none of it (02 §2). | ARC-08 | Story #46 |
 | 2026-10-11 | Unused layer edges are not declared up front: `cargo machete` rejects unused dependencies, so each story adds the edge it first uses. | CRF-05 | Story #46 |
+| 2026-10-11 | Releases: `v*` tags (protected by ruleset) publish `assay` to GHCR as an OCI artifact with oras 1.3.4 (`oras-project/setup-oras`, SHA-pinned); consumers fetch and verify by digest with `.github/actions/fetch-by-digest`. Runbook `docs/operations/release.md`. `plugins.toml` parsing in Rust stays with #62; the action reads pins with python3 `tomllib`. | ADR-14, 05 T14 | Story #68 |

@@ -15,7 +15,7 @@ updates:
         update-types: [minor, patch]
 
   - package-ecosystem: github-actions
-    directory: /
+    directories: ["/", "/.github/actions/*"]   # workflows, and the composite actions' own pins
     schedule:
       interval: weekly
     groups:

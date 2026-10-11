@@ -54,7 +54,7 @@ Each assumption names how it becomes a measurement and what changes if wrong.
 | A-17 | A solo owner can run agents under a distinct identity (Claude Code cloud sessions may push through the owner's GitHub authorisation: unverified) | Dedicated approver account (`H-13`) and P10 as convention only | H-08, M1 behavioural check |
 | A-18 | Average `full` run ≤ 10% of one 5-hour window | Kill criterion `06 §8` | M3 |
 | A-19 | Current SaaS spend is unknown to this spec (third-party figures: ≈ $24–30/seat/month, unverified) | If < ~$100/month, build is not justified on cash (`§4`) | H-11 |
-| A-20 | Actions in private repo A can pull a GHCR package from the org's other repo with `GITHUB_TOKEN` (`packages: read`, package access granted to the repo) | Vendor pinned binary into base `.assay/`; or a read-only deploy credential in Z1 only | P1 |
+| A-20 | Actions in private repo A can pull a GHCR package from the org's other repo with `GITHUB_TOKEN` (`packages: read`, package access granted to the repo) | Vendor pinned binary into base `.assay/`; or a read-only deploy credential in Z1 only | P1, after the first release; procedure in `docs/operations/release.md` (unverified) |
 | A-21 | Role caps and expected costs as in `04 §3` and `06 §2` | Re-size from measured p90 | M2 (lite/micro), M3 (full) |
 | A-22 | 2.5 runs/PR; an incremental run costs 100% of the tier cost (specialists re-read the cumulative diff). Lever (4) in `06 §2` would cut it | Cost scales | M2/M3 |
 | A-23 | The QA-07 baseline is a pinned build of the official reviewer (`code-review@claude-code-plugins` or built-in `/code-review`, version recorded) | Recompare | Start of M5 |

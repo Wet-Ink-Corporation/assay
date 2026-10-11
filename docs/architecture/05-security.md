@@ -66,6 +66,10 @@ Every job also sets `packages: read` where it runs the assay binary (the GHCR di
 | reconcile (scheduled, default branch) | App token: `checks: write`, `contents: write` on the ledger repo; `actions: read` | App key (env-scoped) | no | GitHub API |
 | canary (monthly) / report (weekly) | `contents: read`; canary additionally the model secret; report additionally App `contents: write` on the ledger repo | OAuth token (canary), App key (report) | no | as the relevant job |
 | ingest (later, separate workflow) | `contents: write` on the telemetry branch only | — | no | GitHub |
+| release: build (assay repo, protected `v*` tag; `docs/operations/release.md`) | `contents: read` | none | no (assay's own tagged commit on `main`) | crates.io, GitHub |
+| release: publish | `packages: write` (the only writer of the GHCR package) | none | no | GHCR |
+| release: verify | `contents: read`, `packages: read` (pulls the release back by digest) | none | no | GHCR |
+| release: release-notes | `contents: write`; checks out and runs no repository code | none | no | GitHub API |
 
 The default `GITHUB_TOKEN` permission is read-none org-wide; every job sets explicit `permissions:`.
 
