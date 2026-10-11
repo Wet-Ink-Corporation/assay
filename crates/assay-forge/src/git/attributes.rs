@@ -170,9 +170,11 @@ impl AttributeReport {
     }
 
     /// The allowlisted paths that carry policed attributes, each once, in the order git first
-    /// reported them. A path can appear in [`opaque`](Self::opaque) apart from its first
-    /// entry (it was checked twice, say as one rename's old side and another change's path),
-    /// so repeats are removed by path, not only when adjacent.
+    /// reported them. The caller-supplied `changes` given to
+    /// [`ObjectRepo::police_attributes`](super::ObjectRepo::police_attributes) can name a path
+    /// more than once (say as one rename's old side and another change's path), so a path can
+    /// appear in [`opaque`](Self::opaque) apart from its first entry; repeats are removed by
+    /// path, not only when adjacent.
     pub fn opaque_paths(&self) -> impl Iterator<Item = &str> + '_ {
         let mut seen = HashSet::new();
         self.opaque
