@@ -7,14 +7,19 @@ delivery mechanism for every pinned tool: the assay binary (`[assay] digest`), t
 
 ## What it guarantees
 
-- The pin must be `sha256:<64 lowercase hex>`. A tag, a short or upper-case digest, or a
-  repository carrying a tag is refused before the registry is contacted (exit 2).
+- These are refused before the registry is contacted (exit 2):
+  - a pin that is not `sha256:<64 lowercase hex>`, such as a tag or a short or upper-case digest;
+  - a `repository` that is not lowercase `registry[:port]/path`, including one with a tag, a
+    digest or a leading `-`. GHCR names are lowercase, so callers must lowercase the owner (for
+    example `ghcr.io/${OWNER,,}/assay` in bash);
+  - an empty `out-dir`, or one containing a newline.
 - The manifest's bytes must hash to the pin, it must be an OCI image manifest (and of
-  `artifact-type`, when given), and every layer's bytes must hash to its descriptor digest and
-  match its size. Any mismatch fails the step (exit 1).
+  `artifact-type`, when given), and every layer must have a non-negative integer size, bytes that
+  hash to its descriptor digest and that size. Any mismatch fails the step (exit 1).
 - Layers are staged in a private temporary directory and copied to `out-dir` only after every
   check has passed, so a failed fetch leaves nothing to execute. Each layer is installed under its
-  `org.opencontainers.image.title`, which must be a plain file name (no `/`, not `.` or `..`).
+  `org.opencontainers.image.title`, which must be a plain file name (no `/`, not `.` or `..`) and
+  unique within the manifest.
 - The token reaches `oras` on stdin, never on the command line, and is not written to a docker
   config file.
 

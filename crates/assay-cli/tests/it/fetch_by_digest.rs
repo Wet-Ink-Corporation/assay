@@ -23,6 +23,15 @@ const ESCAPING_MANIFEST_HEX: &str =
 const INDEX_HEX: &str = "9ff2f631e1285c344ee3d82b50d4b96eb2515ad2ee9720725589b2ac26a33ea5";
 /// sha256 of `manifest_with(MANIFEST_TYPE, "assay", "\"29\"")`: the layer size is a string.
 const STRING_SIZE_HEX: &str = "7fd7106ccc0e23b13f872ce75846e382388780c002a933f00410e3607f8c07bd";
+/// A second layer, as a signature beside the binary would be, and its sha256.
+const SIGNATURE: &[u8] = b"assay-fixture-signature\n";
+const SIGNATURE_HEX: &str = "bb3a78a8c8fda7dc4b05cb24ed249a584c6c2aa216c4f024e61bb9c325cd401c";
+/// sha256 of `manifest_of(MANIFEST_TYPE, &[layer "assay", signature "assay.sig"])`.
+const TWO_LAYER_HEX: &str = "46e9ca214a29d3587e2575c1b26b81690097cb2f1c62f66976e508e20dc38bc5";
+/// sha256 of `manifest_of(MANIFEST_TYPE, &[layer "assay", signature "assay"])`: two layers, one
+/// title.
+const DUPLICATE_TITLE_HEX: &str =
+    "175371f55162dddca64c9a2d25a814a49884f65de464dc79a6bd13aac689bd66";
 const GIT_PIN: &str = "0123456789abcdef0123456789abcdef01234567";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
@@ -30,26 +39,44 @@ const PASSWORD: &str = "s3cret";
 
 /// The fake `oras`: `oras {manifest|blob} fetch [-u U --password-stdin] --output F REF@sha256:H`
 /// copies `$FAKE_ORAS_STORE/H` to `F`, appends its argv to `$FAKE_ORAS_LOG` and writes what it
-/// read on stdin for `--password-stdin` to `$FAKE_ORAS_STDIN`.
+/// read on stdin for `--password-stdin` to `$FAKE_ORAS_STDIN`. Without `--password-stdin` it
+/// still drains stdin, as a real CLI may: a caller must not feed it anything it needs later.
 const FAKE_ORAS: &str = r#"#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_ORAS_LOG"
 shift 2
-out= ref=
+out= ref= password=
 while [ $# -gt 0 ]; do
   case "$1" in
     --output|-o) out=$2; shift 2 ;;
     -u|--username) shift 2 ;;
-    --password-stdin) cat > "$FAKE_ORAS_STDIN"; shift ;;
+    --password-stdin) cat > "$FAKE_ORAS_STDIN"; password=1; shift ;;
     *) ref=$1; shift ;;
   esac
 done
+[ -n "$password" ] || [ -t 0 ] || cat > /dev/null
 cp "$FAKE_ORAS_STORE/${ref##*@sha256:}" "$out"
 "#;
 
-/// An OCI manifest shaped like the one `oras push` writes for the assay binary, with one titled
-/// layer whose `size` is the JSON text `size`.
-fn manifest_with(media_type: &str, title: &str, size: &str) -> String {
+/// An OCI manifest shaped like the one `oras push` writes for the assay binary. Each layer is
+/// `(sha256 hex, size as JSON text, title)`.
+fn manifest_of(media_type: &str, layers: &[(&str, &str, &str)]) -> String {
+    let layers = layers
+        .iter()
+        .map(|(hex, size, title)| {
+            format!(
+                concat!(
+                    r#"{{"mediaType":"application/vnd.wet-ink.assay.binary.layer.v1","#,
+                    r#""digest":"sha256:{hex}","size":{size},"#,
+                    r#""annotations":{{"org.opencontainers.image.title":"{title}"}}}}"#,
+                ),
+                hex = hex,
+                size = size,
+                title = title,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
         concat!(
             r#"{{"schemaVersion":2,"mediaType":"{media_type}","#,
@@ -57,20 +84,33 @@ fn manifest_with(media_type: &str, title: &str, size: &str) -> String {
             r#""config":{{"mediaType":"application/vnd.oci.empty.v1+json","#,
             r#""digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","#,
             r#""size":2,"data":"e30="}},"#,
-            r#""layers":[{{"mediaType":"application/vnd.wet-ink.assay.binary.layer.v1","#,
-            r#""digest":"sha256:{layer}","size":{size},"#,
-            r#""annotations":{{"org.opencontainers.image.title":"{title}"}}}}]}}"#,
+            r#""layers":[{layers}]}}"#,
         ),
         media_type = media_type,
-        layer = LAYER_HEX,
-        size = size,
-        title = title,
+        layers = layers,
     )
+}
+
+/// The fixture manifest with its one layer titled `title`, of type `media_type` and with the
+/// layer `size` given as JSON text.
+fn manifest_with(media_type: &str, title: &str, size: &str) -> String {
+    manifest_of(media_type, &[(LAYER_HEX, size, title)])
 }
 
 /// The OCI image manifest `oras push` writes for the assay binary, with one titled layer.
 fn manifest(title: &str) -> String {
     manifest_with(MANIFEST_TYPE, title, "29")
+}
+
+/// The fixture manifest with the binary titled `assay` and the signature titled `signature_title`.
+fn two_layer_manifest(signature_title: &str) -> String {
+    manifest_of(
+        MANIFEST_TYPE,
+        &[
+            (LAYER_HEX, "29", "assay"),
+            (SIGNATURE_HEX, "24", signature_title),
+        ],
+    )
 }
 
 fn script() -> PathBuf {
@@ -187,6 +227,15 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// Asserts the script gave `reason` on stderr, so a test fails for the refusal it is about.
+fn assert_reason(output: &Output, reason: &str) {
+    assert!(
+        stderr(output).contains(reason),
+        "expected `{reason}` on stderr: {}",
+        stderr(output)
+    );
+}
+
 #[test]
 #[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
 fn installs_the_artifact_executable_when_every_digest_matches()
@@ -282,6 +331,7 @@ fn rejects_a_layer_title_that_escapes_the_output_directory()
     let output = sandbox.fetch(&format!("sha256:{ESCAPING_MANIFEST_HEX}"))?;
 
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_reason(&output, "is not a plain file name");
     assert!(sandbox.out_is_empty()?, "nothing may be installed");
     assert!(
         !sandbox.root.join("assay").exists(),
@@ -308,6 +358,7 @@ fn aborts_and_installs_nothing_when_the_artifact_type_differs()
     )?;
 
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_reason(&output, "is not of artifact type");
     assert!(sandbox.out_is_empty()?, "nothing may be installed");
     Ok(())
 }
@@ -326,6 +377,7 @@ fn aborts_and_installs_nothing_when_the_pin_names_an_image_index()
     let output = sandbox.fetch(&format!("sha256:{INDEX_HEX}"))?;
 
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_reason(&output, "is not an OCI image manifest");
     assert!(sandbox.out_is_empty()?, "nothing may be installed");
     Ok(())
 }
@@ -344,6 +396,7 @@ fn aborts_and_installs_nothing_when_a_layer_size_is_not_an_integer()
     let output = sandbox.fetch(&format!("sha256:{STRING_SIZE_HEX}"))?;
 
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_reason(&output, "integer size");
     assert!(sandbox.out_is_empty()?, "nothing may be installed");
     Ok(())
 }
@@ -392,19 +445,76 @@ fn rejects_a_repository_that_is_not_a_plain_registry_path_before_contacting_the_
 
 #[test]
 #[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
-fn rejects_an_output_directory_containing_a_newline() -> Result<(), Box<dyn std::error::Error>> {
-    let sandbox = Sandbox::new("newline-out")?;
+fn rejects_an_empty_output_directory_or_one_containing_a_newline()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = Sandbox::new("bad-out")?;
     sandbox.serve_fixture()?;
-    let out = format!("{}\ninjected=1", sandbox.path("out")?);
+    let newline = format!("{}\ninjected=1", sandbox.path("out")?);
     let digest = format!("sha256:{MANIFEST_HEX}");
 
-    let output = sandbox.run(&["fetch", REPOSITORY, &digest, &out])?;
+    let accepted = ["", newline.as_str()]
+        .into_iter()
+        .map(|out| {
+            let code = sandbox
+                .run(&["fetch", REPOSITORY, &digest, out])?
+                .status
+                .code();
+            Ok((out, code))
+        })
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|&(_, code)| code != Some(2))
+        .collect::<Vec<_>>();
 
-    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert_eq!(
+        accepted,
+        Vec::new(),
+        "out-dirs not rejected as usage errors"
+    );
     assert!(
         !sandbox.oras_was_called(),
         "oras ran for an invalid out-dir"
     );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
+fn installs_every_layer_of_a_multi_layer_artifact_with_its_exact_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = Sandbox::new("two-layers")?;
+    sandbox.serve(TWO_LAYER_HEX, two_layer_manifest("assay.sig").as_bytes())?;
+    sandbox.serve(LAYER_HEX, LAYER)?;
+    sandbox.serve(SIGNATURE_HEX, SIGNATURE)?;
+
+    let output = sandbox.fetch(&format!("sha256:{TWO_LAYER_HEX}"))?;
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        (
+            fs::read(sandbox.out().join("assay"))?,
+            fs::read(sandbox.out().join("assay.sig"))?
+        ),
+        (LAYER.to_vec(), SIGNATURE.to_vec()),
+        "installed layers differ"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
+fn aborts_and_installs_nothing_when_two_layers_share_a_title()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = Sandbox::new("duplicate-title")?;
+    sandbox.serve(DUPLICATE_TITLE_HEX, two_layer_manifest("assay").as_bytes())?;
+    sandbox.serve(LAYER_HEX, LAYER)?;
+    sandbox.serve(SIGNATURE_HEX, SIGNATURE)?;
+
+    let output = sandbox.fetch(&format!("sha256:{DUPLICATE_TITLE_HEX}"))?;
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_reason(&output, "two layers are titled");
+    assert!(sandbox.out_is_empty()?, "nothing may be installed");
     Ok(())
 }
 
