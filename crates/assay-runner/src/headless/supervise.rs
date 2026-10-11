@@ -1,9 +1,10 @@
 //! A bounded `claude` process: a wall-clock deadline, a capped transcript, and a child that is
 //! killed and waited on rather than left behind (H-13).
 //!
-//! stdout goes to an anonymous temporary file, not a pipe, so no reader can block; stdin and
-//! stderr are closed. The calling thread polls the child and the size of its output against one
-//! deadline. Past the deadline or the cap, the child is killed and reaped.
+//! stdin and stdout are anonymous temporary files, not pipes: the child reads its input from a
+//! file written in full before it starts, and writes its transcript to another, so no writer or
+//! reader can block on it. stderr is closed. The calling thread polls the child and the size of
+//! its output against one deadline. Past the deadline or the cap, the child is killed and reaped.
 //!
 //! The child leads its own process group, but only the child itself is killed: the group killer
 //! that also stops descendants lives in `assay-forge`, which this crate may not depend on
@@ -11,7 +12,7 @@
 //! only descendants are its own helpers, which exit once the CLI is gone.
 
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -39,19 +40,22 @@ enum Watched {
     Stop(Ending),
 }
 
-/// Runs `command` until it exits, `timeout` passes or its stdout passes `cap` bytes.
+/// Runs `command` with `input` on its stdin until it exits, `timeout` passes or its stdout
+/// passes `cap` bytes.
 pub(super) fn run(
     mut command: Command,
+    input: &[u8],
     timeout: Duration,
     cap: u64,
 ) -> Result<Captured, HeadlessError> {
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or(HeadlessError::TimeoutTooLong { timeout })?;
-    let mut stdout = tempfile::tempfile().map_err(HeadlessError::Spool)?;
-    let child_end = stdout.try_clone().map_err(HeadlessError::Spool)?;
+    let stdin = input_file(input).map_err(HeadlessError::SpoolCreate)?;
+    let mut stdout = tempfile::tempfile().map_err(HeadlessError::SpoolCreate)?;
+    let child_end = stdout.try_clone().map_err(HeadlessError::SpoolCreate)?;
     command
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(child_end)
         .stderr(Stdio::null())
         .process_group(0);
@@ -77,8 +81,16 @@ pub(super) fn run(
             return Err(HeadlessError::Supervise(source));
         }
     };
-    let transcript = read_capped(&mut stdout, cap).map_err(HeadlessError::Spool)?;
+    let transcript = read_capped(&mut stdout, cap).map_err(HeadlessError::ReadBack)?;
     Ok(Captured { ending, transcript })
+}
+
+/// An anonymous temporary file holding `input`, positioned at its start.
+fn input_file(input: &[u8]) -> io::Result<File> {
+    let mut file = tempfile::tempfile()?;
+    file.write_all(input)?;
+    file.seek(SeekFrom::Start(0))?;
+    Ok(file)
 }
 
 /// Polls until the child exits, its output passes `cap`, or `deadline` passes.

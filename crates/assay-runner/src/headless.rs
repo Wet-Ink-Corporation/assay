@@ -44,8 +44,10 @@ pub struct ClaudeHeadless {
 
 /// Why a headless call could not be made or supervised.
 ///
-/// Up to and including [`Spawn`](Self::Spawn), the CLI never ran and nothing is charged. After
-/// it, the CLI may have run and its cost is unknown: the caller charges the call's budget.
+/// [`may_have_run`](Self::may_have_run) tells the caller whether to charge: the variants up to
+/// and including [`Spawn`](Self::Spawn) fail before the CLI starts, so nothing is charged; after
+/// it ([`Supervise`](Self::Supervise), [`Kill`](Self::Kill), [`ReadBack`](Self::ReadBack)) the
+/// CLI may have run and its cost is unknown, so the caller charges the call's budget.
 #[derive(Debug, thiserror::Error)]
 pub enum HeadlessError {
     /// A path in the call is relative, so it would resolve against the empty working directory.
@@ -63,9 +65,10 @@ pub enum HeadlessError {
         /// The requested timeout.
         timeout: Duration,
     },
-    /// The temporary file holding the transcript could not be created or read.
-    #[error("the transcript spool failed")]
-    Spool(#[source] io::Error),
+    /// The temporary files for the prompt (stdin) and the transcript could not be created,
+    /// before the CLI started.
+    #[error("the prompt or transcript spool could not be created")]
+    SpoolCreate(#[source] io::Error),
     /// The CLI could not be started.
     #[error("the claude CLI could not be started")]
     Spawn(#[source] io::Error),
@@ -75,6 +78,25 @@ pub enum HeadlessError {
     /// The CLI could not be killed and may still be running: abort the job rather than retry.
     #[error("the claude CLI could not be killed")]
     Kill(#[source] io::Error),
+    /// The transcript could not be read back after the CLI stopped.
+    #[error("the transcript could not be read back")]
+    ReadBack(#[source] io::Error),
+}
+
+impl HeadlessError {
+    /// Whether the CLI may have run before this failure, so that its unknown cost must be
+    /// charged at the call's budget. `false` means the CLI was never started.
+    #[must_use]
+    pub const fn may_have_run(&self) -> bool {
+        match self {
+            Self::RelativePath { .. }
+            | Self::Workdir(_)
+            | Self::TimeoutTooLong { .. }
+            | Self::SpoolCreate(_)
+            | Self::Spawn(_) => false,
+            Self::Supervise(_) | Self::Kill(_) | Self::ReadBack(_) => true,
+        }
+    }
 }
 
 impl ClaudeHeadless {
@@ -103,7 +125,6 @@ impl ClaudeHeadless {
         let mut command = Command::new(&self.program);
         command
             .arg("-p")
-            .arg(call.user_prompt.as_str())
             .args(["--output-format", "stream-json", "--verbose"])
             .arg("--json-schema")
             .arg(&call.json_schema)
@@ -141,7 +162,12 @@ impl ModelRunner for ClaudeHeadless {
             }
         }
         self.workdir.ensure_empty()?;
-        let captured = supervise::run(self.command(call), call.timeout, self.max_output_bytes)?;
+        let captured = supervise::run(
+            self.command(call),
+            call.user_prompt.as_str().as_bytes(),
+            call.timeout,
+            self.max_output_bytes,
+        )?;
         Ok(stream::classify(
             &captured.transcript,
             captured.ending,

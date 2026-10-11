@@ -20,20 +20,21 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
 ## Invariants
 - Every spawned process has an owner that waits on or kills it, and a timeout (H-13).
 - Output read from a process is size-capped (H-13): stdout is spooled to an anonymous temporary file and the call is killed past the cap (32 MiB by default); stderr is discarded.
-- The argv is exactly 03 §8's, in its order (`tests/it/headless.rs` pins it flag for flag): `-p <prompt> --output-format stream-json --verbose --json-schema --append-system-prompt-file --exclude-dynamic-system-prompt-sections --restricted --safe-mode --settings <03 §8 JSON> --tools Read,Grep,Glob --add-dir --permission-mode dontAsk --max-turns --max-budget-usd <cap>`. Never `--bare`. The tool set is a constant, not a call field.
-- The environment is cleared; only the OAuth token, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` and passed variables reach the CLI, and `ANTHROPIC_*`, `CLAUDE_CODE_USE_*`, `AWS_*`, `GOOGLE_*`, `CLOUD_ML_*` and `VERTEX_*` cannot be passed.
-- Cost comes only from the last `result` message's `total_cost_usd`; a timeout, a transcript past the cap, or a missing or unreadable cost is charged at the call's budget. Only `rate_limit_event`s with status `rejected` or `allowed_warning` are reported. The exit status is not consulted.
+- The prompt reaches the CLI on stdin, from an anonymous temporary file written before the CLI starts, never as an argument (wi-9fe37e).
+- The argv is exactly 03 §8's, in its order (`tests/it/headless.rs` pins it flag for flag): `-p --output-format stream-json --verbose --json-schema --append-system-prompt-file --exclude-dynamic-system-prompt-sections --restricted --safe-mode --settings <03 §8 JSON> --tools Read,Grep,Glob --add-dir --permission-mode dontAsk --max-turns --max-budget-usd <cap>`. Never `--bare`. The tool set is a constant, not a call field.
+- The environment is cleared; only the OAuth token, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` and passed variables reach the CLI, and `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, `ANTHROPIC_*`, `CLAUDE_CODE_USE_*`, `AWS_*`, `GOOGLE_*`, `CLOUD_ML_*`, `VERTEX_*`, `LD_*` and `DYLD_*` cannot be passed.
+- Cost comes only from the last `result` message's `total_cost_usd`; a timeout, a transcript past the cap, or a missing or unreadable cost is charged at the call's budget, and a cost too large for `Aeu` saturates. The `result` decides the outcome: budget, turn and quota endings stay final even when a stray stdout line is unreadable, which only stops a success from counting (it becomes `Malformed`). Only `rate_limit_event`s with status `rejected` or `allowed_warning` are reported. The exit status is not consulted.
 - The CLI is killed only at the timeout or the output cap, never on assay's own mid-run accounting (03 §8).
 
 ## Runtime prerequisites
 - Unix (`process_group`). Only the CLI process itself is killed at a limit: the process-group killer lives in `assay-forge`, which this crate may not depend on (see Decisions).
 
 ## Errors
-- `HeadlessError`: before the CLI starts (`RelativePath`, `Workdir`, `TimeoutTooLong`, `Spool`, `Spawn`) nothing is charged; after it (`Supervise`, `Kill`, or `Spool` on reading back) the cost is unknown and the caller charges the call's budget. `Kill` means the CLI may still be running: abort the job, do not retry.
+- `HeadlessError`: `may_have_run()` says whether to charge. Before the CLI starts (`RelativePath`, `Workdir`, `TimeoutTooLong`, `SpoolCreate`, `Spawn`) it is `false` and nothing is charged; after it (`Supervise`, `Kill`, `ReadBack`) it is `true`, the cost is unknown and the caller charges the call's budget. `Kill` means the CLI may still be running: abort the job, do not retry.
 - Model-side endings (budget, turns, timeout, quota, malformed output) are `ModelOutcome`s, not errors (ERR-10).
 
 ## Test strategy
-Integration tests in `tests/it/` parse recorded stream-json transcripts (`tests/fixtures/stream/`, one per outcome) through `Replay`, and drive `ClaudeHeadless` against a stand-in script (`tests/fixtures/fake-claude`) that records its argv, cwd and environment; no test starts the real `claude` (TST-10). The timeout test waits on a 300 ms limit. Run: `cargo test -p assay-runner`.
+Integration tests in `tests/it/` parse recorded stream-json transcripts (`tests/fixtures/stream/`, one per outcome) through `Replay`, and drive `ClaudeHeadless` against a stand-in script (`tests/fixtures/fake-claude`) that records its argv, stdin, cwd and environment; no test starts the real `claude` (TST-10). The timeout test runs a real 300 ms limit but asserts only the outcome and the charge, not how much the stand-in wrote before the kill. Run: `cargo test -p assay-runner`.
 
 ## Do not
 - Do not trust model output as authoritative; it is validated mechanically downstream (ADR-08).
@@ -43,4 +44,5 @@ Integration tests in `tests/it/` parse recorded stream-json transcripts (`tests/
 |---|---|---|---|
 | 2026-10-11 | Crate created empty (Story #46); edges are added when first used. | ARC-12, CRF-05 | Story #46 |
 | 2026-10-11 | `ModelRunner` adapters added (#82), with edges to `assay-app`, `assay-domain`, `serde_json` (stream parsing by `Value`, no serde derive), `tempfile` (stdout spool) and `thiserror`, all pre-approved. | ARC-12, H-16 | #82 |
-| 2026-10-11 | Known gap: at a limit the CLI process is killed alone, not its process group, so a helper it started can outlive it briefly (no process-spawning tool is available, so only the CLI's own helpers can be left). `assay-forge`'s `GroupKiller` cannot be reused across the adapter boundary (ADR-07). Planned fix: make `GroupKiller` public in `assay-forge` and have `assay-cli` inject a group kill into `ClaudeHeadless`. | H-13, H-16 | coordinator default (#82 decision 1, option D; B planned) |
+| 2026-10-11 | Known gap: at a limit the CLI process is killed alone, not its process group, so a helper it started can outlive it briefly (no process-spawning tool is available, so only the CLI's own helpers can be left). And because the CLI leads its own group (`process_group(0)`), signals sent to assay's group do not reach it: if assay dies, the CLI outlives it. `assay-forge`'s `GroupKiller` cannot be reused across the adapter boundary (ADR-07). Planned fix (option B), which covers both: make `GroupKiller` public in `assay-forge` and have `assay-cli` inject a group kill into `ClaudeHeadless`. | H-13, H-16 | Weigh-In default wi-469213 (two-way), owner may reopen |
+| 2026-10-11 | The prompt goes to `claude -p` on stdin from a temporary file, not as an argument: one argument is capped at 128 KiB, which a context pack can exceed. 03 §8 updated; `assay doctor` (#84) must verify the pinned CLI reads it. | H-13, H-16 | owner, Weigh-In wi-9fe37e (decided A) |

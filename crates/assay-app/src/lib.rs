@@ -15,5 +15,5 @@ pub use contract::{
 };
 pub use model_runner::{
     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
-    PromptError, RateLimitObserved, RateLimitStatus, RetryError, Structured, run_with_retry,
+    PromptError, RateLimitObserved, RetryError, Structured, run_with_retry,
 };

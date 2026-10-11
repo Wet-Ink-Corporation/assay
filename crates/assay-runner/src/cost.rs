@@ -1,5 +1,7 @@
 //! `total_cost_usd` (a JSON number of dollars) to [`Aeu`].
 
+use std::num::IntErrorKind;
+
 use assay_domain::Aeu;
 use serde_json::Value;
 
@@ -7,7 +9,8 @@ use serde_json::Value;
 const MICROS_PER_AEU: u64 = 1_000_000;
 
 /// The cost a `total_cost_usd` value reports, rounded to the nearest micro-AEU, or `None` when it
-/// is not a non-negative number that fits.
+/// is not a non-negative number. A cost past the largest `Aeu` saturates there, so an absurd
+/// report is charged as much as possible rather than replaced by the smaller cap.
 ///
 /// The float is rendered with six fixed decimals and parsed back as integers, which converts it
 /// without a lossy `as` cast (H-11); fixed-precision formatting never uses an exponent.
@@ -18,12 +21,16 @@ pub(crate) fn from_usd(value: &Value) -> Option<Aeu> {
     }
     let text = format!("{dollars:.6}");
     let (whole, fraction) = text.split_once('.')?;
-    let whole: u64 = whole.parse().ok()?;
     let fraction: u64 = fraction.parse().ok()?;
-    whole
-        .checked_mul(MICROS_PER_AEU)?
-        .checked_add(fraction)
-        .map(Aeu::from_micros)
+    let micros = match whole.parse::<u64>() {
+        Ok(whole) => whole
+            .saturating_mul(MICROS_PER_AEU)
+            .saturating_add(fraction),
+        // The text is digits only, so the parse fails only on overflow.
+        Err(error) if *error.kind() == IntErrorKind::PosOverflow => u64::MAX,
+        Err(_) => return None,
+    };
+    Some(Aeu::from_micros(micros))
 }
 
 #[cfg(test)]
@@ -54,8 +61,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_costs_too_large_to_hold() {
-        assert_eq!(from_usd(&json!(1e30)), None);
+    fn saturates_costs_too_large_to_hold() {
+        let most = Some(Aeu::from_micros(u64::MAX));
+
+        assert_eq!(from_usd(&json!(1e30)), most);
+        assert_eq!(from_usd(&json!(18_446_744_073_709.6)), most);
     }
 
     #[test]

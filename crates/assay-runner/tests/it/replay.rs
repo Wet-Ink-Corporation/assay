@@ -3,10 +3,8 @@
 
 use std::error::Error;
 
-use assay_app::{
-    ModelOutcome, ModelResult, ModelRunner, RateLimitObserved, RateLimitStatus, Structured,
-};
-use assay_domain::Aeu;
+use assay_app::{ModelOutcome, ModelResult, ModelRunner, RateLimitObserved, Structured};
+use assay_domain::{Aeu, RateLimitStatus};
 use assay_runner::{Recording, Replay, ReplayError};
 use serde_json::json;
 
@@ -109,6 +107,17 @@ fn a_line_that_is_not_json_makes_the_stream_malformed() -> Result<(), Box<dyn Er
 
     assert_eq!(result.outcome, ModelOutcome::Malformed);
     assert_eq!(result.cost, Aeu::from_micros(421_300));
+    Ok(())
+}
+
+#[test]
+fn a_stray_line_does_not_hide_a_budget_exhausted_result() -> Result<(), Box<dyn Error>> {
+    let result = replay("garbage_line_budget_exhausted")?;
+
+    assert_eq!(
+        (result.outcome, result.cost),
+        (ModelOutcome::BudgetExhausted, Aeu::from_micros(751_200))
+    );
     Ok(())
 }
 

@@ -8,7 +8,7 @@ use std::num::NonZeroU8;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use assay_domain::Aeu;
+use assay_domain::{Aeu, RateLimitStatus};
 use serde_json::Value;
 
 pub use prompt::{InvalidPrompt, Prompt, PromptError};
@@ -114,13 +114,4 @@ pub struct RateLimitObserved {
     pub status: RateLimitStatus,
     /// When the limit resets, in Unix seconds, when the event says.
     pub resets_at: Option<u64>,
-}
-
-/// The rate-limit statuses that pause the LLM stage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RateLimitStatus {
-    /// Still allowed, but close to the limit.
-    AllowedWarning,
-    /// Refused.
-    Rejected,
 }

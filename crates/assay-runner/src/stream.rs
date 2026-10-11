@@ -7,8 +7,8 @@
 
 mod message;
 
-use assay_app::{ModelOutcome, ModelResult, RateLimitObserved, RateLimitStatus, Structured};
-use assay_domain::Aeu;
+use assay_app::{ModelOutcome, ModelResult, RateLimitObserved, Structured};
+use assay_domain::{Aeu, RateLimitStatus};
 
 use message::{Message, ResultKind, ResultMessage};
 
@@ -28,26 +28,18 @@ pub(crate) enum Ending {
 /// The cost is the last `result`'s `total_cost_usd`, or `budget` when the call timed out, was
 /// cut short, or reported no readable cost (03 §8: on timeout the cap is charged).
 pub(crate) fn classify(transcript: &[u8], ending: Ending, budget: Aeu) -> ModelResult {
-    let Scan {
-        result,
-        rate_limits,
-        rate_limited,
-        unreadable,
-    } = Scan::of(transcript);
+    let mut scan = Scan::of(transcript);
+    let rate_limits = std::mem::take(&mut scan.rate_limits);
     let (outcome, cost) = match ending {
         Ending::TimedOut => (ModelOutcome::Timeout, budget),
         Ending::OutputCapped => (ModelOutcome::Malformed, budget),
         Ending::Exited => {
-            let cost = result
+            let cost = scan
+                .result
                 .as_ref()
                 .and_then(|result| result.cost)
                 .unwrap_or(budget);
-            let outcome = if unreadable {
-                ModelOutcome::Malformed
-            } else {
-                outcome(result, rate_limited)
-            };
-            (outcome, cost)
+            (scan.outcome(), cost)
         }
     };
     ModelResult {
@@ -90,25 +82,77 @@ impl Scan {
         }
         scan
     }
+
+    /// The outcome of a call that exited on its own, decided by its `result` first.
+    ///
+    /// Budget, turn and quota endings are final whatever else the transcript holds: a stray line
+    /// on stdout must not turn them into a retried `Malformed`. An unreadable line only stops a
+    /// success from counting, since its output may then be incomplete.
+    fn outcome(self) -> ModelOutcome {
+        let Some(result) = self.result else {
+            return if self.rate_limited {
+                ModelOutcome::QuotaExhausted
+            } else {
+                ModelOutcome::Malformed
+            };
+        };
+        match result.kind {
+            ResultKind::MaxBudget => ModelOutcome::BudgetExhausted,
+            ResultKind::MaxTurns => ModelOutcome::TurnsExhausted,
+            ResultKind::Success => match result.structured {
+                Some(value) if !value.is_null() && !self.unreadable => {
+                    ModelOutcome::Ok(Structured::new(value))
+                }
+                _ => ModelOutcome::Malformed,
+            },
+            ResultKind::Error if self.rate_limited || result.usage_limit => {
+                ModelOutcome::QuotaExhausted
+            }
+            ResultKind::Error => ModelOutcome::Malformed,
+        }
+    }
 }
 
-/// The outcome of a call that exited with a readable transcript.
-fn outcome(result: Option<ResultMessage>, rate_limited: bool) -> ModelOutcome {
-    let Some(result) = result else {
-        return if rate_limited {
-            ModelOutcome::QuotaExhausted
-        } else {
-            ModelOutcome::Malformed
-        };
-    };
-    match result.kind {
-        ResultKind::MaxBudget => ModelOutcome::BudgetExhausted,
-        ResultKind::MaxTurns => ModelOutcome::TurnsExhausted,
-        ResultKind::Success => match result.structured {
-            Some(value) if !value.is_null() => ModelOutcome::Ok(Structured::new(value)),
-            _ => ModelOutcome::Malformed,
-        },
-        ResultKind::Error if rate_limited || result.usage_limit => ModelOutcome::QuotaExhausted,
-        ResultKind::Error => ModelOutcome::Malformed,
+#[cfg(test)]
+mod tests {
+    use assay_app::ModelOutcome;
+    use assay_domain::Aeu;
+
+    use super::{Ending, classify};
+
+    const BUDGET: Aeu = Aeu::from_micros(740_000);
+    const STRAY: &str = "(node) Warning: printed to stdout";
+
+    fn outcome_of(lines: &[&str]) -> ModelOutcome {
+        classify(lines.join("\n").as_bytes(), Ending::Exited, BUDGET).outcome
+    }
+
+    #[test]
+    fn a_stray_line_does_not_hide_a_turns_exhausted_result() {
+        let result =
+            r#"{"type":"result","subtype":"error_max_turns","is_error":true,"total_cost_usd":0.3}"#;
+
+        assert_eq!(outcome_of(&[STRAY, result]), ModelOutcome::TurnsExhausted);
+    }
+
+    #[test]
+    fn a_stray_line_does_not_hide_a_usage_limit_result() {
+        let result = r#"{"type":"result","subtype":"success","is_error":true,"total_cost_usd":0,"api_error":"usage_limit_reached"}"#;
+
+        assert_eq!(outcome_of(&[STRAY, result]), ModelOutcome::QuotaExhausted);
+    }
+
+    #[test]
+    fn a_stray_line_does_not_hide_a_rejection_without_a_result() {
+        let rejected = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}"#;
+
+        assert_eq!(outcome_of(&[rejected, STRAY]), ModelOutcome::QuotaExhausted);
+    }
+
+    #[test]
+    fn a_stray_line_makes_a_successful_result_malformed() {
+        let result = r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"structured_output":{"findings":[]}}"#;
+
+        assert_eq!(outcome_of(&[STRAY, result]), ModelOutcome::Malformed);
     }
 }

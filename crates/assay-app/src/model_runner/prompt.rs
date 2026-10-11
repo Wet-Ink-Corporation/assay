@@ -2,9 +2,8 @@
 
 use std::fmt;
 
-/// A user prompt the headless CLI reads as its positional argument (03 §8): non-empty, not
-/// starting with `-` (which the CLI would parse as a flag) and free of NUL bytes (which no
-/// argument can carry).
+/// A user prompt, which the headless CLI reads from stdin (03 §8): non-empty, free of NUL bytes
+/// and, as defence in depth should it ever travel as an argument again, not starting with `-`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt(String);
 
@@ -14,10 +13,10 @@ pub enum PromptError {
     /// The text is empty.
     #[error("the prompt is empty")]
     Empty,
-    /// The text starts with `-`, so the CLI would read it as an option.
+    /// The text starts with `-`, which a CLI reading it as an argument would take for an option.
     #[error("the prompt starts with '-'")]
     LeadingDash,
-    /// The text holds a NUL byte, which a process argument cannot carry.
+    /// The text holds a NUL byte, which no prompt needs and a text reader may truncate at.
     #[error("the prompt holds a NUL byte")]
     Nul,
 }

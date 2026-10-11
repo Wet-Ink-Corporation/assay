@@ -14,7 +14,7 @@ application. Orchestrates domain decisions and effects through ports. No concret
 ## Public surface
 Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`:
 - `Contract`, `ContractValidator` (`new`, `read`), `SchemaViolation`: validate-on-read for the versioned contracts, against the schemas in `schemas/` embedded with `include_str!` (`src/contract.rs`). `read`'s callers cap the input size first and act only on the returned `Value` (duplicate keys keep the last value).
-- The `ModelRunner` port (03 §7, `src/model_runner.rs`): `run(&self, &ModelCall) -> Result<ModelResult, Self::Error>`, with `ModelCall`, `Prompt` (`InvalidPrompt`, `PromptError`), `ModelResult` (outcome, cost in `Aeu`, rate limits), `ModelOutcome` (`Ok(Structured)`, `BudgetExhausted`, `TurnsExhausted`, `Timeout`, `QuotaExhausted`, `Malformed`), `RateLimitObserved`, `RateLimitStatus`; and the retry policy `run_with_retry` (`ModelAttempts`, `RetryError`).
+- The `ModelRunner` port (03 §7, `src/model_runner.rs`): `run(&self, &ModelCall) -> Result<ModelResult, Self::Error>`, with `ModelCall`, `Prompt` (`InvalidPrompt`, `PromptError`), `ModelResult` (outcome, cost in `Aeu`, rate limits), `ModelOutcome` (`Ok(Structured)`, `BudgetExhausted`, `TurnsExhausted`, `Timeout`, `QuotaExhausted`, `Malformed`), `RateLimitObserved` (whose status is the domain's `RateLimitStatus`); and the retry policy `run_with_retry` (`ModelAttempts`, `RetryError`).
 
 ## Invariants
 - Ports speak domain types; no adapter type crosses a port signature (ARC-03).
@@ -39,5 +39,5 @@ Integration tests in `tests/it/` drive use cases against in-memory fakes of the 
 |---|---|---|---|
 | 2026-10-11 | Crate created empty (Story #46); the edge to `assay-domain` is added when first used. | ARC-12, CRF-05 | Story #46 |
 | 2026-10-11 | Contract validation lives here, not in the domain (whose dependencies are fixed to serde, thiserror and sha2) and not in an adapter (it does no I/O and every adapter needs it). Adds `assay-domain` (for `Disposition`), `jsonschema` (no default features: no HTTP or file resolution), `serde_json` and `thiserror`, all pre-approved. | ARC-02, ARC-03 | Story #47 |
-| 2026-10-11 | `ModelRunner` (#82) differs from the 03 §7 sketch: `run` borrows the call (the retry reuses it), failures use an associated error type, `preflight` is left to #83, the role is left to #48, and the tool set is not a field (the adapter fixes it). | OWN-01, ARC-03 | #82, pending owner |
+| 2026-10-11 | `ModelRunner` (#82) differs from the 03 §7 sketch: `run` borrows the call (the retry reuses it), failures use an associated error type, `preflight` is left to #83, the role is left to #48, and the tool set is not a field (the adapter fixes it). | OWN-01, ARC-03 | Weigh-In default wi-696446 (two-way), owner may reopen |
 | 2026-10-11 | `ContractValidator` is a value built once by the composition root, not a lazily initialised static: no hidden global state, and the fallible compile step surfaces as a typed error. | OWN-11, ERR-01 | Story #47 |

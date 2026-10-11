@@ -15,7 +15,8 @@ a live call; replace them with captured transcripts when the doctor (#84) record
 | `usage_limit_result_only.jsonl` | `QuotaExhausted` from the `result` message alone |
 | `rate_limit_warning.jsonl` | `Ok` with one `allowed_warning` event kept and one `allowed` dropped |
 | `no_result.jsonl` | `Malformed`: the stream ends without a `result` |
-| `garbage_line.jsonl` | `Malformed`: a line that is not JSON |
+| `garbage_line.jsonl` | `Malformed`: a line that is not JSON before a successful `result` |
+| `garbage_line_budget_exhausted.jsonl` | `BudgetExhausted` at 0.7512: a stray line does not override a final `result` |
 | `no_structured_output.jsonl` | `Malformed`: a successful `result` without `structured_output` |
 | `error_during_execution.jsonl` | `Malformed`: an execution error |
 | `partial.jsonl` | the start of a call cut off by its timeout |
