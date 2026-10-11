@@ -49,7 +49,7 @@ mod numstat;
 mod repository;
 mod sha;
 
-pub use crate::process::{GroupKiller, KillerError, ProcessError};
+pub use crate::process::{GroupKiller, KillerError, ProcFault, ProcessError};
 pub use attributes::{
     AttributeAllowlist, AttributeError, AttributeReport, PolicedAttribute, is_protected_path,
 };

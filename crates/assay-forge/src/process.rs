@@ -20,7 +20,8 @@
 //!
 //! Runtime prerequisites: Linux `/proc` describing this process (not another pid namespace's)
 //! and a procps or util-linux `kill` in `/usr/bin` or `/bin`. [`GroupKiller::system`] checks
-//! both up front, so a host without them fails closed before any process starts.
+//! both up front, and [`GroupKiller::at`] checks `/proc`, so a host without them fails closed
+//! before any process starts.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -118,10 +119,29 @@ pub enum KillerError {
         /// The program that was refused.
         path: PathBuf,
     },
-    /// `/proc/self/stat` is missing, unreadable or names another process (for example a
-    /// `/proc` mounted from another pid namespace), so process groups cannot be supervised.
+    /// `/proc/self/stat` does not describe this process (for example a `/proc` mounted from
+    /// another pid namespace), so process groups cannot be supervised.
     #[error("{SELF_STAT} does not describe this process: Linux /proc is a runtime prerequisite")]
-    ProcUnavailable,
+    ProcUnavailable {
+        /// What was wrong with `/proc/self/stat`.
+        #[source]
+        cause: ProcFault,
+    },
+}
+
+/// Why `/proc/self/stat` does not describe this process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ProcFault {
+    /// It could not be read; `NotFound` when the host has no `/proc`.
+    #[error("it could not be read ({0})")]
+    Unreadable(io::ErrorKind),
+    /// It was read but does not have the documented `pid (comm) ...` shape.
+    #[error("it does not start with a pid and a command name")]
+    Malformed,
+    /// It names the process with this pid instead, as a `/proc` from another pid namespace
+    /// does.
+    #[error("it names process {0}")]
+    NamesAnotherProcess(u32),
 }
 
 /// The program that kills a timed-out child's whole process group: a procps or util-linux
@@ -143,18 +163,35 @@ impl GroupKiller {
         check_proc(Path::new(SELF_STAT), std::process::id())?;
         SYSTEM_KILL
             .into_iter()
-            .find_map(|program| Self::at(program, KILL_GRACE).ok())
+            .find_map(|program| Self::executable(program, KILL_GRACE).ok())
             .ok_or(KillerError::NotFound {
                 searched: &SYSTEM_KILL,
             })
     }
 
-    /// `program` as the kill program. One `grace` deadline covers both its run and the group's
-    /// exit after it.
+    /// `program` as the kill program, once `/proc` is shown to describe this process. One
+    /// `grace` deadline covers both its run and the group's exit after it.
     ///
     /// # Errors
-    /// [`KillerError::NotExecutable`] when `program` is not an executable file.
+    /// [`KillerError::ProcUnavailable`] when `/proc/self/stat` cannot be read or does not name
+    /// this process; [`KillerError::NotExecutable`] when `program` is not an executable file.
     pub fn at(program: impl Into<PathBuf>, grace: Duration) -> Result<Self, KillerError> {
+        Self::checked(Path::new(SELF_STAT), std::process::id(), program, grace)
+    }
+
+    /// [`at`](Self::at) with the `/proc/<pid>/stat` file `stat` expected to name `pid`.
+    fn checked(
+        stat: &Path,
+        pid: u32,
+        program: impl Into<PathBuf>,
+        grace: Duration,
+    ) -> Result<Self, KillerError> {
+        check_proc(stat, pid)?;
+        Self::executable(program, grace)
+    }
+
+    /// `program` as the kill program when it is an executable file; `/proc` is not checked.
+    fn executable(program: impl Into<PathBuf>, grace: Duration) -> Result<Self, KillerError> {
         let program = program.into();
         let executable = fs::metadata(&program)
             .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0);
@@ -342,14 +379,21 @@ fn terminate(
 /// Fails unless the `/proc/<pid>/stat` file at `stat` names `pid`: a missing `/proc`, or one
 /// from another pid namespace, would make every group look empty.
 fn check_proc(stat: &Path, pid: u32) -> Result<(), KillerError> {
-    let line = fs::read_to_string(stat).map_err(|_unreadable| KillerError::ProcUnavailable)?;
-    let named: Option<u32> = line
+    let line = fs::read_to_string(stat).map_err(|error| KillerError::ProcUnavailable {
+        cause: ProcFault::Unreadable(error.kind()),
+    })?;
+    let named: u32 = line
         .split_once(" (")
-        .and_then(|(field, _)| field.parse().ok());
-    if named == Some(pid) {
+        .and_then(|(field, _)| field.parse().ok())
+        .ok_or(KillerError::ProcUnavailable {
+            cause: ProcFault::Malformed,
+        })?;
+    if named == pid {
         Ok(())
     } else {
-        Err(KillerError::ProcUnavailable)
+        Err(KillerError::ProcUnavailable {
+            cause: ProcFault::NamesAnotherProcess(named),
+        })
     }
 }
 
@@ -378,25 +422,47 @@ fn group_alive(group: u32) -> io::Result<bool> {
         if !is_pid {
             continue;
         }
-        let stat = match fs::read_to_string(entry.path().join("stat")) {
-            Ok(stat) => stat,
-            // The process exited between the listing and the read.
-            Err(error)
-                if error.kind() == io::ErrorKind::NotFound
-                    || error.raw_os_error() == Some(ESRCH) =>
-            {
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        let member = in_group(&stat, group).map_err(|UnreadableStat| {
-            io::Error::new(io::ErrorKind::InvalidData, "unreadable /proc/<pid>/stat")
-        })?;
-        if member {
+        let stat = entry.path().join("stat");
+        if is_live_member(|| fs::read_to_string(&stat), group)? {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// Whether the process whose `/proc/<pid>/stat` `read` returns is a live member of `group`.
+///
+/// A process that is gone (the read fails with `NotFound` or `ESRCH`) is not a member. A
+/// process that exits while its stat is read can also yield an empty or truncated line, so an
+/// unparseable line is read once more: gone on that re-read means it exited mid-scan, a
+/// parseable line is used, and a line that is still unparseable is an `InvalidData` error,
+/// because a present process that cannot be read must not make its group look empty.
+fn is_live_member(mut read: impl FnMut() -> io::Result<String>, group: u32) -> io::Result<bool> {
+    let Some(stat) = read_present(&mut read)? else {
+        return Ok(false);
+    };
+    if let Ok(member) = in_group(&stat, group) {
+        return Ok(member);
+    }
+    let Some(stat) = read_present(&mut read)? else {
+        return Ok(false);
+    };
+    in_group(&stat, group).map_err(|UnreadableStat| {
+        io::Error::new(io::ErrorKind::InvalidData, "unreadable /proc/<pid>/stat")
+    })
+}
+
+/// One read of a `/proc/<pid>/stat`: `None` when the process is gone (`NotFound` or `ESRCH`).
+fn read_present(read: &mut impl FnMut() -> io::Result<String>) -> io::Result<Option<String>> {
+    match read() {
+        Ok(stat) => Ok(Some(stat)),
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(ESRCH) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// A `/proc/<pid>/stat` line that does not have the documented shape.
@@ -404,9 +470,11 @@ fn group_alive(group: u32) -> io::Result<bool> {
 struct UnreadableStat;
 
 /// Whether a `/proc/<pid>/stat` line (`pid (comm) state ppid pgrp ...`) is a live member of
-/// `group`. `comm` may contain `) `, so the fields start after the last one.
+/// `group`. `comm` may contain `) `, so the fields start after the last one. The kernel ends
+/// the line with `\n`; a line without it was cut off, possibly inside `pgrp`, and is unreadable.
 fn in_group(stat: &str, group: u32) -> Result<bool, UnreadableStat> {
-    let (_, fields) = stat.rsplit_once(") ").ok_or(UnreadableStat)?;
+    let line = stat.strip_suffix('\n').ok_or(UnreadableStat)?;
+    let (_, fields) = line.rsplit_once(") ").ok_or(UnreadableStat)?;
     let mut fields = fields.split_whitespace();
     let state = fields.next().ok_or(UnreadableStat)?;
     let pgrp: u32 = fields
@@ -665,13 +733,17 @@ mod tests {
 
         assert_eq!(
             check_proc(&stat, 8),
-            Err(KillerError::ProcUnavailable),
+            Err(KillerError::ProcUnavailable {
+                cause: ProcFault::NamesAnotherProcess(7)
+            }),
             "a /proc from another pid namespace must fail closed"
         );
         fs::write(&stat, "garbage").expect("write the stat line");
         assert_eq!(
             check_proc(&stat, 7),
-            Err(KillerError::ProcUnavailable),
+            Err(KillerError::ProcUnavailable {
+                cause: ProcFault::Malformed
+            }),
             "an unreadable stat line must fail closed"
         );
     }
@@ -682,8 +754,39 @@ mod tests {
 
         assert_eq!(
             check_proc(&scratch.path().join("absent"), std::process::id()),
-            Err(KillerError::ProcUnavailable),
+            Err(KillerError::ProcUnavailable {
+                cause: ProcFault::Unreadable(io::ErrorKind::NotFound)
+            }),
             "a host without /proc must fail closed"
+        );
+    }
+
+    #[test]
+    fn an_explicit_kill_program_is_refused_when_proc_describes_another_process() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let stat = scratch.path().join("stat");
+        fs::write(&stat, "7 (assay) R 1 7 7 0").expect("write the stat line");
+
+        // A missing program too: `/proc` is checked first, so its fault is what surfaces.
+        let killer = GroupKiller::checked(&stat, 8, scratch.path().join("absent"), KILL_GRACE);
+
+        assert_eq!(
+            killer,
+            Err(KillerError::ProcUnavailable {
+                cause: ProcFault::NamesAnotherProcess(7)
+            }),
+            "a killer could never see the group it signals, so none is built"
+        );
+    }
+
+    #[test]
+    fn an_explicit_kill_program_is_accepted_when_proc_describes_this_process() {
+        let killer = GroupKiller::at("/bin/true", KILL_GRACE);
+
+        assert_eq!(
+            killer.map(|killer| killer.program),
+            Ok(PathBuf::from("/bin/true")),
+            "this host's /proc passes the preflight"
         );
     }
 
@@ -717,21 +820,129 @@ mod tests {
         );
     }
 
+    /// [`is_live_member`] of group 42 over a stat file whose successive reads return `reads`,
+    /// with an error reduced to its kind.
+    fn member_after(reads: Vec<io::Result<&str>>) -> Result<bool, io::ErrorKind> {
+        let mut reads = reads.into_iter();
+        let read = move || {
+            reads
+                .next()
+                .expect("the scan reads no more often than scripted")
+                .map(str::to_owned)
+        };
+        is_live_member(read, 42).map_err(|error| error.kind())
+    }
+
+    fn vanished() -> io::Error {
+        io::Error::from(io::ErrorKind::NotFound)
+    }
+
+    #[test]
+    fn an_unparseable_stat_whose_process_then_vanishes_is_skipped() {
+        let member = member_after(vec![Ok(""), Err(vanished())]);
+
+        assert_eq!(
+            member,
+            Ok(false),
+            "a process that exited mid-scan is not a member"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_stat_whose_process_is_still_present_fails_closed() {
+        let member = member_after(vec![Ok(""), Ok("42 (sh")]);
+
+        assert_eq!(
+            member,
+            Err(io::ErrorKind::InvalidData),
+            "a stat that stays unparseable must not be read as an empty group"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_stat_that_parses_on_the_re_read_is_used() {
+        let member = member_after(vec![Ok(""), Ok("42 (sh) S 1 42 42 0\n")]);
+
+        assert_eq!(member, Ok(true), "the re-read shows a live member");
+    }
+
+    #[test]
+    fn a_readable_stat_is_read_once() {
+        // One scripted read: a second read would hit the script's end and fail the test.
+        let member = member_after(vec![Ok("9 (sh) S 1 42 42 0\n")]);
+
+        assert_eq!(member, Ok(true), "a live member on the first read");
+    }
+
+    #[test]
+    fn a_re_read_that_fails_otherwise_is_an_error() {
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+
+        let member = member_after(vec![Ok(""), Err(denied)]);
+
+        assert_eq!(
+            member,
+            Err(io::ErrorKind::PermissionDenied),
+            "only a gone process ends the re-read quietly"
+        );
+    }
+
+    #[test]
+    fn a_stat_cut_off_inside_its_group_takes_the_re_read_path() {
+        // "9 (sh) S 1 42 42 0\n" cut after "4" would otherwise name group 4, not 42.
+        let member = member_after(vec![Ok("9 (sh) S 1 4"), Ok("9 (sh) S 1 42 42 0\n")]);
+
+        assert_eq!(
+            member,
+            Ok(true),
+            "a truncated line is re-read, not believed"
+        );
+    }
+
+    #[test]
+    fn a_stat_line_without_its_trailing_newline_is_unreadable() {
+        assert_eq!(
+            in_group("9 (sh) S 1 4", 4),
+            Err(UnreadableStat),
+            "a line cut off inside pgrp must not parse as a shorter group id"
+        );
+    }
+
+    #[test]
+    fn a_process_that_is_gone_before_its_stat_is_read_is_skipped() {
+        let not_found = member_after(vec![Err(vanished())]);
+        let no_such_process = member_after(vec![Err(io::Error::from_raw_os_error(ESRCH))]);
+
+        assert_eq!(not_found, Ok(false), "NotFound means it exited");
+        assert_eq!(no_such_process, Ok(false), "ESRCH means it exited");
+    }
+
+    #[test]
+    fn any_other_read_failure_is_an_error() {
+        let member = member_after(vec![Err(io::Error::from(io::ErrorKind::PermissionDenied))]);
+
+        assert_eq!(
+            member,
+            Err(io::ErrorKind::PermissionDenied),
+            "an unreadable /proc fails closed"
+        );
+    }
+
     #[test]
     fn a_process_in_the_group_is_alive_unless_it_is_a_zombie() {
         assert_eq!(
-            in_group("42 (sh) S 1 42 42 0", 42),
+            in_group("42 (sh) S 1 42 42 0\n", 42),
             Ok(true),
             "a sleeping member"
         );
         assert_eq!(
-            in_group("43 (odd) name) R 1 42 42 0", 42),
+            in_group("43 (odd) name) R 1 42 42 0\n", 42),
             Ok(true),
             "a command name containing `) ` is skipped over"
         );
-        assert_eq!(in_group("44 (sh) Z 1 42 42 0", 42), Ok(false), "a zombie");
+        assert_eq!(in_group("44 (sh) Z 1 42 42 0\n", 42), Ok(false), "a zombie");
         assert_eq!(
-            in_group("45 (sh) S 1 7 7 0", 42),
+            in_group("45 (sh) S 1 7 7 0\n", 42),
             Ok(false),
             "another group"
         );

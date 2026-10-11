@@ -126,7 +126,8 @@ impl GitEnvironment {
         Ok(Self { inherited, killer })
     }
 
-    /// Only `PATH`, set to `path` (no proxy), with `killer`.
+    /// Only `PATH`, set to `path` (no proxy), with `killer`. `/proc` was checked when `killer`
+    /// was built ([`GroupKiller::system`] and [`GroupKiller::at`] both run the preflight).
     #[must_use]
     pub fn new(path: impl Into<OsString>, killer: GroupKiller) -> Self {
         Self {
