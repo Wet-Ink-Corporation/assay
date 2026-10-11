@@ -1,0 +1,37 @@
+# clippy configuration for the rust-craft standard. Protected file: changes need human approval (H-05).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-print-in-tests = true
+allow-dbg-in-tests = false
+avoid-breaking-exported-api = false
+upper-case-acronyms-aggressive = true                   # CRF-01: `HttpClient`, not `HTTPClient`
+too-many-arguments-threshold = 4
+too-many-lines-threshold = 60
+cognitive-complexity-threshold = 15
+max-fn-params-bools = 1
+max-struct-bools = 2
+disallowed-methods = [
+  { path = "std::boxed::Box::leak", reason = "H-07: leaking memory to obtain 'static hides an ownership bug" },
+  { path = "std::panic::catch_unwind", reason = "H-03: panics are bugs, not control flow" },
+  { path = "std::process::abort", reason = "H-03: return an error; main maps it to an ExitCode" },
+  { path = "std::thread::spawn", reason = "ASY-15: panics when the OS refuses; use thread::Builder::new().name(..).spawn(..)?" },
+  { path = "std::thread::Scope::spawn", reason = "ASY-15: panics when the OS refuses; use thread::Builder::new().name(..).spawn_scoped(scope, ..)?" },
+  { path = "std::env::args", reason = "H-03: panics on a non-UTF-8 argument; use env::args_os" },
+  { path = "std::env::vars", reason = "H-03: panics on a non-UTF-8 variable; use env::vars_os or env::var" },
+  { path = "std::time::Duration::from_secs_f64", reason = "H-03: panics on negative, NaN or overflowing input; use Duration::try_from_secs_f64" },
+  { path = "std::time::Duration::from_secs_f32", reason = "H-03: panics on negative, NaN or overflowing input; use Duration::try_from_secs_f32" },
+  { path = "std::time::Duration::mul_f64", reason = "H-03: panics on a negative or overflowing result; use integer checked_mul, or try_from_secs_f64" },
+  { path = "std::time::Duration::mul_f32", reason = "H-03: panics on a negative or overflowing result; use integer checked_mul, or try_from_secs_f32" },
+  { path = "std::time::Duration::div_f64", reason = "H-03: panics on a negative or overflowing result; use integer checked_div, or try_from_secs_f64" },
+  { path = "std::time::Duration::div_f32", reason = "H-03: panics on a negative or overflowing result; use integer checked_div, or try_from_secs_f32" },
+]
+disallowed-macros = [
+  { path = "lazy_static::lazy_static", reason = "MOD-03: use std::sync::LazyLock", allow-invalid = true },
+]
+await-holding-invalid-types = [
+  { path = "tracing::span::Entered", reason = "H-14: an entered span guard held across .await corrupts the span tree; use .instrument(span)" },
+  { path = "tracing::span::EnteredSpan", reason = "H-14: an entered span guard held across .await corrupts the span tree; use .instrument(span)" },
+  { path = "tokio::sync::watch::Ref", reason = "H-14: a watch::Ref held across .await blocks the sender; copy or clone the value out first" },
+]
