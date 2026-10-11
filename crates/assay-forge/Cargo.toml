@@ -10,3 +10,5 @@ workspace = true
 
 # Workspace edges allowed: assay-app and assay-domain (02 §2). Added by the story that first uses them.
 [dependencies]
+tempfile = { workspace = true }
+thiserror = { workspace = true }
