@@ -470,9 +470,11 @@ fn read_present(read: &mut impl FnMut() -> io::Result<String>) -> io::Result<Opt
 struct UnreadableStat;
 
 /// Whether a `/proc/<pid>/stat` line (`pid (comm) state ppid pgrp ...`) is a live member of
-/// `group`. `comm` may contain `) `, so the fields start after the last one.
+/// `group`. `comm` may contain `) `, so the fields start after the last one. The kernel ends
+/// the line with `\n`; a line without it was cut off, possibly inside `pgrp`, and is unreadable.
 fn in_group(stat: &str, group: u32) -> Result<bool, UnreadableStat> {
-    let (_, fields) = stat.rsplit_once(") ").ok_or(UnreadableStat)?;
+    let line = stat.strip_suffix('\n').ok_or(UnreadableStat)?;
+    let (_, fields) = line.rsplit_once(") ").ok_or(UnreadableStat)?;
     let mut fields = fields.split_whitespace();
     let state = fields.next().ok_or(UnreadableStat)?;
     let pgrp: u32 = fields
@@ -765,7 +767,8 @@ mod tests {
         let stat = scratch.path().join("stat");
         fs::write(&stat, "7 (assay) R 1 7 7 0").expect("write the stat line");
 
-        let killer = GroupKiller::checked(&stat, 8, "/bin/true", KILL_GRACE);
+        // A missing program too: `/proc` is checked first, so its fault is what surfaces.
+        let killer = GroupKiller::checked(&stat, 8, scratch.path().join("absent"), KILL_GRACE);
 
         assert_eq!(
             killer,
@@ -858,9 +861,51 @@ mod tests {
 
     #[test]
     fn an_unparseable_stat_that_parses_on_the_re_read_is_used() {
-        let member = member_after(vec![Ok(""), Ok("42 (sh) S 1 42 42 0")]);
+        let member = member_after(vec![Ok(""), Ok("42 (sh) S 1 42 42 0\n")]);
 
         assert_eq!(member, Ok(true), "the re-read shows a live member");
+    }
+
+    #[test]
+    fn a_readable_stat_is_read_once() {
+        // One scripted read: a second read would hit the script's end and fail the test.
+        let member = member_after(vec![Ok("9 (sh) S 1 42 42 0\n")]);
+
+        assert_eq!(member, Ok(true), "a live member on the first read");
+    }
+
+    #[test]
+    fn a_re_read_that_fails_otherwise_is_an_error() {
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+
+        let member = member_after(vec![Ok(""), Err(denied)]);
+
+        assert_eq!(
+            member,
+            Err(io::ErrorKind::PermissionDenied),
+            "only a gone process ends the re-read quietly"
+        );
+    }
+
+    #[test]
+    fn a_stat_cut_off_inside_its_group_takes_the_re_read_path() {
+        // "9 (sh) S 1 42 42 0\n" cut after "4" would otherwise name group 4, not 42.
+        let member = member_after(vec![Ok("9 (sh) S 1 4"), Ok("9 (sh) S 1 42 42 0\n")]);
+
+        assert_eq!(
+            member,
+            Ok(true),
+            "a truncated line is re-read, not believed"
+        );
+    }
+
+    #[test]
+    fn a_stat_line_without_its_trailing_newline_is_unreadable() {
+        assert_eq!(
+            in_group("9 (sh) S 1 4", 4),
+            Err(UnreadableStat),
+            "a line cut off inside pgrp must not parse as a shorter group id"
+        );
     }
 
     #[test]
@@ -886,18 +931,18 @@ mod tests {
     #[test]
     fn a_process_in_the_group_is_alive_unless_it_is_a_zombie() {
         assert_eq!(
-            in_group("42 (sh) S 1 42 42 0", 42),
+            in_group("42 (sh) S 1 42 42 0\n", 42),
             Ok(true),
             "a sleeping member"
         );
         assert_eq!(
-            in_group("43 (odd) name) R 1 42 42 0", 42),
+            in_group("43 (odd) name) R 1 42 42 0\n", 42),
             Ok(true),
             "a command name containing `) ` is skipped over"
         );
-        assert_eq!(in_group("44 (sh) Z 1 42 42 0", 42), Ok(false), "a zombie");
+        assert_eq!(in_group("44 (sh) Z 1 42 42 0\n", 42), Ok(false), "a zombie");
         assert_eq!(
-            in_group("45 (sh) S 1 7 7 0", 42),
+            in_group("45 (sh) S 1 7 7 0\n", 42),
             Ok(false),
             "another group"
         );
