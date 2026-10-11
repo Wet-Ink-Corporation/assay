@@ -8,6 +8,7 @@
 //! The only exception is a path matching an [`AttributeAllowlist`] glob from the base
 //! configuration, and Rust sources, manifests and trust files can never be excepted.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use super::glob::{Glob, GlobError};
@@ -94,8 +95,8 @@ impl AttributeAllowlist {
     /// file name at any depth, one with `/` the whole path.
     ///
     /// # Errors
-    /// [`GlobError`] for the first glob that is empty, starts with `/`, or uses `[`, `]`,
-    /// `{`, `}`, `!` or `\`.
+    /// [`GlobError`] for the first glob that is empty, starts with `/`, uses `[`, `]`, `{`,
+    /// `}`, `!` or `\`, or has a `**` that is not a whole path segment (`a**`, `**b`, `***`).
     pub fn new<I>(globs: I) -> Result<Self, GlobError>
     where
         I: IntoIterator,
@@ -168,17 +169,16 @@ impl AttributeReport {
         &self.opaque
     }
 
-    /// The allowlisted paths that carry policed attributes, each once, in git's order.
+    /// The allowlisted paths that carry policed attributes, each once, in the order git first
+    /// reported them. A path can appear in [`opaque`](Self::opaque) apart from its first
+    /// entry (it was checked twice, say as one rename's old side and another change's path),
+    /// so repeats are removed by path, not only when adjacent.
     pub fn opaque_paths(&self) -> impl Iterator<Item = &str> + '_ {
-        let mut previous = None;
+        let mut seen = HashSet::new();
         self.opaque
             .iter()
             .map(PolicedAttribute::path)
-            .filter(move |path| {
-                let repeated = previous == Some(*path);
-                previous = Some(*path);
-                !repeated
-            })
+            .filter(move |path| seen.insert(*path))
     }
 }
 
@@ -289,6 +289,30 @@ mod tests {
         assert!(
             !allowlist.admits("crates/a/clippy.toml"),
             "a trust file is never admitted"
+        );
+    }
+
+    #[test]
+    fn opaque_paths_lists_each_path_once_even_when_repeated_apart() {
+        let attribute = |path: &str, attribute: &str| PolicedAttribute {
+            path: path.to_owned(),
+            attribute: attribute.to_owned(),
+            value: "set".to_owned(),
+        };
+        let found = vec![
+            attribute("assets/a.png", "diff"),
+            attribute("assets/a.png", "text"),
+            attribute("assets/b.png", "diff"),
+            attribute("assets/a.png", "diff"),
+        ];
+        let allowlist = AttributeAllowlist::new(["assets/**"]).expect("valid globs");
+
+        let report = judge(found, &allowlist).expect("every path is allowlisted");
+
+        assert_eq!(
+            report.opaque_paths().collect::<Vec<_>>(),
+            ["assets/a.png", "assets/b.png"],
+            "a path checked twice (a rename's old side and a new file) is listed once"
         );
     }
 

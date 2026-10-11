@@ -110,12 +110,13 @@ pub struct GitEnvironment {
 impl GitEnvironment {
     /// Reads `PATH`, `HTTPS_PROXY`, `https_proxy`, `NO_PROXY` and `no_proxy` from this
     /// process's environment (the rest, including `HOME`, `GIT_DIR`, `GIT_CONFIG_*`,
-    /// `GIT_EXTERNAL_DIFF` and `GIT_SSH_COMMAND`, is never passed on) and finds the system
-    /// `kill`.
+    /// `GIT_EXTERNAL_DIFF` and `GIT_SSH_COMMAND`, is never passed on), checks `/proc` and
+    /// finds the system `kill` ([`GroupKiller::system`]).
     ///
     /// # Errors
-    /// [`KillerError::NotFound`] when the host has no usable `kill`: without it a timed-out
-    /// process group could not be stopped, so nothing runs.
+    /// [`KillerError::ProcUnavailable`] when `/proc` does not describe this process, and
+    /// [`KillerError::NotFound`] when the host has no usable `kill`: without either a
+    /// timed-out process group could not be stopped, so nothing runs.
     pub fn from_process_env() -> Result<Self, KillerError> {
         let killer = GroupKiller::system()?;
         let inherited = PASSED_THROUGH

@@ -13,19 +13,20 @@
 //! not believed; the kill counts only once `/proc` shows no live member of the group, and
 //! anything else is [`ProcessError::Kill`]. The child itself is then killed through std and
 //! always waited on. A group is never signalled once its leader has been reaped and no member
-//! is left, because the group id may then be reused; the remaining window is a member exiting
-//! between the `/proc` scan and the signal (microseconds), after which an unrelated process
-//! would have to take that id as its own group id before the signal lands.
+//! is left, because the group id may then be reused; nor when its leader has been reaped and
+//! `/proc` cannot be read, which is [`ProcessError::Kill`]. The remaining window is a member
+//! exiting between the `/proc` scan and the signal (microseconds), after which an unrelated
+//! process would have to take that id as its own group id before the signal lands.
 //!
-//! Runtime prerequisites: Linux `/proc` and a procps or util-linux `kill` in `/usr/bin` or
-//! `/bin`. [`GroupKiller::system`] checks the latter up front, so a host without it fails
-//! closed before any process starts.
+//! Runtime prerequisites: Linux `/proc` describing this process (not another pid namespace's)
+//! and a procps or util-linux `kill` in `/usr/bin` or `/bin`. [`GroupKiller::system`] checks
+//! both up front, so a host without them fails closed before any process starts.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -34,7 +35,7 @@ use std::time::{Duration, Instant};
 /// we configure, long enough that polling costs nothing measurable.
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-/// Default time the kill program has to run, and the group then has to be gone.
+/// Default deadline for a group kill, shared by the kill program's run and the group's exit.
 pub(crate) const KILL_GRACE: Duration = Duration::from_secs(5);
 
 /// Where [`GroupKiller::system`] looks for `kill`, in order.
@@ -42,6 +43,9 @@ const SYSTEM_KILL: [&str; 2] = ["/usr/bin/kill", "/bin/kill"];
 
 /// `PATH` for the kill program; fixed rather than inherited.
 const SYSTEM_PATH: &str = "/usr/bin:/bin";
+
+/// The `/proc` entry that [`GroupKiller::system`] checks describes this process.
+const SELF_STAT: &str = "/proc/self/stat";
 
 /// `errno` for "no such process", which reading `/proc/<pid>/stat` of a process that has
 /// just exited can return.
@@ -114,6 +118,10 @@ pub enum KillerError {
         /// The program that was refused.
         path: PathBuf,
     },
+    /// `/proc/self/stat` is missing, unreadable or names another process (for example a
+    /// `/proc` mounted from another pid namespace), so process groups cannot be supervised.
+    #[error("{SELF_STAT} does not describe this process: Linux /proc is a runtime prerequisite")]
+    ProcUnavailable,
 }
 
 /// The program that kills a timed-out child's whole process group: a procps or util-linux
@@ -125,11 +133,14 @@ pub struct GroupKiller {
 }
 
 impl GroupKiller {
-    /// The system `kill` from `/usr/bin` or `/bin`, with a five-second grace.
+    /// The system `kill` from `/usr/bin` or `/bin`, with a five-second grace, once `/proc` is
+    /// shown to describe this process.
     ///
     /// # Errors
-    /// [`KillerError::NotFound`] when neither location holds an executable `kill`.
+    /// [`KillerError::ProcUnavailable`] when `/proc/self/stat` cannot be read or names another
+    /// process; [`KillerError::NotFound`] when neither location holds an executable `kill`.
     pub fn system() -> Result<Self, KillerError> {
+        check_proc(Path::new(SELF_STAT), std::process::id())?;
         SYSTEM_KILL
             .into_iter()
             .find_map(|program| Self::at(program, KILL_GRACE).ok())
@@ -138,7 +149,8 @@ impl GroupKiller {
             })
     }
 
-    /// `program` as the kill program; it, and then the group's exit, get `grace` each.
+    /// `program` as the kill program. One `grace` deadline covers both its run and the group's
+    /// exit after it.
     ///
     /// # Errors
     /// [`KillerError::NotExecutable`] when `program` is not an executable file.
@@ -209,7 +221,7 @@ pub(crate) fn run(
     drop(command);
 
     let outcome = supervise(&mut child, [&stdout, &stderr], cap, deadline)
-        .map_err(|interrupted| terminate(&mut child, interrupted, killer));
+        .map_err(|interrupted| terminate(&mut child, interrupted, killer, group_alive));
     let reaped = child.wait();
     let status = match (outcome, reaped) {
         (Ok(status), Ok(_)) => status,
@@ -290,15 +302,30 @@ fn supervise(
 }
 
 /// Kills what is left of the child's group after `interrupted`, and the child itself.
-fn terminate(child: &mut Child, interrupted: Interrupted, killer: &GroupKiller) -> ProcessError {
+/// `alive` reports whether the group has a live member ([`group_alive`] outside tests).
+fn terminate(
+    child: &mut Child,
+    interrupted: Interrupted,
+    killer: &GroupKiller,
+    alive: impl FnOnce(u32) -> io::Result<bool>,
+) -> ProcessError {
     let Interrupted {
         cause,
         leader_reaped,
     } = interrupted;
     let group = child.id();
-    // A reaped leader with no live member left: nothing to kill, and the id may be reused.
-    if leader_reaped && matches!(group_alive(group), Ok(false)) {
-        return cause;
+    // Once the leader is reaped the id may be reused: signal only a group seen to be alive.
+    if leader_reaped {
+        match alive(group) {
+            Ok(true) => {}
+            Ok(false) => return cause,
+            Err(source) => {
+                return ProcessError::Kill {
+                    cause: Box::new(cause),
+                    source,
+                };
+            }
+        }
     }
     let group_killed = killer.kill_group(group);
     // Already-exited children report `Ok` here.
@@ -309,6 +336,20 @@ fn terminate(child: &mut Child, interrupted: Interrupted, killer: &GroupKiller) 
             cause: Box::new(cause),
             source,
         },
+    }
+}
+
+/// Fails unless the `/proc/<pid>/stat` file at `stat` names `pid`: a missing `/proc`, or one
+/// from another pid namespace, would make every group look empty.
+fn check_proc(stat: &Path, pid: u32) -> Result<(), KillerError> {
+    let line = fs::read_to_string(stat).map_err(|_unreadable| KillerError::ProcUnavailable)?;
+    let named: Option<u32> = line
+        .split_once(" (")
+        .and_then(|(field, _)| field.parse().ok());
+    if named == Some(pid) {
+        Ok(())
+    } else {
+        Err(KillerError::ProcUnavailable)
     }
 }
 
@@ -399,8 +440,6 @@ fn poll_until<T>(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     const GENEROUS: Limits = Limits {
@@ -494,13 +533,9 @@ mod tests {
             "a process group still running at the deadline is a timeout, got {result:?}"
         );
         let pid = fs::read_to_string(&pid_file).expect("the shell started the grandchild first");
-        // `run` returns only once the group is verifiably gone; re-poll briefly regardless.
-        let dead = (0..1000).any(|_| {
-            thread::yield_now();
-            is_dead(pid.trim())
-        });
+        // `run` returns only once `/proc` shows no live member of the group.
         assert!(
-            dead,
+            is_dead(pid.trim()),
             "the grandchild must have been killed with its process group"
         );
     }
@@ -578,6 +613,77 @@ mod tests {
         assert!(
             !marker.exists(),
             "a reaped leader with an empty group must not be signalled (pgid reuse)"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+    fn a_reaped_leader_whose_group_cannot_be_observed_is_not_signalled() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let marker = scratch.path().join("killed");
+        let spy = script(
+            scratch.path(),
+            "kill",
+            &format!("touch '{}'", marker.display()),
+        );
+        let killer = GroupKiller::at(&spy, Duration::from_millis(100)).expect("executable");
+        let mut child = Command::new("true").spawn().expect("true starts");
+        child.wait().expect("true is reaped");
+        let interrupted = Interrupted {
+            cause: ProcessError::TimedOut,
+            leader_reaped: true,
+        };
+
+        let error = terminate(&mut child, interrupted, &killer, |_| {
+            Err(io::Error::other("/proc is unreadable"))
+        });
+
+        assert!(
+            matches!(&error, ProcessError::Kill { cause, .. } if matches!(**cause, ProcessError::TimedOut)),
+            "an unobservable group must surface as a kill failure, got {error:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "a group whose leader is reaped must not be signalled (pgid reuse)"
+        );
+    }
+
+    #[test]
+    fn this_hosts_proc_describes_this_process() {
+        assert_eq!(
+            check_proc(Path::new(SELF_STAT), std::process::id()),
+            Ok(()),
+            "the test host mounts its own /proc"
+        );
+    }
+
+    #[test]
+    fn a_proc_that_describes_another_process_is_unavailable() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let stat = scratch.path().join("stat");
+        fs::write(&stat, "7 (assay) R 1 7 7 0").expect("write the stat line");
+
+        assert_eq!(
+            check_proc(&stat, 8),
+            Err(KillerError::ProcUnavailable),
+            "a /proc from another pid namespace must fail closed"
+        );
+        fs::write(&stat, "garbage").expect("write the stat line");
+        assert_eq!(
+            check_proc(&stat, 7),
+            Err(KillerError::ProcUnavailable),
+            "an unreadable stat line must fail closed"
+        );
+    }
+
+    #[test]
+    fn a_missing_proc_is_unavailable() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+
+        assert_eq!(
+            check_proc(&scratch.path().join("absent"), std::process::id()),
+            Err(KillerError::ProcUnavailable),
+            "a host without /proc must fail closed"
         );
     }
 
