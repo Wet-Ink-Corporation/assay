@@ -1,0 +1,274 @@
+# The same gate the agents run (H-15), enforced for every push and PR.
+# Actions are pinned to full commit SHAs; Dependabot proposes bumps (.github/dependabot.yml).
+# Every cargo command that resolves dependencies passes --locked (PROC-13).
+name: rust
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"       # Mondays 04:17 UTC: latest-deps, aarch64 and miri
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_WARNINGS: deny   # Cargo 1.97+ build.warnings (MOD-13)
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      report-url: ${{ steps.upload-report.outputs.artifact-url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0       # the lint ratchet diffs against the merge base
+          persist-credentials: false
+      # A committed baseline accepts the legacy warnings; Lint (temper) fails on new ones.
+      # Checks, tests and docs below must not deny the old ones (H-15).
+      - name: Baseline mode
+        if: hashFiles('.claude/temper-baseline.json') != ''
+        run: echo "CARGO_BUILD_WARNINGS=warn" >> "$GITHUB_ENV"
+      # What the ratchet compares with, computed once for Lint (temper) and the report.
+      - name: Ratchet base
+        id: base
+        if: hashFiles('.claude/temper/temper.mjs') != ''
+        shell: bash
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base=
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            # The previous tip; absent on a new branch, or unreachable after a force push.
+            if [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
+              && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              base=$BEFORE
+            fi
+          elif git rev-parse --verify --quiet "origin/${GITHUB_BASE_REF:-main}^{commit}" >/dev/null; then
+            base=origin/${GITHUB_BASE_REF:-main}
+          fi
+          [ -n "$base" ] || echo "No base commit: a baseline is compared by its totals only."
+          echo "ref=$base" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-28
+        with:
+          toolchain: "1.98.1"  # keep in sync with rust-toolchain.toml
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-nextest,cargo-deny,cargo-hack,cargo-machete
+      - run: cargo fmt --all -- --check
+      # One clippy, rustdoc and scanner run through the vendored temper CLI. Without a baseline it
+      # is strict: zero findings, like -D warnings. With .claude/temper-baseline.json (from
+      # `temper baseline --init`) legacy findings pass and only new ones fail: findings on lines
+      # changed since the base, or a (crate, lint) count above the baseline (H-15). Either way it
+      # writes the findings and its verdict for the report.
+      - name: Lint (temper)
+        if: hashFiles('.claude/temper/temper.mjs') != ''
+        shell: bash
+        env:
+          BASE: ${{ steps.base.outputs.ref }}
+        run: |
+          args=()
+          if [ -n "$BASE" ]; then args=(--base "$BASE"); fi
+          node .claude/temper/temper.mjs baseline --check --locked "${args[@]}" --findings-out target/temper/findings.json
+      - name: Lint
+        if: hashFiles('.claude/temper/temper.mjs') == ''
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Each crate builds on its own (ARC-16)
+        shell: bash            # pipefail: a failing cargo metadata must fail the step
+        run: >-
+          cargo metadata --locked --no-deps --format-version 1
+          | jq -r '.packages[].name'
+          | xargs -I{} cargo check --locked -p {}
+      - name: Feature combinations (API-16)
+        run: cargo hack check --locked --workspace --feature-powerset   # add --depth 2 if it grows slow
+      - run: cargo nextest run --locked --workspace --all-features --no-tests=pass
+      - run: cargo test --locked --doc --workspace --all-features
+      - name: Docs
+        if: hashFiles('.claude/temper/temper.mjs') == ''
+        run: cargo doc --locked --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Docs build (rustdoc lints are checked by Lint (temper))
+        if: hashFiles('.claude/temper/temper.mjs') != ''
+        run: cargo doc --locked --workspace --no-deps --all-features
+      - run: cargo deny --locked check
+      - name: Unused dependencies (CRF-05)
+        run: cargo machete
+      # The compliance scorecard: per-crate status, top rules and files, new findings, and a
+      # raised baseline. It uses Lint (temper)'s findings and verdict as-is; only when that step
+      # did not get that far does it collect, and ratchet against the same base.
+      - name: Compliance report
+        if: ${{ !cancelled() && hashFiles('.claude/temper/temper.mjs') != '' }}
+        shell: bash
+        env:
+          BASE: ${{ steps.base.outputs.ref }}
+        run: |
+          args=(--out target/temper-report)
+          if [ -f target/temper/findings.json ]; then args+=(--findings target/temper/findings.json)
+          elif [ -n "$BASE" ]; then args+=(--base "$BASE"); fi
+          node .claude/temper/temper.mjs report --locked "${args[@]}"
+          cat target/temper-report/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the compliance report
+        id: upload-report
+        if: ${{ !cancelled() && hashFiles('target/temper-report/report.html') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: temper-report
+          path: target/temper-report
+          retention-days: 30
+
+  # The report as a PR comment. This job runs no repository code, and it is the only job that
+  # can write to the PR; on fork PRs the token is read-only and the comment is skipped.
+  report-comment:
+    needs: gate
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Download the compliance report
+        id: download
+        continue-on-error: true  # the gate stopped before the report was written
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: temper-report
+          path: temper-report
+      - name: Comment the report on the PR
+        if: steps.download.outcome == 'success'
+        continue-on-error: true  # a fork PR's token is read-only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          REPORT_URL: ${{ needs.gate.outputs.report-url }}
+        run: |
+          body=temper-report/report.md
+          if [ -n "$REPORT_URL" ]; then printf '\n[Full HTML report](%s): the temper-report artifact.\n' "$REPORT_URL" >> "$body"; fi
+          # temper's previous comment, found by its marker (never another bot's comment): edit it, else post one.
+          id=$(gh api --paginate "repos/$GH_REPO/issues/$PR/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- temper-report -->"))) | .id' | tail -n 1)
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$GH_REPO/issues/comments/$id" -F "body=@$body" --silent
+          else
+            gh api --method POST "repos/$GH_REPO/issues/$PR/comments" -F "body=@$body" --silent
+          fi
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The MSRV is read from the manifest, so it never drifts from rust-version: the first
+      # rust-version in the root Cargo.toml (workspace.package's, or package's in a single crate).
+      - name: MSRV
+        id: msrv
+        shell: bash
+        run: |
+          v=$(sed -n 's/^rust-version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
+          if [ -z "$v" ]; then
+            echo "::error file=Cargo.toml::no rust-version in the root Cargo.toml: set workspace.package.rust-version"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Baseline mode
+        if: hashFiles('.claude/temper-baseline.json') != ''
+        run: echo "CARGO_BUILD_WARNINGS=warn" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-28
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      # `+$MSRV` overrides rust-toolchain.toml, which would otherwise select the pinned toolchain.
+      # Cargo < 1.97 silently ignores build.warnings, so deny warnings the old way here too.
+      # With a baseline, legacy warnings are the gate job's Lint (temper) step's business.
+      - run: cargo "+$MSRV" check --locked --workspace --all-targets --all-features
+        env:
+          MSRV: ${{ steps.msrv.outputs.version }}
+          RUSTFLAGS: ${{ hashFiles('.claude/temper-baseline.json') == '' && '-D warnings' || '' }}
+
+  latest-deps:
+    # Builds against the newest compatible releases, as `cargo update` would.
+    # A failure here is a heads-up, not a broken main: the committed Cargo.lock still passes.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: allow
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-28
+        with:
+          toolchain: "1.98.1"
+          components: clippy
+      - name: Baseline mode
+        if: hashFiles('.claude/temper-baseline.json') != ''
+        run: echo "CARGO_BUILD_WARNINGS=warn" >> "$GITHUB_ENV"
+      - run: cargo update --verbose
+      - name: Lint (temper)      # strict without a baseline, the baseline totals with one
+        if: hashFiles('.claude/temper/temper.mjs') != ''
+        run: node .claude/temper/temper.mjs baseline --check --locked
+      - name: Lint
+        if: hashFiles('.claude/temper/temper.mjs') == ''
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --workspace --all-features
+
+  aarch64:
+    # Weakly ordered hardware: an ordering bug that x86-64 hides can fail here (TST-17).
+    # Required for crates with non-Relaxed atomics, Condvars or hand-written thread
+    # coordination; scheduled or on demand, like miri.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Baseline mode
+        if: hashFiles('.claude/temper-baseline.json') != ''
+        run: echo "CARGO_BUILD_WARNINGS=warn" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-28
+        with:
+          toolchain: "1.98.1"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo test --locked --workspace --all-features
+
+  miri:
+    # Undefined behaviour, leaks, data races and deadlocks in the test suite (TST-17).
+    # Required for crates with non-Relaxed atomics, Condvars or hand-written thread
+    # coordination; about 1000x slower than native tests, so scheduled or on demand only.
+    # Never add -Zmiri-ignore-leaks or any -Zmiri-disable-* flag other than isolation (H-12).
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_WARNINGS: warn   # nightly lint churn is not this job's concern
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-28
+        with:
+          toolchain: nightly-2026-09-28   # pinned; bump deliberately, with rust-toolchain.toml
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: miri
+      - run: cargo +nightly-2026-09-28 miri setup
+      # Tests Miri cannot run carry #[cfg_attr(miri, ignore = "reason")] (TST-17).
+      # Isolation is off so adapter tests can use the file system; the env-set flags
+      # shrink proptest cases and stop insta spawning `cargo metadata`.
+      - run: cargo +nightly-2026-09-28 miri test --locked --workspace --no-fail-fast
+        env:
+          MIRIFLAGS: >-
+            -Zmiri-many-seeds=0..8
+            -Zmiri-disable-isolation
+            -Zmiri-env-set=PROPTEST_CASES=8
+            -Zmiri-env-set=PROPTEST_DISABLE_FAILURE_PERSISTENCE=1
+            -Zmiri-env-set=INSTA_WORKSPACE_ROOT=${{ github.workspace }}
+            -Zmiri-env-set=INSTA_UPDATE=no

@@ -1,0 +1,12 @@
+[package]
+name = "assay-gates"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Workspace edges allowed: assay-app and assay-domain (02 §2). Added by the story that first uses them.
+[dependencies]

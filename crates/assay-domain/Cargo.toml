@@ -1,0 +1,13 @@
+[package]
+name = "assay-domain"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Only serde, thiserror and sha2 may ever appear here (02 §2); none is used yet.
+# crates/assay-cli/tests/it/architecture.rs enforces the allowlist.
+[dependencies]

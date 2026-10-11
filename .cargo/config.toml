@@ -1,0 +1,10 @@
+# Cargo 1.97+: treat warnings from workspace crates as errors in CI without
+# RUSTFLAGS (which would invalidate the build cache). Locally, CI sets
+# CARGO_BUILD_WARNINGS=deny; interactive builds keep warnings visible (MOD-13).
+[build]
+warnings = "warn"
+
+# PERF-09 (H-16, per deployment): a server binary that only runs on known hardware may
+# target a named CPU level. Never "native", never for libraries or distributed CLIs.
+# [target.x86_64-unknown-linux-gnu]
+# rustflags = ["-C", "target-cpu=x86-64-v3"]

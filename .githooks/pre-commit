@@ -1,0 +1,18 @@
+#!/bin/sh
+# temper pre-commit: fast checks only; the full gate runs in CI and on agent Stop.
+# Enable with: git config core.hooksPath .githooks
+set -e
+cargo fmt --all -- --check
+if [ -f .claude/temper/temper.mjs ]; then
+  # The vendored temper CLI (one clippy, rustdoc and scanner run). Without a baseline it is
+  # strict: zero findings. With .claude/temper-baseline.json only findings on lines changed
+  # since HEAD, or a (crate, lint) count above the baseline, fail (H-15).
+  command -v node >/dev/null 2>&1 || { echo "temper pre-commit: node is required for .claude/temper/temper.mjs" >&2; exit 1; }
+  if git rev-parse --verify --quiet HEAD >/dev/null; then
+    node .claude/temper/temper.mjs baseline --check --base HEAD
+  else
+    node .claude/temper/temper.mjs baseline --check   # the first commit: there is no HEAD yet
+  fi
+else
+  cargo clippy --workspace --all-targets --quiet -- -D warnings
+fi

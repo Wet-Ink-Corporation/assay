@@ -1,0 +1,1675 @@
+{
+  "generated_from": "rules.md",
+  "lints": {
+    "clippy::allow_attributes": [
+      "H-05",
+      "MOD-05"
+    ],
+    "clippy::allow_attributes_without_reason": [
+      "H-05"
+    ],
+    "clippy::arc_with_non_send_sync": [
+      "OWN-11"
+    ],
+    "clippy::as_conversions": [
+      "H-11"
+    ],
+    "clippy::assertions_on_result_states": [
+      "TST-05"
+    ],
+    "clippy::assigning_clones": [
+      "PERF-02"
+    ],
+    "clippy::await_holding_invalid_type": [
+      "H-14"
+    ],
+    "clippy::await_holding_lock": [
+      "H-14",
+      "ASY-06"
+    ],
+    "clippy::await_holding_refcell_ref": [
+      "H-14"
+    ],
+    "clippy::borrowed_box": [
+      "OWN-03"
+    ],
+    "clippy::box_collection": [
+      "PERF-05"
+    ],
+    "clippy::cast_abs_to_unsigned": [
+      "H-11"
+    ],
+    "clippy::cast_enum_constructor": [
+      "H-11"
+    ],
+    "clippy::cast_enum_truncation": [
+      "H-11"
+    ],
+    "clippy::cast_lossless": [
+      "H-11"
+    ],
+    "clippy::cast_nan_to_int": [
+      "H-11"
+    ],
+    "clippy::cast_possible_truncation": [
+      "H-11"
+    ],
+    "clippy::cast_possible_wrap": [
+      "H-11"
+    ],
+    "clippy::cast_precision_loss": [
+      "H-11"
+    ],
+    "clippy::cast_ptr_alignment": [
+      "H-11"
+    ],
+    "clippy::cast_sign_loss": [
+      "H-11"
+    ],
+    "clippy::cast_slice_different_sizes": [
+      "H-11"
+    ],
+    "clippy::cast_slice_from_raw_parts": [
+      "H-11"
+    ],
+    "clippy::chunks_exact_to_as_chunks": [
+      "PERF-03"
+    ],
+    "clippy::clone_on_ref_ptr": [
+      "H-08",
+      "PERF-11"
+    ],
+    "clippy::cognitive_complexity": [
+      "CRF-02"
+    ],
+    "clippy::collapsible_if": [
+      "MOD-02"
+    ],
+    "clippy::dbg_macro": [
+      "H-06"
+    ],
+    "clippy::disallowed_macros": [
+      "MOD-03"
+    ],
+    "clippy::disallowed_methods": [
+      "H-03",
+      "H-07",
+      "ASY-15"
+    ],
+    "clippy::elidable_lifetime_names": [
+      "OWN-05"
+    ],
+    "clippy::empty_drop": [
+      "ERR-13"
+    ],
+    "clippy::expect_used": [
+      "H-02"
+    ],
+    "clippy::fn_params_excessive_bools": [
+      "API-10"
+    ],
+    "clippy::format_push_string": [
+      "PERF-04"
+    ],
+    "clippy::from_over_into": [
+      "API-07"
+    ],
+    "clippy::future_not_send": [
+      "ASY-11"
+    ],
+    "clippy::indexing_slicing": [
+      "H-04"
+    ],
+    "clippy::inline_always": [
+      "PERF-08"
+    ],
+    "clippy::into_iter_without_iter": [
+      "API-01"
+    ],
+    "clippy::iter_without_into_iter": [
+      "API-01",
+      "API-06"
+    ],
+    "clippy::large_enum_variant": [
+      "PERF-05"
+    ],
+    "clippy::large_types_passed_by_value": [
+      "OWN-16"
+    ],
+    "clippy::let_underscore_must_use": [
+      "H-10",
+      "ERR-12"
+    ],
+    "clippy::manual_abs_diff": [
+      "MOD-07"
+    ],
+    "clippy::manual_assert": [
+      "MOD-07"
+    ],
+    "clippy::manual_assert_eq": [
+      "MOD-07"
+    ],
+    "clippy::manual_async_fn": [
+      "MOD-07"
+    ],
+    "clippy::manual_bits": [
+      "MOD-07"
+    ],
+    "clippy::manual_c_str_literals": [
+      "MOD-07"
+    ],
+    "clippy::manual_checked_ops": [
+      "MOD-07"
+    ],
+    "clippy::manual_clamp": [
+      "MOD-07"
+    ],
+    "clippy::manual_clear": [
+      "MOD-07"
+    ],
+    "clippy::manual_contains": [
+      "MOD-07"
+    ],
+    "clippy::manual_dangling_ptr": [
+      "MOD-07"
+    ],
+    "clippy::manual_div_ceil": [
+      "MOD-07"
+    ],
+    "clippy::manual_filter": [
+      "MOD-07"
+    ],
+    "clippy::manual_filter_map": [
+      "MOD-07"
+    ],
+    "clippy::manual_find": [
+      "MOD-07"
+    ],
+    "clippy::manual_find_map": [
+      "MOD-07"
+    ],
+    "clippy::manual_flatten": [
+      "MOD-07"
+    ],
+    "clippy::manual_hash_one": [
+      "MOD-07"
+    ],
+    "clippy::manual_ignore_case_cmp": [
+      "MOD-07"
+    ],
+    "clippy::manual_ilog2": [
+      "MOD-07"
+    ],
+    "clippy::manual_inspect": [
+      "MOD-07"
+    ],
+    "clippy::manual_instant_elapsed": [
+      "MOD-07"
+    ],
+    "clippy::manual_is_ascii_check": [
+      "MOD-07"
+    ],
+    "clippy::manual_is_finite": [
+      "MOD-07"
+    ],
+    "clippy::manual_is_infinite": [
+      "MOD-07"
+    ],
+    "clippy::manual_is_multiple_of": [
+      "MOD-07"
+    ],
+    "clippy::manual_is_power_of_two": [
+      "MOD-07"
+    ],
+    "clippy::manual_is_variant_and": [
+      "MOD-07"
+    ],
+    "clippy::manual_isolate_lowest_one": [
+      "MOD-07"
+    ],
+    "clippy::manual_let_else": [
+      "MOD-02",
+      "MOD-07"
+    ],
+    "clippy::manual_main_separator_str": [
+      "MOD-07"
+    ],
+    "clippy::manual_map": [
+      "MOD-07"
+    ],
+    "clippy::manual_memcpy": [
+      "MOD-07"
+    ],
+    "clippy::manual_midpoint": [
+      "MOD-07"
+    ],
+    "clippy::manual_next_back": [
+      "MOD-07"
+    ],
+    "clippy::manual_non_exhaustive": [
+      "API-05",
+      "MOD-07"
+    ],
+    "clippy::manual_noop_waker": [
+      "MOD-07"
+    ],
+    "clippy::manual_ok_err": [
+      "MOD-07"
+    ],
+    "clippy::manual_ok_or": [
+      "MOD-07"
+    ],
+    "clippy::manual_option_as_slice": [
+      "MOD-07"
+    ],
+    "clippy::manual_option_zip": [
+      "MOD-07"
+    ],
+    "clippy::manual_pattern_char_comparison": [
+      "MOD-07"
+    ],
+    "clippy::manual_pop_if": [
+      "MOD-07"
+    ],
+    "clippy::manual_range_contains": [
+      "MOD-07"
+    ],
+    "clippy::manual_range_patterns": [
+      "MOD-07"
+    ],
+    "clippy::manual_rem_euclid": [
+      "MOD-07"
+    ],
+    "clippy::manual_repeat_n": [
+      "MOD-07"
+    ],
+    "clippy::manual_retain": [
+      "MOD-07"
+    ],
+    "clippy::manual_rotate": [
+      "MOD-07"
+    ],
+    "clippy::manual_saturating_arithmetic": [
+      "MOD-07"
+    ],
+    "clippy::manual_slice_fill": [
+      "MOD-07"
+    ],
+    "clippy::manual_slice_size_calculation": [
+      "MOD-07"
+    ],
+    "clippy::manual_split_once": [
+      "MOD-07"
+    ],
+    "clippy::manual_str_repeat": [
+      "MOD-07"
+    ],
+    "clippy::manual_string_new": [
+      "MOD-07"
+    ],
+    "clippy::manual_strip": [
+      "MOD-07"
+    ],
+    "clippy::manual_swap": [
+      "MOD-07"
+    ],
+    "clippy::manual_take": [
+      "MOD-07"
+    ],
+    "clippy::manual_try_fold": [
+      "MOD-07"
+    ],
+    "clippy::manual_unwrap_or": [
+      "MOD-07"
+    ],
+    "clippy::manual_unwrap_or_default": [
+      "MOD-07"
+    ],
+    "clippy::manual_while_let_some": [
+      "MOD-07"
+    ],
+    "clippy::map_entry": [
+      "OWN-09"
+    ],
+    "clippy::mem_forget": [
+      "H-07"
+    ],
+    "clippy::mem_replace_with_default": [
+      "OWN-08"
+    ],
+    "clippy::missing_errors_doc": [
+      "H-15",
+      "API-15"
+    ],
+    "clippy::missing_spin_loop": [
+      "ASY-16"
+    ],
+    "clippy::mod_module_files": [
+      "ARC-06"
+    ],
+    "clippy::must_use_candidate": [
+      "API-11"
+    ],
+    "clippy::needless_collect": [
+      "OWN-13",
+      "PERF-02"
+    ],
+    "clippy::needless_lifetimes": [
+      "OWN-05"
+    ],
+    "clippy::needless_pass_by_value": [
+      "OWN-01"
+    ],
+    "clippy::needless_range_loop": [
+      "PERF-03"
+    ],
+    "clippy::negative_feature_names": [
+      "API-16"
+    ],
+    "clippy::option_map_unit_fn": [
+      "CRF-10"
+    ],
+    "clippy::or_fun_call": [
+      "ERR-07",
+      "PERF-04"
+    ],
+    "clippy::panic": [
+      "H-03"
+    ],
+    "clippy::print_stderr": [
+      "H-06"
+    ],
+    "clippy::print_stdout": [
+      "H-06"
+    ],
+    "clippy::ptr_arg": [
+      "OWN-03"
+    ],
+    "clippy::redundant_clone": [
+      "H-08"
+    ],
+    "clippy::redundant_feature_names": [
+      "API-16"
+    ],
+    "clippy::renamed_function_params": [
+      "API-18"
+    ],
+    "clippy::return_self_not_must_use": [
+      "API-11"
+    ],
+    "clippy::should_implement_trait": [
+      "API-07"
+    ],
+    "clippy::significant_drop_in_scrutinee": [
+      "ASY-14"
+    ],
+    "clippy::significant_drop_tightening": [
+      "PERF-12",
+      "ASY-14"
+    ],
+    "clippy::string_slice": [
+      "H-04"
+    ],
+    "clippy::suspicious_arithmetic_impl": [
+      "API-22"
+    ],
+    "clippy::suspicious_op_assign_impl": [
+      "API-22"
+    ],
+    "clippy::to_string_trait_impl": [
+      "OUT-10"
+    ],
+    "clippy::todo": [
+      "H-03"
+    ],
+    "clippy::too_long_first_doc_paragraph": [
+      "API-15"
+    ],
+    "clippy::too_many_arguments": [
+      "API-10",
+      "CRF-02"
+    ],
+    "clippy::too_many_lines": [
+      "ARC-06",
+      "CRF-02"
+    ],
+    "clippy::trivially_copy_pass_by_ref": [
+      "OWN-16"
+    ],
+    "clippy::unbuffered_bytes": [
+      "PERF-07"
+    ],
+    "clippy::unimplemented": [
+      "H-03"
+    ],
+    "clippy::unreachable": [
+      "H-03"
+    ],
+    "clippy::unused_async": [
+      "CRF-05"
+    ],
+    "clippy::unused_async_trait_impl": [
+      "CRF-05"
+    ],
+    "clippy::unused_enumerate_index": [
+      "CRF-05"
+    ],
+    "clippy::unused_format_specs": [
+      "CRF-05"
+    ],
+    "clippy::unused_io_amount": [
+      "CRF-05"
+    ],
+    "clippy::unused_peekable": [
+      "CRF-05"
+    ],
+    "clippy::unused_result_ok": [
+      "CRF-05"
+    ],
+    "clippy::unused_rounding": [
+      "CRF-05"
+    ],
+    "clippy::unused_self": [
+      "CRF-05"
+    ],
+    "clippy::unused_trait_names": [
+      "CRF-05"
+    ],
+    "clippy::unused_unit": [
+      "CRF-05"
+    ],
+    "clippy::unwrap_used": [
+      "H-02"
+    ],
+    "clippy::upper_case_acronyms": [
+      "CRF-01"
+    ],
+    "clippy::vec_box": [
+      "PERF-05"
+    ],
+    "clippy::wrong_self_convention": [
+      "OWN-04",
+      "API-01"
+    ],
+    "dead_code": [
+      "CRF-05"
+    ],
+    "for_loops_over_fallibles": [
+      "CRF-10"
+    ],
+    "missing_debug_implementations": [
+      "API-06"
+    ],
+    "missing_docs": [
+      "H-15",
+      "API-15"
+    ],
+    "rustdoc::broken_intra_doc_links": [
+      "API-15"
+    ],
+    "static_mut_refs": [
+      "H-07"
+    ],
+    "unreachable_pub": [
+      "API-14"
+    ],
+    "unsafe_code": [
+      "H-01"
+    ],
+    "unused_allocation": [
+      "CRF-05"
+    ],
+    "unused_assignments": [
+      "CRF-05"
+    ],
+    "unused_associated_type_bounds": [
+      "CRF-05"
+    ],
+    "unused_attributes": [
+      "CRF-05"
+    ],
+    "unused_braces": [
+      "CRF-05"
+    ],
+    "unused_comparisons": [
+      "CRF-05"
+    ],
+    "unused_crate_dependencies": [
+      "CRF-05"
+    ],
+    "unused_doc_comments": [
+      "CRF-05"
+    ],
+    "unused_extern_crates": [
+      "CRF-05"
+    ],
+    "unused_features": [
+      "CRF-05"
+    ],
+    "unused_import_braces": [
+      "CRF-05"
+    ],
+    "unused_imports": [
+      "CRF-05"
+    ],
+    "unused_labels": [
+      "CRF-05"
+    ],
+    "unused_lifetimes": [
+      "CRF-05"
+    ],
+    "unused_macro_rules": [
+      "CRF-05"
+    ],
+    "unused_macros": [
+      "CRF-05"
+    ],
+    "unused_must_use": [
+      "H-10",
+      "CRF-05"
+    ],
+    "unused_mut": [
+      "CRF-05"
+    ],
+    "unused_parens": [
+      "CRF-05"
+    ],
+    "unused_qualifications": [
+      "CRF-05"
+    ],
+    "unused_results": [
+      "CRF-05"
+    ],
+    "unused_unsafe": [
+      "CRF-05"
+    ],
+    "unused_variables": [
+      "CRF-05"
+    ],
+    "unused_visibilities": [
+      "CRF-05"
+    ]
+  },
+  "scan": {
+    "allow-attr": [
+      "H-05"
+    ],
+    "as-cast": [
+      "H-11"
+    ],
+    "assert-in-prod": [
+      "H-03"
+    ],
+    "async-trait": [
+      "MOD-04"
+    ],
+    "catch-unwind": [
+      "H-03"
+    ],
+    "commented-code": [
+      "H-06"
+    ],
+    "compiler-fence": [
+      "ASY-13"
+    ],
+    "crate-lint-attr": [
+      "MOD-09"
+    ],
+    "dbg": [
+      "H-06"
+    ],
+    "deref-inherit": [
+      "API-19"
+    ],
+    "detached-spawn": [
+      "ASY-04"
+    ],
+    "discard-ok": [
+      "H-10"
+    ],
+    "doc-arg-sections": [
+      "API-15"
+    ],
+    "doc-unwrap": [
+      "H-02"
+    ],
+    "downcast": [
+      "MOD-11"
+    ],
+    "empty-err-arm": [
+      "H-10"
+    ],
+    "empty-if-let-err": [
+      "H-10"
+    ],
+    "env-var": [
+      "ARC-11"
+    ],
+    "erased-error": [
+      "H-09"
+    ],
+    "exit": [
+      "ARC-14"
+    ],
+    "expect-attr": [
+      "H-05"
+    ],
+    "extern-crate": [
+      "MOD-01"
+    ],
+    "fetch-update": [
+      "MOD-07"
+    ],
+    "filter-map-ok": [
+      "H-10"
+    ],
+    "forbid-override": [
+      "H-05"
+    ],
+    "get-prefix": [
+      "API-01"
+    ],
+    "global-allocator": [
+      "ARC-14"
+    ],
+    "global-mut": [
+      "ARC-09"
+    ],
+    "ignore-no-reason": [
+      "H-12"
+    ],
+    "lazy-static": [
+      "MOD-03"
+    ],
+    "leak": [
+      "H-07"
+    ],
+    "let-underscore": [
+      "H-10"
+    ],
+    "map-index": [
+      "H-04"
+    ],
+    "mutex-unit": [
+      "OWN-12"
+    ],
+    "ops-impl": [
+      "API-22"
+    ],
+    "panic": [
+      "H-03"
+    ],
+    "parse-unwrap-or": [
+      "H-10"
+    ],
+    "path-attr": [
+      "ARC-06"
+    ],
+    "prelude-mod": [
+      "API-14"
+    ],
+    "print": [
+      "H-06"
+    ],
+    "ptr-param": [
+      "OWN-03"
+    ],
+    "pub-glob-reexport": [
+      "API-14"
+    ],
+    "pub-smart-ptr": [
+      "API-23"
+    ],
+    "seqcst": [
+      "ASY-13"
+    ],
+    "shared-mut": [
+      "OWN-11"
+    ],
+    "should-panic": [
+      "TST-05"
+    ],
+    "sleep": [
+      "TST-10"
+    ],
+    "struct-bounds": [
+      "API-21"
+    ],
+    "thread-spawn": [
+      "ASY-15"
+    ],
+    "todo-comment": [
+      "CRF-04"
+    ],
+    "type-alias-primitive": [
+      "API-02"
+    ],
+    "unbounded": [
+      "ASY-07"
+    ],
+    "unsafe": [
+      "H-01"
+    ],
+    "unwrap": [
+      "H-02"
+    ],
+    "unwrap-or-default": [
+      "H-10"
+    ],
+    "weak-assert": [
+      "TST-05"
+    ]
+  },
+  "rules": {
+    "H-01": {
+      "level": "MUST",
+      "family": "H",
+      "title": "No `unsafe` code anywhere."
+    },
+    "H-02": {
+      "level": "MUST",
+      "family": "H",
+      "title": "No `unwrap`/`expect`/`unwrap_unchecked`/`unwrap_err`/`expect_err` in production code, including doctest examples."
+    },
+    "H-03": {
+      "level": "MUST",
+      "family": "H",
+      "title": "No `panic!`/`todo!`/`unimplemented!`/`unreachable!` in production code, and no call to a std API that panics on input the code does not con…"
+    },
+    "H-04": {
+      "level": "MUST",
+      "family": "H",
+      "title": "No panicking index or slice on data whose bounds are not proven by construction."
+    },
+    "H-05": {
+      "level": "MUST",
+      "family": "H",
+      "title": "No `#[allow]`."
+    },
+    "H-06": {
+      "level": "MUST",
+      "family": "H",
+      "title": "No `dbg!`."
+    },
+    "H-07": {
+      "level": "MUST",
+      "family": "H",
+      "title": "No `Box::leak`, `mem::forget`, `transmute`, `static mut`, or `'static` added to silence lifetimes."
+    },
+    "H-08": {
+      "level": "MUST",
+      "family": "H",
+      "title": "No clones to appease the borrow checker."
+    },
+    "H-09": {
+      "level": "MUST",
+      "family": "H",
+      "title": "No `String`, `Box<dyn Error>` or `anyhow`/`eyre` errors in public library signatures."
+    },
+    "H-10": {
+      "level": "MUST",
+      "family": "H",
+      "title": "No silently discarded failures (`let _ =`, `.ok();`, empty `Err` arms, masking defaults)."
+    },
+    "H-11": {
+      "level": "MUST",
+      "family": "H",
+      "title": "No lossy `as` numeric casts, including enum discriminants: map a fieldless enum to a code with an exhaustive `match` in `From`."
+    },
+    "H-12": {
+      "level": "MUST",
+      "family": "H",
+      "title": "Never weaken verification (tests, lints, hooks, CI) to get green."
+    },
+    "H-13": {
+      "level": "MUST",
+      "family": "H",
+      "title": "Bounded resources: channels, buffers, timeouts, owned tasks and threads (joined or aborted; `spawn_blocking` tasks awaited)."
+    },
+    "H-14": {
+      "level": "MUST",
+      "family": "H",
+      "title": "No blocking in async code."
+    },
+    "H-15": {
+      "level": "MUST",
+      "family": "H",
+      "title": "Zero warnings."
+    },
+    "H-16": {
+      "level": "MUST",
+      "family": "H",
+      "title": "New dependencies and major-version bumps, `[patch]` overrides, `rust-version` raises, API breaks, exceptions, crate boundaries, migrations…"
+    },
+    "OWN-01": {
+      "level": "MUST",
+      "family": "OWN",
+      "title": "Borrow in parameters, own in returns."
+    },
+    "OWN-02": {
+      "level": "SHOULD",
+      "family": "OWN",
+      "title": "Take ownership when the callee stores or transforms the value."
+    },
+    "OWN-03": {
+      "level": "MUST",
+      "family": "OWN",
+      "title": "Never accept `&String`, `&Vec<T>`, `&Box<T>`, `&PathBuf` or `&OsString`."
+    },
+    "OWN-04": {
+      "level": "SHOULD",
+      "family": "OWN",
+      "title": "Choose the receiver deliberately: `&self` to query, `&mut self` to mutate, `self` to convert, consume or transition typestate."
+    },
+    "OWN-05": {
+      "level": "SHOULD",
+      "family": "OWN",
+      "title": "Rely on lifetime elision."
+    },
+    "OWN-06": {
+      "level": "SHOULD",
+      "family": "OWN",
+      "title": "Borrowing structs (`struct View<'a>`) are for short-lived views, parsers and iterators."
+    },
+    "OWN-07": {
+      "level": "MUST",
+      "family": "OWN",
+      "title": "Do not add `'static` bounds, `Box::leak` or globals to silence lifetime errors."
+    },
+    "OWN-08": {
+      "level": "MUST",
+      "family": "OWN",
+      "title": "Resolve borrow conflicts by restructuring, not cloning."
+    },
+    "OWN-09": {
+      "level": "SHOULD",
+      "family": "OWN",
+      "title": "Use the entry API for insert-or-update."
+    },
+    "OWN-10": {
+      "level": "SHOULD",
+      "family": "OWN",
+      "title": "Return `Cow<'_, T>` when a function usually borrows but sometimes must allocate."
+    },
+    "OWN-11": {
+      "level": "MUST",
+      "family": "OWN",
+      "title": "Walk the sharing ladder: single owner, then borrow, then move into the task, then `Arc<T>`, then `Arc<Mutex<T>>` with a written justificati…"
+    },
+    "OWN-12": {
+      "level": "SHOULD",
+      "family": "OWN",
+      "title": "Interior mutability (`Cell`, `RefCell`, `Mutex`, atomics) is a documented design decision on the type."
+    },
+    "OWN-13": {
+      "level": "SHOULD",
+      "family": "OWN",
+      "title": "Return iterators or slices instead of allocating a collection the caller only iterates."
+    },
+    "OWN-14": {
+      "level": "SHOULD",
+      "family": "OWN",
+      "title": "Closures borrow by default."
+    },
+    "OWN-15": {
+      "level": "CONSIDER",
+      "family": "OWN",
+      "title": "Use `Box<str>`, `Box<[T]>`, `Arc<str>` or `Arc<[T]>` for immutable owned data that never grows."
+    },
+    "OWN-16": {
+      "level": "SHOULD",
+      "family": "OWN",
+      "title": "Derive `Copy` only for small value-like types that will stay small."
+    },
+    "OWN-17": {
+      "level": "SHOULD",
+      "family": "OWN",
+      "title": "Return results by value, as a tuple or named struct when there are several."
+    },
+    "API-01": {
+      "level": "MUST",
+      "family": "API",
+      "title": "Follow standard naming."
+    },
+    "API-02": {
+      "level": "MUST",
+      "family": "API",
+      "title": "Make illegal states unrepresentable."
+    },
+    "API-03": {
+      "level": "MUST",
+      "family": "API",
+      "title": "Parse, don't validate."
+    },
+    "API-04": {
+      "level": "MUST",
+      "family": "API",
+      "title": "Public structs have private fields unless they are plain data with no invariants."
+    },
+    "API-05": {
+      "level": "SHOULD",
+      "family": "API",
+      "title": "In published crates, mark public enums and structs that may grow (errors, config, events) `#[non_exhaustive]`, deliberately and at first pu…"
+    },
+    "API-06": {
+      "level": "SHOULD",
+      "family": "API",
+      "title": "Implement standard traits eagerly where they make sense: `Debug` on every public type, plus `Clone`, `PartialEq`/`Eq`/`Hash`, `Default`, `D…"
+    },
+    "API-07": {
+      "level": "SHOULD",
+      "family": "API",
+      "title": "Express conversions through `From`/`TryFrom`/`AsRef`/`FromStr` rather than ad-hoc `from_x` functions, and put each conversion on the more s…"
+    },
+    "API-08": {
+      "level": "SHOULD",
+      "family": "API",
+      "title": "Accept generic inputs at boundaries (`impl AsRef<Path>`, `impl IntoIterator`, `impl RangeBounds<T>`) and return concrete types, or `impl Tr…"
+    },
+    "API-09": {
+      "level": "SHOULD",
+      "family": "API",
+      "title": "Default to static dispatch."
+    },
+    "API-10": {
+      "level": "MUST",
+      "family": "API",
+      "title": "At most one `bool` parameter, and only where it reads naturally at the call site (`set_visible(true)`)."
+    },
+    "API-11": {
+      "level": "SHOULD",
+      "family": "API",
+      "title": "Mark values that must be used `#[must_use]`: pure constructors, builders, iterators and computed results."
+    },
+    "API-12": {
+      "level": "SHOULD",
+      "family": "API",
+      "title": "Seal traits that are not meant to be implemented downstream, and say so in the trait's docs."
+    },
+    "API-13": {
+      "level": "CONSIDER",
+      "family": "API",
+      "title": "Use a typestate or builder when misuse (wrong call order, incomplete configuration) should be a compile error, and a sealed type parameter…"
+    },
+    "API-14": {
+      "level": "MUST",
+      "family": "API",
+      "title": "Keep the surface minimal."
+    },
+    "API-15": {
+      "level": "MUST",
+      "family": "API",
+      "title": "Document every public item: purpose in a one-line summary, an `# Examples` doctest for primary entry points, and `# Errors` for fallible fu…"
+    },
+    "API-16": {
+      "level": "SHOULD",
+      "family": "API",
+      "title": "Cargo features are additive, named for what they enable (`serde`, never `use-serde` or `no-std`), and never change the meaning of a type or…"
+    },
+    "API-17": {
+      "level": "MUST",
+      "family": "API",
+      "title": "Published crates follow semver."
+    },
+    "API-18": {
+      "level": "SHOULD",
+      "family": "API",
+      "title": "Traits are small, cohesive role interfaces."
+    },
+    "API-19": {
+      "level": "MUST",
+      "family": "API",
+      "title": "Do not implement `Deref` to emulate inheritance."
+    },
+    "API-20": {
+      "level": "CONSIDER",
+      "family": "API",
+      "title": "Use `#[diagnostic::on_unimplemented]` on public traits users are likely to misimplement."
+    },
+    "API-21": {
+      "level": "MUST",
+      "family": "API",
+      "title": "Generic `struct` and `enum` definitions carry no trait bounds; put them on the `impl` blocks that need them."
+    },
+    "API-22": {
+      "level": "MUST",
+      "family": "API",
+      "title": "Implement `std::ops` traits only where the operator has its usual algebraic meaning, as a consistent set, with no allocation, I/O or O(n) w…"
+    },
+    "API-23": {
+      "level": "SHOULD",
+      "family": "API",
+      "title": "Public signatures do not expose `Arc`, `Rc`, `RefCell`, `Mutex` or `RwLock`."
+    },
+    "ERR-01": {
+      "level": "MUST",
+      "family": "ERR",
+      "title": "Library crates expose typed errors that implement `std::error::Error + Send + Sync + 'static`, usually derived with `thiserror`."
+    },
+    "ERR-02": {
+      "level": "SHOULD",
+      "family": "ERR",
+      "title": "Scope error types to an operation or module, with a closed set of variants callers can act on."
+    },
+    "ERR-03": {
+      "level": "MUST",
+      "family": "ERR",
+      "title": "Variants carry diagnostic context (path, id, offending value) as typed fields, not preformatted strings."
+    },
+    "ERR-04": {
+      "level": "SHOULD",
+      "family": "ERR",
+      "title": "Preserve causes with `#[source]`."
+    },
+    "ERR-05": {
+      "level": "SHOULD",
+      "family": "ERR",
+      "title": "Error messages are lowercase, have no trailing punctuation, and describe this layer's failure."
+    },
+    "ERR-06": {
+      "level": "SHOULD",
+      "family": "ERR",
+      "title": "Binaries use one application error type (`anyhow`, or `color-eyre`) at the edge, with `.context()`/`.with_context()` at every boundary cros…"
+    },
+    "ERR-07": {
+      "level": "MUST",
+      "family": "ERR",
+      "title": "Convert `Option` to an error explicitly (`ok_or`, `ok_or_else`, `let ... else`)."
+    },
+    "ERR-08": {
+      "level": "MUST",
+      "family": "ERR",
+      "title": "Handle or propagate, never both."
+    },
+    "ERR-09": {
+      "level": "MUST",
+      "family": "ERR",
+      "title": "Arithmetic on external input uses `checked_*`, `saturating_*` or `wrapping_*` deliberately."
+    },
+    "ERR-10": {
+      "level": "SHOULD",
+      "family": "ERR",
+      "title": "Separate domain rejections (invalid command, conflict, not found) from infrastructure failures (I/O, network), using distinct types or vari…"
+    },
+    "ERR-11": {
+      "level": "SHOULD",
+      "family": "ERR",
+      "title": "Tests assert error variants structurally (`assert!(matches!(...))`, or `assert_matches!` on 1.96+, imported with `use std::assert_matches;`…"
+    },
+    "ERR-12": {
+      "level": "MUST",
+      "family": "ERR",
+      "title": "Never silence `#[must_use]`."
+    },
+    "ERR-13": {
+      "level": "MUST",
+      "family": "ERR",
+      "title": "A type whose teardown can fail (flush, commit, sync, a final frame) exposes `close(self)`/`finish(self) -> Result`, and the success path ca…"
+    },
+    "ERR-14": {
+      "level": "SHOULD",
+      "family": "ERR",
+      "title": "A fallible function that takes a non-`Copy` argument by value returns it inside its error (`into_inner(self) -> T`), so callers never clone…"
+    },
+    "ARC-01": {
+      "level": "MUST",
+      "family": "ARC",
+      "title": "Use a workspace with a virtual manifest and members under `crates/`."
+    },
+    "ARC-02": {
+      "level": "MUST",
+      "family": "ARC",
+      "title": "Dependencies point inward: domain (pure) before application (use cases, ports) before adapters (I/O) before binaries (composition root)."
+    },
+    "ARC-03": {
+      "level": "MUST",
+      "family": "ARC",
+      "title": "Ports are traits owned by the consumer (the application layer) and implemented by adapters."
+    },
+    "ARC-04": {
+      "level": "SHOULD",
+      "family": "ARC",
+      "title": "Functional core, imperative shell."
+    },
+    "ARC-05": {
+      "level": "MUST",
+      "family": "ARC",
+      "title": "One concept per module, with a small surface."
+    },
+    "ARC-06": {
+      "level": "SHOULD",
+      "family": "ARC",
+      "title": "Use `foo.rs` plus `foo/bar.rs`, not `mod.rs`."
+    },
+    "ARC-07": {
+      "level": "SHOULD",
+      "family": "ARC",
+      "title": "Split a crate for a distinct dependency profile, a distinct reason to change, a reuse boundary or measured compile time (`cargo build --tim…"
+    },
+    "ARC-08": {
+      "level": "MUST",
+      "family": "ARC",
+      "title": "Every crate has a charter (`AGENTS.md`, with `CLAUDE.md` importing it) covering purpose, layer, allowed dependencies, public surface, invar…"
+    },
+    "ARC-09": {
+      "level": "MUST",
+      "family": "ARC",
+      "title": "Keep coupling low."
+    },
+    "ARC-10": {
+      "level": "SHOULD",
+      "family": "ARC",
+      "title": "Keep cohesion high."
+    },
+    "ARC-11": {
+      "level": "MUST",
+      "family": "ARC",
+      "title": "Parse configuration once at startup into validated typed structs and pass it down."
+    },
+    "ARC-12": {
+      "level": "MUST",
+      "family": "ARC",
+      "title": "Justify every dependency (maintenance, size, license, `cargo deny`)."
+    },
+    "ARC-13": {
+      "level": "SHOULD",
+      "family": "ARC",
+      "title": "Event-sourced domains use the Decider shape: `decide(&Command, &State) -> Result<Vec<Event>, Rejection>` and `evolve(State, &Event) -> Stat…"
+    },
+    "ARC-14": {
+      "level": "SHOULD",
+      "family": "ARC",
+      "title": "Binaries are thin: parse input, build the object graph (composition root), run, and map errors to exit codes."
+    },
+    "ARC-15": {
+      "level": "SHOULD",
+      "family": "ARC",
+      "title": "Write a macro only when functions, generics or traits cannot express the idea."
+    },
+    "ARC-16": {
+      "level": "MUST",
+      "family": "ARC",
+      "title": "Every crate builds on its own: its manifest enables every dependency feature its code uses, without relying on feature unification from sib…"
+    },
+    "ARC-17": {
+      "level": "MUST",
+      "family": "ARC",
+      "title": "Build scripts write only under `OUT_DIR`, declare every input with `cargo::rerun-if-changed`, declare custom cfgs with `cargo::rustc-check-…"
+    },
+    "TST-01": {
+      "level": "MUST",
+      "family": "TST",
+      "title": "Red, green, refactor."
+    },
+    "TST-02": {
+      "level": "MUST",
+      "family": "TST",
+      "title": "Test through the narrowest real seam."
+    },
+    "TST-03": {
+      "level": "SHOULD",
+      "family": "TST",
+      "title": "Test names state behavior (`rejects_withdrawal_over_balance`)."
+    },
+    "TST-04": {
+      "level": "SHOULD",
+      "family": "TST",
+      "title": "Tests return `Result` and use `?` for setup."
+    },
+    "TST-05": {
+      "level": "MUST",
+      "family": "TST",
+      "title": "Assert exact values and exact error variants."
+    },
+    "TST-06": {
+      "level": "SHOULD",
+      "family": "TST",
+      "title": "Use property tests (`proptest`) for invariants, round-trips and algebraic laws in parsers, codecs and domain rules."
+    },
+    "TST-07": {
+      "level": "SHOULD",
+      "family": "TST",
+      "title": "Use snapshot tests (`insta`) for structured or textual output, and review snapshots as code."
+    },
+    "TST-08": {
+      "level": "CONSIDER",
+      "family": "TST",
+      "title": "Prove type-level guarantees (typestate, sealing, deliberate `!Send`) with compile-fail tests (`trybuild` or `compile_fail` doctests)."
+    },
+    "TST-09": {
+      "level": "MUST",
+      "family": "TST",
+      "title": "Test doubles are hand-written fakes of port traits."
+    },
+    "TST-10": {
+      "level": "MUST",
+      "family": "TST",
+      "title": "Tests are deterministic: no sleeps, no wall clock, no real network, no shared global state, no order dependence."
+    },
+    "TST-11": {
+      "level": "SHOULD",
+      "family": "TST",
+      "title": "Public entry points have runnable doctests that use `?`, not `unwrap`."
+    },
+    "TST-12": {
+      "level": "MUST",
+      "family": "TST",
+      "title": "Never weaken tests (H-12)."
+    },
+    "TST-13": {
+      "level": "SHOULD",
+      "family": "TST",
+      "title": "Value test strength over coverage."
+    },
+    "TST-14": {
+      "level": "SHOULD",
+      "family": "TST",
+      "title": "Build test data with builder or fixture functions."
+    },
+    "TST-15": {
+      "level": "SHOULD",
+      "family": "TST",
+      "title": "Keep feedback fast: use `cargo nextest` when available, keep unit tests in milliseconds, and isolate slow tests."
+    },
+    "TST-16": {
+      "level": "MUST",
+      "family": "TST",
+      "title": "Every performance claim ships with a benchmark (`criterion` or `divan`)."
+    },
+    "TST-17": {
+      "level": "MUST",
+      "family": "TST",
+      "title": "Crates with non-`Relaxed` atomics, `Condvar`s or hand-written thread coordination run their tests under Miri (with `-Zmiri-many-seeds`) and…"
+    },
+    "TST-18": {
+      "level": "SHOULD",
+      "family": "TST",
+      "title": "When correctness depends on dependency behaviour its signature does not express (sort stability, rounding, parser leniency, output order),…"
+    },
+    "PERF-01": {
+      "level": "MUST",
+      "family": "PERF",
+      "title": "Measure before optimizing."
+    },
+    "PERF-02": {
+      "level": "SHOULD",
+      "family": "PERF",
+      "title": "Allocate deliberately."
+    },
+    "PERF-03": {
+      "level": "SHOULD",
+      "family": "PERF",
+      "title": "Prefer iterators and adapters (`extend`, `retain`, `drain`, `windows`, `as_chunks::<N>()`) to index loops."
+    },
+    "PERF-04": {
+      "level": "SHOULD",
+      "family": "PERF",
+      "title": "Avoid needless string building."
+    },
+    "PERF-05": {
+      "level": "SHOULD",
+      "family": "PERF",
+      "title": "Keep hot types small: at or below 128 bytes on 64-bit targets, pinned with a `const` size assertion that holds on every target."
+    },
+    "PERF-06": {
+      "level": "SHOULD",
+      "family": "PERF",
+      "title": "Choose collections by access pattern."
+    },
+    "PERF-07": {
+      "level": "MUST",
+      "family": "PERF",
+      "title": "Buffer I/O (`BufReader`/`BufWriter`), lock stdout once for bulk output, and stream large inputs rather than slurping them, reading lines in…"
+    },
+    "PERF-08": {
+      "level": "SHOULD",
+      "family": "PERF",
+      "title": "Hot generic code uses static dispatch."
+    },
+    "PERF-09": {
+      "level": "CONSIDER",
+      "family": "PERF",
+      "title": "Keep the template's release, profiling, bench and dev profiles."
+    },
+    "PERF-10": {
+      "level": "MUST",
+      "family": "PERF",
+      "title": "Bound everything that grows with input: sizes, collections, recursion depth, concurrency (`Semaphore`), queue lengths (H-13)."
+    },
+    "PERF-11": {
+      "level": "SHOULD",
+      "family": "PERF",
+      "title": "Make refcount clones explicit with `Arc::clone(&x)`."
+    },
+    "PERF-12": {
+      "level": "SHOULD",
+      "family": "PERF",
+      "title": "Keep critical sections short: drop every guard before I/O, sleeps, joins, blocking channel operations or calls into unknown code."
+    },
+    "PERF-13": {
+      "level": "SHOULD",
+      "family": "PERF",
+      "title": "When a benchmark shows contention on independent atomics or small locks stored side by side, pad each to its own cache line (`#[repr(align(…"
+    },
+    "ASY-01": {
+      "level": "MUST",
+      "family": "ASY",
+      "title": "Use async only for I/O-bound concurrency."
+    },
+    "ASY-02": {
+      "level": "SHOULD",
+      "family": "ASY",
+      "title": "Libraries stay runtime-agnostic where feasible."
+    },
+    "ASY-03": {
+      "level": "SHOULD",
+      "family": "ASY",
+      "title": "Use native `async fn` in traits, not `#[async_trait]`."
+    },
+    "ASY-04": {
+      "level": "MUST",
+      "family": "ASY",
+      "title": "Structured concurrency."
+    },
+    "ASY-05": {
+      "level": "MUST",
+      "family": "ASY",
+      "title": "Make cancellation explicit and cooperative (`CancellationToken`)."
+    },
+    "ASY-06": {
+      "level": "MUST",
+      "family": "ASY",
+      "title": "Never block in async code: no `std::thread::sleep`, blocking I/O, or heavy CPU, and no lock guard across `.await` (H-14)."
+    },
+    "ASY-07": {
+      "level": "MUST",
+      "family": "ASY",
+      "title": "Use bounded channels."
+    },
+    "ASY-08": {
+      "level": "MUST",
+      "family": "ASY",
+      "title": "Put timeouts on all external I/O."
+    },
+    "ASY-09": {
+      "level": "SHOULD",
+      "family": "ASY",
+      "title": "Share state by message passing (an actor owns it) before reaching for `Arc<Mutex<_>>`."
+    },
+    "ASY-10": {
+      "level": "SHOULD",
+      "family": "ASY",
+      "title": "For sync parallelism use `std::thread::scope` (borrowing) or `rayon` (data parallel)."
+    },
+    "ASY-11": {
+      "level": "SHOULD",
+      "family": "ASY",
+      "title": "Keep public types, and the futures public `async fn`s return, `Send` (types also `Sync`), and assert it at compile time."
+    },
+    "ASY-12": {
+      "level": "SHOULD",
+      "family": "ASY",
+      "title": "Use async closures (`async |x| ...`, `AsyncFn*` bounds) for borrowed, non-spawned callbacks."
+    },
+    "ASY-13": {
+      "level": "MUST",
+      "family": "ASY",
+      "title": "Every atomic ordering is justified in a comment: `Relaxed` says why no other memory depends on the value, `Acquire`/`Release`/`AcqRel` name…"
+    },
+    "ASY-14": {
+      "level": "MUST",
+      "family": "ASY",
+      "title": "Lock discipline."
+    },
+    "ASY-15": {
+      "level": "MUST",
+      "family": "ASY",
+      "title": "Spawn threads with `thread::Builder` (`spawn`, `spawn_scoped`), named, and propagate the `io::Error`: `thread::spawn` and `Scope::spawn` pa…"
+    },
+    "ASY-16": {
+      "level": "MUST",
+      "family": "ASY",
+      "title": "Wait, don't spin."
+    },
+    "ASY-17": {
+      "level": "MUST",
+      "family": "ASY",
+      "title": "Do not build synchronization primitives (locks, once-cells, semaphores, channels) from atomics."
+    },
+    "OUT-01": {
+      "level": "SHOULD",
+      "family": "OUT",
+      "title": "Wire types (DTOs) are separate from domain types when the external shape differs or must version independently."
+    },
+    "OUT-02": {
+      "level": "MUST",
+      "family": "OUT",
+      "title": "Public contracts pin serde conventions: `rename_all` at the type level, explicit enum tagging, `deny_unknown_fields` on inbound commands an…"
+    },
+    "OUT-03": {
+      "level": "MUST",
+      "family": "OUT",
+      "title": "Persisted and public schemas carry a version."
+    },
+    "OUT-04": {
+      "level": "MUST",
+      "family": "OUT",
+      "title": "Output is deterministic: stable field order, `BTreeMap` for maps, sorted collections, and injected time and ids."
+    },
+    "OUT-05": {
+      "level": "MUST",
+      "family": "OUT",
+      "title": "Validate on the way in."
+    },
+    "OUT-06": {
+      "level": "SHOULD",
+      "family": "OUT",
+      "title": "CLIs offer a machine mode (`--format json`): data to stdout, diagnostics to stderr, meaningful `ExitCode`s, and JSON Lines for streams."
+    },
+    "OUT-07": {
+      "level": "SHOULD",
+      "family": "OUT",
+      "title": "Generate JSON Schemas for public contracts with `schemars` and snapshot them to catch breaking changes."
+    },
+    "OUT-08": {
+      "level": "MUST",
+      "family": "OUT",
+      "title": "Log with `tracing`: structured fields, spans (`#[instrument(skip_all, fields(...))]`), no `println!` in libraries, and no secrets or PII."
+    },
+    "OUT-09": {
+      "level": "CONSIDER",
+      "family": "OUT",
+      "title": "Use zero-copy deserialization (`&'de str`, `Cow<'de, str>`, `#[serde(borrow)]`) for large or hot inputs."
+    },
+    "OUT-10": {
+      "level": "SHOULD",
+      "family": "OUT",
+      "title": "`Display` is for users and `Debug` is for developers."
+    },
+    "MOD-01": {
+      "level": "MUST",
+      "family": "MOD",
+      "title": "Use edition 2024 everywhere."
+    },
+    "MOD-02": {
+      "level": "SHOULD",
+      "family": "MOD",
+      "title": "Use `let ... else` for early exits, `if let` chains instead of nested `if let`, and `if let` guards in match arms (1.95+)."
+    },
+    "MOD-03": {
+      "level": "MUST",
+      "family": "MOD",
+      "title": "Use `std::sync::LazyLock`/`OnceLock` (and `LazyCell`/`OnceCell`), not `lazy_static!` or `once_cell`."
+    },
+    "MOD-04": {
+      "level": "SHOULD",
+      "family": "MOD",
+      "title": "Use native `async fn` in traits and async closures, not `async-trait` or boxed-closure workarounds."
+    },
+    "MOD-05": {
+      "level": "MUST",
+      "family": "MOD",
+      "title": "Use `#[expect(lint, reason = \"...\")]`, never `#[allow]`, and only under H-05."
+    },
+    "MOD-06": {
+      "level": "SHOULD",
+      "family": "MOD",
+      "title": "Know the 2024 capture rules: return-position `impl Trait` captures all in-scope lifetimes."
+    },
+    "MOD-07": {
+      "level": "SHOULD",
+      "family": "MOD",
+      "title": "Prefer modern std APIs to hand-rolled equivalents: `is_some_and`, `is_none_or`, `inspect_err`, `take_if`, `repeat_n`, `chunk_by`, `as_chunk…"
+    },
+    "MOD-08": {
+      "level": "CONSIDER",
+      "family": "MOD",
+      "title": "Use `core::error::Error` for `no_std`-compatible libraries, and `std::fmt::from_fn` for one-off `Display` adapters."
+    },
+    "MOD-09": {
+      "level": "MUST",
+      "family": "MOD",
+      "title": "Configure lints in the workspace `[lints]` table with member inheritance (`[lints] workspace = true` in every member), not as crate-root at…"
+    },
+    "MOD-10": {
+      "level": "CONSIDER",
+      "family": "MOD",
+      "title": "Use const generics, `const fn` and inline `const { }` where compile-time evaluation clarifies intent."
+    },
+    "MOD-11": {
+      "level": "SHOULD",
+      "family": "MOD",
+      "title": "Use trait upcasting (`&dyn Sub` to `&dyn Super`), not `as_any` hacks."
+    },
+    "MOD-12": {
+      "level": "CONSIDER",
+      "family": "MOD",
+      "title": "Use `cfg_select!` (1.95+) instead of the `cfg-if` crate in new code."
+    },
+    "MOD-13": {
+      "level": "SHOULD",
+      "family": "MOD",
+      "title": "In CI, set `build.warnings = \"deny\"` (Cargo 1.97+) rather than `RUSTFLAGS=-Dwarnings`, which invalidates the build cache."
+    },
+    "CRF-01": {
+      "level": "MUST",
+      "family": "CRF",
+      "title": "Names reveal intent in the domain's own language."
+    },
+    "CRF-02": {
+      "level": "SHOULD",
+      "family": "CRF",
+      "title": "A function does one thing at one level of abstraction."
+    },
+    "CRF-03": {
+      "level": "SHOULD",
+      "family": "CRF",
+      "title": "Prefer early returns (`?`, `let-else`) to nesting."
+    },
+    "CRF-04": {
+      "level": "MUST",
+      "family": "CRF",
+      "title": "Comments explain why, doc comments explain the contract, there is no commented-out code, and `TODO(#issue)` carries a reference."
+    },
+    "CRF-05": {
+      "level": "MUST",
+      "family": "CRF",
+      "title": "No dead code, unused dependencies (`cargo machete`), unused features or speculative generality: no single-implementation trait that is not…"
+    },
+    "CRF-06": {
+      "level": "MUST",
+      "family": "CRF",
+      "title": "Format with `rustfmt` using the repository config; its output is authoritative."
+    },
+    "CRF-07": {
+      "level": "SHOULD",
+      "family": "CRF",
+      "title": "Bindings are immutable by default."
+    },
+    "CRF-08": {
+      "level": "SHOULD",
+      "family": "CRF",
+      "title": "Leave the code cleaner within the change's scope."
+    },
+    "CRF-09": {
+      "level": "SHOULD",
+      "family": "CRF",
+      "title": "Replace magic numbers with named constants or unit-bearing types (`Duration`, newtypes)."
+    },
+    "CRF-10": {
+      "level": "SHOULD",
+      "family": "CRF",
+      "title": "Write expression-oriented code (`let x = match ...`) and iterator pipelines when they read more clearly than loops, but do not code-golf."
+    },
+    "CRF-11": {
+      "level": "MUST",
+      "family": "CRF",
+      "title": "Rustdoc and READMEs describe the current contract and behaviour."
+    },
+    "PROC-01": {
+      "level": "MUST",
+      "family": "PROC",
+      "title": "Explore before editing: crate charter, public API, tests, call sites."
+    },
+    "PROC-02": {
+      "level": "SHOULD",
+      "family": "PROC",
+      "title": "Delegate wide searches to an exploration subagent and keep conclusions only."
+    },
+    "PROC-03": {
+      "level": "MUST",
+      "family": "PROC",
+      "title": "Plan non-trivial changes: goal, invariants, signatures, placement, errors, test list, risks, HITL decisions."
+    },
+    "PROC-04": {
+      "level": "MUST",
+      "family": "PROC",
+      "title": "Surface HITL decisions (H-16) explicitly."
+    },
+    "PROC-05": {
+      "level": "SHOULD",
+      "family": "PROC",
+      "title": "Take small steps: one behavior per red-green-refactor cycle, build and test each step, and commit when green if commits are in scope."
+    },
+    "PROC-06": {
+      "level": "MUST",
+      "family": "PROC",
+      "title": "For multi-step work, keep the plan file's checklist current so compaction or handoff loses nothing."
+    },
+    "PROC-07": {
+      "level": "MUST",
+      "family": "PROC",
+      "title": "Self-review the diff against the checklist before requesting review, and fix what you find."
+    },
+    "PROC-08": {
+      "level": "MUST",
+      "family": "PROC",
+      "title": "Every change that reaches \"done\" gets an independent fresh-context review."
+    },
+    "PROC-09": {
+      "level": "MUST",
+      "family": "PROC",
+      "title": "After two failed attempts at the same compiler error, stop and re-model ownership before trying again."
+    },
+    "PROC-10": {
+      "level": "MUST",
+      "family": "PROC",
+      "title": "Report with the Status block."
+    },
+    "PROC-11": {
+      "level": "MUST",
+      "family": "PROC",
+      "title": "Keep docs in sync in the same change: crate charter, README, rustdoc, CHANGELOG if present (published crates keep an `Unreleased` section w…"
+    },
+    "PROC-12": {
+      "level": "SHOULD",
+      "family": "PROC",
+      "title": "Read the whole diagnostic, including notes, help and `rustc --explain`, before changing code."
+    },
+    "PROC-13": {
+      "level": "MUST",
+      "family": "PROC",
+      "title": "Never edit `Cargo.lock` by hand."
+    }
+  }
+}
