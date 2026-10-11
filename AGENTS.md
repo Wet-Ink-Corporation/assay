@@ -57,4 +57,5 @@ Pre-approved dependencies are listed in `.claude/temper.json`; any other is an H
 | 2026-10-11 | Pre-approved dependencies: serde, serde_json, toml, thiserror, jsonschema, sha2, hex, clap, camino, tempfile, syn, regex, time, tracing, proptest, insta, assert_cmd. | H-16, ARC-12 | owner |
 | 2026-10-11 | No `license` field in `[workspace.package]` (private code); `deny.toml` ignores unpublished workspace crates in the license check. | ARC-12 | Story #46, to confirm |
 | 2026-10-11 | Root `CLAUDE.md` only imports this charter and adds Claude Code specifics; it repeats none of it (02 §2). | ARC-08 | Story #46 |
+| 2026-10-11 | `thiserror` (library errors) and `tempfile` (anonymous spool files for git's stdio in `assay-forge`, and test fixture repositories) enter the workspace with the `assay-forge` git layer; both are pre-approved. | H-16, ARC-12 | Story #52 |
 | 2026-10-11 | Unused layer edges are not declared up front: `cargo machete` rejects unused dependencies, so each story adds the edge it first uses. | CRF-05 | Story #46 |
