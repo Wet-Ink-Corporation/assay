@@ -1,0 +1,53 @@
+{
+  "schema": "assay.findings/1",
+  "source": {
+    "kind": "reviewer",
+    "name": "claude",
+    "version": "git:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "role": "bugs",
+    "run_key": "run-42-1"
+  },
+  "findings": [
+    {
+      "class": "error-handling",
+      "rule": "H-02",
+      "kind": "defect",
+      "severity": "major",
+      "introduced_by": "diff",
+      "pre_existing": false,
+      "file": "crates/x/src/lib.rs",
+      "line": 88,
+      "end_line": 91,
+      "side": "RIGHT",
+      "evidence": "let x = y.unwrap();",
+      "trigger": "request with empty body reaches line 88 via handler::parse",
+      "title": "unwrap on user input panics",
+      "body": "`y` is `None` for an empty body, so the handler panics.",
+      "fix": "let Some(x) = y else { return Err(ParseError::Empty) };",
+      "confidence": "high",
+      "group_hint": "unchecked option"
+    },
+    {
+      "class": "tests",
+      "kind": "omission",
+      "severity": "minor",
+      "introduced_by": "interaction",
+      "pre_existing": false,
+      "file": "crates/x/src/lib.rs",
+      "line": 12,
+      "side": "RIGHT",
+      "evidence": "pub fn parse(input: &str) -> Result<Request, ParseError>",
+      "caller": {
+        "file": "crates/x/src/handler.rs",
+        "line": 30,
+        "evidence": "parse(&body)?"
+      },
+      "title": "no test for empty input",
+      "body": "The new early return has no test.",
+      "confidence": "medium"
+    }
+  ],
+  "stats": {
+    "files_read": 12
+  }
+}

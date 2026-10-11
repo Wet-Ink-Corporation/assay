@@ -10,3 +10,7 @@ workspace = true
 
 # Workspace edge allowed: assay-domain only (02 §2). Added by the story that first uses it.
 [dependencies]
+assay-domain = { workspace = true }
+jsonschema = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

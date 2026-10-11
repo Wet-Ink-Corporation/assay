@@ -16,6 +16,11 @@ allow = [
 # assay's own crates are private (publish = false) and carry no license field (AGENTS.md).
 # Every third-party crate is still checked against `allow`.
 private = { ignore = true }
+# Per-crate exceptions, each an owner decision (H-16); never widen `allow` for one crate.
+exceptions = [
+  # borrow-or-share (jsonschema -> referencing -> fluent-uri) is MIT-0 only. Weigh-In wi-a01169, option A.
+  { crate = "borrow-or-share", allow = ["MIT-0"] },
+]
 
 [bans]
 multiple-versions = "warn"
@@ -27,7 +32,8 @@ deny = [
   # that still use them. When a newly approved dependency pulls one in (`cargo tree -i <crate>`),
   # add the crate that uses it here as part of that H-16 decision.
   { name = "lazy_static", wrappers = ["sharded-slab"], reason = "MOD-03: use std::sync::LazyLock" },
-  { name = "once_cell", wrappers = ["insta", "tempfile", "tracing-core", "tracing-log", "tracing-subscriber"], reason = "MOD-03: use std::sync::{OnceLock, LazyLock}" },
+  # ahash and wasm-bindgen arrive with jsonschema (Weigh-In wi-a01169, option A).
+  { name = "once_cell", wrappers = ["ahash", "insta", "tempfile", "tracing-core", "tracing-log", "tracing-subscriber", "wasm-bindgen"], reason = "MOD-03: use std::sync::{OnceLock, LazyLock}" },
   { name = "failure", reason = "unmaintained; use thiserror" },
   { name = "error-chain", reason = "unmaintained; use thiserror" },
   # P8: assay consumes Weigh-In through its documented contract and never links its crates.

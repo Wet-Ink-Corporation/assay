@@ -1,0 +1,18 @@
+{
+  "schema": "assay.event/1",
+  "job": "decide",
+  "idx": 1,
+  "ts": "2026-10-11T06:16:00Z",
+  "run_key": "run-42-1",
+  "run_uid": {
+    "repo_id": 840213377,
+    "run_id": 18342009871,
+    "run_attempt": 1
+  },
+  "stage": "S7",
+  "kind": "CommandVoided",
+  "data": {
+    "comment_id": 2400000001,
+    "reason": "edited"
+  }
+}

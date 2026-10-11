@@ -3,4 +3,12 @@
 //!
 //! The ports (`ModelRunner`, `Forge`, `EventSink`, `GateRunner`, `Ledger`, `Clock`) are owned
 //! here and implemented by the adapter crates (`docs/architecture/02-architecture.md` §2).
-//! Empty until the first use-case story.
+//! Every versioned contract is validated on read through [`ContractValidator`]
+//! (`docs/architecture/03-contracts.md`).
+
+mod contract;
+
+pub use contract::{
+    Contract, ContractSchemaError, ContractValidator, ReadContractError, SchemaCompileError,
+    SchemaViolation,
+};

@@ -8,11 +8,13 @@ domain. Pure: no I/O, no clock, no randomness, no environment, no processes, no 
 
 ## Allowed dependencies
 - Workspace crates: none.
-- Third-party, and only these (02 §2): `serde` (derives on versioned contract types), `thiserror` (typed rejections, ERR-01), `sha2` (fingerprints). Each is added by the story that first uses it. Dev-dependencies from the pre-approved list in `.claude/temper.json` are allowed.
-- Never: any other crate, any `assay-*` crate, `weighin-core` or temper code (P8). `crates/assay-cli/tests/it/architecture.rs` fails on a violation.
+- Third-party, and only these (02 §2): `serde` (derives on versioned contract types), `thiserror` (typed rejections, ERR-01), `sha2` (fingerprints). Each is added by the story that first uses it.
+- Dev-dependencies: crates on the pre-approved list in `.claude/temper.json`. The architecture test does not check them (it exempts every third-party dev-dependency of the domain); temper's H-16 pre-approval hook governs them, and any other is a human decision.
+- Never: any other normal or build dependency, any `assay-*` crate (dev-dependencies included), `weighin-core` or temper code (P8). `crates/assay-cli/tests/it/architecture.rs` fails on a violation.
 
 ## Public surface
-None yet. Workspace-internal, not published (`publish = false`).
+Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`:
+- `Disposition`: the closed set of finding dispositions of 03 §5, with its wire `code()`.
 
 ## Invariants
 - No I/O: every function is a pure function of its arguments.
@@ -32,3 +34,4 @@ Unit tests beside the code; property tests for fingerprint stability and state-m
 | Date | Decision | Rule | Decided by |
 |---|---|---|---|
 | 2026-10-11 | Crate created empty (Story #46); dependencies are added when first used. | ARC-12, CRF-05 | Story #46 |
+| 2026-10-11 | `Disposition` added (Story #47) so schema rejections in `assay-app` map to a domain value; no dependency needed. | API-02 | Story #47 |

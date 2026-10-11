@@ -1,0 +1,77 @@
+{
+  "schema": "assay.run/1",
+  "run_key": "run-42-1",
+  "run_uid": {
+    "repo_id": 840213377,
+    "run_id": 18342009871,
+    "run_attempt": 1
+  },
+  "repo": "Wet-Ink-Corporation/assay",
+  "pr": 42,
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "base_ref": "main",
+  "tier": "full",
+  "tier_reasons": [
+    "trust-path changed"
+  ],
+  "classes": [
+    "trust-path"
+  ],
+  "roles": [
+    "bugs",
+    "security",
+    "design",
+    "meta"
+  ],
+  "required_roles": [
+    "bugs",
+    "security",
+    "design",
+    "meta"
+  ],
+  "shards": [
+    {
+      "files": [
+        "crates/x/src/lib.rs"
+      ]
+    }
+  ],
+  "plugins": [
+    {
+      "name": "temper",
+      "required": true,
+      "pin": "git:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "steps": [
+        {
+          "name": "fmt",
+          "job": "gates-lint",
+          "timeout_s": 300
+        }
+      ]
+    }
+  ],
+  "trust_paths_changed": [
+    ".github/workflows/assay.yml"
+  ],
+  "exec_surface_changed": [],
+  "filtered_stats": {
+    "files": 3,
+    "lines": 120,
+    "excluded": [
+      "Cargo.lock"
+    ]
+  },
+  "artifact_names": {
+    "gates-lint": "gates-lint-3f9a"
+  },
+  "draft": false,
+  "budget": {
+    "ledger_day_spent_aeu": 4.5,
+    "day_cap_aeu": 20,
+    "window_state": "ok",
+    "allowed": true,
+    "slot": "slot-0",
+    "deferral": "quota"
+  }
+}
