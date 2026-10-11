@@ -44,11 +44,16 @@ assay-forge = { path = "crates/assay-forge" }
 assay-runner = { path = "crates/assay-runner" }
 assay-gates = { path = "crates/assay-gates" }
 
-# Contract validation in assay-app (Story #47): JSON parsing, JSON Schema checking, typed errors.
+# Errors in library crates (H-09, ERR-01): assay-forge, assay-app.
+thiserror = { version = "2.0.12", default-features = false, features = ["std"] }
+
+# Anonymous spool files for child-process stdio (assay-forge), and test scratch directories.
+tempfile = { version = "3.0.0", default-features = false }
+
+# Contract validation in assay-app (Story #47): JSON parsing and JSON Schema checking; also used by tests.
 # jsonschema without default features: no HTTP or file resolution, every schema is embedded.
 jsonschema = { version = "0.58.6", default-features = false }
 serde_json = { version = "1.0.140", default-features = false, features = ["std"] }
-thiserror = { version = "2.0.12", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"                                  # H-01

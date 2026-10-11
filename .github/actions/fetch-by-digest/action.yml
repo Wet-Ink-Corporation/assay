@@ -1,0 +1,79 @@
+# Fetch an OCI artifact from GHCR by a pinned digest and verify it before anything can run it
+# (ADR-14, 02 §4, 05 T14). The manifest must hash to the pin and every layer to its descriptor;
+# on any mismatch the step fails and nothing is installed. Tags are never accepted.
+#
+# The calling job grants `packages: read` (the GITHUB_TOKEN pull, A-20) and, when the digest is
+# read from base `.assay/plugins.toml`, `contents: read` for the base checkout. See README.md.
+name: fetch-by-digest
+description: Pull an OCI artifact by pinned sha256 digest and verify manifest and layers before use.
+inputs:
+  repository:
+    description: Registry repository without tag or digest, e.g. ghcr.io/wet-ink-corporation/assay.
+    required: true
+  digest:
+    description: The pinned digest (sha256:<64 hex>). Give this or config.
+    required: false
+    default: ""
+  config:
+    description: Path to a plugins.toml to read the pin from (base checkout only, never the PR head).
+    required: false
+    default: ""
+  selector:
+    description: With config, which pin to read - assay.digest, assay.warm_target or plugin.<name>.
+    required: false
+    default: assay.digest
+  out-dir:
+    description: Directory that receives each layer under its org.opencontainers.image.title.
+    required: true
+  artifact-type:
+    description: If set, the manifest's artifactType must equal it.
+    required: false
+    default: ""
+  mode:
+    description: File mode of the installed layers.
+    required: false
+    default: "0755"
+  token:
+    description: Registry password; the job's GITHUB_TOKEN with packages read.
+    required: false
+    default: ${{ github.token }}
+  username:
+    description: Registry user name.
+    required: false
+    default: ${{ github.actor }}
+outputs:
+  digest:
+    description: The verified digest.
+    value: ${{ steps.fetch.outputs.digest }}
+  dir:
+    description: The directory the verified layers were installed into.
+    value: ${{ steps.fetch.outputs.dir }}
+runs:
+  using: composite
+  steps:
+    # setup-oras checks the downloaded oras release against the sha256 it ships for that version.
+    - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+      with:
+        version: 1.3.4
+    - id: fetch
+      shell: bash
+      env:
+        SCRIPT: ${{ github.action_path }}/fetch-by-digest.sh
+        REPOSITORY: ${{ inputs.repository }}
+        DIGEST: ${{ inputs.digest }}
+        CONFIG: ${{ inputs.config }}
+        SELECTOR: ${{ inputs.selector }}
+        OUT_DIR: ${{ inputs.out-dir }}
+        FETCH_BY_DIGEST_ARTIFACT_TYPE: ${{ inputs.artifact-type }}
+        FETCH_BY_DIGEST_MODE: ${{ inputs.mode }}
+        FETCH_BY_DIGEST_USERNAME: ${{ inputs.username }}
+        FETCH_BY_DIGEST_PASSWORD: ${{ inputs.token }}
+      run: |
+        if [ -n "$DIGEST" ] && [ -n "$CONFIG" ]; then
+          echo "::error::fetch-by-digest: give digest or config, not both"
+          exit 2
+        fi
+        if [ -n "$CONFIG" ]; then
+          DIGEST=$(bash "$SCRIPT" digest-from-config "$CONFIG" "$SELECTOR")
+        fi
+        bash "$SCRIPT" fetch "$REPOSITORY" "$DIGEST" "$OUT_DIR"

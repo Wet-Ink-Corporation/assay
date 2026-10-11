@@ -1,0 +1,206 @@
+# Release: build the assay binary from a protected `v*` tag and publish it to GHCR as an OCI
+# artifact. Consumers pin it by digest in base `.assay/plugins.toml` `[assay] digest` and fetch it
+# with .github/actions/fetch-by-digest, which verifies the digest before anything runs it
+# (ADR-14, 02 §4, 05 T14). Runbook: docs/operations/release.md.
+#
+# Tags must be protected: a repository ruleset on `refs/tags/v*` restricts creation, update and
+# deletion to the owner (docs/operations/release.md). The tag is a name for humans; nothing
+# downstream trusts it. The build also refuses a tag whose commit is not on main or whose name
+# differs from the workspace version.
+#
+# Least privilege: every job defaults to `contents: read`; only `publish` may write packages and
+# only `release-notes` may write contents (it checks out and runs no repository code). Actions are
+# pinned by full commit SHA. No cache: the released binary is built cold (ADR-21, 05 T6).
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_WARNINGS: deny
+  ARTIFACT_TYPE: application/vnd.wet-ink.assay.binary.v1
+  LAYER_TYPE: application/vnd.wet-ink.assay.binary.layer.v1
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      sha256: ${{ steps.stage.outputs.sha256 }}
+      artifact: ${{ steps.stage.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0       # the ancestry check below needs origin/main
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-28
+        with:
+          toolchain: "1.98.1"  # keep in sync with rust-toolchain.toml
+      - name: The tag is on main and names the workspace version
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$TAG ($GITHUB_SHA) is not on main"
+            exit 1
+          fi
+          version=$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "assay-cli") | .version')
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match the workspace version $version"
+            exit 1
+          fi
+      - run: cargo build --locked --release -p assay-cli --bin assay
+      - name: Stage the binary
+        id: stage
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/release/assay dist/assay
+          sum=$(sha256sum < dist/assay)
+          # A per-job nonce artifact name (02 §1); its sha256 travels in this job's outputs.
+          echo "artifact=assay-$(openssl rand -hex 8)" >> "$GITHUB_OUTPUT"
+          echo "sha256=sha256:${sum%% *}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.stage.outputs.artifact }}
+          path: dist/assay
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    outputs:
+      repository: ${{ steps.push.outputs.repository }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: dist
+      - name: The artifact is the binary the build job hashed
+        shell: bash
+        env:
+          EXPECTED: ${{ needs.build.outputs.sha256 }}
+        run: |
+          sum=$(sha256sum < dist/assay)
+          if [ "sha256:${sum%% *}" != "$EXPECTED" ]; then
+            echo "::error::artifact digest sha256:${sum%% *} does not match the build output $EXPECTED"
+            exit 1
+          fi
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        with:
+          version: 1.3.4
+      - name: Push to GHCR
+        id: push
+        shell: bash
+        working-directory: dist
+        env:
+          TAG: ${{ github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ github.token }}
+        run: |
+          repository="ghcr.io/${OWNER,,}/assay"
+          # The source annotation links the package to this repository (GHCR package access).
+          printf '%s' "$TOKEN" | oras push --username "$ACTOR" --password-stdin \
+            --artifact-type "$ARTIFACT_TYPE" \
+            --annotation "org.opencontainers.image.source=$SOURCE" \
+            --annotation "org.opencontainers.image.version=$TAG" \
+            --annotation "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --export-manifest "$RUNNER_TEMP/manifest.json" \
+            "$repository:$TAG" "assay:$LAYER_TYPE"
+          # The digest is the sha256 of the exact manifest bytes pushed.
+          sum=$(sha256sum < "$RUNNER_TEMP/manifest.json")
+          digest="sha256:${sum%% *}"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### assay $TAG published"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Repository | \`$repository\` |"
+            echo "| Digest | \`$digest\` |"
+            echo "| Commit | \`$GITHUB_SHA\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Pulls the release back through the consumer mechanism: proves the digest resolves and
+  # verifies, and that the bytes are the ones the build job hashed.
+  verify:
+    needs: [build, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: fetch
+        uses: ./.github/actions/fetch-by-digest
+        with:
+          repository: ${{ needs.publish.outputs.repository }}
+          digest: ${{ needs.publish.outputs.digest }}
+          artifact-type: ${{ env.ARTIFACT_TYPE }}
+          out-dir: ${{ runner.temp }}/assay
+      - name: The fetched binary is the one that was built, and it runs
+        shell: bash
+        env:
+          DIR: ${{ steps.fetch.outputs.dir }}
+          EXPECTED: ${{ needs.build.outputs.sha256 }}
+        run: |
+          sum=$(sha256sum < "$DIR/assay")
+          if [ "sha256:${sum%% *}" != "$EXPECTED" ]; then
+            echo "::error::fetched binary sha256:${sum%% *} differs from the build output $EXPECTED"
+            exit 1
+          fi
+          "$DIR/assay"
+
+  release-notes:
+    needs: [build, publish, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create the GitHub release with the digest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ needs.publish.outputs.repository }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          BINARY: ${{ needs.build.outputs.sha256 }}
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            echo "OCI artifact: \`$REPOSITORY@$DIGEST\`"
+            echo
+            echo "Pin it by digest in base \`.assay/plugins.toml\` (never by tag):"
+            echo
+            echo '```toml'
+            echo '[assay]'
+            echo "digest = \"$DIGEST\""
+            echo '```'
+            echo
+            echo "Binary (linux x86_64) sha256: \`$BINARY\`; commit \`$GITHUB_SHA\`."
+          } > "$notes"
+          gh release create "$TAG" --verify-tag --title "assay $TAG" --notes-file "$notes"
+          cat "$notes" >> "$GITHUB_STEP_SUMMARY"
