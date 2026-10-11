@@ -1,0 +1,12 @@
+[package]
+name = "assay-app"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Workspace edge allowed: assay-domain only (02 §2). Added by the story that first uses it.
+[dependencies]

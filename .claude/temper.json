@@ -1,0 +1,36 @@
+{
+  "skillGate": true,
+  "review": "required",
+  "askOnNewDependency": true,
+  "gate": {
+    "allFeatures": true,
+    "doc": true,
+    "scan": true,
+    "stepTimeoutSec": 900
+  },
+  "scanner": {
+    "exempt": []
+  },
+  "preapprovedDependencies": [
+    "serde",
+    "serde_json",
+    "toml",
+    "thiserror",
+    "jsonschema",
+    "sha2",
+    "hex",
+    "clap",
+    "camino",
+    "tempfile",
+    "syn",
+    "regex",
+    "time",
+    "tracing",
+    "proptest",
+    "insta",
+    "assert_cmd"
+  ],
+  "manifests": {
+    "ownLints": []
+  }
+}

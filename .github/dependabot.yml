@@ -1,0 +1,24 @@
+# Weekly, grouped update PRs. Each one runs the full gate and gets reviewed like any change.
+# Cargo updates move only Cargo.lock: requirement floors never move automatically (ARC-12),
+# and a major-version bump stays a manual, human-approved change (H-16).
+# Action majors are left out of the group, so each arrives as its own PR for the same review.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    versioning-strategy: lockfile-only
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]

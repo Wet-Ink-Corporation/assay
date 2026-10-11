@@ -1,0 +1,146 @@
+# assay workspace manifest, built from the temper workspace template.
+# Each member crate opts in to the shared lints with:
+#
+#   [lints]
+#   workspace = true
+#
+# Levels: escape-hatch lints are "deny" so they fail `cargo clippy` immediately.
+# Style and pedantic lints are "warn"; the gate and CI run with warnings denied,
+# so nothing merges with a warning, but red/green TDD iterations aren't blocked
+# by a missing doc comment on a function you haven't finished yet.
+
+[workspace]
+resolver = "3"
+# Six crates (ADR-07). Dependencies point inward: domain <- app <- {forge, runner, gates} <- cli
+# (02 §2). crates/assay-cli/tests/it/architecture.rs fails the build on any other edge.
+members = [
+  "crates/assay-domain",
+  "crates/assay-app",
+  "crates/assay-forge",
+  "crates/assay-runner",
+  "crates/assay-gates",
+  "crates/assay-cli",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.96"          # MSRV = oldest compiler you support. clippy rejects newer std APIs
+                               # (incompatible_msrv): assert_matches! needs 1.96, if-let guards 1.95
+version = "0.1.0"
+publish = false                # members inherit it (publish.workspace = true); turning it on is H-16
+# No `license`: assay is private, owner's code (decisions log in AGENTS.md).
+# repository = "https://github.com/Wet-Ink-Corporation/assay"   # set before any crate publishes (ARC-01)
+
+[workspace.dependencies]
+# Every dependency is declared once, here (ARC-12); members write `name = { workspace = true }`
+# and may only add `features`. Each entry is justified in the root AGENTS.md decisions log.
+# Versions are caret floors at the oldest release whose API we use, default features off.
+# Layer edges are added by the story that first uses them (cargo machete rejects unused ones).
+
+# Workspace crates, innermost first (ARC-02).
+assay-domain = { path = "crates/assay-domain" }
+assay-app = { path = "crates/assay-app" }
+assay-forge = { path = "crates/assay-forge" }
+assay-runner = { path = "crates/assay-runner" }
+assay-gates = { path = "crates/assay-gates" }
+
+# Tests only.
+serde_json = { version = "1.0.140", default-features = false, features = ["std"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"                                  # H-01
+missing_docs = "warn"                                   # H-15 / API-15
+missing_debug_implementations = "warn"                  # API-06
+unreachable_pub = "warn"                                # API-14
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_qualifications = "warn"
+unused_lifetimes = "warn"                               # OWN-05
+redundant_lifetimes = "warn"                            # OWN-05
+let_underscore_drop = "warn"                            # H-10
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+non_ascii_idents = "deny"
+ambiguous_negative_literals = "warn"                    # `-1i32.abs()` parses as `-(1i32.abs())`
+redundant_imports = "warn"                              # CRF-05: e.g. importing 2024-prelude items
+
+[workspace.lints.clippy]
+# Groups: correctness/suspicious/style/complexity/perf deny; pedantic warn.
+# nursery, restriction and cargo lints are off unless listed below.
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+naive_bytecount = "allow"                               # would push a new dependency (H-16)
+
+# Escape hatches (H-rules): deny outright.
+unwrap_used = "deny"                                    # H-02
+expect_used = "deny"                                    # H-02
+unwrap_in_result = "deny"                               # H-02
+panic = "deny"                                          # H-03
+todo = "deny"                                           # H-03
+unimplemented = "deny"                                  # H-03
+unreachable = "deny"                                    # H-03
+indexing_slicing = "deny"                               # H-04
+string_slice = "deny"                                   # H-04
+allow_attributes = "deny"                               # H-05
+allow_attributes_without_reason = "deny"                # H-05
+dbg_macro = "deny"                                      # H-06
+print_stdout = "deny"                                   # H-06 (bins: writeln!(io::stdout().lock(), ..)?)
+print_stderr = "deny"                                   # H-06
+mem_forget = "deny"                                     # H-07
+rc_mutex = "deny"                                       # H-07 / OWN-11
+let_underscore_must_use = "deny"                        # H-10
+unused_result_ok = "deny"                               # H-10
+as_conversions = "deny"                                 # H-11
+exit = "deny"                                           # ARC-14: main returns ExitCode
+
+# Idiom and design lints: warn (denied by the gate).
+clone_on_ref_ptr = "warn"                               # PERF-11
+redundant_clone = "warn"                                # H-08
+rc_buffer = "warn"                                      # OWN-15
+map_err_ignore = "warn"                                 # ERR-04
+str_to_string = "warn"
+mod_module_files = "warn"                               # ARC-06
+empty_structs_with_brackets = "warn"
+format_push_string = "warn"                             # PERF-04
+significant_drop_tightening = "warn"                    # PERF-12
+cognitive_complexity = "warn"                           # CRF-02
+large_futures = "warn"                                  # PERF-05
+needless_collect = "warn"                               # PERF-02 / OWN-13
+or_fun_call = "warn"                                    # ERR-07 / PERF-04
+significant_drop_in_scrutinee = "warn"                  # ASY-14
+debug_assert_with_mut_call = "warn"                     # H-03
+future_not_send = "warn"                                # ASY-11
+too_long_first_doc_paragraph = "warn"                   # API-15
+missing_assert_message = "warn"                         # H-03
+assertions_on_result_states = "warn"                    # TST-05
+renamed_function_params = "warn"                        # API-18
+empty_drop = "warn"                                     # ERR-13
+negative_feature_names = "warn"                         # API-16
+redundant_feature_names = "warn"                        # API-16
+cargo_common_metadata = "warn"                          # ARC-01: fires only once a crate can publish
+
+# Profiles live only in this root manifest; cargo ignores member [profile] tables (PERF-09).
+# Per-application H-16 decisions, each with a benchmark and a decisions-log entry, never
+# template defaults: lto = "fat", opt-level = "s"/"z", panic = "abort", strip = "symbols",
+# overflow-checks = true (money domains), a #[global_allocator] (binaries only), PGO/BOLT,
+# and target-cpu (a named level, never "native"). Shipped profiles keep debug-assertions off.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# `cargo build --profile profiling`: release code with file:line for profilers.
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+
+# `cargo bench`: source lines in profiler output.
+[profile.bench]
+debug = "line-tables-only"
+
+# Dev and test builds keep file:line in panics and backtraces, but no debugger locals.
+# To attach a debugger locally: CARGO_PROFILE_DEV_DEBUG=true.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false                                           # dependencies: no debug info

@@ -1,0 +1,6 @@
+# MOD-01: pin the toolchain so every agent, human and CI run uses the same
+# compiler and lints. Bump deliberately, in its own reviewed change.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
