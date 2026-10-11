@@ -1,6 +1,7 @@
 //! Integration tests for `assay-app`, compiled as one binary (TST-14).
 
 mod contract;
+mod domain_model;
 mod model_runner;
 mod redaction;
 mod spec;

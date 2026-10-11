@@ -1,74 +1,41 @@
 //! Dispositions: what happened to an individual finding (`docs/architecture/03-contracts.md` §5).
 
-/// What happened to one finding on its way to the decision. A closed set (03 §5); not every
-/// disposition drops the finding (`NoTrigger` caps it at `minor`, `LineNotInDiffMoved` moves it to
-/// the summary).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Disposition {
-    /// The document failed its schema: unknown field or version, over-length text, wrong shape.
-    Schema,
-    /// The quoted evidence occurs nowhere in the file.
-    EvidenceMissing,
-    /// The line is outside every diff hunk, so the finding moves to the summary.
-    LineNotInDiffMoved,
-    /// Another finding already reports the same defect.
-    Duplicate,
-    /// A gate already reports the same defect.
-    DuplicateOfGate,
-    /// A base `suppress` rule matches the finding.
-    SuppressedByRule,
-    /// The owner dismissed the finding.
-    DismissedByOwner,
-    /// The owner waived the finding.
-    WaivedByOwner,
-    /// The verifier refuted the finding, which is downgraded to `minor`.
-    VerifierRejectedDowngraded,
-    /// A per-run or per-role cap on findings was reached.
-    CapExceeded,
-    /// The finding is about code the diff did not introduce.
-    PreExisting,
-    /// The free-text egress scan flagged the finding.
-    InjectionSuspect,
-    /// A `major` or `blocker` without a trigger, capped at `minor`.
-    NoTrigger,
-}
+use crate::vocabulary::closed_enum;
 
-impl Disposition {
-    /// Every disposition, in the order 03 §5 lists them.
-    pub const ALL: [Self; 13] = [
-        Self::Schema,
-        Self::EvidenceMissing,
-        Self::LineNotInDiffMoved,
-        Self::Duplicate,
-        Self::DuplicateOfGate,
-        Self::SuppressedByRule,
-        Self::DismissedByOwner,
-        Self::WaivedByOwner,
-        Self::VerifierRejectedDowngraded,
-        Self::CapExceeded,
-        Self::PreExisting,
-        Self::InjectionSuspect,
-        Self::NoTrigger,
-    ];
-
-    /// The wire code of this disposition in `assay.decision/1` (`dispositions[].code`).
-    #[must_use]
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::Schema => "schema",
-            Self::EvidenceMissing => "evidence-missing",
-            Self::LineNotInDiffMoved => "line-not-in-diff-moved",
-            Self::Duplicate => "duplicate",
-            Self::DuplicateOfGate => "duplicate-of-gate",
-            Self::SuppressedByRule => "suppressed-by-rule",
-            Self::DismissedByOwner => "dismissed-by-owner",
-            Self::WaivedByOwner => "waived-by-owner",
-            Self::VerifierRejectedDowngraded => "verifier-rejected-downgraded",
-            Self::CapExceeded => "cap-exceeded",
-            Self::PreExisting => "pre-existing",
-            Self::InjectionSuspect => "injection-suspect",
-            Self::NoTrigger => "no-trigger",
-        }
+closed_enum! {
+    /// What happened to one finding on its way to the decision. A closed set (03 §5).
+    ///
+    /// Not every disposition drops the finding (`NoTrigger` caps it at `minor`,
+    /// `LineNotInDiffMoved` moves it to the summary). Its `code()` is `assay.decision/1`
+    /// `dispositions[].code`.
+    #[derive(PartialOrd, Ord)]
+    pub enum Disposition {
+        /// The document failed its schema: unknown field or version, over-length text, wrong shape.
+        Schema => "schema",
+        /// The quoted evidence occurs nowhere in the file.
+        EvidenceMissing => "evidence-missing",
+        /// The line is outside every diff hunk, so the finding moves to the summary.
+        LineNotInDiffMoved => "line-not-in-diff-moved",
+        /// Another finding already reports the same defect.
+        Duplicate => "duplicate",
+        /// A gate already reports the same defect.
+        DuplicateOfGate => "duplicate-of-gate",
+        /// A base `suppress` rule matches the finding.
+        SuppressedByRule => "suppressed-by-rule",
+        /// The owner dismissed the finding.
+        DismissedByOwner => "dismissed-by-owner",
+        /// The owner waived the finding.
+        WaivedByOwner => "waived-by-owner",
+        /// The verifier refuted the finding, which is downgraded to `minor`.
+        VerifierRejectedDowngraded => "verifier-rejected-downgraded",
+        /// A per-run or per-role cap on findings was reached.
+        CapExceeded => "cap-exceeded",
+        /// The finding is about code the diff did not introduce.
+        PreExisting => "pre-existing",
+        /// The free-text egress scan flagged the finding.
+        InjectionSuspect => "injection-suspect",
+        /// A `major` or `blocker` without a trigger, capped at `minor`.
+        NoTrigger => "no-trigger",
     }
 }
 
