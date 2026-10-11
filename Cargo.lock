@@ -67,6 +67,13 @@ version = "0.1.0"
 [[package]]
 name = "assay-runner"
 version = "0.1.0"
+dependencies = [
+ "assay-app",
+ "assay-domain",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "autocfg"

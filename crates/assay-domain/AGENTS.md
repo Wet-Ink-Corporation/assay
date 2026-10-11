@@ -15,6 +15,7 @@ domain. Pure: no I/O, no clock, no randomness, no environment, no processes, no 
 ## Public surface
 Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`:
 - `Disposition`: the closed set of finding dispositions of 03 §5, with its wire `code()`.
+- `Aeu`: an amount of API-equivalent dollars held exactly in micro-AEU (`from_micros`, `micros`, `saturating_add`), displayed as a plain decimal (`0.74`), the form `--max-budget-usd` reads.
 
 ## Invariants
 - No I/O: every function is a pure function of its arguments.
@@ -35,3 +36,4 @@ Unit tests beside the code; property tests for fingerprint stability and state-m
 |---|---|---|---|
 | 2026-10-11 | Crate created empty (Story #46); dependencies are added when first used. | ARC-12, CRF-05 | Story #46 |
 | 2026-10-11 | `Disposition` added (Story #47) so schema rejections in `assay-app` map to a domain value; no dependency needed. | API-02 | Story #47 |
+| 2026-10-11 | `Aeu` added (#82) as integer micro-AEU rather than a float or a decimal crate (none is allowed here), so caps and costs compare and sum exactly. | API-02, H-11 | #82 |
