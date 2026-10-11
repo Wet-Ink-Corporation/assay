@@ -32,8 +32,10 @@ const DOMAIN: &str = "assay-domain";
 /// The only third-party crates the domain may use outside its tests (02 §2).
 const DOMAIN_ALLOWED: [&str; 3] = ["serde", "thiserror", "sha2"];
 
-/// assay drives weigh-in and temper as external tools and never links their code (P8).
-const FORBIDDEN_PREFIXES: [&str; 3] = ["weighin", "weigh-in", "temper"];
+/// assay drives weigh-in and temper as external tools and never links their code (P8). A crate is
+/// theirs when its name, with `_` read as `-`, is one of these or one of these followed by `-`
+/// (`temper`, `temper-scan`, `weighin_core`); `temperature` and `weighing` are not.
+const FORBIDDEN_FAMILIES: [&str; 3] = ["weighin", "weigh-in", "temper"];
 
 const WORKSPACE_PREFIX: &str = "assay-";
 
@@ -137,9 +139,11 @@ fn allowed_workspace_dependencies(package: &str) -> Option<&'static [&'static st
 
 fn is_forbidden(dependency: &str) -> bool {
     let normalized = dependency.replace('_', "-");
-    FORBIDDEN_PREFIXES
-        .iter()
-        .any(|prefix| normalized.starts_with(prefix))
+    FORBIDDEN_FAMILIES.iter().any(|family| {
+        normalized
+            .strip_prefix(family)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+    })
 }
 
 /// The workspace members of this repository, read from `cargo metadata --no-deps`.

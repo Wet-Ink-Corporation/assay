@@ -2,4 +2,8 @@
 //! its events.
 //!
 //! Pure: no I/O, no clock, no environment, no async runtime. Fingerprints are computed here and
-//! only here (`docs/architecture/02-architecture.md` §2). Empty until the first domain story.
+//! only here (`docs/architecture/02-architecture.md` §2).
+
+mod disposition;
+
+pub use disposition::Disposition;

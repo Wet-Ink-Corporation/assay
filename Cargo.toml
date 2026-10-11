@@ -12,7 +12,7 @@
 [workspace]
 resolver = "3"
 # Six crates (ADR-07). Dependencies point inward: domain <- app <- {forge, runner, gates} <- cli
-# (02 §2). crates/assay-cli/tests/it/architecture.rs fails the build on any other edge.
+# (02 §2). crates/assay-cli/tests/it/architecture.rs fails `cargo test` on any other edge.
 members = [
   "crates/assay-domain",
   "crates/assay-app",
@@ -44,8 +44,11 @@ assay-forge = { path = "crates/assay-forge" }
 assay-runner = { path = "crates/assay-runner" }
 assay-gates = { path = "crates/assay-gates" }
 
-# Tests only.
+# Contract validation in assay-app (Story #47): JSON parsing, JSON Schema checking, typed errors.
+# jsonschema without default features: no HTTP or file resolution, every schema is embedded.
+jsonschema = { version = "0.58.6", default-features = false }
 serde_json = { version = "1.0.140", default-features = false, features = ["std"] }
+thiserror = { version = "2.0.12", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"                                  # H-01

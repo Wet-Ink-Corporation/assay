@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:assay:schema:findings:1",
+  "title": "assay.findings/1",
+  "description": "Findings from one gate or one reviewer role (docs/architecture/03-contracts.md §3). Unknown fields are rejected; producers never supply `fp` or `group_id`; reviewers never supply `conclusion`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "source", "findings"],
+  "properties": {
+    "schema": { "const": "assay.findings/1" },
+    "source": { "$ref": "#/$defs/source" },
+    "conclusion": { "enum": ["pass", "fail", "neutral"] },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "stats": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "files_read": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "if": {
+    "properties": { "source": { "properties": { "kind": { "const": "reviewer" } } } }
+  },
+  "then": {
+    "not": { "required": ["conclusion"] }
+  },
+  "else": {
+    "required": ["conclusion"]
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "version", "run_key"],
+      "properties": {
+        "kind": { "enum": ["gate", "reviewer"] },
+        "name": { "$ref": "#/$defs/nonEmpty" },
+        "version": { "$ref": "#/$defs/nonEmpty" },
+        "role": { "$ref": "#/$defs/nonEmpty" },
+        "run_key": { "$ref": "#/$defs/nonEmpty" }
+      },
+      "if": { "properties": { "kind": { "const": "reviewer" } } },
+      "then": { "required": ["role"] }
+    },
+    "evidence": { "type": "string", "minLength": 1, "maxLength": 400 },
+    "line": { "type": "integer", "minimum": 1 },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "kind", "severity", "file", "line", "evidence", "title", "body"],
+      "properties": {
+        "class": {
+          "enum": [
+            "logic", "error-handling", "concurrency", "resource", "security", "api-design",
+            "layering", "tests", "docs", "compliance", "deps"
+          ]
+        },
+        "rule": { "$ref": "#/$defs/nonEmpty" },
+        "kind": { "enum": ["defect", "omission"] },
+        "severity": { "enum": ["blocker", "major", "minor", "nit"] },
+        "introduced_by": { "enum": ["diff", "interaction"] },
+        "pre_existing": { "type": "boolean" },
+        "file": { "$ref": "#/$defs/nonEmpty" },
+        "line": { "$ref": "#/$defs/line" },
+        "end_line": { "$ref": "#/$defs/line" },
+        "side": { "enum": ["RIGHT", "LEFT"] },
+        "evidence": { "$ref": "#/$defs/evidence" },
+        "expected_behavior": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "trigger": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "caller": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file", "line", "evidence"],
+          "properties": {
+            "file": { "$ref": "#/$defs/nonEmpty" },
+            "line": { "$ref": "#/$defs/line" },
+            "evidence": { "$ref": "#/$defs/evidence" }
+          }
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 1200 },
+        "fix": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "group_hint": { "$ref": "#/$defs/nonEmpty" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "omission" } }, "required": ["kind"] },
+          "then": { "required": ["expected_behavior"] }
+        },
+        {
+          "if": {
+            "properties": { "introduced_by": { "const": "interaction" } },
+            "required": ["introduced_by"]
+          },
+          "then": { "required": ["caller"] }
+        }
+      ]
+    }
+  }
+}

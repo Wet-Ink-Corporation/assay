@@ -1,0 +1,15 @@
+{
+  "schema": "assay.event/1",
+  "job": "gates-lint",
+  "idx": 3,
+  "ts": "2026-10-11T06:16:00Z",
+  "run_key": "run-42-1",
+  "stage": "S2b",
+  "kind": "GateFinished",
+  "data": {
+    "plugin": "temper",
+    "exit": 1,
+    "conclusion": "fail",
+    "duration_ms": 81234
+  }
+}

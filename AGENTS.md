@@ -17,7 +17,7 @@ Dependencies point inward: domain, then application, then adapters, then the bin
 
 ## Repository layout
 
-`docs/architecture/02-architecture.md` §7. Directories without content yet (`plugin/`, `workflows/`, `rubric/`, `schemas/`, `corpus/`, `docs/decisions/`) carry a README; `crates/assay-cli/tests/it/layout.rs` checks them.
+`docs/architecture/02-architecture.md` §7. `schemas/` holds the contract JSON Schemas and their golden fixtures (its README indexes them). Directories without content yet (`plugin/`, `workflows/`, `rubric/`, `corpus/`, `docs/decisions/`) carry a README; `crates/assay-cli/tests/it/layout.rs` checks them.
 
 ## Commands
 
@@ -58,3 +58,6 @@ Pre-approved dependencies are listed in `.claude/temper.json`; any other is an H
 | 2026-10-11 | No `license` field in `[workspace.package]` (private code); `deny.toml` ignores unpublished workspace crates in the license check. | ARC-12 | Story #46, to confirm |
 | 2026-10-11 | Root `CLAUDE.md` only imports this charter and adds Claude Code specifics; it repeats none of it (02 §2). | ARC-08 | Story #46 |
 | 2026-10-11 | Unused layer edges are not declared up front: `cargo machete` rejects unused dependencies, so each story adds the edge it first uses. | CRF-05 | Story #46 |
+| 2026-10-11 | First third-party normal dependencies, all pre-approved and used by `assay-app`'s contract validation: `jsonschema` 0.58 (default features off, so no HTTP/TLS or file resolution; schemas are embedded), `serde_json`, `thiserror` 2. | H-16, ARC-12 | Story #47 |
+| 2026-10-11 | Every contract document, `assay.run/1` and `assay.decision/1` included, carries its id in a `schema` field; 03 §4 and §5 do not list one, but the preamble requires versioned, validated contracts. | OUT-03 | Story #47, to confirm |
+| 2026-10-11 | Schema interpretations where 03 is silent: `trigger` is not required by the schema (a missing one is disposition `no-trigger`, 04 §4); `expected_behavior` (omission) and `caller` (interaction) are; gate documents require `conclusion`; reviewer `source` requires `role`; a shard is `{files[]}`; for grouped event kinds (`GateStarted|Finished`, `Specialist*`) only `plugin`/`role` is required; `data` of kinds without listed fields is any object. | OUT-03 | Story #47, to confirm |

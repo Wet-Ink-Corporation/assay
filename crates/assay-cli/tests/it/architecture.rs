@@ -205,6 +205,48 @@ fn rejects_dependency_on_weighin_or_temper_code() {
 }
 
 #[test]
+fn accepts_crates_whose_names_only_begin_with_weighin_or_temper() {
+    let workspace = replace(
+        fully_wired_workspace(),
+        package(
+            "assay-gates",
+            &[
+                ("assay-app", Kind::Normal),
+                ("temperature", Kind::Normal),
+                ("weighing", Kind::Normal),
+                ("weigh-intake", Kind::Dev),
+            ],
+        ),
+    );
+
+    assert_eq!(
+        violations(&workspace),
+        Vec::new(),
+        "only `temper`, `weighin` and `weigh-in` themselves or their `-`/`_` families are P8 crates"
+    );
+}
+
+#[test]
+fn rejects_the_bare_temper_crate() {
+    let workspace = replace(
+        fully_wired_workspace(),
+        package(
+            "assay-gates",
+            &[("assay-app", Kind::Normal), ("temper", Kind::Normal)],
+        ),
+    );
+
+    assert_eq!(
+        violations(&workspace),
+        vec![Violation::ForbiddenCrate {
+            package: "assay-gates",
+            dependency: "temper"
+        }],
+        "the temper crate itself is temper code (P8)"
+    );
+}
+
+#[test]
 fn rejects_publishable_crate() {
     let mut runner = package("assay-runner", &[]);
     runner.publishable = true;

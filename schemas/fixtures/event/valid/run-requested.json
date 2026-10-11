@@ -1,0 +1,10 @@
+{
+  "schema": "assay.event/1",
+  "job": "gates-lint",
+  "idx": 0,
+  "ts": "2026-10-11T06:16:00Z",
+  "run_key": "run-42-1",
+  "stage": "S0",
+  "kind": "RunRequested",
+  "data": {}
+}

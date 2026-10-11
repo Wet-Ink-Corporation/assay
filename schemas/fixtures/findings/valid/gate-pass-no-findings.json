@@ -1,0 +1,11 @@
+{
+  "schema": "assay.findings/1",
+  "source": {
+    "kind": "gate",
+    "name": "temper",
+    "version": "git:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "run_key": "run-42-1"
+  },
+  "conclusion": "pass",
+  "findings": []
+}

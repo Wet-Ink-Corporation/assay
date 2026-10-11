@@ -1,0 +1,30 @@
+{
+  "schema": "assay.decision/7",
+  "decision_key": "dec-42-1",
+  "evidence_key": "run-42-1",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "blocker-verified",
+      "detail": "1 verified blocker",
+      "fp": "0123456789abcdef"
+    }
+  ],
+  "counts": {
+    "blocker": 1,
+    "major": 0,
+    "minor": 2,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [
+    {
+      "fp": "fedcba9876543210",
+      "code": "schema"
+    }
+  ],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+}

@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:assay:schema:decision:1",
+  "title": "assay.decision/1",
+  "description": "The decision `decide` publishes (docs/architecture/03-contracts.md §5). Reason and disposition codes are closed enums. Unknown fields are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "decision_key", "evidence_key", "conclusion", "reasons", "counts",
+    "advisory_blockers", "dispositions", "waived", "degraded", "rubric_version", "inputs_digest"
+  ],
+  "properties": {
+    "schema": { "const": "assay.decision/1" },
+    "decision_key": { "$ref": "#/$defs/nonEmpty" },
+    "evidence_key": { "$ref": "#/$defs/nonEmpty" },
+    "conclusion": { "enum": ["success", "failure", "neutral", "pending"] },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "detail"],
+        "properties": {
+          "code": { "$ref": "#/$defs/reasonCode" },
+          "detail": { "type": "string" },
+          "fp": { "$ref": "#/$defs/fp" }
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocker", "major", "minor", "nit"],
+      "properties": {
+        "blocker": { "$ref": "#/$defs/count" },
+        "major": { "$ref": "#/$defs/count" },
+        "minor": { "$ref": "#/$defs/count" },
+        "nit": { "$ref": "#/$defs/count" }
+      }
+    },
+    "advisory_blockers": { "type": "array", "items": { "$ref": "#/$defs/fp" } },
+    "dispositions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fp", "code"],
+        "properties": {
+          "fp": { "$ref": "#/$defs/fp" },
+          "code": { "$ref": "#/$defs/dispositionCode" }
+        }
+      }
+    },
+    "waived": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fp", "by"],
+        "properties": {
+          "fp": { "$ref": "#/$defs/fp" },
+          "by": { "$ref": "#/$defs/nonEmpty" }
+        }
+      }
+    },
+    "degraded": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "reason"],
+        "properties": {
+          "role": { "$ref": "#/$defs/nonEmpty" },
+          "reason": { "$ref": "#/$defs/nonEmpty" }
+        }
+      }
+    },
+    "rubric_version": { "$ref": "#/$defs/nonEmpty" },
+    "inputs_digest": { "$ref": "#/$defs/nonEmpty" }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "count": { "type": "integer", "minimum": 0 },
+    "fp": {
+      "description": "Finding fingerprint computed by Z4: the first 8 bytes of a SHA-256, in lowercase hex (03 §3).",
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "reasonCode": {
+      "enum": [
+        "gate-failed", "gate-error", "gate-skipped", "blocker-verified", "majors-over-threshold",
+        "weigh-in-open-blocking", "weigh-in-no-evidence", "weigh-in-pending-triage", "needs-split",
+        "infra-llm-unavailable", "llm-degraded", "required-role-degraded", "trust-path-unapproved",
+        "plan-mismatch", "publish-error", "persist-error", "bundle-expired", "override",
+        "budget-deferred", "base-not-protected"
+      ]
+    },
+    "dispositionCode": {
+      "enum": [
+        "schema", "evidence-missing", "line-not-in-diff-moved", "duplicate", "duplicate-of-gate",
+        "suppressed-by-rule", "dismissed-by-owner", "waived-by-owner",
+        "verifier-rejected-downgraded", "cap-exceeded", "pre-existing", "injection-suspect",
+        "no-trigger"
+      ]
+    }
+  }
+}
