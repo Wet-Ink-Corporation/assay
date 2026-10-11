@@ -19,10 +19,18 @@ const MANIFEST_HEX: &str = "75cb4a025c9733e918a795d1b498ac44974c23f63c5c0127a92f
 /// sha256 of `manifest("../assay")`: a well-formed manifest whose layer title escapes `out/`.
 const ESCAPING_MANIFEST_HEX: &str =
     "96a69ccf159c4f93ffe1b780274e357ccd738c52845827f524f35371f990d934";
+/// sha256 of `manifest_with(INDEX_TYPE, "assay", "29")`: an image index, not a manifest.
+const INDEX_HEX: &str = "9ff2f631e1285c344ee3d82b50d4b96eb2515ad2ee9720725589b2ac26a33ea5";
+/// sha256 of `manifest_with(MANIFEST_TYPE, "assay", "\"29\"")`: the layer size is a string.
+const STRING_SIZE_HEX: &str = "7fd7106ccc0e23b13f872ce75846e382388780c002a933f00410e3607f8c07bd";
 const GIT_PIN: &str = "0123456789abcdef0123456789abcdef01234567";
+const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+const PASSWORD: &str = "s3cret";
 
 /// The fake `oras`: `oras {manifest|blob} fetch [-u U --password-stdin] --output F REF@sha256:H`
-/// copies `$FAKE_ORAS_STORE/H` to `F` and appends the command to `$FAKE_ORAS_LOG`.
+/// copies `$FAKE_ORAS_STORE/H` to `F`, appends its argv to `$FAKE_ORAS_LOG` and writes what it
+/// read on stdin for `--password-stdin` to `$FAKE_ORAS_STDIN`.
 const FAKE_ORAS: &str = r#"#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_ORAS_LOG"
@@ -32,29 +40,37 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --output|-o) out=$2; shift 2 ;;
     -u|--username) shift 2 ;;
-    --password-stdin) cat > /dev/null; shift ;;
+    --password-stdin) cat > "$FAKE_ORAS_STDIN"; shift ;;
     *) ref=$1; shift ;;
   esac
 done
 cp "$FAKE_ORAS_STORE/${ref##*@sha256:}" "$out"
 "#;
 
-/// An OCI image manifest as `oras push` writes it for the assay binary, with one titled layer.
-fn manifest(title: &str) -> String {
+/// An OCI manifest shaped like the one `oras push` writes for the assay binary, with one titled
+/// layer whose `size` is the JSON text `size`.
+fn manifest_with(media_type: &str, title: &str, size: &str) -> String {
     format!(
         concat!(
-            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","#,
+            r#"{{"schemaVersion":2,"mediaType":"{media_type}","#,
             r#""artifactType":"application/vnd.wet-ink.assay.binary.v1","#,
             r#""config":{{"mediaType":"application/vnd.oci.empty.v1+json","#,
             r#""digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","#,
             r#""size":2,"data":"e30="}},"#,
             r#""layers":[{{"mediaType":"application/vnd.wet-ink.assay.binary.layer.v1","#,
-            r#""digest":"sha256:{layer}","size":29,"#,
+            r#""digest":"sha256:{layer}","size":{size},"#,
             r#""annotations":{{"org.opencontainers.image.title":"{title}"}}}}]}}"#,
         ),
+        media_type = media_type,
         layer = LAYER_HEX,
+        size = size,
         title = title,
     )
+}
+
+/// The OCI image manifest `oras push` writes for the assay binary, with one titled layer.
+fn manifest(title: &str) -> String {
+    manifest_with(MANIFEST_TYPE, title, "29")
 }
 
 fn script() -> PathBuf {
@@ -99,29 +115,49 @@ impl Sandbox {
         self.root.join("out")
     }
 
-    fn run(&self, args: &[&str]) -> io::Result<Output> {
+    fn path(&self, name: &str) -> io::Result<String> {
+        self.root
+            .join(name)
+            .into_os_string()
+            .into_string()
+            .map_err(|path| io::Error::other(format!("non-UTF-8 path {}", path.display())))
+    }
+
+    /// Runs the script with `env` added to (or overriding) the sandbox environment, in which
+    /// `GITHUB_OUTPUT` and every `FETCH_BY_DIGEST_*` variable are unset.
+    fn run_with(&self, args: &[&str], env: &[(&str, &str)]) -> io::Result<Output> {
         let mut path = vec![self.root.join("bin")];
         path.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
         ));
         let path: OsString =
             std::env::join_paths(path).map_err(|error| io::Error::other(error.to_string()))?;
-        Command::new("bash")
+        let mut command = Command::new("bash");
+        command
             .arg(script())
             .args(args)
             .env("PATH", path)
             .env("FAKE_ORAS_STORE", self.root.join("store"))
             .env("FAKE_ORAS_LOG", self.root.join("oras.log"))
-            .env_remove("GITHUB_OUTPUT")
-            .output()
+            .env("FAKE_ORAS_STDIN", self.root.join("oras.stdin"))
+            .env_remove("GITHUB_OUTPUT");
+        for variable in [
+            "FETCH_BY_DIGEST_USERNAME",
+            "FETCH_BY_DIGEST_PASSWORD",
+            "FETCH_BY_DIGEST_ARTIFACT_TYPE",
+            "FETCH_BY_DIGEST_MODE",
+        ] {
+            command.env_remove(variable);
+        }
+        command.envs(env.iter().copied()).output()
+    }
+
+    fn run(&self, args: &[&str]) -> io::Result<Output> {
+        self.run_with(args, &[])
     }
 
     fn fetch(&self, digest: &str) -> io::Result<Output> {
-        let out = self.out();
-        let out = out
-            .to_str()
-            .ok_or_else(|| io::Error::other("non-UTF-8 path"))?;
-        self.run(&["fetch", REPOSITORY, digest, out])
+        self.run(&["fetch", REPOSITORY, digest, &self.path("out")?])
     }
 
     /// Whether `out/` holds anything; a missing directory holds nothing.
@@ -250,6 +286,174 @@ fn rejects_a_layer_title_that_escapes_the_output_directory()
     assert!(
         !sandbox.root.join("assay").exists(),
         "a layer was written outside the output directory"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
+fn aborts_and_installs_nothing_when_the_artifact_type_differs()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = Sandbox::new("artifact-type")?;
+    sandbox.serve_fixture()?;
+
+    let digest = format!("sha256:{MANIFEST_HEX}");
+
+    let output = sandbox.run_with(
+        &["fetch", REPOSITORY, &digest, &sandbox.path("out")?],
+        &[(
+            "FETCH_BY_DIGEST_ARTIFACT_TYPE",
+            "application/vnd.wet-ink.temper.v1",
+        )],
+    )?;
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(sandbox.out_is_empty()?, "nothing may be installed");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
+fn aborts_and_installs_nothing_when_the_pin_names_an_image_index()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = Sandbox::new("image-index")?;
+    sandbox.serve(
+        INDEX_HEX,
+        manifest_with(INDEX_TYPE, "assay", "29").as_bytes(),
+    )?;
+    sandbox.serve(LAYER_HEX, LAYER)?;
+
+    let output = sandbox.fetch(&format!("sha256:{INDEX_HEX}"))?;
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(sandbox.out_is_empty()?, "nothing may be installed");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
+fn aborts_and_installs_nothing_when_a_layer_size_is_not_an_integer()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = Sandbox::new("string-size")?;
+    sandbox.serve(
+        STRING_SIZE_HEX,
+        manifest_with(MANIFEST_TYPE, "assay", "\"29\"").as_bytes(),
+    )?;
+    sandbox.serve(LAYER_HEX, LAYER)?;
+
+    let output = sandbox.fetch(&format!("sha256:{STRING_SIZE_HEX}"))?;
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(sandbox.out_is_empty()?, "nothing may be installed");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
+fn rejects_a_repository_that_is_not_a_plain_registry_path_before_contacting_the_registry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = Sandbox::new("bad-repository")?;
+    sandbox.serve_fixture()?;
+    let digest = format!("sha256:{MANIFEST_HEX}");
+    let pinned = format!("ghcr.io/x/assay@{digest}");
+    let out = sandbox.path("out")?;
+    let repositories = [
+        "ghcr.io/x/assay:v1",
+        pinned.as_str(),
+        "--plain-http",
+        "-ghcr.io/x/assay",
+    ];
+
+    let accepted = repositories
+        .into_iter()
+        .map(|repository| {
+            let code = sandbox
+                .run(&["fetch", repository, &digest, &out])?
+                .status
+                .code();
+            Ok((repository, code))
+        })
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|&(_, code)| code != Some(2))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        accepted,
+        Vec::new(),
+        "repositories not rejected as usage errors"
+    );
+    assert!(
+        !sandbox.oras_was_called(),
+        "oras ran for an invalid repository"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
+fn rejects_an_output_directory_containing_a_newline() -> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = Sandbox::new("newline-out")?;
+    sandbox.serve_fixture()?;
+    let out = format!("{}\ninjected=1", sandbox.path("out")?);
+    let digest = format!("sha256:{MANIFEST_HEX}");
+
+    let output = sandbox.run(&["fetch", REPOSITORY, &digest, &out])?;
+
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert!(
+        !sandbox.oras_was_called(),
+        "oras ran for an invalid out-dir"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
+fn passes_the_registry_password_on_stdin_and_never_in_argv()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = Sandbox::new("password-stdin")?;
+    sandbox.serve_fixture()?;
+    let digest = format!("sha256:{MANIFEST_HEX}");
+
+    let output = sandbox.run_with(
+        &["fetch", REPOSITORY, &digest, &sandbox.path("out")?],
+        &[
+            ("FETCH_BY_DIGEST_USERNAME", "robot"),
+            ("FETCH_BY_DIGEST_PASSWORD", PASSWORD),
+        ],
+    )?;
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let argv = fs::read_to_string(sandbox.root.join("oras.log"))?;
+    assert!(!argv.contains(PASSWORD), "password in oras argv: {argv}");
+    assert_eq!(
+        fs::read_to_string(sandbox.root.join("oras.stdin"))?,
+        PASSWORD,
+        "oras must read the password on stdin"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
+fn writes_the_verified_digest_and_directory_to_github_output()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = Sandbox::new("github-output")?;
+    sandbox.serve_fixture()?;
+    let out = sandbox.path("out")?;
+    let github_output = sandbox.path("github-output")?;
+    let digest = format!("sha256:{MANIFEST_HEX}");
+
+    let output = sandbox.run_with(
+        &["fetch", REPOSITORY, &digest, &out],
+        &[("GITHUB_OUTPUT", &github_output)],
+    )?;
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        fs::read_to_string(&github_output)?,
+        format!("digest=sha256:{MANIFEST_HEX}\ndir={out}\n")
     );
     Ok(())
 }

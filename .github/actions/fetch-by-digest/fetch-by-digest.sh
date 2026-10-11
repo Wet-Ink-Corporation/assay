@@ -9,8 +9,9 @@
 #       Prints the pinned digest (sha256:<hex>). Selectors: assay.digest, assay.warm_target,
 #       plugin.<name> (the plugin's pin must be oci:sha256:<hex>; git: pins are not OCI).
 #   fetch-by-digest.sh fetch <repository> <sha256:hex> <out-dir>
-#       <repository> has no tag or digest, e.g. ghcr.io/wet-ink-corporation/assay. Each layer
-#       is installed as <out-dir>/<its org.opencontainers.image.title>.
+#       <repository> is registry/path with no tag or digest, e.g.
+#       ghcr.io/wet-ink-corporation/assay. Each layer is installed as
+#       <out-dir>/<its org.opencontainers.image.title>; <out-dir> may not contain a newline.
 #
 # Environment (never argv, so the token is not in the process list):
 #   FETCH_BY_DIGEST_USERNAME, FETCH_BY_DIGEST_PASSWORD  registry credentials (packages: read);
@@ -25,6 +26,9 @@ set -euo pipefail
 
 readonly MANIFEST_TYPE=application/vnd.oci.image.manifest.v1+json
 readonly TITLE=org.opencontainers.image.title
+# registry[:port]/component[/component...], lowercase, as in the OCI distribution spec; it cannot
+# start with '-', so it is never read as an oras flag.
+readonly REPOSITORY_PATTERN='^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]+)?(/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*)+$'
 
 die() {
   printf 'fetch-by-digest: %s\n' "$2" >&2
@@ -69,7 +73,9 @@ verify_blob() {
   [[ $actual == "$3" ]] || die 1 "digest mismatch for $2: pinned $3, got $actual"
   if [[ $# -eq 4 ]]; then
     size=$(wc -c < "$1")
-    [[ $((size)) -eq $4 ]] || die 1 "size mismatch for $2: descriptor says $4 bytes, got $((size))"
+    size=${size//[[:space:]]/}
+    # Base 10 on both sides: a leading zero must not switch bash to octal.
+    ((10#$size == 10#$4)) || die 1 "size mismatch for $2: descriptor says $4 bytes, got $size"
   fi
 }
 
@@ -124,8 +130,9 @@ fetch() {
   [[ $# -eq 3 ]] || usage
   local repository=$1 digest=$2 out=$3
   is_digest "$digest" || die 2 "pin '$digest' is not sha256:<64 lowercase hex>; tags are never accepted"
-  [[ $repository != *@* && ${repository##*/} != *:* ]] \
-    || die 2 "repository '$repository' must not carry a tag or digest"
+  [[ $repository =~ $REPOSITORY_PATTERN ]] \
+    || die 2 "repository '$repository' is not registry/path (no tag, no digest, no leading '-')"
+  [[ -n $out && $out != *$'\n'* ]] || die 2 "out-dir must be non-empty and contain no newline"
   require oras jq sha256sum
 
   # Global, so the EXIT trap still sees it after this function returns or dies.
@@ -148,12 +155,16 @@ fetch() {
   local layers
   layers=$(jq -r --arg title "$TITLE" '
     if (.layers | type) == "array" and (.layers | length) > 0 then
-      .layers[] | [(.digest | tostring), (.size | tostring), (.annotations[$title] // "" | tostring)] | @tsv
+      .layers[]
+      | if (.size | type) == "number" and .size >= 0 and .size == (.size | floor) then .
+        else error("layer size is not a non-negative integer") end
+      | [(.digest | tostring), (.size | tostring), (.annotations[$title] // "" | tostring)] | @tsv
     else error("no layers") end' "$manifest") \
-    || die 1 "$repository@$digest has no layers"
+    || die 1 "$repository@$digest has no layers or a layer without an integer size"
 
   local layer_digest size title titles=()
-  while IFS=$'\t' read -r layer_digest size title; do
+  # fd 3, so nothing in the loop (oras reading a password) can consume the layer list.
+  while IFS=$'\t' read -r -u 3 layer_digest size title; do
     is_digest "$layer_digest" || die 1 "layer digest '$layer_digest' is not sha256:<64 lowercase hex>"
     [[ $size =~ ^[0-9]+$ ]] || die 1 "layer $layer_digest has no valid size"
     [[ $title =~ ^[A-Za-z0-9._-]+$ && $title != . && $title != .. ]] \
@@ -163,7 +174,7 @@ fetch() {
       || die 1 "could not fetch layer $layer_digest"
     verify_blob "$stage/layers/$title" "layer '$title'" "$layer_digest" "$size"
     titles+=("$title")
-  done <<< "$layers"
+  done 3<<< "$layers"
 
   # Every check passed: only now does anything reach the output directory.
   mkdir -p -- "$out"

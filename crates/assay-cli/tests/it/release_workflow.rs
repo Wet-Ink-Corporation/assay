@@ -2,6 +2,7 @@
 //! from `v*` tags, `packages: write` only on the publish job, and every third-party action
 //! pinned by full commit SHA.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -56,44 +57,128 @@ fn workflow_default_permission_is_contents_read() -> Result<(), io::Error> {
     Ok(())
 }
 
-/// The jobs (two-space keys under `jobs:`) whose block contains `grant` as a line.
-fn jobs_granting<'a>(workflow: &'a str, grant: &str) -> Vec<&'a str> {
-    let mut jobs = Vec::new();
-    let mut current = None;
-    for line in top_level_block(workflow, "jobs") {
+/// Each job under `jobs:` with the lines of its body, comments and blank lines dropped.
+fn jobs(workflow: &str) -> Vec<(&str, Vec<&str>)> {
+    let mut jobs: Vec<(&str, Vec<&str>)> = Vec::new();
+    for line in top_level_block(workflow, "jobs").into_iter().skip(1) {
         if let Some(job) = line
             .strip_prefix("  ")
             .filter(|rest| !rest.starts_with(' '))
             .and_then(|rest| rest.strip_suffix(':'))
         {
-            current = Some(job);
-        } else if line.trim() == grant
-            && let Some(job) = current
-            && !jobs.contains(&job)
-        {
-            jobs.push(job);
+            jobs.push((job, Vec::new()));
+        } else if let Some((_, body)) = jobs.last_mut() {
+            body.push(line);
         }
     }
     jobs
 }
 
+/// A job's `permissions:` entries as `scope: level`; `None` when it inherits the workflow's.
+/// An inline value (`permissions: write-all`, `permissions: {...}`) is one `inline:` entry.
+fn permissions(body: &[&str]) -> Option<Vec<String>> {
+    let mut lines = body
+        .iter()
+        .skip_while(|line| !line.starts_with("    permissions:"));
+    let header = lines.next()?;
+    let inline = header.trim_start_matches("    permissions:").trim();
+    if !inline.is_empty() {
+        return Some(vec![format!("inline: {inline}")]);
+    }
+    Some(
+        lines
+            .take_while(|line| line.starts_with("      "))
+            .map(|line| line.trim().to_owned())
+            .collect(),
+    )
+}
+
+fn job_body<'a>(jobs: &'a [(&str, Vec<&'a str>)], name: &str) -> &'a [&'a str] {
+    jobs.iter()
+        .find(|(job, _)| *job == name)
+        .map_or(&[], |(_, body)| body.as_slice())
+}
+
 #[test]
-fn only_the_publish_job_may_write_packages() -> Result<(), io::Error> {
+fn each_job_is_granted_exactly_its_permissions() -> Result<(), io::Error> {
     let workflow = release_workflow()?;
 
-    let writers = jobs_granting(&workflow, "packages: write");
+    let granted = jobs(&workflow)
+        .iter()
+        .map(|(job, body)| ((*job).to_owned(), permissions(body)))
+        .collect::<BTreeMap<_, _>>();
 
-    assert_eq!(writers, ["publish"], "jobs granted `packages: write`");
+    let grants = |scopes: &[&str]| Some(scopes.iter().map(|&s| s.to_owned()).collect());
+    let expected = BTreeMap::from([
+        ("build".to_owned(), None),
+        ("publish".to_owned(), grants(&["packages: write"])),
+        (
+            "verify".to_owned(),
+            grants(&["contents: read", "packages: read"]),
+        ),
+        ("release-notes".to_owned(), grants(&["contents: write"])),
+    ]);
+    assert_eq!(granted, expected, "per-job permissions of release.yml");
     Ok(())
 }
 
 #[test]
-fn only_the_release_notes_job_may_write_contents() -> Result<(), io::Error> {
+fn no_permissions_are_granted_in_bulk_or_in_flow_style() -> Result<(), io::Error> {
     let workflow = release_workflow()?;
 
-    let writers = jobs_granting(&workflow, "contents: write");
+    let bulk = workflow
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .filter(|line| {
+            line.contains("write-all")
+                || line.contains("read-all")
+                || line
+                    .strip_prefix("permissions:")
+                    .is_some_and(|value| !value.trim().is_empty())
+        })
+        .collect::<Vec<_>>();
 
-    assert_eq!(writers, ["release-notes"], "jobs granted `contents: write`");
+    assert_eq!(bulk, Vec::<&str>::new(), "bulk or flow-style permissions");
+    Ok(())
+}
+
+#[test]
+fn release_notes_job_runs_no_action() -> Result<(), io::Error> {
+    let workflow = release_workflow()?;
+    let jobs = jobs(&workflow);
+    let body = job_body(&jobs, "release-notes");
+
+    let actions = body
+        .iter()
+        .map(|line| line.trim().trim_start_matches("- "))
+        .filter(|line| line.starts_with("uses:"))
+        .collect::<Vec<_>>();
+
+    assert!(!body.is_empty(), "release.yml has no release-notes job");
+    assert_eq!(
+        actions,
+        Vec::<&str>::new(),
+        "release-notes holds contents: write"
+    );
+    Ok(())
+}
+
+#[test]
+fn build_checks_the_tag_is_on_main_before_building() -> Result<(), io::Error> {
+    let workflow = release_workflow()?;
+    let jobs = jobs(&workflow);
+    let build = job_body(&jobs, "build");
+
+    let ancestry = build.iter().position(|line| {
+        line.contains(r#"git merge-base --is-ancestor "$GITHUB_SHA" origin/main"#)
+    });
+    let compile = build.iter().position(|line| line.contains("cargo build"));
+
+    assert!(
+        matches!((ancestry, compile), (Some(check), Some(build)) if check < build),
+        "the ancestry check must precede `cargo build`: {ancestry:?}, {compile:?}"
+    );
     Ok(())
 }
 

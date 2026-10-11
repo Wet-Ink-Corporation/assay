@@ -26,7 +26,7 @@ One integration binary, `tests/it/` (TST-14):
 - `architecture.rs` with `layering.rs`: the ADR-07 crate graph read from `cargo metadata`, plus synthetic graphs proving each rule rejects a violation.
 - `layout.rs`: the repository layout of 02 §7.
 - `binary.rs`: the `assay` binary runs.
-- `fetch_by_digest.rs`: `.github/actions/fetch-by-digest/fetch-by-digest.sh` against a fake `oras` (no network): a digest mismatch aborts with nothing installed (ADR-14, 05 T14). Unix only; needs `bash`, `jq`, `sha256sum` and `python3` >= 3.11.
+- `fetch_by_digest.rs`: `.github/actions/fetch-by-digest/fetch-by-digest.sh` against a fake `oras` (no network): a digest, artifact-type, media-type or size mismatch aborts with nothing installed, malformed repositories and out-dirs are usage errors, and the token travels on stdin (ADR-14, 05 T14). Unix only; needs `bash`, `jq`, `sha256sum` and `python3` >= 3.11.
 - `release_workflow.rs`: `.github/workflows/release.yml` runs only on `v*` tags with least-privilege jobs, and every action in `.github/` is pinned by commit SHA.
 
 Run: `cargo test -p assay-cli`.
