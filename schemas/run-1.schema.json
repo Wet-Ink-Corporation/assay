@@ -6,19 +6,20 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema", "run_key", "repo", "pr", "base_sha", "head_sha", "base_ref", "tier",
+    "schema", "run_key", "run_uid", "repo", "pr", "base_sha", "head_sha", "base_ref", "tier",
     "tier_reasons", "classes", "roles", "required_roles", "shards", "plugins",
     "trust_paths_changed", "exec_surface_changed", "filtered_stats", "artifact_names", "draft"
   ],
   "properties": {
     "schema": { "const": "assay.run/1" },
     "run_key": { "$ref": "#/$defs/nonEmpty" },
+    "run_uid": { "$ref": "#/$defs/runUid" },
     "repo": { "$ref": "#/$defs/nonEmpty" },
     "pr": { "type": "integer", "minimum": 1 },
     "base_sha": { "$ref": "#/$defs/sha" },
     "head_sha": { "$ref": "#/$defs/sha" },
     "base_ref": { "$ref": "#/$defs/nonEmpty" },
-    "tier": { "enum": ["trivial", "micro", "lite", "full"] },
+    "tier": { "$ref": "#/$defs/tier" },
     "tier_reasons": { "$ref": "#/$defs/strings" },
     "classes": {
       "type": "array",
@@ -57,13 +58,42 @@
     "budget": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ledger_day_spent_aeu", "day_cap_aeu", "window_state", "allowed", "slot"],
+      "required": [
+        "ledger_day_spent_aeu", "day_cap_aeu", "window_state", "allowed", "slot", "deferral"
+      ],
       "properties": {
         "ledger_day_spent_aeu": { "$ref": "#/$defs/aeu" },
         "day_cap_aeu": { "$ref": "#/$defs/aeu" },
         "window_state": { "$ref": "#/$defs/nonEmpty" },
         "allowed": { "type": "boolean" },
-        "slot": { "oneOf": [{ "$ref": "#/$defs/nonEmpty" }, { "type": "null" }] }
+        "slot": { "oneOf": [{ "$ref": "#/$defs/nonEmpty" }, { "type": "null" }] },
+        "deferral": { "enum": ["none", "budget-deferred", "slot-busy"] },
+        "tier_degraded_from": {
+          "description": "Set when `admit` degraded a non-trust-path `full` run to `lite` (04 §2.4); Z4 accepts it when recomputing required roles (R3-27). Only `full` degrades.",
+          "const": "full"
+        },
+        "reused_evidence": {
+          "description": "The ledger evidence record `admit` found reusable before reserving (02 §5).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["evidence_key", "bundle_sha256", "llm", "tier"],
+          "properties": {
+            "evidence_key": { "$ref": "#/$defs/nonEmpty" },
+            "bundle_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "llm": {
+              "description": "`skipped` is 02 §5's `skipped(draft)`: a draft run, gates only.",
+              "enum": ["complete", "skipped", "deferred", "degraded"]
+            },
+            "tier": { "$ref": "#/$defs/tier" }
+          }
+        },
+        "retry_grant": {
+          "description": "The one-shot `/assay retry <role>` grant `admit` consumed by compare-and-set (06 §1).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role"],
+          "properties": { "role": { "$ref": "#/$defs/nonEmpty" } }
+        }
       }
     }
   },
@@ -71,6 +101,18 @@
     "nonEmpty": { "type": "string", "minLength": 1 },
     "strings": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" } },
     "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "tier": { "enum": ["trivial", "micro", "lite", "full"] },
+    "runUid": {
+      "description": "One workflow run, (repo_id, run_id, run_attempt): keys leases, ledger records and the pending stamp (03 §4, 02 §5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_id", "run_id", "run_attempt"],
+      "properties": {
+        "repo_id": { "type": "integer", "minimum": 1 },
+        "run_id": { "type": "integer", "minimum": 1 },
+        "run_attempt": { "type": "integer", "minimum": 1 }
+      }
+    },
     "count": { "type": "integer", "minimum": 0 },
     "aeu": { "type": "number", "minimum": 0 },
     "plugin": {

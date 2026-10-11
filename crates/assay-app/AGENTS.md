@@ -13,16 +13,16 @@ application. Orchestrates domain decisions and effects through ports. No concret
 
 ## Public surface
 Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`:
-- `Contract`, `ContractValidator` (`new`, `read`), `SchemaViolation`: validate-on-read for the versioned contracts, against the schemas in `schemas/` embedded with `include_str!` (`src/contract.rs`).
+- `Contract`, `ContractValidator` (`new`, `read`), `SchemaViolation`: validate-on-read for the versioned contracts, against the schemas in `schemas/` embedded with `include_str!` (`src/contract.rs`). `read`'s callers cap the input size first and act only on the returned `Value` (duplicate keys keep the last value).
 
 ## Invariants
 - Ports speak domain types; no adapter type crosses a port signature (ARC-03).
 - A contract document is accepted only at a supported version and only if it satisfies that version's schema; unknown fields, unknown versions and over-length text are rejected, never repaired (03 preamble).
-- Validation errors never quote the rejected value (it is untrusted text).
+- Validation errors never quote the rejected value (it is untrusted text), nor an object key the schema does not name: such keys are reported as `*`, and unexpected properties are counted, not listed (`src/contract/violation.rs`).
 
 ## Errors
 - `ReadContractError` (`Malformed`, `MissingSchema`, `UnknownSchema`, `UnknownVersion`, `Invalid`): every variant maps to disposition `schema` through `disposition()`.
-- `ContractSchemaError`: an embedded schema does not compile, a defect in the build.
+- `ContractSchemaError`: an embedded schema does not compile, a defect in the build. Its cause is the opaque `SchemaCompileError`, so `jsonschema`'s error type is not part of this crate's API.
 - Use cases to come: one `thiserror` enum each; port failures surface through each port's associated error type.
 
 ## Test strategy

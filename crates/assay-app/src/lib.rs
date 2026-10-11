@@ -9,5 +9,6 @@
 mod contract;
 
 pub use contract::{
-    Contract, ContractSchemaError, ContractValidator, ReadContractError, SchemaViolation,
+    Contract, ContractSchemaError, ContractValidator, ReadContractError, SchemaCompileError,
+    SchemaViolation,
 };

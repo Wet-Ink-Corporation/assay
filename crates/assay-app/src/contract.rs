@@ -7,10 +7,13 @@
 //! satisfies that version's schema: unknown fields, unknown versions and over-length text are all
 //! rejected, never repaired.
 
+mod violation;
+
+use std::collections::BTreeSet;
 use std::fmt;
 
 use assay_domain::Disposition;
-use jsonschema::Validator;
+use jsonschema::{ValidationError, Validator};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -68,10 +71,18 @@ impl fmt::Display for Contract {
 /// reference; compiling is far more expensive than validating.
 #[derive(Debug)]
 pub struct ContractValidator {
-    findings: Validator,
-    run: Validator,
-    decision: Validator,
-    event: Validator,
+    findings: Compiled,
+    run: Compiled,
+    decision: Compiled,
+    event: Compiled,
+}
+
+/// One contract's compiled schema and the property names it declares, the only object keys a
+/// reported path may show.
+#[derive(Debug)]
+struct Compiled {
+    validator: Validator,
+    declared: BTreeSet<String>,
 }
 
 impl ContractValidator {
@@ -92,6 +103,13 @@ impl ContractValidator {
 
     /// Parses `document` and accepts it only as a valid `expected` contract at a supported
     /// version, returning the parsed JSON.
+    ///
+    /// Callers own two obligations this function cannot discharge:
+    /// - **Cap the input first.** `document` is parsed whole; read untrusted input through a
+    ///   byte limit before calling.
+    /// - **Use only the returned [`Value`].** A JSON object with a duplicate key parses with its
+    ///   last value; another parser may keep the first. Never re-parse `document`, or the
+    ///   validated reading and the one acted on can differ.
     ///
     /// # Errors
     ///
@@ -129,21 +147,17 @@ impl ContractValidator {
                 source,
             })?;
         check_version(expected, &value)?;
-        if let Err(error) = self.validator(expected).validate(&value) {
+        let compiled = self.compiled(expected);
+        if let Err(error) = compiled.validator.validate(&value) {
             return Err(ReadContractError::Invalid {
                 contract: expected,
-                violation: SchemaViolation {
-                    instance_path: error.instance_path().as_str().to_owned(),
-                    keyword: error.kind().keyword().to_owned(),
-                    // Masked: the rejected value is untrusted text and stays out of messages.
-                    message: error.masked().to_string(),
-                },
+                violation: violation::violation(&error, &value, &compiled.declared),
             });
         }
         Ok(value)
     }
 
-    const fn validator(&self, contract: Contract) -> &Validator {
+    const fn compiled(&self, contract: Contract) -> &Compiled {
         match contract {
             Contract::Findings => &self.findings,
             Contract::Run => &self.run,
@@ -153,16 +167,20 @@ impl ContractValidator {
     }
 }
 
-fn compile(contract: Contract) -> Result<Validator, ContractSchemaError> {
+fn compile(contract: Contract) -> Result<Compiled, ContractSchemaError> {
     let schema: Value = serde_json::from_str(contract.schema_text())
         .map_err(|source| ContractSchemaError::NotJson { contract, source })?;
-    jsonschema::draft202012::options()
+    let validator = jsonschema::draft202012::options()
         .should_validate_formats(true)
         .build(&schema)
-        .map_err(|source| ContractSchemaError::NotASchema {
+        .map_err(|error| ContractSchemaError::NotASchema {
             contract,
-            source: Box::new(source),
-        })
+            source: SchemaCompileError(Box::new(error)),
+        })?;
+    Ok(Compiled {
+        validator,
+        declared: violation::declared_names(&schema),
+    })
 }
 
 /// Checks the `schema` field before the schema itself, so an unknown version is reported as such
@@ -244,15 +262,18 @@ impl ReadContractError {
     }
 }
 
-/// The first schema rule a document breaks.
+/// The first schema rule a document breaks. No field quotes the document: not its values, and
+/// not its object keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaViolation {
-    /// JSON Pointer to the offending value (`/findings/0/evidence`); empty for the root.
+    /// JSON Pointer to the offending value (`/findings/0/evidence`); empty for the root. An
+    /// object key the contract's schema does not name, such as a key of `artifact_names`, is
+    /// shown as `*`.
     pub instance_path: String,
     /// The schema keyword that rejected it (`maxLength`, `additionalProperties`, `required`).
     pub keyword: String,
-    /// A human-readable description that never quotes the rejected value; for
-    /// `additionalProperties` it names the unexpected properties.
+    /// A human-readable description that quotes only the schema; for `additionalProperties` it
+    /// counts the unexpected properties without naming them.
     pub message: String,
 }
 
@@ -275,6 +296,12 @@ pub enum ContractSchemaError {
         contract: Contract,
         /// The schema compiler's error.
         #[source]
-        source: Box<jsonschema::ValidationError<'static>>,
+        source: SchemaCompileError,
     },
 }
+
+/// Why the schema compiler rejected an embedded schema. Opaque, so the compiler's own error
+/// type stays out of this crate's API (ERR-04).
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct SchemaCompileError(Box<ValidationError<'static>>);

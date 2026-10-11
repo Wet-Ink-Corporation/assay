@@ -1,6 +1,11 @@
 {
   "schema": "assay.run/2",
   "run_key": "run-42-1",
+  "run_uid": {
+    "repo_id": 840213377,
+    "run_id": 18342009871,
+    "run_attempt": 1
+  },
   "repo": "Wet-Ink-Corporation/assay",
   "pr": 42,
   "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

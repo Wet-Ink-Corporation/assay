@@ -1,6 +1,11 @@
 {
   "schema": "assay.run/1",
   "run_key": "run-42-1",
+  "run_uid": {
+    "repo_id": 840213377,
+    "run_id": 18342009871,
+    "run_attempt": 1
+  },
   "repo": "Wet-Ink-Corporation/assay",
   "pr": 42,
   "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -66,6 +71,7 @@
     "day_cap_aeu": 20,
     "window_state": "ok",
     "allowed": true,
-    "slot": "slot-0"
+    "slot": "slot-0",
+    "deferral": "none"
   }
 }

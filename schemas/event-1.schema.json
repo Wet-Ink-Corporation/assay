@@ -5,237 +5,113 @@
   "description": "One line of a job's JSONL event stream (docs/architecture/03-contracts.md §6). The envelope rejects unknown fields; `data` is closed for every kind whose fields 03 §6 lists and an object for the others.",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schema",
-    "job",
-    "idx",
-    "ts",
-    "run_key",
-    "stage",
-    "kind",
-    "data"
-  ],
+  "required": ["schema", "job", "idx", "ts", "run_key", "run_uid", "stage", "kind", "data"],
   "properties": {
-    "schema": {
-      "const": "assay.event/1"
-    },
-    "job": {
-      "$ref": "#/$defs/nonEmpty"
-    },
-    "idx": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "ts": {
-      "type": "string",
-      "format": "date-time"
-    },
-    "run_key": {
-      "$ref": "#/$defs/nonEmpty"
-    },
-    "stage": {
-      "$ref": "#/$defs/nonEmpty"
-    },
+    "schema": { "const": "assay.event/1" },
+    "job": { "$ref": "#/$defs/nonEmpty" },
+    "idx": { "$ref": "#/$defs/count" },
+    "ts": { "type": "string", "format": "date-time" },
+    "run_key": { "$ref": "#/$defs/nonEmpty" },
+    "run_uid": { "$ref": "#/$defs/runUid" },
+    "stage": { "$ref": "#/$defs/nonEmpty" },
     "kind": {
       "enum": [
-        "RunRequested",
-        "PlanComputed",
-        "Admitted",
-        "PreflightPassed",
-        "PreflightFailed",
-        "GateStarted",
-        "GateFinished",
-        "SpecialistStarted",
-        "SpecialistFinished",
-        "SpecialistFailed",
-        "SpecialistBudgetExhausted",
-        "CoordinatorFinished",
-        "StageDegraded",
-        "RateLimitObserved",
-        "FindingRaised",
-        "FindingVerified",
-        "FindingDisposed",
-        "FindingPublished",
-        "DecisionMade",
-        "CheckPublished",
-        "BundlePersisted",
-        "WaiverApplied",
-        "OverrideApplied",
-        "FeedbackReceived",
-        "RunSuperseded",
-        "BudgetDeferred",
-        "LedgerWritten",
-        "SlotReleased"
+        "RunRequested", "PlanComputed", "Admitted", "PreflightPassed", "PreflightFailed",
+        "GateStarted", "GateFinished", "SpecialistStarted", "SpecialistFinished",
+        "SpecialistFailed", "SpecialistBudgetExhausted", "CoordinatorFinished", "StageDegraded",
+        "RateLimitObserved", "FindingRaised", "FindingVerified", "FindingDisposed",
+        "FindingPublished", "DecisionMade", "CheckPublished", "BundlePersisted", "WaiverApplied",
+        "OverrideApplied", "FeedbackReceived", "RunSuperseded", "BudgetDeferred", "SlotBusy",
+        "LedgerWritten", "SlotReleased", "SlotReaped", "PushRecorded", "CommandRecorded",
+        "CommandRejected", "CommandVoided", "RetryGranted", "EvidenceReused"
       ]
     },
-    "data": {
-      "type": "object"
-    }
+    "data": { "type": "object" }
   },
   "allOf": [
-    {
-      "$ref": "#/$defs/whenAdmitted"
-    },
-    {
-      "$ref": "#/$defs/whenPreflight"
-    },
-    {
-      "$ref": "#/$defs/whenGate"
-    },
-    {
-      "$ref": "#/$defs/whenSpecialist"
-    },
-    {
-      "$ref": "#/$defs/whenStageDegraded"
-    },
-    {
-      "$ref": "#/$defs/whenRateLimitObserved"
-    },
-    {
-      "$ref": "#/$defs/whenFindingVerified"
-    },
-    {
-      "$ref": "#/$defs/whenFindingDisposed"
-    },
-    {
-      "$ref": "#/$defs/whenFindingPublished"
-    },
-    {
-      "$ref": "#/$defs/whenBundlePersisted"
-    },
-    {
-      "$ref": "#/$defs/whenWaiverApplied"
-    },
-    {
-      "$ref": "#/$defs/whenOverrideApplied"
-    },
-    {
-      "$ref": "#/$defs/whenFeedbackReceived"
-    }
+    { "$ref": "#/$defs/whenAdmitted" },
+    { "$ref": "#/$defs/whenPreflight" },
+    { "$ref": "#/$defs/whenGate" },
+    { "$ref": "#/$defs/whenSpecialist" },
+    { "$ref": "#/$defs/whenStageDegraded" },
+    { "$ref": "#/$defs/whenRateLimitObserved" },
+    { "$ref": "#/$defs/whenFindingVerified" },
+    { "$ref": "#/$defs/whenFindingDisposed" },
+    { "$ref": "#/$defs/whenFindingPublished" },
+    { "$ref": "#/$defs/whenBundlePersisted" },
+    { "$ref": "#/$defs/whenWaiverApplied" },
+    { "$ref": "#/$defs/whenOverrideApplied" },
+    { "$ref": "#/$defs/whenFeedbackReceived" },
+    { "$ref": "#/$defs/whenSlotReaped" },
+    { "$ref": "#/$defs/whenPushRecorded" },
+    { "$ref": "#/$defs/whenCommandRecorded" },
+    { "$ref": "#/$defs/whenCommandRejected" },
+    { "$ref": "#/$defs/whenCommandVoided" },
+    { "$ref": "#/$defs/whenRetryGranted" },
+    { "$ref": "#/$defs/whenEvidenceReused" }
   ],
   "$defs": {
-    "nonEmpty": {
-      "type": "string",
-      "minLength": 1
-    },
-    "count": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "aeu": {
-      "type": "number",
-      "minimum": 0
-    },
-    "fp": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{16}$"
-    },
-    "severity": {
-      "enum": [
-        "blocker",
-        "major",
-        "minor",
-        "nit"
-      ]
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "count": { "type": "integer", "minimum": 0 },
+    "githubId": { "type": "integer", "minimum": 1 },
+    "aeu": { "type": "number", "minimum": 0 },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "fp": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+    "severity": { "enum": ["blocker", "major", "minor", "nit"] },
+    "runUid": {
+      "description": "One workflow run, (repo_id, run_id, run_attempt): keys leases, ledger records and the pending stamp (03 §4, 02 §5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_id", "run_id", "run_attempt"],
+      "properties": {
+        "repo_id": { "type": "integer", "minimum": 1 },
+        "run_id": { "type": "integer", "minimum": 1 },
+        "run_attempt": { "type": "integer", "minimum": 1 }
+      }
     },
     "whenAdmitted": {
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "Admitted"
-          }
-        }
-      },
+      "if": { "properties": { "kind": { "const": "Admitted" } } },
       "then": {
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "slot",
-              "reserved_aeu"
-            ],
+            "required": ["slot", "reserved_aeu"],
             "properties": {
-              "slot": {
-                "$ref": "#/$defs/nonEmpty"
-              },
-              "reserved_aeu": {
-                "$ref": "#/$defs/aeu"
-              }
+              "slot": { "$ref": "#/$defs/nonEmpty" },
+              "reserved_aeu": { "$ref": "#/$defs/aeu" }
             }
           }
         }
       }
     },
     "whenPreflight": {
-      "if": {
-        "properties": {
-          "kind": {
-            "enum": [
-              "PreflightPassed",
-              "PreflightFailed"
-            ]
-          }
-        }
-      },
+      "if": { "properties": { "kind": { "enum": ["PreflightPassed", "PreflightFailed"] } } },
       "then": {
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "auth_method",
-              "cli_version",
-              "init_clean"
-            ],
+            "required": ["auth_method", "cli_version", "init_clean"],
             "properties": {
-              "auth_method": {
-                "$ref": "#/$defs/nonEmpty"
-              },
-              "cli_version": {
-                "$ref": "#/$defs/nonEmpty"
-              },
-              "init_clean": {
-                "type": "boolean"
-              }
+              "auth_method": { "$ref": "#/$defs/nonEmpty" },
+              "cli_version": { "$ref": "#/$defs/nonEmpty" },
+              "init_clean": { "type": "boolean" }
             }
           }
         }
       }
     },
     "whenGate": {
-      "if": {
-        "properties": {
-          "kind": {
-            "enum": [
-              "GateStarted",
-              "GateFinished"
-            ]
-          }
-        }
-      },
+      "if": { "properties": { "kind": { "enum": ["GateStarted", "GateFinished"] } } },
       "then": {
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "plugin"
-            ],
+            "required": ["plugin"],
             "properties": {
-              "plugin": {
-                "$ref": "#/$defs/nonEmpty"
-              },
-              "exit": {
-                "type": "integer"
-              },
-              "conclusion": {
-                "enum": [
-                  "pass",
-                  "fail",
-                  "neutral"
-                ]
-              },
-              "duration_ms": {
-                "$ref": "#/$defs/count"
-              }
+              "plugin": { "$ref": "#/$defs/nonEmpty" },
+              "exit": { "type": "integer" },
+              "conclusion": { "enum": ["pass", "fail", "neutral"] },
+              "duration_ms": { "$ref": "#/$defs/count" }
             }
           }
         }
@@ -246,9 +122,7 @@
         "properties": {
           "kind": {
             "enum": [
-              "SpecialistStarted",
-              "SpecialistFinished",
-              "SpecialistFailed",
+              "SpecialistStarted", "SpecialistFinished", "SpecialistFailed",
               "SpecialistBudgetExhausted"
             ]
           }
@@ -258,305 +132,253 @@
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "role"
-            ],
+            "required": ["role"],
             "properties": {
-              "role": {
-                "$ref": "#/$defs/nonEmpty"
-              },
-              "model": {
-                "$ref": "#/$defs/nonEmpty"
-              },
-              "input_tokens": {
-                "$ref": "#/$defs/count"
-              },
-              "output_tokens": {
-                "$ref": "#/$defs/count"
-              },
-              "cache_read_tokens": {
-                "$ref": "#/$defs/count"
-              },
-              "cost_aeu": {
-                "$ref": "#/$defs/aeu"
-              },
-              "duration_ms": {
-                "$ref": "#/$defs/count"
-              },
-              "turns": {
-                "$ref": "#/$defs/count"
-              },
-              "stop_reason": {
-                "$ref": "#/$defs/nonEmpty"
-              }
+              "role": { "$ref": "#/$defs/nonEmpty" },
+              "model": { "$ref": "#/$defs/nonEmpty" },
+              "input_tokens": { "$ref": "#/$defs/count" },
+              "output_tokens": { "$ref": "#/$defs/count" },
+              "cache_read_tokens": { "$ref": "#/$defs/count" },
+              "cost_aeu": { "$ref": "#/$defs/aeu" },
+              "duration_ms": { "$ref": "#/$defs/count" },
+              "turns": { "$ref": "#/$defs/count" },
+              "stop_reason": { "$ref": "#/$defs/nonEmpty" }
             }
           }
         }
       }
     },
     "whenStageDegraded": {
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "StageDegraded"
-          }
-        }
-      },
+      "if": { "properties": { "kind": { "const": "StageDegraded" } } },
       "then": {
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "stage",
-              "reason"
-            ],
+            "required": ["stage", "reason"],
             "properties": {
-              "stage": {
-                "$ref": "#/$defs/nonEmpty"
-              },
-              "reason": {
-                "$ref": "#/$defs/nonEmpty"
-              }
+              "stage": { "$ref": "#/$defs/nonEmpty" },
+              "reason": { "$ref": "#/$defs/nonEmpty" }
             }
           }
         }
       }
     },
     "whenRateLimitObserved": {
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "RateLimitObserved"
-          }
-        }
-      },
+      "if": { "properties": { "kind": { "const": "RateLimitObserved" } } },
       "then": {
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "status"
-            ],
+            "required": ["status"],
             "properties": {
-              "status": {
-                "enum": [
-                  "allowed_warning",
-                  "rejected"
-                ]
-              },
-              "resets_at": {
-                "type": "string",
-                "format": "date-time"
-              }
+              "status": { "enum": ["allowed_warning", "rejected"] },
+              "resets_at": { "type": "string", "format": "date-time" }
             }
           }
         }
       }
     },
     "whenFindingVerified": {
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "FindingVerified"
-          }
-        }
-      },
+      "if": { "properties": { "kind": { "const": "FindingVerified" } } },
       "then": {
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "verdict"
-            ],
-            "properties": {
-              "verdict": {
-                "enum": [
-                  "confirmed",
-                  "refuted",
-                  "unclear"
-                ]
-              }
-            }
+            "required": ["verdict"],
+            "properties": { "verdict": { "enum": ["confirmed", "refuted", "unclear"] } }
           }
         }
       }
     },
     "whenFindingDisposed": {
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "FindingDisposed"
-          }
-        }
-      },
+      "if": { "properties": { "kind": { "const": "FindingDisposed" } } },
       "then": {
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "code"
-            ],
+            "required": ["code"],
             "properties": {
               "code": {
                 "enum": [
-                  "schema",
-                  "evidence-missing",
-                  "line-not-in-diff-moved",
-                  "duplicate",
-                  "duplicate-of-gate",
-                  "suppressed-by-rule",
-                  "dismissed-by-owner",
-                  "waived-by-owner",
-                  "verifier-rejected-downgraded",
-                  "cap-exceeded",
-                  "pre-existing",
-                  "injection-suspect",
-                  "no-trigger"
+                  "schema", "evidence-missing", "line-not-in-diff-moved", "duplicate",
+                  "duplicate-of-gate", "suppressed-by-rule", "dismissed-by-owner",
+                  "waived-by-owner", "verifier-rejected-downgraded", "cap-exceeded",
+                  "pre-existing", "injection-suspect", "no-trigger"
                 ]
               },
-              "from": {
-                "$ref": "#/$defs/severity"
-              },
-              "to": {
-                "$ref": "#/$defs/severity"
-              }
+              "from": { "$ref": "#/$defs/severity" },
+              "to": { "$ref": "#/$defs/severity" }
             }
           }
         }
       }
     },
     "whenFindingPublished": {
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "FindingPublished"
-          }
-        }
-      },
+      "if": { "properties": { "kind": { "const": "FindingPublished" } } },
       "then": {
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "url"
-            ],
-            "properties": {
-              "url": {
-                "type": "string",
-                "format": "uri"
-              }
-            }
+            "required": ["url"],
+            "properties": { "url": { "type": "string", "format": "uri" } }
           }
         }
       }
     },
     "whenBundlePersisted": {
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "BundlePersisted"
-          }
-        }
-      },
+      "if": { "properties": { "kind": { "const": "BundlePersisted" } } },
       "then": {
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "sha256"
-            ],
-            "properties": {
-              "sha256": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$"
-              }
-            }
+            "required": ["sha256"],
+            "properties": { "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
           }
         }
       }
     },
     "whenWaiverApplied": {
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "WaiverApplied"
-          }
-        }
-      },
+      "if": { "properties": { "kind": { "const": "WaiverApplied" } } },
       "then": {
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "who",
-              "fp"
-            ],
+            "required": ["who", "fp"],
             "properties": {
-              "who": {
-                "$ref": "#/$defs/nonEmpty"
-              },
-              "fp": {
-                "$ref": "#/$defs/fp"
-              }
+              "who": { "$ref": "#/$defs/nonEmpty" },
+              "fp": { "$ref": "#/$defs/fp" }
             }
           }
         }
       }
     },
     "whenOverrideApplied": {
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "OverrideApplied"
-          }
-        }
-      },
+      "if": { "properties": { "kind": { "const": "OverrideApplied" } } },
       "then": {
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "who",
-              "reason"
-            ],
+            "required": ["who", "reason"],
             "properties": {
-              "who": {
-                "$ref": "#/$defs/nonEmpty"
-              },
-              "reason": {
-                "$ref": "#/$defs/nonEmpty"
-              }
+              "who": { "$ref": "#/$defs/nonEmpty" },
+              "reason": { "$ref": "#/$defs/nonEmpty" }
             }
           }
         }
       }
     },
     "whenFeedbackReceived": {
-      "if": {
-        "properties": {
-          "kind": {
-            "const": "FeedbackReceived"
-          }
-        }
-      },
+      "if": { "properties": { "kind": { "const": "FeedbackReceived" } } },
       "then": {
         "properties": {
           "data": {
             "additionalProperties": false,
-            "required": [
-              "signal"
-            ],
+            "required": ["signal"],
             "properties": {
               "signal": {
-                "enum": [
-                  "reaction",
-                  "dismiss",
-                  "self-dismiss",
-                  "resolved",
-                  "anchor-changed"
-                ]
+                "enum": ["reaction", "dismiss", "self-dismiss", "resolved", "anchor-changed"]
               }
             }
+          }
+        }
+      }
+    },
+    "whenSlotReaped": {
+      "if": { "properties": { "kind": { "const": "SlotReaped" } } },
+      "then": {
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "required": ["run_uid"],
+            "properties": { "run_uid": { "$ref": "#/$defs/runUid" } }
+          }
+        }
+      }
+    },
+    "whenPushRecorded": {
+      "if": { "properties": { "kind": { "const": "PushRecorded" } } },
+      "then": {
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "required": ["before", "after", "sender_id", "forced"],
+            "properties": {
+              "before": { "$ref": "#/$defs/sha" },
+              "after": { "$ref": "#/$defs/sha" },
+              "sender_id": { "$ref": "#/$defs/githubId" },
+              "forced": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "whenCommandRecorded": {
+      "if": { "properties": { "kind": { "const": "CommandRecorded" } } },
+      "then": {
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "required": ["command", "actor_id", "comment_id"],
+            "properties": {
+              "command": { "$ref": "#/$defs/nonEmpty" },
+              "actor_id": { "$ref": "#/$defs/githubId" },
+              "comment_id": { "$ref": "#/$defs/githubId" }
+            }
+          }
+        }
+      }
+    },
+    "whenCommandRejected": {
+      "if": { "properties": { "kind": { "const": "CommandRejected" } } },
+      "then": {
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "required": ["command", "actor_id", "reason"],
+            "properties": {
+              "command": { "$ref": "#/$defs/nonEmpty" },
+              "actor_id": { "$ref": "#/$defs/githubId" },
+              "reason": { "$ref": "#/$defs/nonEmpty" }
+            }
+          }
+        }
+      }
+    },
+    "whenCommandVoided": {
+      "if": { "properties": { "kind": { "const": "CommandVoided" } } },
+      "then": {
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "required": ["comment_id", "reason"],
+            "properties": {
+              "comment_id": { "$ref": "#/$defs/githubId" },
+              "reason": { "enum": ["edited", "deleted", "hash"] }
+            }
+          }
+        }
+      }
+    },
+    "whenRetryGranted": {
+      "if": { "properties": { "kind": { "const": "RetryGranted" } } },
+      "then": {
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "required": ["role"],
+            "properties": { "role": { "$ref": "#/$defs/nonEmpty" } }
+          }
+        }
+      }
+    },
+    "whenEvidenceReused": {
+      "if": { "properties": { "kind": { "const": "EvidenceReused" } } },
+      "then": {
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "required": ["evidence_key"],
+            "properties": { "evidence_key": { "$ref": "#/$defs/nonEmpty" } }
           }
         }
       }

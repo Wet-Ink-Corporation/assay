@@ -92,7 +92,7 @@
         "weigh-in-open-blocking", "weigh-in-no-evidence", "weigh-in-pending-triage", "needs-split",
         "infra-llm-unavailable", "llm-degraded", "required-role-degraded", "trust-path-unapproved",
         "plan-mismatch", "publish-error", "persist-error", "bundle-expired", "override",
-        "budget-deferred", "base-not-protected"
+        "budget-deferred", "slot-busy", "base-not-protected", "ambiguous-head", "re-deciding"
       ]
     },
     "dispositionCode": {

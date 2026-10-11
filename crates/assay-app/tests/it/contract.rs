@@ -20,7 +20,78 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 21] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 35] = [
+    (
+        Contract::Findings,
+        "reviewer-without-role",
+        Rejection::Violation("/source", "required"),
+    ),
+    (
+        Contract::Findings,
+        "producer-group-id",
+        Rejection::Violation("/findings/0", "additionalProperties"),
+    ),
+    (
+        Contract::Findings,
+        "over-length-caller-evidence",
+        Rejection::Violation("/findings/1/caller/evidence", "maxLength"),
+    ),
+    (
+        Contract::Run,
+        "missing-run-uid",
+        Rejection::Violation("", "required"),
+    ),
+    (
+        Contract::Run,
+        "unknown-deferral",
+        Rejection::Violation("/budget/deferral", "enum"),
+    ),
+    (
+        Contract::Run,
+        "budget-without-deferral",
+        Rejection::Violation("/budget", "required"),
+    ),
+    (
+        Contract::Run,
+        "retry-grant-unknown-field",
+        Rejection::Violation("/budget/retry_grant", "additionalProperties"),
+    ),
+    (
+        Contract::Run,
+        "reused-evidence-unknown-llm",
+        Rejection::Violation("/budget/reused_evidence/llm", "enum"),
+    ),
+    // The key under the open `artifact_names` map is producer-chosen: the path masks it.
+    (
+        Contract::Run,
+        "empty-artifact-name",
+        Rejection::Violation("/artifact_names/*", "minLength"),
+    ),
+    (
+        Contract::Event,
+        "missing-run-uid",
+        Rejection::Violation("", "required"),
+    ),
+    (
+        Contract::Event,
+        "run-uid-unknown-field",
+        Rejection::Violation("/run_uid", "additionalProperties"),
+    ),
+    (
+        Contract::Event,
+        "push-recorded-unknown-data-field",
+        Rejection::Violation("/data", "additionalProperties"),
+    ),
+    (
+        Contract::Event,
+        "command-voided-unknown-reason",
+        Rejection::Violation("/data/reason", "enum"),
+    ),
+    (
+        Contract::Event,
+        "slot-reaped-without-run-uid",
+        Rejection::Violation("/data", "required"),
+    ),
     (
         Contract::Findings,
         "unknown-field",
