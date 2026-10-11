@@ -15,6 +15,10 @@ pub enum LineCount {
 impl LineCount {
     /// The count used for tiering: [`LineCount::Unmeasured`] is `u64::MAX`, which forces the
     /// largest tier.
+    ///
+    /// Sum these with `saturating_add` (or `checked_add` and treat overflow as maximum size):
+    /// a plain `+` overflows on the first unmeasured file, and wrapping would turn "maximum
+    /// size" into a small number.
     #[must_use]
     pub const fn for_tiering(self) -> u64 {
         match self {
@@ -177,14 +181,25 @@ mod tests {
 
     #[test]
     fn rejects_truncated_and_garbled_records() {
-        for garbled in [
-            b"3\t1\x00".as_slice(),
-            b"x\t1\tsrc/lib.rs\x00",
-            b"2\t2\t\x00src/old.rs\x00",
-            b"1\t1\tsrc/\xff.rs\x00",
+        for (garbled, detail) in [
+            (
+                b"3\t1\x00".as_slice(),
+                "a numstat record has fewer than three columns",
+            ),
+            (
+                b"x\t1\tsrc/lib.rs\x00",
+                "a numstat count is neither digits nor `-`",
+            ),
+            (
+                b"2\t2\t\x00src/old.rs\x00",
+                "a rename record is missing a path",
+            ),
+            (b"1\t1\tsrc/\xff.rs\x00", "a path is not UTF-8"),
+            (b"1\t1\tsrc/lib.rs", "the output does not end with NUL"),
         ] {
-            assert!(
-                parse(garbled).is_err(),
+            assert_eq!(
+                parse(garbled),
+                Err(Malformed(detail)),
                 "{garbled:?} must not be read as a change"
             );
         }

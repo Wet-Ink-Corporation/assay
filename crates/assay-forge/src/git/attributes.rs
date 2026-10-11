@@ -1,19 +1,23 @@
 //! `.gitattributes` policing with `git check-attr` (`docs/architecture/03-contracts.md` §2.1).
 //!
 //! Neutralising attributes does not work (the in-tree file stays in force), so they are
-//! forbidden instead: on the policed paths every attribute in [`POLICED_ATTRIBUTES`] must be
-//! `unspecified`. `* -diff` would blind the changed-line oracle and `* filter=lfs` would
-//! collapse files to pointers.
+//! forbidden instead: on every changed path, both sides of a rename, every attribute in
+//! [`POLICED_ATTRIBUTES`] must be `unspecified`. Policing by extension would not do, because
+//! `#[path = "evil.txt"]`, `include!` and `build = "build.txt"` make any file Rust. `* -diff`
+//! would blind the changed-line oracle and `* filter=lfs` would collapse files to pointers.
+//! The only exception is a path matching an [`AttributeAllowlist`] glob from the base
+//! configuration, and Rust sources, manifests and trust files can never be excepted.
 
 use std::fmt;
 
+use super::glob::{Glob, GlobError};
 use super::{GitError, Malformed};
 
 /// Why a set of changed paths failed attribute policing.
 #[derive(Debug, thiserror::Error)]
 pub enum AttributeError {
-    /// A policed attribute is set, unset or valued on a policed path: the gate fails closed
-    /// with reason `gate-error:gitattributes`.
+    /// A policed attribute is set, unset or valued on a changed path that the allowlist does
+    /// not admit: the gate fails closed with reason `gate-error:gitattributes`.
     #[error(
         "gate-error:gitattributes: {} policed attribute(s) set on changed files",
         violations.len()
@@ -27,31 +31,91 @@ pub enum AttributeError {
     Git(#[from] GitError),
 }
 
-/// The attributes that change what git shows of a file's content.
-pub(super) const POLICED_ATTRIBUTES: [&str; 4] =
-    ["diff", "text", "filter", "working-tree-encoding"];
+/// The attributes that change what git shows of a file's content or how it is converted.
+pub(super) const POLICED_ATTRIBUTES: [&str; 7] = [
+    "diff",
+    "text",
+    "filter",
+    "working-tree-encoding",
+    "eol",
+    "crlf",
+    "ident",
+];
 
 /// The only state a policed attribute may have.
 const UNSPECIFIED: &str = "unspecified";
 
-/// Whether the attributes of `path` (a `/`-separated git path) are policed.
+/// File names (lowercase, at any depth) that configure the build, lints or supply chain.
+const TRUST_FILE_NAMES: [&str; 8] = [
+    "cargo.toml",
+    "cargo.lock",
+    "clippy.toml",
+    ".clippy.toml",
+    "rustfmt.toml",
+    ".rustfmt.toml",
+    "deny.toml",
+    ".gitattributes",
+];
+
+/// Whether `path` (a `/`-separated git path) can never be admitted by an
+/// [`AttributeAllowlist`].
 ///
-/// Policed are `.rs` files, `Cargo.toml` files, anything under a `.cargo/` directory and
-/// `rust-toolchain*` files. Names are compared without regard to ASCII case, so a case-insensitive checkout cannot
-/// slip `SRC/LIB.RS` past the check.
+/// Protected are Rust sources, manifests and lockfiles, `.cargo/` and `.assay/` contents,
+/// `rust-toolchain*`, the clippy, rustfmt and cargo-deny configs, `.claude/temper*.json` and
+/// `.gitattributes` itself. Names are compared without regard to ASCII case, so a
+/// case-insensitive checkout cannot slip `SRC/LIB.RS` past the check.
 #[must_use]
-pub fn is_policed_path(path: &str) -> bool {
+pub fn is_protected_path(path: &str) -> bool {
     let path = path.to_ascii_lowercase();
     let (directories, file) = path.rsplit_once('/').unwrap_or(("", &path));
+    let in_directory = |name: &str| directories.split('/').any(|directory| directory == name);
     file.strip_suffix(".rs").is_some()
-        || file == "cargo.toml"
+        || TRUST_FILE_NAMES.contains(&file)
         || file.starts_with("rust-toolchain")
-        || directories
-            .split('/')
-            .any(|directory| directory == ".cargo")
+        || in_directory(".cargo")
+        || in_directory(".assay")
+        || (in_directory(".claude")
+            && file.starts_with("temper")
+            && file.strip_suffix(".json").is_some())
 }
 
-/// A policed attribute that is set, unset or given a value on a policed path.
+/// Globs of paths that may carry policed attributes, read from the base configuration.
+///
+/// Meant for binary assets marked `-diff`. Empty by default. Never admits a path for which
+/// [`is_protected_path`] holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttributeAllowlist {
+    globs: Vec<Glob>,
+}
+
+impl AttributeAllowlist {
+    /// Parses `globs`. `*` matches within one path segment, `?` one character other than
+    /// `/`, `**` anything and `**/` zero or more directories; a glob without `/` matches the
+    /// file name at any depth, one with `/` the whole path.
+    ///
+    /// # Errors
+    /// [`GlobError`] for the first glob that is empty, starts with `/`, or uses `[`, `]`,
+    /// `{`, `}`, `!` or `\`.
+    pub fn new<I>(globs: I) -> Result<Self, GlobError>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let globs = globs
+            .into_iter()
+            .map(|glob| glob.as_ref().parse())
+            .collect::<Result<_, _>>()?;
+        Ok(Self { globs })
+    }
+
+    /// Whether a policed attribute on `path` is admitted.
+    #[must_use]
+    pub fn admits(&self, path: &str) -> bool {
+        !is_protected_path(path) && self.globs.iter().any(|glob| glob.matches(path))
+    }
+}
+
+/// A policed attribute that is set, unset or given a value on a changed path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttributeViolation {
     path: String,
@@ -66,7 +130,8 @@ impl AttributeViolation {
         &self.path
     }
 
-    /// The attribute, one of `diff`, `text`, `filter` and `working-tree-encoding`.
+    /// The attribute: `diff`, `text`, `filter`, `working-tree-encoding`, `eol`, `crlf` or
+    /// `ident`.
     #[must_use]
     pub fn attribute(&self) -> &str {
         &self.attribute
@@ -114,35 +179,79 @@ mod tests {
     use super::*;
 
     #[test]
-    fn polices_rust_sources_manifests_cargo_config_and_toolchain_files() {
+    fn protects_rust_sources_manifests_and_trust_files() {
         for path in [
             "src/lib.rs",
             "crates/a/build.rs",
             "Cargo.toml",
             "crates/a/Cargo.toml",
+            "Cargo.lock",
             ".cargo/config.toml",
             "crates/a/.cargo/config",
             "rust-toolchain",
             "rust-toolchain.toml",
+            "clippy.toml",
+            "crates/a/.clippy.toml",
+            "rustfmt.toml",
+            ".rustfmt.toml",
+            "deny.toml",
+            ".claude/temper.json",
+            ".claude/temper-baseline.json",
+            ".assay/plugins.toml",
+            ".gitattributes",
             "SRC/LIB.RS",
-            "cargo.toml",
+            "CLIPPY.TOML",
         ] {
-            assert!(is_policed_path(path), "{path} must be policed");
+            assert!(is_protected_path(path), "{path} must be protected");
         }
     }
 
     #[test]
-    fn leaves_other_files_alone() {
+    fn leaves_assets_and_docs_unprotected() {
         for path in [
             "README.md",
-            "Cargo.lock",
+            "assets/logo.png",
             "src/lib.rsx",
             "docs/Cargo.toml.md",
             "cargo/config.toml",
             "my-rust-toolchain",
+            ".claude/settings.json",
+            "temper.json",
         ] {
-            assert!(!is_policed_path(path), "{path} must not be policed");
+            assert!(!is_protected_path(path), "{path} must not be protected");
         }
+    }
+
+    #[test]
+    fn the_default_allowlist_admits_nothing() {
+        assert!(
+            !AttributeAllowlist::default().admits("assets/logo.png"),
+            "with no base config every attribute fails closed"
+        );
+    }
+
+    #[test]
+    fn an_allowlist_admits_matching_unprotected_paths_only() {
+        let allowlist = AttributeAllowlist::new(["**"]).expect("valid globs");
+
+        assert!(allowlist.admits("assets/logo.png"), "an asset matches **");
+        assert!(
+            !allowlist.admits("src/evil.rs"),
+            "a Rust source is never admitted"
+        );
+        assert!(
+            !allowlist.admits("crates/a/clippy.toml"),
+            "a trust file is never admitted"
+        );
+    }
+
+    #[test]
+    fn an_allowlist_rejects_an_unsupported_glob() {
+        assert_eq!(
+            AttributeAllowlist::new(["*.png", "*.[ch]"]),
+            Err(GlobError::Unsupported('[')),
+            "a glob outside the dialect is an error, not a silent mismatch"
+        );
     }
 
     #[test]
@@ -183,9 +292,21 @@ mod tests {
 
     #[test]
     fn rejects_a_truncated_triple() {
-        assert!(
-            violations(b"a.rs\0diff\0").is_err(),
+        assert_eq!(
+            violations(b"a.rs\0diff\0"),
+            Err(Malformed(
+                "a check-attr record is missing its attribute or state"
+            )),
             "a path and attribute without a value must not pass"
+        );
+    }
+
+    #[test]
+    fn rejects_output_without_a_final_nul() {
+        assert_eq!(
+            violations(b"a.rs\0diff\0unset"),
+            Err(Malformed("the output does not end with NUL")),
+            "truncated output must not pass"
         );
     }
 }

@@ -1,4 +1,4 @@
-//! Measuring a PR with `git diff --numstat --text` under a wall-clock cap.
+//! Measuring a PR with `git diff --numstat` under a wall-clock cap.
 
 use std::error::Error;
 use std::time::Duration;
@@ -54,7 +54,9 @@ fn a_file_git_will_not_measure_counts_as_maximum_size() -> Result<(), Box<dyn Er
 
 #[test]
 #[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
-fn a_minus_diff_attribute_cannot_shrink_the_measured_size() -> Result<(), Box<dyn Error>> {
+fn in_tree_attributes_do_not_change_the_measured_size() -> Result<(), Box<dyn Error>> {
+    // The fixture's HEAD is the PR commit, so a bare repository would read this
+    // `.gitattributes`; `--text` does not override `-diff` for numstat, `attr.tree` does.
     let fixture = fixture(&[
         ("src/lib.rs", b"pub fn two() -> u8 {\n    2\n}\n"),
         (".gitattributes", b"* -diff\n"),
@@ -66,9 +68,10 @@ fn a_minus_diff_attribute_cannot_shrink_the_measured_size() -> Result<(), Box<dy
         panic!("a two-commit diff finishes well within a minute, got {outcome:?}");
     };
     let lib = changes.iter().find(|change| change.path() == "src/lib.rs");
-    assert!(
-        lib.is_some_and(|lib| lib.added().for_tiering() >= 2),
-        "a PR must not hide its changed lines behind `* -diff`, got {changes:?}"
+    assert_eq!(
+        lib.map(|lib| (lib.added(), lib.deleted())),
+        Some((LineCount::Counted(2), LineCount::Counted(2))),
+        "`* -diff` in the PR must not change how its lines are counted, got {changes:?}"
     );
     Ok(())
 }

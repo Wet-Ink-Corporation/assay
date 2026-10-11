@@ -32,24 +32,38 @@ fn production_part(source: &str) -> &str {
     miri,
     ignore = "reads the crate's sources; Miri isolates the file system"
 )]
-fn only_the_hardened_constructor_creates_processes() -> Result<(), Box<dyn Error>> {
+fn only_the_hardened_constructor_creates_git_processes() -> Result<(), Box<dyn Error>> {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut constructors = Vec::new();
 
     for file in rust_files(&src)? {
         let source = fs::read_to_string(&file)?;
         let production = production_part(&source);
+        let relative = file
+            .strip_prefix(&src)?
+            .to_string_lossy()
+            .replace('\\', "/");
         for pattern in ["Command::new", "process::Command::"] {
-            let hits = production.matches(pattern).count();
-            let relative = file.strip_prefix(&src)?.to_string_lossy().into_owned();
-            constructors.extend(std::iter::repeat_n(relative, hits));
+            for (at, _) in production.match_indices(pattern) {
+                // The constructor call through its closing parenthesis, e.g. `Command::new("git")`.
+                let call = production
+                    .get(at..)
+                    .and_then(|rest| rest.split_once(')'))
+                    .map_or("", |(call, _)| call);
+                constructors.push(format!("{relative}: {call})"));
+            }
         }
     }
+    constructors.sort();
 
     assert_eq!(
         constructors,
-        [Path::new("git").join("command.rs").to_string_lossy()],
-        "every process must be created by the hardened git constructor"
+        [
+            r#"git/command.rs: Command::new("git")"#,
+            // Signals the process group of a timed-out child; it never touches PR objects.
+            r#"process.rs: Command::new("kill")"#,
+        ],
+        "git must be started only by the hardened constructor, and nothing else may start"
     );
     Ok(())
 }

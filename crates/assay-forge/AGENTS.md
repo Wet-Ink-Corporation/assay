@@ -13,14 +13,15 @@ adapter. Implements application ports; wire DTOs for GitHub live here and are co
 
 ## Public surface
 Workspace-internal, not published (`publish = false`).
-- `git`: the hardened git layer for PR objects (`docs/architecture/03-contracts.md` §9, §2.1). `ObjectRepo` (bare, object-only repository: `init`, `fetch` by `CommitSha` from an `HttpsRemote`, `numstat` under a wall-clock cap returning `DiffOutcome::{Measured, NeedsSplit}`, `police_attributes`), `GitLimits`, `is_policed_path`, and the errors `GitError`, `AttributeError`, `ProcessError`, `ParseShaError`, `ParseRemoteError`.
+- `git`: the hardened git layer for PR objects (`docs/architecture/03-contracts.md` §9, §2.1). `ObjectRepo` (bare, object-only repository: `init` into an absent or empty directory, `fetch` by `CommitSha` from an `HttpsRemote`, `numstat` under a wall-clock cap returning `DiffOutcome::{Measured, NeedsSplit}`, `police_attributes` over every changed path with an `AttributeAllowlist`), `GitEnvironment` (the inherited variables, captured once at the edge), `GitLimits`, `is_protected_path`, and the errors `GitError`, `AttributeError`, `GlobError`, `ProcessError`, `ParseShaError`, `ParseRemoteError`. Parsing the allowlist out of base `.assay/plugins.toml` belongs to the config story (#62); this crate takes the globs as a parameter.
 
 ## Invariants
 - Every external call has a timeout and a bounded response size (H-13).
-- Every git process is built by `git::command::git`, the only `Command::new` in production code (`tests/it/single_constructor.rs` enforces it). It clears the environment to `PATH` and the proxy variables, sets `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ATTR_NOSYSTEM=1`, and passes the §9 `-c` flags; every diff carries `--no-ext-diff --no-textconv`.
+- Every git process is built by `git::command::git`, the only `Command::new("git")` in production code; the only other process is the system `kill` that signals a timed-out process group (`tests/it/single_constructor.rs` enforces both). The constructor clears the environment to what `GitEnvironment` holds, sets `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ATTR_NOSYSTEM=1`, and passes the §9 `-c` flags including `attr.tree=<empty tree>`; every diff carries `--no-ext-diff --no-textconv`.
 - PR objects are fetched only by full SHA over https into a bare repository; refs such as `refs/pull/N/merge` cannot be expressed.
-- Every child process is waited on; one past its deadline is killed first. A diff past its cap is `needs-split`, never a hang.
-- Attribute policing needs git 2.40 or later (`check-attr --source`); an older git fails closed.
+- Every child leads its own process group and is waited on. Past its deadline, or when a grandchild still holds its pipes at the deadline, the whole group is killed. A diff past its cap is `needs-split`, never a hang.
+- Every changed path (both sides of renames) is policed; Rust sources, manifests and trust files can never be allowlisted.
+- Attribute policing needs git 2.40 or later (`check-attr --source`), and `attr.tree` needs 2.42; an older git fails closed or ignores the setting (then in-tree attributes can only make numstat print `-`, which counts as maximum size).
 
 ## Errors
 A `thiserror` enum per operation, separating GitHub rejections from transport failures (ERR-10). git: `GitError` (process failure, non-zero exit, unreadable output, missing commit) and `AttributeError` (`Forbidden`, displayed as `gate-error:gitattributes`, or a `GitError`); both fail closed.
@@ -37,3 +38,5 @@ Integration tests in `tests/it/` against recorded `gh` responses; no live networ
 |---|---|---|---|
 | 2026-10-11 | Crate created empty (Story #46); edges are added when first used. | ARC-12, CRF-05 | Story #46 |
 | 2026-10-11 | The hardened git layer lives here (the charter's "diffs and objects"), not in the domain (I/O). Processes are bounded with std scoped threads and polling, not a timeout crate (none is pre-approved). | ARC-02, H-13, H-16 | Story #52 |
+| 2026-10-11 | Police attributes on every changed path with a base-config glob allowlist that can never cover Rust, manifests or trust files (security pass S1). | T5 | coordinator, Story #52 |
+| 2026-10-11 | Kill timed-out process groups through the system `kill` (fixed `PATH`, bounded) rather than `unsafe` or a new `libc` dependency. | H-01, H-16, H-13 | Story #52 |

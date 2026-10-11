@@ -1,12 +1,14 @@
 //! [`ObjectRepo`]: the object-only repository PR objects are fetched into and measured in.
 
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use super::attributes::{self, AttributeError, POLICED_ATTRIBUTES, is_policed_path};
-use super::command::{GitOperation, git};
-use super::numstat::{self, DiffOutcome};
+use super::attributes::{self, AttributeAllowlist, AttributeError, POLICED_ATTRIBUTES};
+use super::command::{GitEnvironment, GitOperation, git};
+use super::numstat::{self, DiffOutcome, FileChange};
 use super::sha::{CommitSha, HttpsRemote};
 use super::{GitError, Malformed};
 use crate::process::{self, Captured, Limits, ProcessError};
@@ -58,17 +60,36 @@ struct Call<'a> {
 #[derive(Debug)]
 pub struct ObjectRepo {
     git_dir: PathBuf,
+    environment: GitEnvironment,
     limits: GitLimits,
 }
 
 impl ObjectRepo {
-    /// Creates (or reopens) a bare repository at `git_dir`.
+    /// Creates a bare repository at `git_dir`, which must not exist or be empty: an existing
+    /// repository could carry config the hardened flags do not override. Every git process
+    /// it starts inherits only `environment`.
     ///
     /// # Errors
-    /// [`GitError`] when `git init --bare` cannot run or fails.
-    pub fn init(git_dir: impl Into<PathBuf>, limits: GitLimits) -> Result<Self, GitError> {
+    /// [`GitError::DirectoryNotEmpty`] when `git_dir` has contents, [`GitError::Inspect`] when
+    /// it cannot be read, and [`GitError`] when `git init --bare` cannot run or fails.
+    pub fn init(
+        git_dir: impl Into<PathBuf>,
+        environment: GitEnvironment,
+        limits: GitLimits,
+    ) -> Result<Self, GitError> {
+        let git_dir = git_dir.into();
+        match fs::read_dir(&git_dir) {
+            Ok(mut entries) => {
+                if entries.next().is_some() {
+                    return Err(GitError::DirectoryNotEmpty { git_dir });
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => return Err(GitError::Inspect { git_dir, source }),
+        }
         let repo = Self {
-            git_dir: git_dir.into(),
+            git_dir,
+            environment,
             limits,
         };
         repo.run(repo.call(GitOperation::Init, &[]))?;
@@ -138,20 +159,26 @@ impl ObjectRepo {
         }
     }
 
-    /// Checks the `.gitattributes` of `head` against every policed path in `changed` (see
-    /// [`is_policed_path`](super::is_policed_path)): `diff`, `text`, `filter` and
-    /// `working-tree-encoding` must all be `unspecified`.
+    /// Checks the `.gitattributes` of `head` against every path in `changes`, both sides of
+    /// each rename: `diff`, `text`, `filter`, `working-tree-encoding`, `eol`, `crlf` and
+    /// `ident` must all be `unspecified`, except on paths `allowlist` admits.
     ///
     /// # Errors
     /// [`AttributeError::Forbidden`] listing each policed attribute that is set, unset or
-    /// valued; [`AttributeError::Git`] when `git check-attr` cannot run or fails.
-    pub fn police_attributes<'a>(
+    /// valued on a path the allowlist does not admit; [`AttributeError::Git`] when
+    /// `git check-attr` cannot run or fails.
+    pub fn police_attributes(
         &self,
         head: &CommitSha,
-        changed: impl IntoIterator<Item = &'a str>,
+        changes: &[FileChange],
+        allowlist: &AttributeAllowlist,
     ) -> Result<(), AttributeError> {
         let mut input = Vec::new();
-        for path in changed.into_iter().filter(|path| is_policed_path(path)) {
+        let paths = changes
+            .iter()
+            .flat_map(|change| [Some(change.path()), change.previous_path()])
+            .flatten();
+        for path in paths {
             input.extend_from_slice(path.as_bytes());
             input.push(b'\0');
         }
@@ -164,13 +191,14 @@ impl ObjectRepo {
             input: &input,
             ..self.call(GitOperation::CheckAttr, &args)
         })?;
-        let violations =
+        let mut violations =
             attributes::violations(&captured.stdout).map_err(|Malformed(detail)| {
                 GitError::Malformed {
                     operation: GitOperation::CheckAttr,
                     detail,
                 }
             })?;
+        violations.retain(|violation| !allowlist.admits(violation.path()));
         if violations.is_empty() {
             Ok(())
         } else {
@@ -180,7 +208,7 @@ impl ObjectRepo {
 
     /// The hardened command for `operation` with `args` appended.
     fn command(&self, operation: GitOperation, args: &[&str]) -> Command {
-        let mut command = git(&self.git_dir, operation);
+        let mut command = git(&self.git_dir, &self.environment, operation);
         command.args(args);
         command
     }
@@ -235,6 +263,7 @@ mod tests {
     fn fetches_one_commit_by_sha_into_a_private_ref() {
         let repo = ObjectRepo {
             git_dir: PathBuf::from("/repo.git"),
+            environment: GitEnvironment::default(),
             limits: GitLimits::default(),
         };
         let sha = "0671db2374a1928aa85a711de7476edd9263a48a";

@@ -4,41 +4,50 @@
 //! ([`HttpsRemote`]) into an object-only [`ObjectRepo`] with no worktree. Every git process is
 //! built by one constructor that ignores system and global config and attributes, disables
 //! hooks, external diff drivers and textconv, fscks received objects and clears the inherited
-//! environment; and every process runs under a wall-clock limit and an output cap (H-13).
+//! environment, reading no in-tree attributes; and every process runs in its own process group
+//! under a wall-clock limit and an output cap (H-13).
 //!
 //! ```no_run
 //! use std::time::Duration;
 //!
-//! use assay_forge::git::{CommitSha, DiffOutcome, GitLimits, HttpsRemote, ObjectRepo};
+//! use assay_forge::git::{
+//!     AttributeAllowlist, CommitSha, DiffOutcome, GitEnvironment, GitLimits, HttpsRemote,
+//!     ObjectRepo,
+//! };
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let repo = ObjectRepo::init("/tmp/pr.git", GitLimits::default())?;
+//! let environment = GitEnvironment::from_process_env();
+//! let repo = ObjectRepo::init("/tmp/pr.git", environment, GitLimits::default())?;
 //! let remote: HttpsRemote = "https://github.com/Wet-Ink-Corporation/assay.git".parse()?;
 //! let base: CommitSha = "0671db2374a1928aa85a711de7476edd9263a48a".parse()?;
 //! let head: CommitSha = "194c6ac1a5b4c1fa0ad6f2b0b6c2a4d1e7f3a9b2".parse()?;
+//! // From the base `.assay/plugins.toml`; empty when it names none.
+//! let allowlist = AttributeAllowlist::new(["assets/**"])?;
 //! repo.fetch(&remote, &base)?;
 //! repo.fetch(&remote, &head)?;
 //! match repo.numstat(&base, &head, Duration::from_secs(60))? {
-//!     DiffOutcome::Measured(changes) => {
-//!         repo.police_attributes(&head, changes.iter().map(|change| change.path()))?;
-//!     }
+//!     DiffOutcome::Measured(changes) => repo.police_attributes(&head, &changes, &allowlist)?,
 //!     DiffOutcome::NeedsSplit => { /* classify the PR as needs-split */ }
 //! }
 //! # Ok(())
 //! # }
 //! ```
 
+use std::io;
+use std::path::PathBuf;
 use std::process::ExitStatus;
 
 mod attributes;
 mod command;
+mod glob;
 mod numstat;
 mod repository;
 mod sha;
 
 pub use crate::process::ProcessError;
-pub use attributes::{AttributeError, AttributeViolation, is_policed_path};
-pub use command::GitOperation;
+pub use attributes::{AttributeAllowlist, AttributeError, AttributeViolation, is_protected_path};
+pub use command::{GitEnvironment, GitOperation};
+pub use glob::GlobError;
 pub use numstat::{DiffOutcome, FileChange, LineCount};
 pub use repository::{GitLimits, ObjectRepo};
 pub use sha::{CommitSha, HttpsRemote, ParseRemoteError, ParseShaError};
@@ -73,6 +82,22 @@ pub enum GitError {
         operation: GitOperation,
         /// What was wrong with it.
         detail: &'static str,
+    },
+    /// The directory for a new repository already has contents, which could include config
+    /// that the hardened flags do not override.
+    #[error("{} is not empty; the object repository must start fresh", git_dir.display())]
+    DirectoryNotEmpty {
+        /// The directory that was refused.
+        git_dir: PathBuf,
+    },
+    /// The directory for a new repository could not be inspected.
+    #[error("could not inspect {}", git_dir.display())]
+    Inspect {
+        /// The directory that was being inspected.
+        git_dir: PathBuf,
+        /// Why it could not be read.
+        #[source]
+        source: io::Error,
     },
     /// A fetch succeeded but the repository holds no commit with the requested name.
     #[error("the fetch did not provide commit {commit}")]

@@ -5,6 +5,7 @@
 //! another constructor appears.
 
 use std::env;
+use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
 use std::process::Command;
@@ -20,16 +21,16 @@ const HARDENED_ENV: [(&str, &str); 6] = [
     ("LC_ALL", "C"),
 ];
 
-/// The only variables inherited from assay's own environment: `PATH` to find git, and the
-/// proxy settings an https fetch may need. Everything else, including `HOME`, `GIT_DIR`,
-/// `GIT_CONFIG_*`, `GIT_EXTERNAL_DIFF` and `GIT_SSH_COMMAND`, is dropped.
+/// The only variables [`GitEnvironment::from_process_env`] takes from assay's environment:
+/// `PATH` to find git, and the proxy settings an https fetch may need.
 const PASSED_THROUGH: [&str; 5] = ["PATH", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"];
 
 /// `-c` settings on every git process: no hooks, https as the only transport, fsck on every
 /// object received, no submodule recursion, a bounded rename search and no fsmonitor daemon.
-/// The low-speed abort bounds the https remote helper, a grandchild that inherits stderr and
-/// so would keep a drain thread waiting if a stalled transfer outlived a killed fetch.
-const HARDENED_CONFIG: [&str; 10] = [
+/// The low-speed abort bounds a stalled https transfer. `attr.tree` points at the empty tree,
+/// so no in-tree `.gitattributes` (a bare repository otherwise reads HEAD's) changes what a
+/// diff shows; `check-attr --source` still reads the PR's attributes in order to police them.
+const HARDENED_CONFIG: [&str; 11] = [
     "core.hooksPath=/dev/null",
     "protocol.allow=never",
     "protocol.https.allow=always",
@@ -40,6 +41,7 @@ const HARDENED_CONFIG: [&str; 10] = [
     "core.fsmonitor=false",
     "http.lowSpeedLimit=1000",
     "http.lowSpeedTime=30",
+    "attr.tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904",
 ];
 
 /// The git operations assay performs on PR objects. Each fixes its subcommand and the flags
@@ -92,11 +94,46 @@ impl fmt::Display for GitOperation {
     }
 }
 
+/// The variables a git process inherits: at most `PATH` and the proxy settings.
+///
+/// Captured once, at the composition root, and handed to
+/// [`ObjectRepo::init`](super::ObjectRepo::init) (ARC-11); every other variable is dropped.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitEnvironment {
+    inherited: Vec<(&'static str, OsString)>,
+}
+
+impl GitEnvironment {
+    /// Reads `PATH`, `HTTPS_PROXY`, `https_proxy`, `NO_PROXY` and `no_proxy` from this
+    /// process's environment; the rest, including `HOME`, `GIT_DIR`, `GIT_CONFIG_*`,
+    /// `GIT_EXTERNAL_DIFF` and `GIT_SSH_COMMAND`, is never passed on.
+    #[must_use]
+    pub fn from_process_env() -> Self {
+        let inherited = PASSED_THROUGH
+            .into_iter()
+            .filter_map(|name| env::var_os(name).map(|value| (name, value)))
+            .collect();
+        Self { inherited }
+    }
+
+    /// Only `PATH`, set to `path`: no proxy.
+    #[must_use]
+    pub fn with_path(path: impl Into<OsString>) -> Self {
+        Self {
+            inherited: vec![("PATH", path.into())],
+        }
+    }
+}
+
 /// A hardened `git --git-dir <git_dir> -c ... <operation>` command; callers append the
 /// operation's remaining arguments.
-pub(super) fn git(git_dir: &Path, operation: GitOperation) -> Command {
+pub(super) fn git(
+    git_dir: &Path,
+    environment: &GitEnvironment,
+    operation: GitOperation,
+) -> Command {
     let mut command = Command::new("git");
-    harden_environment(&mut command);
+    harden_environment(&mut command, environment);
     command.arg("--git-dir").arg(git_dir);
     for setting in HARDENED_CONFIG {
         command.arg("-c").arg(setting);
@@ -105,14 +142,15 @@ pub(super) fn git(git_dir: &Path, operation: GitOperation) -> Command {
     command
 }
 
-/// Clears the inherited environment down to [`PASSED_THROUGH`] and sets [`HARDENED_ENV`].
-fn harden_environment(command: &mut Command) {
+/// Clears the inherited environment down to `environment` and sets [`HARDENED_ENV`].
+fn harden_environment(command: &mut Command, environment: &GitEnvironment) {
     command.env_clear();
-    for name in PASSED_THROUGH {
-        if let Some(value) = env::var_os(name) {
-            command.env(name, value);
-        }
-    }
+    command.envs(
+        environment
+            .inherited
+            .iter()
+            .map(|(name, value)| (*name, value)),
+    );
     command.envs(HARDENED_ENV);
 }
 
@@ -138,6 +176,14 @@ mod tests {
             .collect()
     }
 
+    fn hardened(operation: GitOperation) -> Command {
+        git(
+            Path::new("/repo.git"),
+            &GitEnvironment::from_process_env(),
+            operation,
+        )
+    }
+
     #[test]
     fn every_command_carries_the_section_9_config() {
         for operation in [
@@ -147,7 +193,7 @@ mod tests {
             GitOperation::Diff,
             GitOperation::CheckAttr,
         ] {
-            let command = git(Path::new("/repo.git"), operation);
+            let command = hardened(operation);
 
             assert_eq!(
                 config(&command),
@@ -162,6 +208,7 @@ mod tests {
                     "core.fsmonitor=false",
                     "http.lowSpeedLimit=1000",
                     "http.lowSpeedTime=30",
+                    "attr.tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904",
                 ],
                 "{operation} must run with the hardened config"
             );
@@ -175,7 +222,7 @@ mod tests {
 
     #[test]
     fn every_command_ignores_system_and_global_config_and_attributes() {
-        let command = git(Path::new("/repo.git"), GitOperation::Fetch);
+        let command = hardened(GitOperation::Fetch);
         let envs: BTreeMap<_, _> = command.get_envs().collect();
 
         for (name, value) in [
@@ -196,7 +243,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "spawns `env`; Miri cannot spawn processes")]
     fn the_environment_is_cleared_to_an_allowlist() {
         let mut env = Command::new("env");
-        harden_environment(&mut env);
+        harden_environment(&mut env, &GitEnvironment::from_process_env());
         let limits = Limits {
             timeout: Duration::from_secs(30),
             max_output_bytes: 1 << 16,
@@ -220,8 +267,27 @@ mod tests {
     }
 
     #[test]
+    fn an_explicit_environment_passes_through_only_what_it_was_given() {
+        let environment = GitEnvironment::with_path("/opt/git/bin");
+
+        let command = git(Path::new("/repo.git"), &environment, GitOperation::Diff);
+
+        let envs: BTreeMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            envs.get(OsStr::new("PATH")),
+            Some(&Some(OsStr::new("/opt/git/bin"))),
+            "the configured PATH reaches git"
+        );
+        assert_eq!(
+            envs.get(OsStr::new("HTTPS_PROXY")),
+            None,
+            "nothing unconfigured is inherited"
+        );
+    }
+
+    #[test]
     fn every_diff_disables_external_diff_drivers_and_textconv() {
-        let command = git(Path::new("/repo.git"), GitOperation::Diff);
+        let command = hardened(GitOperation::Diff);
 
         let args = args(&command);
         let subcommand = args.iter().position(|arg| *arg == "diff");
