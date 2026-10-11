@@ -135,8 +135,9 @@ pub enum ProcFault {
     /// It could not be read; `NotFound` when the host has no `/proc`.
     #[error("it could not be read ({0})")]
     Unreadable(io::ErrorKind),
-    /// It was read but does not have the documented `pid (comm) ...` shape.
-    #[error("it does not start with a pid and a command name")]
+    /// It was read but does not have the documented `pid (comm) state ppid pgrp ...` shape,
+    /// ending in a newline, that a `/proc` scan parses.
+    #[error("it does not have the documented `pid (comm) state ppid pgrp ...` shape")]
     Malformed,
     /// It names the process with this pid instead, as a `/proc` from another pid namespace
     /// does.
@@ -376,18 +377,26 @@ fn terminate(
     }
 }
 
-/// Fails unless the `/proc/<pid>/stat` file at `stat` names `pid`: a missing `/proc`, or one
-/// from another pid namespace, would make every group look empty.
+/// Fails unless the `/proc/<pid>/stat` file at `stat` names `pid` and has the shape a `/proc`
+/// scan parses ([`in_group`]): a missing `/proc`, one from another pid namespace, or one whose
+/// stat lines the scan cannot read would make every group look empty or every scan fail.
 fn check_proc(stat: &Path, pid: u32) -> Result<(), KillerError> {
-    let line = fs::read_to_string(stat).map_err(|error| KillerError::ProcUnavailable {
+    let line = fs::read(stat).map_err(|error| KillerError::ProcUnavailable {
         cause: ProcFault::Unreadable(error.kind()),
     })?;
+    let malformed = KillerError::ProcUnavailable {
+        cause: ProcFault::Malformed,
+    };
+    if in_group(&line, 0).is_err() {
+        return Err(malformed);
+    }
     let named: u32 = line
-        .split_once(" (")
-        .and_then(|(field, _)| field.parse().ok())
-        .ok_or(KillerError::ProcUnavailable {
-            cause: ProcFault::Malformed,
-        })?;
+        .windows(2)
+        .position(|pair| pair == b" (")
+        .and_then(|pid_end| line.get(..pid_end))
+        .and_then(|field| std::str::from_utf8(field).ok())
+        .and_then(|field| field.parse().ok())
+        .ok_or(malformed)?;
     if named == pid {
         Ok(())
     } else {
@@ -422,12 +431,17 @@ fn group_alive(group: u32) -> io::Result<bool> {
         if !is_pid {
             continue;
         }
-        let stat = entry.path().join("stat");
-        if is_live_member(|| fs::read_to_string(&stat), group)? {
+        if stat_names_live_member(&entry.path().join("stat"), group)? {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// [`is_live_member`] over the `/proc/<pid>/stat` file at `stat`, read as bytes because the
+/// kernel writes `comm` unescaped and it need not be UTF-8.
+fn stat_names_live_member(stat: &Path, group: u32) -> io::Result<bool> {
+    is_live_member(|| fs::read(stat), group)
 }
 
 /// Whether the process whose `/proc/<pid>/stat` `read` returns is a live member of `group`.
@@ -437,7 +451,7 @@ fn group_alive(group: u32) -> io::Result<bool> {
 /// unparseable line is read once more: gone on that re-read means it exited mid-scan, a
 /// parseable line is used, and a line that is still unparseable is an `InvalidData` error,
 /// because a present process that cannot be read must not make its group look empty.
-fn is_live_member(mut read: impl FnMut() -> io::Result<String>, group: u32) -> io::Result<bool> {
+fn is_live_member(mut read: impl FnMut() -> io::Result<Vec<u8>>, group: u32) -> io::Result<bool> {
     let Some(stat) = read_present(&mut read)? else {
         return Ok(false);
     };
@@ -453,7 +467,7 @@ fn is_live_member(mut read: impl FnMut() -> io::Result<String>, group: u32) -> i
 }
 
 /// One read of a `/proc/<pid>/stat`: `None` when the process is gone (`NotFound` or `ESRCH`).
-fn read_present(read: &mut impl FnMut() -> io::Result<String>) -> io::Result<Option<String>> {
+fn read_present(read: &mut impl FnMut() -> io::Result<Vec<u8>>) -> io::Result<Option<Vec<u8>>> {
     match read() {
         Ok(stat) => Ok(Some(stat)),
         Err(error)
@@ -470,11 +484,20 @@ fn read_present(read: &mut impl FnMut() -> io::Result<String>) -> io::Result<Opt
 struct UnreadableStat;
 
 /// Whether a `/proc/<pid>/stat` line (`pid (comm) state ppid pgrp ...`) is a live member of
-/// `group`. `comm` may contain `) `, so the fields start after the last one. The kernel ends
-/// the line with `\n`; a line without it was cut off, possibly inside `pgrp`, and is unreadable.
-fn in_group(stat: &str, group: u32) -> Result<bool, UnreadableStat> {
-    let line = stat.strip_suffix('\n').ok_or(UnreadableStat)?;
-    let (_, fields) = line.rsplit_once(") ").ok_or(UnreadableStat)?;
+/// `group`. `comm` may contain `) ` and any other bytes, so the fields start after the last
+/// `) `, and only they must be text (the kernel writes them in ASCII). The kernel ends the line
+/// with `\n`; a line without it was cut off, possibly inside `pgrp`, and is unreadable.
+fn in_group(stat: &[u8], group: u32) -> Result<bool, UnreadableStat> {
+    let line = stat.strip_suffix(b"\n").ok_or(UnreadableStat)?;
+    let comm_end = line
+        .windows(2)
+        .rposition(|pair| pair == b") ")
+        .ok_or(UnreadableStat)?;
+    let fields = line
+        .get(comm_end..)
+        .and_then(|rest| rest.strip_prefix(b") "))
+        .ok_or(UnreadableStat)?;
+    let fields = std::str::from_utf8(fields).map_err(|_not_utf8| UnreadableStat)?;
     let mut fields = fields.split_whitespace();
     let state = fields.next().ok_or(UnreadableStat)?;
     let pgrp: u32 = fields
@@ -729,7 +752,7 @@ mod tests {
     fn a_proc_that_describes_another_process_is_unavailable() {
         let scratch = tempfile::tempdir().expect("a scratch directory");
         let stat = scratch.path().join("stat");
-        fs::write(&stat, "7 (assay) R 1 7 7 0").expect("write the stat line");
+        fs::write(&stat, "7 (assay) R 1 7 7 0\n").expect("write the stat line");
 
         assert_eq!(
             check_proc(&stat, 8),
@@ -745,6 +768,34 @@ mod tests {
                 cause: ProcFault::Malformed
             }),
             "an unreadable stat line must fail closed"
+        );
+    }
+
+    #[test]
+    fn a_proc_whose_stat_lines_the_scan_cannot_parse_is_unavailable() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let stat = scratch.path().join("stat");
+        fs::write(&stat, "7 (assay) R 1 7 7 0").expect("write the stat line");
+
+        assert_eq!(
+            check_proc(&stat, 7),
+            Err(KillerError::ProcUnavailable {
+                cause: ProcFault::Malformed
+            }),
+            "a line without the kernel's trailing newline would fail every scan, so fail once here"
+        );
+    }
+
+    #[test]
+    fn a_proc_naming_this_process_by_a_non_utf8_name_is_available() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let stat = scratch.path().join("stat");
+        fs::write(&stat, b"7 (a\xffb) R 1 7 7 0\n").expect("write the stat line");
+
+        assert_eq!(
+            check_proc(&stat, 7),
+            Ok(()),
+            "an executable whose file name is not UTF-8 still passes the preflight"
         );
     }
 
@@ -765,7 +816,7 @@ mod tests {
     fn an_explicit_kill_program_is_refused_when_proc_describes_another_process() {
         let scratch = tempfile::tempdir().expect("a scratch directory");
         let stat = scratch.path().join("stat");
-        fs::write(&stat, "7 (assay) R 1 7 7 0").expect("write the stat line");
+        fs::write(&stat, "7 (assay) R 1 7 7 0\n").expect("write the stat line");
 
         // A missing program too: `/proc` is checked first, so its fault is what surfaces.
         let killer = GroupKiller::checked(&stat, 8, scratch.path().join("absent"), KILL_GRACE);
@@ -828,7 +879,7 @@ mod tests {
             reads
                 .next()
                 .expect("the scan reads no more often than scripted")
-                .map(str::to_owned)
+                .map(|stat| stat.as_bytes().to_vec())
         };
         is_live_member(read, 42).map_err(|error| error.kind())
     }
@@ -902,7 +953,7 @@ mod tests {
     #[test]
     fn a_stat_line_without_its_trailing_newline_is_unreadable() {
         assert_eq!(
-            in_group("9 (sh) S 1 4", 4),
+            in_group(b"9 (sh) S 1 4", 4),
             Err(UnreadableStat),
             "a line cut off inside pgrp must not parse as a shorter group id"
         );
@@ -929,25 +980,45 @@ mod tests {
     }
 
     #[test]
+    fn a_stat_whose_command_name_is_not_utf8_is_read() {
+        // Any process can name itself with arbitrary bytes (`prctl(PR_SET_NAME)`).
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let stat = scratch.path().join("stat");
+        fs::write(&stat, b"42 (a\xffb) S 1 42 42 0\n").expect("write the stat line");
+
+        let member = stat_names_live_member(&stat, 42).map_err(|error| error.kind());
+
+        assert_eq!(
+            member,
+            Ok(true),
+            "the fields after the command name are ASCII and still name the group"
+        );
+    }
+
+    #[test]
     fn a_process_in_the_group_is_alive_unless_it_is_a_zombie() {
         assert_eq!(
-            in_group("42 (sh) S 1 42 42 0\n", 42),
+            in_group(b"42 (sh) S 1 42 42 0\n", 42),
             Ok(true),
             "a sleeping member"
         );
         assert_eq!(
-            in_group("43 (odd) name) R 1 42 42 0\n", 42),
+            in_group(b"43 (odd) name) R 1 42 42 0\n", 42),
             Ok(true),
             "a command name containing `) ` is skipped over"
         );
-        assert_eq!(in_group("44 (sh) Z 1 42 42 0\n", 42), Ok(false), "a zombie");
         assert_eq!(
-            in_group("45 (sh) S 1 7 7 0\n", 42),
+            in_group(b"44 (sh) Z 1 42 42 0\n", 42),
+            Ok(false),
+            "a zombie"
+        );
+        assert_eq!(
+            in_group(b"45 (sh) S 1 7 7 0\n", 42),
             Ok(false),
             "another group"
         );
         assert_eq!(
-            in_group("garbage", 42),
+            in_group(b"garbage", 42),
             Err(UnreadableStat),
             "an unreadable stat line fails closed"
         );
