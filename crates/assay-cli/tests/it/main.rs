@@ -3,6 +3,9 @@
 
 mod architecture;
 mod binary;
+#[cfg(unix)] // drives a bash script and sets Unix file modes
+mod fetch_by_digest;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod layering;
 mod layout;
+mod release_workflow;
