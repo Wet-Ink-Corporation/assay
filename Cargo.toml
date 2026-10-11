@@ -55,6 +55,10 @@ tempfile = { version = "3.0.0", default-features = false }
 jsonschema = { version = "0.58.6", default-features = false }
 serde_json = { version = "1.0.140", default-features = false, features = ["std"] }
 
+# `.assay/plugins.toml` (Story #62): parsed in-process into DTOs in assay-app, then validated.
+serde = { version = "1.0.219", default-features = false, features = ["std", "derive"] }
+toml = { version = "1.1.0", default-features = false, features = ["std", "parse", "serde"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"                                  # H-01
 missing_docs = "warn"                                   # H-15 / API-15

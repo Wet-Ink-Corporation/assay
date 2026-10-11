@@ -55,7 +55,7 @@ Also in base: `.assay/owners` (TOML: `owners = [{id, login}]`, `approvers = [{id
 
 ## 2. Gate contract (adapter → assay)
 
-A gate runs as a process from the manifest, cwd = the head checkout (or, in Z2s, a sanitised manifest-only copy), environment scrubbed to an allowlist (`PATH`, `HOME`, `CI`, `ASSAY_BASE_SHA`, `ASSAY_HEAD_SHA`, `ASSAY_RUN_KEY`, plus adapter-specific variables set by the adapter). It writes one `assay.findings/1` document to a file under the adapter's output directory and exits:
+A gate runs as a process from the manifest, cwd = the head checkout (or, in Z2s, a sanitised manifest-only copy), environment scrubbed to an allowlist (`PATH`, `HOME`, `CI`, `ASSAY_BASE_SHA`, `ASSAY_HEAD_SHA`, `ASSAY_RUN_KEY`, plus adapter-specific variables set by the adapter). It writes one `assay.findings/1` document to a file under the adapter's output directory and exits. For an `exec` gate that file is named by `ASSAY_FINDINGS_OUT` (always set by the adapter, overriding any inherited value), inside a directory created fresh for the run; the document's `source` must be `kind: "gate"` with `name` equal to the plugin's, and a path that is not a regular file is an invalid document:
 
 | Exit | Meaning |
 |---|---|
