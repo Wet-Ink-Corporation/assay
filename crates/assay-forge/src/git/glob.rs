@@ -1,7 +1,8 @@
 //! The small glob dialect of the attribute allowlist.
 //!
 //! `*` matches any run of characters except `/`, `?` one character except `/`, `**` anything,
-//! and `**/` zero or more whole directories. A glob without `/` matches the file name at any
+//! and `**/` zero or more whole directories. `**` must be a whole path segment (at the start
+//! or after `/`, and followed by `/` or the end); `a**`, `**b` and `***` are refused. A glob without `/` matches the file name at any
 //! depth (as in `.gitattributes`); one with `/` matches the whole path from the root.
 //! Character classes, braces, negation and escapes are rejected rather than half-supported.
 //! Matching is a linear-space dynamic programme, so no glob can make it exponential.
@@ -57,20 +58,32 @@ impl FromStr for Glob {
         }
         let mut tokens = Vec::new();
         let mut chars = glob.chars().peekable();
+        // The character before the current one; `None` at the start.
+        let mut previous = None;
         while let Some(c) = chars.next() {
             let token = match c {
                 '[' | ']' | '{' | '}' | '!' | '\\' => return Err(GlobError::Unsupported(c)),
                 '?' => Token::One,
                 '*' if chars.next_if_eq(&'*').is_some() => {
-                    if chars.next_if_eq(&'/').is_some() {
-                        Token::AnyDirs
-                    } else {
-                        Token::AnyDepth
+                    // `**` must be a whole path segment: `a**`, `**b` and `***` mean nothing
+                    // consistent, so they are refused rather than guessed at.
+                    let starts_segment = previous.is_none_or(|previous| previous == '/');
+                    if !starts_segment {
+                        return Err(GlobError::Unsupported('*'));
+                    }
+                    match chars.next_if_eq(&'/') {
+                        Some(_) => Token::AnyDirs,
+                        None if chars.peek().is_none() => Token::AnyDepth,
+                        None => return Err(GlobError::Unsupported('*')),
                     }
                 }
                 '*' => Token::Star,
                 literal => Token::Literal(literal),
             };
+            previous = Some(match token {
+                Token::AnyDirs => '/',
+                _ => c,
+            });
             tokens.push(token);
         }
         Ok(Self {
@@ -106,12 +119,12 @@ fn step(token: Token, reachable: &[bool], text: &[char]) -> Vec<bool> {
     let mut next = vec![false; reachable.len()];
     match token {
         Token::Literal(_) | Token::One => {
+            let accepts = |c: char| match token {
+                Token::Literal(expected) => c == expected,
+                _ => c != '/',
+            };
             for ((slot, &from), &c) in next.iter_mut().skip(1).zip(reachable).zip(text) {
-                *slot = from
-                    && match token {
-                        Token::Literal(expected) => c == expected,
-                        _ => c != '/',
-                    };
+                *slot = from && accepts(c);
             }
         }
         Token::Star | Token::AnyDepth => {
@@ -201,6 +214,11 @@ mod tests {
             ("*.{png,jpg}", GlobError::Unsupported('{')),
             ("!*.png", GlobError::Unsupported('!')),
             ("a\\*", GlobError::Unsupported('\\')),
+            ("a**/b", GlobError::Unsupported('*')),
+            ("x**", GlobError::Unsupported('*')),
+            ("a/**b", GlobError::Unsupported('*')),
+            ("a/b**c/d", GlobError::Unsupported('*')),
+            ("***", GlobError::Unsupported('*')),
         ] {
             assert_eq!(glob.parse::<Glob>(), Err(expected), "{glob:?}");
         }

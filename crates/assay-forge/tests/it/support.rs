@@ -64,7 +64,7 @@ pub(crate) fn fixture_with_removals(
     let git_dir = scratch.path().join("objects.git");
     let repo = ObjectRepo::init(
         &git_dir,
-        GitEnvironment::from_process_env(),
+        GitEnvironment::from_process_env()?,
         GitLimits::default(),
     )?;
     let destination = git_dir.to_str().ok_or("scratch path is not UTF-8")?;

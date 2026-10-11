@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use super::attributes::{self, AttributeAllowlist, AttributeError, POLICED_ATTRIBUTES};
+use super::attributes::{
+    self, AttributeAllowlist, AttributeError, AttributeReport, POLICED_ATTRIBUTES,
+};
 use super::command::{GitEnvironment, GitOperation, git};
 use super::numstat::{self, DiffOutcome, FileChange};
 use super::sha::{CommitSha, HttpsRemote};
@@ -161,7 +163,8 @@ impl ObjectRepo {
 
     /// Checks the `.gitattributes` of `head` against every path in `changes`, both sides of
     /// each rename: `diff`, `text`, `filter`, `working-tree-encoding`, `eol`, `crlf` and
-    /// `ident` must all be `unspecified`, except on paths `allowlist` admits.
+    /// `ident` must all be `unspecified`, except on paths `allowlist` admits, which the
+    /// returned report lists as opaque for downstream gates to treat as fully changed.
     ///
     /// # Errors
     /// [`AttributeError::Forbidden`] listing each policed attribute that is set, unset or
@@ -172,7 +175,7 @@ impl ObjectRepo {
         head: &CommitSha,
         changes: &[FileChange],
         allowlist: &AttributeAllowlist,
-    ) -> Result<(), AttributeError> {
+    ) -> Result<AttributeReport, AttributeError> {
         let mut input = Vec::new();
         let paths = changes
             .iter()
@@ -183,7 +186,7 @@ impl ObjectRepo {
             input.push(b'\0');
         }
         if input.is_empty() {
-            return Ok(());
+            return Ok(AttributeReport::default());
         }
         let mut args = vec!["--source", head.as_str()];
         args.extend(POLICED_ATTRIBUTES);
@@ -191,19 +194,13 @@ impl ObjectRepo {
             input: &input,
             ..self.call(GitOperation::CheckAttr, &args)
         })?;
-        let mut violations =
-            attributes::violations(&captured.stdout).map_err(|Malformed(detail)| {
-                GitError::Malformed {
-                    operation: GitOperation::CheckAttr,
-                    detail,
-                }
-            })?;
-        violations.retain(|violation| !allowlist.admits(violation.path()));
-        if violations.is_empty() {
-            Ok(())
-        } else {
-            Err(AttributeError::Forbidden { violations })
-        }
+        let found = attributes::violations(&captured.stdout).map_err(|Malformed(detail)| {
+            GitError::Malformed {
+                operation: GitOperation::CheckAttr,
+                detail,
+            }
+        })?;
+        attributes::judge(found, allowlist)
     }
 
     /// The hardened command for `operation` with `args` appended.
@@ -235,7 +232,8 @@ impl ObjectRepo {
             timeout,
             max_output_bytes: self.limits.max_output_bytes,
         };
-        let captured = process::run(self.command(operation, args), input, limits)
+        let command = self.command(operation, args);
+        let captured = process::run(command, input, limits, self.environment.killer())
             .map_err(|source| GitError::Process { operation, source })?;
         if captured.status.success() {
             Ok(captured)
@@ -263,7 +261,7 @@ mod tests {
     fn fetches_one_commit_by_sha_into_a_private_ref() {
         let repo = ObjectRepo {
             git_dir: PathBuf::from("/repo.git"),
-            environment: GitEnvironment::default(),
+            environment: GitEnvironment::from_process_env().expect("the test host has a kill"),
             limits: GitLimits::default(),
         };
         let sha = "0671db2374a1928aa85a711de7476edd9263a48a";

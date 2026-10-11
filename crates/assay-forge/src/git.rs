@@ -16,7 +16,7 @@
 //! };
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let environment = GitEnvironment::from_process_env();
+//! let environment = GitEnvironment::from_process_env()?;
 //! let repo = ObjectRepo::init("/tmp/pr.git", environment, GitLimits::default())?;
 //! let remote: HttpsRemote = "https://github.com/Wet-Ink-Corporation/assay.git".parse()?;
 //! let base: CommitSha = "0671db2374a1928aa85a711de7476edd9263a48a".parse()?;
@@ -26,7 +26,12 @@
 //! repo.fetch(&remote, &base)?;
 //! repo.fetch(&remote, &head)?;
 //! match repo.numstat(&base, &head, Duration::from_secs(60))? {
-//!     DiffOutcome::Measured(changes) => repo.police_attributes(&head, &changes, &allowlist)?,
+//!     DiffOutcome::Measured(changes) => {
+//!         let report = repo.police_attributes(&head, &changes, &allowlist)?;
+//!         // Downstream gates treat these as fully changed.
+//!         let fully_changed: Vec<&str> = report.opaque_paths().collect();
+//!         assert!(fully_changed.iter().all(|path| path.starts_with("assets/")));
+//!     }
 //!     DiffOutcome::NeedsSplit => { /* classify the PR as needs-split */ }
 //! }
 //! # Ok(())
@@ -44,8 +49,10 @@ mod numstat;
 mod repository;
 mod sha;
 
-pub use crate::process::ProcessError;
-pub use attributes::{AttributeAllowlist, AttributeError, AttributeViolation, is_protected_path};
+pub use crate::process::{GroupKiller, KillerError, ProcessError};
+pub use attributes::{
+    AttributeAllowlist, AttributeError, AttributeReport, PolicedAttribute, is_protected_path,
+};
 pub use command::{GitEnvironment, GitOperation};
 pub use glob::GlobError;
 pub use numstat::{DiffOutcome, FileChange, LineCount};

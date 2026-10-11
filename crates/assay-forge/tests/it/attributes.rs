@@ -1,16 +1,16 @@
-//! `.gitattributes` on any changed path fails closed unless a base-config glob allows it
-//! (`03 §2.1`, threat T5).
+//! `.gitattributes` on any changed path fails closed unless a base-config glob allows it, and
+//! an allowed path is reported as opaque (`03 §2.1`, threat T5).
 
 use std::error::Error;
 
-use assay_forge::git::{AttributeAllowlist, AttributeError};
+use assay_forge::git::{AttributeAllowlist, AttributeError, AttributeReport};
 
 use crate::support::{Fixture, fixture, fixture_with_removals};
 
 fn police(
     fixture: &Fixture,
     allowlist: &AttributeAllowlist,
-) -> Result<Result<(), AttributeError>, Box<dyn Error>> {
+) -> Result<Result<AttributeReport, AttributeError>, Box<dyn Error>> {
     let changes = fixture.changes()?;
     Ok(fixture
         .repo
@@ -18,13 +18,20 @@ fn police(
 }
 
 /// The policed attributes git reported, as `path: attribute=value`.
-fn forbidden(result: Result<(), AttributeError>) -> Result<Vec<String>, Box<dyn Error>> {
+fn forbidden(
+    result: Result<AttributeReport, AttributeError>,
+) -> Result<Vec<String>, Box<dyn Error>> {
     match result {
         Err(AttributeError::Forbidden { violations }) => {
             Ok(violations.iter().map(ToString::to_string).collect())
         }
         other => Err(format!("expected a gitattributes gate error, got {other:?}").into()),
     }
+}
+
+/// The allowlisted attributes of a passing report, as `path: attribute=value`.
+fn opaque(result: Result<AttributeReport, AttributeError>) -> Result<Vec<String>, Box<dyn Error>> {
+    Ok(result?.opaque().iter().map(ToString::to_string).collect())
 }
 
 #[test]
@@ -37,9 +44,10 @@ fn passes_when_no_changed_path_has_a_policed_attribute() -> Result<(), Box<dyn E
 
     let result = police(&fixture, &AttributeAllowlist::default())?;
 
-    assert!(
-        matches!(result, Ok(())),
-        "attributes outside the policed set are allowed, got {result:?}"
+    assert_eq!(
+        opaque(result)?,
+        Vec::<String>::new(),
+        "attributes outside the policed set pass, and nothing is opaque"
     );
     Ok(())
 }
@@ -64,7 +72,7 @@ fn star_minus_diff_fails_closed() -> Result<(), Box<dyn Error>> {
 
 #[test]
 #[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
-fn star_filter_lfs_fails_closed() -> Result<(), Box<dyn Error>> {
+fn filter_lfs_on_a_manifest_fails_closed() -> Result<(), Box<dyn Error>> {
     let fixture = fixture(&[
         ("Cargo.toml", b"[package]\nname = \"renamed\"\n"),
         (".gitattributes", b"Cargo.toml filter=lfs\n"),
@@ -145,7 +153,7 @@ fn both_sides_of_a_rename_are_policed() -> Result<(), Box<dyn Error>> {
 
 #[test]
 #[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
-fn a_base_allowlist_glob_admits_binary_assets() -> Result<(), Box<dyn Error>> {
+fn an_allowlisted_path_passes_but_is_reported_opaque() -> Result<(), Box<dyn Error>> {
     let fixture = fixture(&[
         ("assets/logo.png", b"\x89PNG\0binary"),
         (".gitattributes", b"*.png -diff\n"),
@@ -154,9 +162,10 @@ fn a_base_allowlist_glob_admits_binary_assets() -> Result<(), Box<dyn Error>> {
 
     let result = police(&fixture, &allowlist)?;
 
-    assert!(
-        matches!(result, Ok(())),
-        "an allowlisted binary asset may carry -diff, got {result:?}"
+    assert_eq!(
+        opaque(result)?,
+        ["assets/logo.png: diff=unset"],
+        "an admitted path is not silently trusted: downstream gates treat it as fully changed"
     );
     Ok(())
 }

@@ -47,9 +47,11 @@ assay-gates = { path = "crates/assay-gates" }
 # Errors in library crates (H-09, ERR-01).
 thiserror = { version = "2.0.0", default-features = false, features = ["std"] }
 
+# Anonymous spool files for child-process stdio (assay-forge), and test scratch directories.
+tempfile = { version = "3.0.0", default-features = false }
+
 # Tests only.
 serde_json = { version = "1.0.140", default-features = false, features = ["std"] }
-tempfile = { version = "3.0.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"                                  # H-01

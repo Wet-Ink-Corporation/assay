@@ -10,6 +10,8 @@ use std::fmt;
 use std::path::Path;
 use std::process::Command;
 
+use crate::process::{GroupKiller, KillerError};
+
 /// Variables set on every git process. Global and system config and system attributes are
 /// ignored, credential prompts cannot block, and replace refs cannot substitute objects.
 const HARDENED_ENV: [(&str, &str); 6] = [
@@ -94,34 +96,47 @@ impl fmt::Display for GitOperation {
     }
 }
 
-/// The variables a git process inherits: at most `PATH` and the proxy settings.
+/// What git processes take from the host: at most `PATH` and the proxy settings, plus the
+/// [`GroupKiller`] that stops a timed-out process group.
 ///
 /// Captured once, at the composition root, and handed to
 /// [`ObjectRepo::init`](super::ObjectRepo::init) (ARC-11); every other variable is dropped.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitEnvironment {
     inherited: Vec<(&'static str, OsString)>,
+    killer: GroupKiller,
 }
 
 impl GitEnvironment {
     /// Reads `PATH`, `HTTPS_PROXY`, `https_proxy`, `NO_PROXY` and `no_proxy` from this
-    /// process's environment; the rest, including `HOME`, `GIT_DIR`, `GIT_CONFIG_*`,
-    /// `GIT_EXTERNAL_DIFF` and `GIT_SSH_COMMAND`, is never passed on.
-    #[must_use]
-    pub fn from_process_env() -> Self {
+    /// process's environment (the rest, including `HOME`, `GIT_DIR`, `GIT_CONFIG_*`,
+    /// `GIT_EXTERNAL_DIFF` and `GIT_SSH_COMMAND`, is never passed on) and finds the system
+    /// `kill`.
+    ///
+    /// # Errors
+    /// [`KillerError::NotFound`] when the host has no usable `kill`: without it a timed-out
+    /// process group could not be stopped, so nothing runs.
+    pub fn from_process_env() -> Result<Self, KillerError> {
+        let killer = GroupKiller::system()?;
         let inherited = PASSED_THROUGH
             .into_iter()
             .filter_map(|name| env::var_os(name).map(|value| (name, value)))
             .collect();
-        Self { inherited }
+        Ok(Self { inherited, killer })
     }
 
-    /// Only `PATH`, set to `path`: no proxy.
+    /// Only `PATH`, set to `path` (no proxy), with `killer`.
     #[must_use]
-    pub fn with_path(path: impl Into<OsString>) -> Self {
+    pub fn new(path: impl Into<OsString>, killer: GroupKiller) -> Self {
         Self {
             inherited: vec![("PATH", path.into())],
+            killer,
         }
+    }
+
+    /// The program that kills a timed-out process group.
+    pub(super) const fn killer(&self) -> &GroupKiller {
+        &self.killer
     }
 }
 
@@ -176,12 +191,12 @@ mod tests {
             .collect()
     }
 
+    fn host() -> GitEnvironment {
+        GitEnvironment::from_process_env().expect("the test host has a system kill")
+    }
+
     fn hardened(operation: GitOperation) -> Command {
-        git(
-            Path::new("/repo.git"),
-            &GitEnvironment::from_process_env(),
-            operation,
-        )
+        git(Path::new("/repo.git"), &host(), operation)
     }
 
     #[test]
@@ -242,14 +257,15 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "spawns `env`; Miri cannot spawn processes")]
     fn the_environment_is_cleared_to_an_allowlist() {
+        let host = host();
         let mut env = Command::new("env");
-        harden_environment(&mut env, &GitEnvironment::from_process_env());
+        harden_environment(&mut env, &host);
         let limits = Limits {
             timeout: Duration::from_secs(30),
             max_output_bytes: 1 << 16,
         };
 
-        let output = run(env, b"", limits).expect("env runs");
+        let output = run(env, b"", limits, host.killer()).expect("env runs");
 
         let stdout = String::from_utf8(output.stdout).expect("env prints UTF-8 here");
         let names: Vec<&str> = stdout
@@ -268,7 +284,8 @@ mod tests {
 
     #[test]
     fn an_explicit_environment_passes_through_only_what_it_was_given() {
-        let environment = GitEnvironment::with_path("/opt/git/bin");
+        let killer = GroupKiller::system().expect("the test host has a system kill");
+        let environment = GitEnvironment::new("/opt/git/bin", killer);
 
         let command = git(Path::new("/repo.git"), &environment, GitOperation::Diff);
 

@@ -24,7 +24,7 @@ pub enum AttributeError {
     )]
     Forbidden {
         /// Every offending path and attribute, in git's order.
-        violations: Vec<AttributeViolation>,
+        violations: Vec<PolicedAttribute>,
     },
     /// `git check-attr` could not answer, which also fails closed.
     #[error(transparent)]
@@ -117,13 +117,13 @@ impl AttributeAllowlist {
 
 /// A policed attribute that is set, unset or given a value on a changed path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AttributeViolation {
+pub struct PolicedAttribute {
     path: String,
     attribute: String,
     value: String,
 }
 
-impl AttributeViolation {
+impl PolicedAttribute {
     /// The path the attribute applies to.
     #[must_use]
     pub fn path(&self) -> &str {
@@ -144,15 +144,62 @@ impl AttributeViolation {
     }
 }
 
-impl fmt::Display for AttributeViolation {
+impl fmt::Display for PolicedAttribute {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}={}", self.path, self.attribute, self.value)
     }
 }
 
+/// The outcome of attribute policing that passed.
+///
+/// Paths the allowlist admitted are not trusted as shown: git may present them differently
+/// from their content (a NUL-byte "binary" check would not tell, since Rust string literals
+/// can carry NUL), so [`opaque`](Self::opaque) lists them for downstream gates to treat as
+/// fully changed (`docs/architecture/03-contracts.md` §2.1).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttributeReport {
+    opaque: Vec<PolicedAttribute>,
+}
+
+impl AttributeReport {
+    /// Every policed attribute set on an allowlisted path, in git's order.
+    #[must_use]
+    pub fn opaque(&self) -> &[PolicedAttribute] {
+        &self.opaque
+    }
+
+    /// The allowlisted paths that carry policed attributes, each once, in git's order.
+    pub fn opaque_paths(&self) -> impl Iterator<Item = &str> + '_ {
+        let mut previous = None;
+        self.opaque
+            .iter()
+            .map(PolicedAttribute::path)
+            .filter(move |path| {
+                let repeated = previous == Some(*path);
+                previous = Some(*path);
+                !repeated
+            })
+    }
+}
+
+/// Splits `found` into what `allowlist` admits (the report) and what it does not (an error).
+pub(super) fn judge(
+    found: Vec<PolicedAttribute>,
+    allowlist: &AttributeAllowlist,
+) -> Result<AttributeReport, AttributeError> {
+    let (opaque, violations): (Vec<_>, Vec<_>) = found
+        .into_iter()
+        .partition(|attribute| allowlist.admits(attribute.path()));
+    if violations.is_empty() {
+        Ok(AttributeReport { opaque })
+    } else {
+        Err(AttributeError::Forbidden { violations })
+    }
+}
+
 /// Reads `git check-attr -z` output (`path NUL attribute NUL state NUL` triples) and returns
 /// every triple whose state is not `unspecified`.
-pub(super) fn violations(stdout: &[u8]) -> Result<Vec<AttributeViolation>, Malformed> {
+pub(super) fn violations(stdout: &[u8]) -> Result<Vec<PolicedAttribute>, Malformed> {
     let mut found = Vec::new();
     let Some(mut fields) = super::nul_terminated_fields(stdout)? else {
         return Ok(found);
@@ -164,7 +211,7 @@ pub(super) fn violations(stdout: &[u8]) -> Result<Vec<AttributeViolation>, Malfo
             ));
         };
         if value != UNSPECIFIED {
-            found.push(AttributeViolation {
+            found.push(PolicedAttribute {
                 path: path.to_owned(),
                 attribute: attribute.to_owned(),
                 value: value.to_owned(),
@@ -270,17 +317,17 @@ mod tests {
         assert_eq!(
             found,
             [
-                AttributeViolation {
+                PolicedAttribute {
                     path: "a.rs".to_owned(),
                     attribute: "diff".to_owned(),
                     value: "unset".to_owned(),
                 },
-                AttributeViolation {
+                PolicedAttribute {
                     path: "a.rs".to_owned(),
                     attribute: "text".to_owned(),
                     value: "set".to_owned(),
                 },
-                AttributeViolation {
+                PolicedAttribute {
                     path: "a.rs".to_owned(),
                     attribute: "filter".to_owned(),
                     value: "lfs".to_owned(),

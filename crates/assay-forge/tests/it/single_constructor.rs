@@ -60,8 +60,9 @@ fn only_the_hardened_constructor_creates_git_processes() -> Result<(), Box<dyn E
         constructors,
         [
             r#"git/command.rs: Command::new("git")"#,
-            // Signals the process group of a timed-out child; it never touches PR objects.
-            r#"process.rs: Command::new("kill")"#,
+            // The validated kill program (`GroupKiller`), which signals a timed-out child's
+            // process group; it never touches PR objects.
+            "process.rs: Command::new(&self.program)",
         ],
         "git must be started only by the hardened constructor, and nothing else may start"
     );

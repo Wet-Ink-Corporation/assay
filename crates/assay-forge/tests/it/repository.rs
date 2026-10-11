@@ -39,7 +39,7 @@ fn init_refuses_a_directory_that_already_has_contents() -> Result<(), Box<dyn Er
 
     let result = ObjectRepo::init(
         scratch.path(),
-        GitEnvironment::from_process_env(),
+        GitEnvironment::from_process_env()?,
         GitLimits::default(),
     );
 
@@ -57,7 +57,7 @@ fn init_accepts_an_empty_directory() -> Result<(), Box<dyn Error>> {
 
     let repo = ObjectRepo::init(
         scratch.path(),
-        GitEnvironment::from_process_env(),
+        GitEnvironment::from_process_env()?,
         GitLimits::default(),
     )?;
 
