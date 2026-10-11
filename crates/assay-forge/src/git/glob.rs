@@ -2,10 +2,11 @@
 //!
 //! `*` matches any run of characters except `/`, `?` one character except `/`, `**` anything,
 //! and `**/` zero or more whole directories. `**` must be a whole path segment (at the start
-//! or after `/`, and followed by `/` or the end); `a**`, `**b` and `***` are refused. A glob without `/` matches the file name at any
-//! depth (as in `.gitattributes`); one with `/` matches the whole path from the root.
-//! Character classes, braces, negation and escapes are rejected rather than half-supported.
-//! Matching is a linear-space dynamic programme, so no glob can make it exponential.
+//! or after `/`, and followed by `/` or the end); `a**`, `**b` and `***` are refused. A glob
+//! without `/` matches the file name at any depth (as in `.gitattributes`); one with `/`
+//! matches the whole path from the root. Character classes, braces, negation and escapes are
+//! rejected rather than half-supported. Matching is a linear-space dynamic programme, so no
+//! glob can make it exponential.
 
 use std::str::FromStr;
 
