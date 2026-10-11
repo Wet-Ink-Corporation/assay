@@ -55,6 +55,9 @@ tempfile = { version = "3.0.0", default-features = false }
 jsonschema = { version = "0.58.6", default-features = false }
 serde_json = { version = "1.0.140", default-features = false, features = ["std"] }
 
+# Derives on the versioned contract types in assay-domain (Story #48, 02 §2).
+serde = { version = "1.0.219", default-features = false, features = ["std", "derive"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"                                  # H-01
 missing_docs = "warn"                                   # H-15 / API-15
