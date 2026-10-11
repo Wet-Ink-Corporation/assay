@@ -7,8 +7,13 @@
 //! (`docs/architecture/03-contracts.md`).
 
 mod contract;
+mod model_runner;
 
 pub use contract::{
     Contract, ContractSchemaError, ContractValidator, ReadContractError, SchemaCompileError,
     SchemaViolation,
+};
+pub use model_runner::{
+    InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
+    PromptError, RateLimitObserved, RetryError, Structured, run_with_retry,
 };
