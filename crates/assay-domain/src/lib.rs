@@ -55,7 +55,7 @@ pub use run_uid::RunUid;
 pub use severity::{Marker, Severity};
 pub use tier::{PrClass, Tier};
 pub use tiering::{
-    BaselineChange, ChangeSet, ExecCause, FileChange, FilteredStats, Glob, GlobError, Lines,
-    ManifestKey, ManifestTrustChange, PackageChange, PackageDiff, RepoGlobs, RequiredRole,
+    BaselineChange, ChangeSet, ExecCause, FileChange, FileKind, FilteredStats, Glob, GlobError,
+    Lines, ManifestKey, ManifestTrustChange, PackageChange, PackageDiff, RepoGlobs, RequiredRole,
     TierReason, Tiering, tier,
 };

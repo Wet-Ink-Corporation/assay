@@ -4,6 +4,7 @@
 //! scripts) match wide: ignoring ASCII case and counting a match on any ancestor directory.
 //! Lists that lower one (docs allowlist, exclusion) match exactly. Both directions fail closed.
 
+use super::change::is_canonical;
 use super::glob::Glob;
 
 /// Trust paths (04 §2.2). Files tools discover in any directory match in any directory.
@@ -182,8 +183,9 @@ impl<'a> Lists<'a> {
         }
     }
 
+    /// A trust-path glob matches, or the path is not canonical and so may alias one.
     pub(super) fn is_trust(&self, path: &str) -> bool {
-        self.trust.matches_wide(path)
+        !is_canonical(path) || self.trust.matches_wide(path)
     }
 
     pub(super) fn is_risk(&self, path: &str) -> bool {

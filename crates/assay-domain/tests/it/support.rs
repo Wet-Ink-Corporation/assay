@@ -264,6 +264,7 @@ pub(crate) fn changes(files: Vec<FileChange>) -> ChangeSet {
         files,
         manifests: Vec::new(),
         include_targets: Vec::new(),
+        exec_roots: Vec::new(),
         packages: PackageDiff::Computed(Vec::new()),
         temper_baseline: BaselineChange::Other,
     }

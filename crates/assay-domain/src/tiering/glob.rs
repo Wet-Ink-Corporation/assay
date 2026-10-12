@@ -151,12 +151,25 @@ fn validate(pattern: &str) -> Result<(), GlobError> {
         return Err(GlobError::Reserved(reserved));
     }
     validate_braces(pattern)?;
-    for segment in pattern.split('/') {
+    validate_segments(pattern, pattern)?;
+    // Braces hold no `/`, so each alternative has the raw pattern's segments, one for one.
+    expand_braces(pattern)
+        .iter()
+        .try_for_each(|alternative| validate_segments(pattern, alternative))
+}
+
+/// Every segment of `expanded` is non-empty, not `.` or `..`, and holds `**` only when the
+/// same segment of the raw `pattern` is exactly `**` (so `{*,x}*` cannot make one).
+fn validate_segments(pattern: &str, expanded: &str) -> Result<(), GlobError> {
+    let mut raw = pattern.split('/');
+    for segment in expanded.split('/') {
+        let whole_double_star = raw.next() == Some("**");
         match segment {
             "" => return Err(GlobError::EmptySegment),
             "." | ".." => return Err(GlobError::DotSegment),
-            "**" => {}
-            _ if segment.contains("**") => return Err(GlobError::PartialDoubleStar),
+            _ if segment.contains("**") && !whole_double_star => {
+                return Err(GlobError::PartialDoubleStar);
+            }
             _ => {}
         }
     }
@@ -420,6 +433,9 @@ mod tests {
             ("a}", GlobError::UnbalancedBrace),
             ("{a,{b}}", GlobError::NestedBrace),
             ("{a,b/c}", GlobError::SlashInBrace),
+            ("{*,x}*", GlobError::PartialDoubleStar),
+            ("{.,x}/a", GlobError::DotSegment),
+            ("{,x}/a", GlobError::EmptySegment),
             (
                 "{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}",
                 GlobError::TooManyAlternatives,

@@ -11,9 +11,17 @@ pub struct ChangeSet {
     pub files: Vec<FileChange>,
     /// Trust keys that differ between the base and head manifests, found by TOML parsing.
     pub manifests: Vec<ManifestTrustChange>,
-    /// Files named by `include_str!`, `include_bytes!` or `#[doc = include_str!(..)]` in a `.rs`
-    /// file at base or head (the Z2s `syn` scan): never `trivial`.
+    /// Files a `.rs` file at base or head reads at compile time, found by the Z2s `syn` scan
+    /// (#64): the targets of `include!`, `include_str!`, `include_bytes!` (including
+    /// `#[doc = include_str!(..)]`) and `#[path = ..]`. Each is a canonical repo-relative path
+    /// (`/`-separated, no `.` or `..` segments); it is never `trivial`, and matching ignores
+    /// ASCII case.
     pub include_targets: Vec<String>,
+    /// Source roots of the workspace's `custom-build` and `proc-macro` targets at base and at
+    /// head, as canonical repo-relative paths: a custom build script file (`[package] build`)
+    /// or a proc-macro crate's directory. Any changed file at or under a root is exec surface.
+    /// Derived from the parsed manifests (`assay_app::exec_roots`) or filled by #65.
+    pub exec_roots: Vec<String>,
     /// The package-set diff, base vs head.
     pub packages: PackageDiff,
     /// How `.claude/temper-baseline.json` changed, when it did.
@@ -29,17 +37,38 @@ pub struct FileChange {
     pub renamed_from: Option<String>,
     /// The `--numstat --text` line counts.
     pub lines: Lines,
+    /// What git records at the path, on either side.
+    pub kind: FileKind,
+}
+
+/// What git records at a path (the `--raw` mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileKind {
+    /// A regular or executable file.
+    #[default]
+    File,
+    /// A symbolic link (mode `120000`), on either side: never docs and never excluded.
+    Symlink,
+    /// A submodule commit (mode `160000`), on either side: never docs and never excluded.
+    Gitlink,
 }
 
 impl FileChange {
-    /// A change to `path` that was not renamed.
+    /// A change to a regular file at `path` that was not renamed.
     #[must_use]
     pub fn new(path: impl Into<String>, lines: Lines) -> Self {
         Self {
             path: path.into(),
             renamed_from: None,
             lines,
+            kind: FileKind::File,
         }
+    }
+
+    /// The same change, recorded by git as `kind`.
+    #[must_use]
+    pub fn with_kind(self, kind: FileKind) -> Self {
+        Self { kind, ..self }
     }
 
     /// The same change, renamed from `old`.
@@ -55,6 +84,31 @@ impl FileChange {
     pub fn sides(&self) -> impl Iterator<Item = &str> {
         iter::once(self.path.as_str()).chain(self.renamed_from.as_deref())
     }
+}
+
+/// Whether `path` is the canonical repo-relative form git prints with `-z`: non-empty,
+/// `/`-separated segments that are neither empty, `.` nor `..`, no leading `"` (a C-quoted
+/// path), no `\` and no control character. Anything else may be an alias of a trust path.
+pub(super) fn is_canonical(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('"')
+        && !path.chars().any(|c| c == '\\' || c.is_control())
+        && path
+            .split('/')
+            .all(|segment| !matches!(segment, "" | "." | ".."))
+}
+
+/// Whether `path` is `root` or lies under it, ignoring ASCII case; an empty root holds every
+/// path (fail closed).
+pub(super) fn is_under(path: &str, root: &str) -> bool {
+    let root = root.trim_end_matches('/');
+    if root.is_empty() {
+        return true;
+    }
+    let prefix_matches = path
+        .get(..root.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(root));
+    prefix_matches && matches!(path.as_bytes().get(root.len()), None | Some(b'/'))
 }
 
 /// One file's `git diff --numstat --text` result.

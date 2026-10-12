@@ -53,39 +53,43 @@ fn projection(manifest: &Table, key: ManifestKey) -> Vec<Option<&Value>> {
             at(&["package", "rust-version"]),
             at(&["workspace", "package", "rust-version"]),
         ],
-        ManifestKey::Edition => vec![
+        ManifestKey::Edition => [
             at(&["package", "edition"]),
             at(&["workspace", "package", "edition"]),
-        ],
-        ManifestKey::TestSwitch => test_switches(manifest),
+        ]
+        .into_iter()
+        .chain(target_keys(manifest, &["edition"]))
+        .collect(),
+        ManifestKey::TestSwitch => [
+            at(&["package", "autotests"]),
+            at(&["package", "autobenches"]),
+        ]
+        .into_iter()
+        .chain(target_keys(manifest, &["test", "doctest", "harness"]))
+        .collect(),
         ManifestKey::Unparseable => Vec::new(),
     }
 }
 
-/// `autotests` and `autobenches`, then each target's name, `test`, `doctest` and `harness`,
-/// targets in file order. A target with none of the three adds nothing, so a new plain target
-/// is not a switch change.
-fn test_switches(manifest: &Table) -> Vec<Option<&Value>> {
+/// For each target (`[lib]`, then `[[bin]]`, `[[test]]`, `[[bench]]` and `[[example]]` in file
+/// order) that sets any of `keys`: its name, then the value of each key. A target that sets
+/// none adds nothing, so a new plain target is not a change.
+fn target_keys<'a>(manifest: &'a Table, keys: &[&str]) -> Vec<Option<&'a Value>> {
     let lib = lookup(manifest, &["lib"]).into_iter();
     let arrays = ["bin", "test", "bench", "example"]
         .into_iter()
         .filter_map(|kind| lookup(manifest, &[kind]))
         .filter_map(Value::as_array)
         .flatten();
-    let targets = lib.chain(arrays).flat_map(|target| {
-        let switches = ["test", "doctest", "harness"].map(|switch| target.get(switch));
-        if switches.iter().all(Option::is_none) {
-            return Vec::new();
-        }
-        iter::once(target.get("name")).chain(switches).collect()
-    });
-    [
-        lookup(manifest, &["package", "autotests"]),
-        lookup(manifest, &["package", "autobenches"]),
-    ]
-    .into_iter()
-    .chain(targets)
-    .collect()
+    lib.chain(arrays)
+        .flat_map(|target| {
+            let values: Vec<Option<&Value>> = keys.iter().map(|key| target.get(*key)).collect();
+            if values.iter().all(Option::is_none) {
+                return Vec::new();
+            }
+            iter::once(target.get("name")).chain(values).collect()
+        })
+        .collect()
 }
 
 fn lookup<'a>(manifest: &'a Table, path: &[&str]) -> Option<&'a Value> {

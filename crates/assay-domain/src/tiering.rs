@@ -12,8 +12,8 @@ mod lists;
 use std::collections::BTreeSet;
 
 pub use change::{
-    BaselineChange, ChangeSet, ExecCause, FileChange, Lines, ManifestKey, ManifestTrustChange,
-    PackageChange, PackageDiff,
+    BaselineChange, ChangeSet, ExecCause, FileChange, FileKind, Lines, ManifestKey,
+    ManifestTrustChange, PackageChange, PackageDiff,
 };
 pub use glob::{Glob, GlobError};
 pub use lists::RepoGlobs;
@@ -130,6 +130,7 @@ closed_enum! {
 ///     ],
 ///     manifests: Vec::new(),
 ///     include_targets: Vec::new(),
+///     exec_roots: Vec::new(),
 ///     packages: PackageDiff::Computed(Vec::new()),
 ///     temper_baseline: BaselineChange::Other,
 /// };
@@ -293,13 +294,20 @@ fn trust_paths(lists: &Lists<'_>, changes: &ChangeSet) -> Vec<String> {
         .collect()
 }
 
-/// Build scripts on either side of every file, and exec-surface packages.
+/// Build scripts and files under an exec root on either side of every file, and exec-surface
+/// packages.
 fn exec_surface(lists: &Lists<'_>, changes: &ChangeSet) -> Vec<String> {
+    let under_root = |path: &str| {
+        changes
+            .exec_roots
+            .iter()
+            .any(|root| change::is_under(path, root))
+    };
     let scripts = changes
         .files
         .iter()
         .flat_map(FileChange::sides)
-        .filter(|path| lists.is_build_script(path))
+        .filter(|path| lists.is_build_script(path) || under_root(path))
         .map(str::to_owned);
     let packages: Vec<String> = match &changes.packages {
         PackageDiff::Computed(packages) => packages
@@ -320,20 +328,27 @@ fn exec_surface(lists: &Lists<'_>, changes: &ChangeSet) -> Vec<String> {
         .collect()
 }
 
-/// Whether there is at least one file and every side of every file is allowlisted docs that no
-/// `include_*!` names.
+/// Whether there is at least one file and every file is a regular file whose every side is
+/// allowlisted docs that no compile-time include names (compared ignoring ASCII case).
 fn docs_only(lists: &Lists<'_>, changes: &ChangeSet) -> bool {
-    let included = |path: &str| changes.include_targets.iter().any(|target| target == path);
-    !changes.files.is_empty()
-        && changes
-            .files
+    let included = |path: &str| {
+        changes
+            .include_targets
             .iter()
-            .flat_map(FileChange::sides)
-            .all(|path| lists.is_docs(path) && !included(path))
+            .any(|target| target.eq_ignore_ascii_case(path))
+    };
+    !changes.files.is_empty()
+        && changes.files.iter().all(|file| {
+            file.kind == FileKind::File
+                && file
+                    .sides()
+                    .all(|path| lists.is_docs(path) && !included(path))
+        })
 }
 
 /// Splits the files into excluded and counted (04 §2.1). A file is excluded when it is binary
-/// or every side matches an exclusion glob, unless a side is never excluded.
+/// or every side matches an exclusion glob, unless it is a symlink or gitlink or a side is never
+/// excluded.
 fn filter(lists: &Lists<'_>, files: &[FileChange]) -> FilteredStats {
     let mut stats = FilteredStats {
         files: 0,
@@ -341,7 +356,8 @@ fn filter(lists: &Lists<'_>, files: &[FileChange]) -> FilteredStats {
         excluded: Vec::new(),
     };
     for file in files {
-        let protected = file.sides().any(|path| lists.is_never_excluded(path));
+        let protected =
+            file.kind != FileKind::File || file.sides().any(|path| lists.is_never_excluded(path));
         let excludable = file.sides().all(|path| lists.is_excludable(path));
         match file.lines {
             Lines::Counted { added, removed } if protected || !excludable => {

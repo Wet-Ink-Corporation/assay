@@ -15,5 +15,6 @@ mod rubric;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod support;
 mod tiering;
+mod tiering_edges;
 mod tiering_properties;
 mod vocabulary;
