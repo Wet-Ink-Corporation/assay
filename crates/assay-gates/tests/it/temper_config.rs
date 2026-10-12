@@ -128,6 +128,16 @@ fn a_key_temper_does_not_steer_with_may_change() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// The `gate-config` finding for `gate` at its line in [`longer_steps`].
+fn gate_changed() -> Result<(String, String, u64, Severity), Box<dyn Error>> {
+    Ok((
+        "gate-config".to_owned(),
+        CONFIG.to_owned(),
+        key_line(&longer_steps(), "gate")?,
+        Severity::Blocker,
+    ))
+}
+
 /// An exceptions file admitting `gate` changing from `base` to `head` (JSON texts).
 fn admits_gate(base: &str, head: &str) -> String {
     format!(
@@ -170,7 +180,11 @@ fn an_allowlist_for_another_head_value_does_not_admit_the_change() -> Result<(),
 
     let outcome = pr.outcome()?;
 
-    assert_eq!(outcome.0, FAILED, "the allowlist binds the head value");
+    assert_eq!(
+        outcome,
+        (FAILED, vec![gate_changed()?]),
+        "the allowlist binds the head value"
+    );
     Ok(())
 }
 
@@ -187,7 +201,8 @@ fn an_allowlist_for_another_base_value_does_not_admit_the_change() -> Result<(),
     let outcome = pr.outcome()?;
 
     assert_eq!(
-        outcome.0, FAILED,
+        outcome,
+        (FAILED, vec![gate_changed()?]),
         "the allowlist binds the value it changes from, so it cannot be replayed"
     );
     Ok(())

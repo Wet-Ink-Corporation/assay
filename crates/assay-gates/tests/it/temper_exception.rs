@@ -8,7 +8,7 @@ use assay_app::{Conclusion, GateJob, GateOutcome, Termination};
 use assay_domain::Severity;
 use assay_gates::{Revision, TemperError};
 
-use crate::temper_support::{EXCEPTIONS, Pr, hit};
+use crate::temper_support::{EXCEPTIONS, Pr, Seen, hit};
 
 const FAILED: GateOutcome = GateOutcome::Concluded(Conclusion::Fail);
 const PASSED: GateOutcome = GateOutcome::Concluded(Conclusion::Pass);
@@ -23,6 +23,16 @@ path = "crates/assay-forge/src/process.rs"
 lint = "clippy::too_many_lines"
 reason = "one state machine, split across helpers it would only obscure"
 "#;
+
+/// An `exception` finding at `line` of `file`.
+fn unapproved(file: &str, line: u64) -> Seen {
+    (
+        "exception".to_owned(),
+        file.to_owned(),
+        line,
+        Severity::Blocker,
+    )
+}
 
 /// A Rust source with `attribute` starting on line `line`.
 fn source(line: usize, attribute: &str) -> String {
@@ -170,13 +180,17 @@ fn an_expect_the_scan_did_not_report_fails() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn an_expect_hit_whose_source_cannot_be_read_is_not_admitted() -> Result<(), Box<dyn Error>> {
+fn an_expect_hit_with_no_attribute_at_its_line_is_not_admitted() -> Result<(), Box<dyn Error>> {
     let mut pr = pr_with("fn run() {}")?;
     pr.set(Revision::Base, EXCEPTIONS, ADMITS_PROCESS);
 
     let outcome = pr.outcome()?;
 
-    assert_eq!(outcome.0, FAILED, "no attribute at the reported line");
+    assert_eq!(
+        outcome,
+        (FAILED, vec![unapproved(PROCESS, 42)]),
+        "no attribute at the reported line"
+    );
     Ok(())
 }
 
@@ -203,7 +217,11 @@ fn an_exceptions_file_only_at_head_admits_nothing() -> Result<(), Box<dyn Error>
 
     let outcome = pr.outcome()?;
 
-    assert_eq!(outcome.0, FAILED, "a PR cannot admit its own exception");
+    assert_eq!(
+        outcome,
+        (FAILED, vec![unapproved(PROCESS, 42)]),
+        "a PR cannot admit its own exception"
+    );
     Ok(())
 }
 
@@ -240,7 +258,8 @@ fn an_ask_hit_without_a_lint_is_never_admitted() -> Result<(), Box<dyn Error>> {
     let outcome = pr.outcome()?;
 
     assert_eq!(
-        outcome.0, FAILED,
+        outcome,
+        (FAILED, vec![unapproved(PROCESS, 42)]),
         "an exception request naming no lint fails"
     );
     Ok(())

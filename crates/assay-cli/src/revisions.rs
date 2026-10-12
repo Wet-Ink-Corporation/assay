@@ -75,22 +75,15 @@ impl RevisionFiles for ForgeRevisions<'_> {
     /// [`GitError`] when an entry is a submodule, the entries hold more bytes than the limits
     /// allow, or git cannot read a blob at its listed size.
     fn read(&self, entries: &[&TreeEntry]) -> Result<Vec<Vec<u8>>, GitError> {
-        let listed: Vec<git::TreeEntry> = entries
+        let blobs: Vec<git::BlobRef<'_>> = entries
             .iter()
-            .map(|entry| git::TreeEntry {
-                // Forge's entry owns its fields; these copies live for one read.
-                path: entry.path.clone(),
-                kind: match entry.kind {
-                    EntryKind::File => git::EntryKind::File,
-                    EntryKind::Symlink => git::EntryKind::Symlink,
-                    EntryKind::Submodule => git::EntryKind::Submodule,
-                },
-                object: entry.object.clone(),
+            .map(|entry| git::BlobRef {
+                path: &entry.path,
+                object: &entry.object,
                 size: entry.size,
             })
             .collect();
-        let listed: Vec<&git::TreeEntry> = listed.iter().collect();
-        self.repo.read_blobs(&listed, self.limits)
+        self.repo.read_blobs(&blobs, self.limits)
     }
 
     /// The blob id git gives `bytes`.

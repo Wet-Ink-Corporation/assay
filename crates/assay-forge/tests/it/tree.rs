@@ -6,7 +6,7 @@ use std::error::Error;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
-use assay_forge::git::{EntryKind, GitError, TreeEntry, TreeLimits};
+use assay_forge::git::{BlobRef, EntryKind, GitError, TreeEntry, TreeLimits};
 
 use crate::support::{fixture, fixture_with_head, write};
 
@@ -137,7 +137,7 @@ fn reads_the_bytes_of_listed_blobs_in_one_go() -> Result<(), Box<dyn Error>> {
     let head = fixture
         .repo
         .list_tree(&fixture.head, Some("src"), GENEROUS)?;
-    let entries: Vec<&TreeEntry> = base.iter().chain(&head).collect();
+    let entries: Vec<BlobRef<'_>> = base.iter().chain(&head).map(BlobRef::from).collect();
 
     let blobs = fixture.repo.read_blobs(&entries, GENEROUS)?;
 
@@ -157,7 +157,7 @@ fn reads_the_bytes_of_listed_blobs_in_one_go() -> Result<(), Box<dyn Error>> {
 fn blobs_over_the_byte_limit_are_refused_before_any_read() -> Result<(), Box<dyn Error>> {
     let fixture = fixture(&[])?;
     let entries = fixture.repo.list_tree(&fixture.base, None, GENEROUS)?;
-    let all: Vec<&TreeEntry> = entries.iter().collect();
+    let all: Vec<BlobRef<'_>> = entries.iter().map(BlobRef::from).collect();
     let total: u64 = entries.iter().filter_map(|entry| entry.size).sum();
     let limits = TreeLimits {
         max_total_bytes: total - 1,

@@ -59,7 +59,7 @@ pub use glob::GlobError;
 pub use numstat::{DiffOutcome, FileChange, LineCount};
 pub use repository::{GitLimits, ObjectRepo};
 pub use sha::{CommitSha, HttpsRemote, ParseRemoteError, ParseShaError};
-pub use tree::{EntryKind, TreeEntry, TreeLimits};
+pub use tree::{BlobRef, EntryKind, TreeEntry, TreeLimits};
 
 /// Why a git operation produced no result.
 #[derive(Debug, thiserror::Error)]

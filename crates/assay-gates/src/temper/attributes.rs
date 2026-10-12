@@ -10,18 +10,30 @@ use super::tokens::{Lexed, Token};
 const HIDDEN: [&str; 3] = ["allow", "expect", "path"];
 
 /// The lines of attributes the scan does not read: a `cfg_attr(..)` whose arguments name
-/// `allow`, `expect` or `path` anywhere (or a macro fragment `$x`, which could be any of them),
-/// and a `#[path ..]` or `#![path ..]`, which can compile a file the scan never walks.
+/// `allow`, `expect` or `path` anywhere (raw or not), or a macro fragment `$x`, which could be
+/// any of them; a `#[path ..]` or `#![path ..]`, which can compile a file the scan never walks;
+/// an attribute named by a raw identifier (`#[r#allow(..)]`), which temper's patterns do not
+/// match; and an attribute built from a macro fragment (`#[$m]`, `# $m`), which a macro call can
+/// fill with any of these.
 pub(super) fn unread(tokens: &[Lexed<'_>]) -> Vec<NonZeroU64> {
     let mut lines = Vec::new();
     let mut rest = tokens;
     while let [first, tail @ ..] = rest {
         let hidden = match (first.token, tail) {
-            (Token::Ident("cfg_attr"), [open, inner @ ..]) => {
+            (
+                Token::Ident {
+                    name: "cfg_attr", ..
+                },
+                [open, inner @ ..],
+            ) => {
                 open.token == Token::Punct('(')
                     && group(inner).iter().any(|lexed| hides(lexed.token))
             }
-            (Token::Punct('#'), _) => attribute(tail).is_some_and(|(name, _)| name == "path"),
+            (Token::Punct('#'), _) => match attribute(tail) {
+                Some(Attribute::Fragment) => true,
+                Some(Attribute::Named { name, raw, .. }) => raw || name == "path",
+                None => false,
+            },
             _ => false,
         };
         if hidden {
@@ -35,9 +47,9 @@ pub(super) fn unread(tokens: &[Lexed<'_>]) -> Vec<NonZeroU64> {
 /// Whether a token inside a `cfg_attr` can make it hide something from the scan.
 fn hides(token: Token<'_>) -> bool {
     match token {
-        Token::Ident(word) => HIDDEN.contains(&word),
+        Token::Ident { name, .. } => HIDDEN.contains(&name),
         Token::Punct(punct) => punct == '$',
-        Token::Literal => false,
+        Token::Lifetime(_) | Token::Literal(_) => false,
     }
 }
 
@@ -45,13 +57,18 @@ fn hides(token: Token<'_>) -> bool {
 /// it spells (`clippy::too_many_lines`), or `None` for an argument that is not a path.
 pub(super) type Expect = Vec<Option<String>>;
 
-/// Every `expect` attribute with an argument list, and the line of its `#`.
+/// Every `expect` attribute (named plainly; a raw `r#expect` is unread instead) with an argument
+/// list, and the line of its `#`.
 pub(super) fn expects(tokens: &[Lexed<'_>]) -> Vec<(NonZeroU64, Expect)> {
     let mut found = Vec::new();
     let mut rest = tokens;
     while let [first, tail @ ..] = rest {
         if first.token == Token::Punct('#')
-            && let Some(("expect", [open, inner @ ..])) = attribute(tail)
+            && let Some(Attribute::Named {
+                name: "expect",
+                raw: false,
+                rest: [open, inner @ ..],
+            }) = attribute(tail)
             && open.token == Token::Punct('(')
         {
             found.push((first.line, lints(group(inner))));
@@ -61,19 +78,37 @@ pub(super) fn expects(tokens: &[Lexed<'_>]) -> Vec<(NonZeroU64, Expect)> {
     found
 }
 
-/// The name of the attribute a `#` starts, `#[name ..]` or `#![name ..]`, and the tokens after
-/// the name.
-fn attribute<'t, 'a>(after_hash: &'t [Lexed<'a>]) -> Option<(&'a str, &'t [Lexed<'a>])> {
+/// What a `#` starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Attribute<'t, 'a> {
+    /// `#[name ..]` or `#![name ..]`, and the tokens after the name.
+    Named {
+        name: &'a str,
+        raw: bool,
+        rest: &'t [Lexed<'a>],
+    },
+    /// `#[$x ..]`, `#![$x ..]`, `# $x` or `#! $x`: an attribute a macro fragment supplies.
+    Fragment,
+}
+
+/// The attribute the tokens after a `#` start, if any.
+fn attribute<'t, 'a>(after_hash: &'t [Lexed<'a>]) -> Option<Attribute<'t, 'a>> {
     let after_bang = match after_hash {
         [bang, rest @ ..] if bang.token == Token::Punct('!') => rest,
         rest => rest,
     };
-    match after_bang {
-        [open, name, rest @ ..] if open.token == Token::Punct('[') => match name.token {
-            Token::Ident(name) => Some((name, rest)),
-            Token::Punct(_) | Token::Literal => None,
+    let after_open = match after_bang {
+        [open, rest @ ..] if open.token == Token::Punct('[') => rest,
+        [dollar, ..] if dollar.token == Token::Punct('$') => return Some(Attribute::Fragment),
+        _ => return None,
+    };
+    match after_open {
+        [name, rest @ ..] => match name.token {
+            Token::Ident { name, raw } => Some(Attribute::Named { name, raw, rest }),
+            Token::Punct('$') => Some(Attribute::Fragment),
+            Token::Punct(_) | Token::Lifetime(_) | Token::Literal(_) => None,
         },
-        _ => None,
+        [] => None,
     }
 }
 
@@ -119,17 +154,27 @@ fn lints(arguments: &[Lexed<'_>]) -> Expect {
 }
 
 /// Adds one argument to `lints`, unless it is empty (a trailing comma) or `reason = ..`: the
-/// path it spells, or `None` when it is something else.
+/// path it spells, or `None` when it is something else. A raw segment keeps its `r#`, so it
+/// never matches the lint temper names.
 fn push_lint(lints: &mut Expect, argument: &[Token<'_>]) {
     match argument {
-        [] | [Token::Ident("reason"), Token::Punct('='), ..] => {}
+        []
+        | [
+            Token::Ident {
+                name: "reason",
+                raw: false,
+            },
+            Token::Punct('='),
+            ..,
+        ] => {}
         tokens => lints.push(
             tokens
                 .iter()
-                .map(|token| match token {
-                    Token::Ident(word) => Some(*word),
-                    Token::Punct(':') => Some(":"),
-                    Token::Punct(_) | Token::Literal => None,
+                .map(|token| match *token {
+                    Token::Ident { name, raw: false } => Some(name.to_owned()),
+                    Token::Ident { name, raw: true } => Some(format!("r#{name}")),
+                    Token::Punct(':') => Some(":".to_owned()),
+                    Token::Punct(_) | Token::Lifetime(_) | Token::Literal(_) => None,
                 })
                 .collect(),
         ),

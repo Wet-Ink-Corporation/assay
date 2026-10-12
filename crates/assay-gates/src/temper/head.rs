@@ -3,6 +3,7 @@
 //! and attributes it does not read. Each is a blind spot, which fails the gate instead of
 //! passing unseen.
 
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use std::path::Path;
 
@@ -106,6 +107,7 @@ impl HeadTree {
     /// The blind spots and the `expect` attributes, in path order.
     pub(super) fn analyse(&self) -> Analysis<'_> {
         let mut analysis = Analysis::default();
+        let index = Index::new(self.entries());
         for (entry, bytes) in &self.0 {
             let path = entry.path.as_str();
             let rust = is_rust(path);
@@ -117,7 +119,7 @@ impl HeadTree {
                 (EntryKind::File | EntryKind::Symlink, _) if rust && skipped => {
                     Some(Why::SkippedDirectory)
                 }
-                (EntryKind::Symlink, Some(target)) if self.resolves(path, target) => None,
+                (EntryKind::Symlink, Some(target)) if index.resolves(path, target) => None,
                 (EntryKind::Symlink, _) => Some(Why::Symlink),
                 (EntryKind::File, Some(source)) if rust => {
                     read_source(path, source, &mut analysis);
@@ -136,6 +138,30 @@ impl HeadTree {
             }
         }
         analysis
+    }
+}
+
+/// The tree's paths for resolving symlinks, each lookup in constant time.
+struct Index<'h> {
+    /// Every entry's path and kind.
+    kinds: HashMap<&'h str, EntryKind>,
+    /// Every directory: each proper prefix of an entry's path that ends at a `/`.
+    directories: HashSet<&'h str>,
+}
+
+impl<'h> Index<'h> {
+    fn new(entries: impl Iterator<Item = &'h TreeEntry>) -> Self {
+        let mut kinds = HashMap::new();
+        let mut directories = HashSet::new();
+        for entry in entries {
+            let path = entry.path.as_str();
+            kinds.insert(path, entry.kind);
+            directories.extend(
+                path.match_indices('/')
+                    .filter_map(|(slash, _)| path.get(..slash)),
+            );
+        }
+        Self { kinds, directories }
     }
 
     /// Whether the symlink at `link` with target `target` resolves, lexically, to a regular
@@ -157,7 +183,8 @@ impl HeadTree {
             match part {
                 "" | "." => {}
                 ".." => {
-                    if !self.is_directory(&parts.join("/")) || parts.pop().is_none() {
+                    if !self.directories.contains(parts.join("/").as_str()) || parts.pop().is_none()
+                    {
                         return false;
                     }
                 }
@@ -165,21 +192,8 @@ impl HeadTree {
             }
         }
         let resolved = parts.join("/");
-        let kind = self
-            .entries()
-            .find(|entry| entry.path == resolved)
-            .map(|entry| entry.kind);
-        kind == Some(EntryKind::File) && (!is_rust(link) || is_rust(&resolved))
-    }
-
-    /// Whether `path` is a directory of the tree: some entry sits below it.
-    fn is_directory(&self, path: &str) -> bool {
-        self.entries().any(|entry| {
-            entry
-                .path
-                .strip_prefix(path)
-                .is_some_and(|rest| rest.starts_with('/'))
-        })
+        self.kinds.get(resolved.as_str()) == Some(&EntryKind::File)
+            && (!is_rust(link) || is_rust(&resolved))
     }
 }
 

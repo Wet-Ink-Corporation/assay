@@ -30,6 +30,27 @@ pub struct TreeEntry {
     pub size: Option<u64>,
 }
 
+/// A listed blob to read, borrowed from a [`TreeEntry`] or from a caller's own listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlobRef<'a> {
+    /// Its path, named in [`GitError::NotABlob`](super::GitError::NotABlob).
+    pub path: &'a str,
+    /// Its full object id, as listed.
+    pub object: &'a str,
+    /// Its listed size in bytes; `None` (a submodule) is not a blob.
+    pub size: Option<u64>,
+}
+
+impl<'a> From<&'a TreeEntry> for BlobRef<'a> {
+    fn from(entry: &'a TreeEntry) -> Self {
+        Self {
+            path: &entry.path,
+            object: &entry.object,
+            size: entry.size,
+        }
+    }
+}
+
 /// Bounds on reading a tree whose shape the PR controls (H-13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TreeLimits {

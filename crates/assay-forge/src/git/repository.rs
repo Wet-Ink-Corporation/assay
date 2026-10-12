@@ -12,7 +12,7 @@ use super::attributes::{
 use super::command::{GitEnvironment, GitOperation, git};
 use super::numstat::{self, DiffOutcome, FileChange};
 use super::sha::{CommitSha, HttpsRemote};
-use super::tree::{self, TreeEntry, TreeLimits};
+use super::tree::{self, BlobRef, TreeEntry, TreeLimits};
 use super::{GitError, Malformed};
 use crate::process::{self, Captured, Limits, ProcessError};
 
@@ -236,29 +236,30 @@ impl ObjectRepo {
         Ok(entries)
     }
 
-    /// Reads the blobs of `entries` (files, executables and symlinks from [`Self::list_tree`])
-    /// with one `git cat-file --batch`, in order. The listed sizes are summed and checked
-    /// against `limits.max_total_bytes` before anything is read, and each blob must come back
-    /// at its listed size.
+    /// Reads `blobs` (files, executables and symlinks from [`Self::list_tree`], borrowed as
+    /// [`BlobRef`]s) with one `git cat-file --batch`, in order. The listed sizes are summed and
+    /// checked against `limits.max_total_bytes` before anything is read, and each blob must
+    /// come back at its listed size.
     ///
     /// # Errors
     /// [`GitError::TooManyBytes`] past the limit, [`GitError::NotABlob`] for a submodule, and
     /// [`GitError`] when cat-file cannot run, fails, or prints anything but the listed blobs.
     pub fn read_blobs(
         &self,
-        entries: &[&TreeEntry],
+        blobs: &[BlobRef<'_>],
         limits: TreeLimits,
     ) -> Result<Vec<Vec<u8>>, GitError> {
-        let mut expected = Vec::with_capacity(entries.len());
+        let mut expected = Vec::with_capacity(blobs.len());
         let mut total = 0_u64;
-        for entry in entries {
-            let (Some(size), true) = (entry.size, tree::is_object_id(&entry.object)) else {
+        for blob in blobs {
+            let (Some(size), true) = (blob.size, tree::is_object_id(blob.object)) else {
                 return Err(GitError::NotABlob {
-                    path: entry.path.clone(),
+                    // The error owns the path it names.
+                    path: blob.path.to_owned(),
                 });
             };
             total = total.saturating_add(size);
-            expected.push((entry.object.as_str(), size));
+            expected.push((blob.object, size));
         }
         if total > limits.max_total_bytes {
             return Err(GitError::TooManyBytes {

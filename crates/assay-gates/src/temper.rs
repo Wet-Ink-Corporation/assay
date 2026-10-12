@@ -19,6 +19,8 @@
 
 mod attributes;
 mod baseline;
+#[cfg(test)]
+mod corpus;
 mod error;
 mod exceptions;
 mod findings;
