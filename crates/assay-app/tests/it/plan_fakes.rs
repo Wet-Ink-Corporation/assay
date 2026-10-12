@@ -77,6 +77,8 @@ pub(crate) struct FakePr {
     pub(crate) changes: ChangedFiles,
     /// Reads return one blob fewer than asked for.
     pub(crate) short_reads: bool,
+    /// Every read fails.
+    pub(crate) failing_reads: bool,
 }
 
 impl FakePr {
@@ -99,6 +101,7 @@ impl FakePr {
             head: HEAD.to_owned(),
             changes: ChangedFiles::Listed(Vec::new()),
             short_reads: false,
+            failing_reads: false,
         };
         pr.write(HEAD, "src/lib.rs", b"pub fn two() {}\n");
         pr.changes = ChangedFiles::Listed(vec![FileChange::new(
@@ -138,11 +141,28 @@ impl FakePr {
         );
     }
 
+    /// Puts a submodule at `path` in `commit`'s tree.
+    pub(crate) fn submodule(&mut self, commit: &str, path: &str) {
+        self.put(
+            commit,
+            path,
+            File {
+                kind: EntryKind::Submodule,
+                bytes: Vec::new(),
+            },
+        );
+    }
+
     /// Removes `path` from `commit`'s tree.
     pub(crate) fn remove(&mut self, commit: &str, path: &str) {
         if let Some(tree) = self.trees.get_mut(commit) {
             tree.remove(path);
         }
+    }
+
+    /// Drops `commit`'s tree, so listing it fails.
+    pub(crate) fn forget(&mut self, commit: &str) {
+        self.trees.remove(commit);
     }
 
     fn put(&mut self, commit: &str, path: &str, file: File) {
@@ -212,6 +232,9 @@ impl PullRequestObjects for FakePr {
     }
 
     fn read(&self, entries: &[&TreeEntry]) -> Result<Vec<Vec<u8>>, FakeError> {
+        if self.failing_reads {
+            return Err(FakeError);
+        }
         let mut blobs = entries
             .iter()
             .map(|entry| {

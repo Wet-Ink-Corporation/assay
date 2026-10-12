@@ -6,7 +6,7 @@ use std::error::Error;
 
 use assay_app::{
     ArtifactJob, BaseConfigError, ChangedFiles, Contract, ContractValidator, EntryKind,
-    FileListError, IncludeTargets, PlanError, PlannedRun, RestFile, plan,
+    FileListError, IncludeTargets, ObjectsStep, PlanError, PlannedRun, RestFile, plan,
 };
 use assay_domain::{FileChange, Lines, PrClass, Tier};
 use serde_json::{Value, json};
@@ -169,6 +169,59 @@ fn a_symlink_in_the_base_config_is_refused() -> Result<(), Box<dyn Error>> {
             ref path,
             kind: EntryKind::Symlink,
         })) if path == ".assay/owners"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_base_config_directory_that_is_a_symlink_is_refused() -> Result<(), Box<dyn Error>> {
+    let mut pr = FakePr::new();
+    pr.remove(BASE, ".assay/plugins.toml");
+    pr.symlink(BASE, ".assay", b"config");
+
+    let planned = plan_for(&pr)?;
+
+    assert_matches!(
+        planned,
+        Err(PlanError::BaseConfig(BaseConfigError::NotARegularFile {
+            ref path,
+            kind: EntryKind::Symlink,
+        })) if path == ".assay"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_base_config_directory_that_is_a_submodule_is_refused() -> Result<(), Box<dyn Error>> {
+    let mut pr = FakePr::new();
+    pr.remove(BASE, ".assay/plugins.toml");
+    pr.submodule(BASE, ".assay");
+
+    let planned = plan_for(&pr)?;
+
+    assert_matches!(
+        planned,
+        Err(PlanError::BaseConfig(BaseConfigError::NotARegularFile {
+            ref path,
+            kind: EntryKind::Submodule,
+        })) if path == ".assay"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_submodule_in_the_base_config_is_refused() -> Result<(), Box<dyn Error>> {
+    let mut pr = FakePr::new();
+    pr.submodule(BASE, ".assay/vendored");
+
+    let planned = plan_for(&pr)?;
+
+    assert_matches!(
+        planned,
+        Err(PlanError::BaseConfig(BaseConfigError::NotARegularFile {
+            ref path,
+            kind: EntryKind::Submodule,
+        })) if path == ".assay/vendored"
     );
     Ok(())
 }
@@ -391,6 +444,38 @@ fn a_truncated_rest_list_naming_a_file_git_did_not_list_is_refused() -> Result<(
 }
 
 #[test]
+fn a_truncated_rest_list_with_git_listing_fewer_files_than_changed_is_refused()
+-> Result<(), Box<dyn Error>> {
+    let mut pr = FakePr::new();
+    // git lists exactly the 3,000 files REST shows, though the PR changed 3,001.
+    let rest = truncated_rest(&mut pr, None);
+    pr.changes = changes(
+        rest.iter()
+            .map(|file| counted(&file.path, 1))
+            .collect::<Vec<_>>(),
+    );
+    let mut request = request(&pr)?;
+    request.rest_files.files = rest;
+    request.rest_files.changed_files = 3_001;
+
+    let planned = plan(
+        &request,
+        &pr,
+        &mut CountingNonces::default(),
+        &ContractValidator::new()?,
+    );
+
+    assert_matches!(
+        planned,
+        Err(PlanError::FileList(FileListError::GitShort {
+            git_paths: 3_000,
+            changed_files: 3_001,
+        }))
+    );
+    Ok(())
+}
+
+#[test]
 fn a_rename_only_one_side_detected_still_matches() -> Result<(), Box<dyn Error>> {
     let mut pr = FakePr::new();
     pr.changes = changes(vec![counted("src/new.rs", 0).renamed_from("src/old.rs")]);
@@ -438,6 +523,80 @@ fn a_read_that_returns_fewer_blobs_than_asked_is_refused() -> Result<(), Box<dyn
     let planned = plan_for(&pr)?;
 
     assert_matches!(planned, Err(PlanError::ShortRead { .. }));
+    Ok(())
+}
+
+#[test]
+fn a_failing_diff_names_the_changed_files_step() -> Result<(), Box<dyn Error>> {
+    // The fake answers for another head, so the request's diff fails.
+    let pr = FakePr::new().at_head("cccccccccccccccccccccccccccccccccccccccc");
+    let request = request(&FakePr::new())?;
+
+    let planned = plan(
+        &request,
+        &pr,
+        &mut CountingNonces::default(),
+        &ContractValidator::new()?,
+    );
+
+    assert_matches!(
+        planned,
+        Err(PlanError::Objects {
+            step: ObjectsStep::ChangedFiles,
+            source: FakeError,
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn a_failing_base_listing_names_the_list_base_step() -> Result<(), Box<dyn Error>> {
+    let mut pr = FakePr::new();
+    pr.forget(BASE);
+
+    let planned = plan_for(&pr)?;
+
+    assert_matches!(
+        planned,
+        Err(PlanError::Objects {
+            step: ObjectsStep::ListBase,
+            source: FakeError,
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn a_failing_head_listing_names_the_list_head_step() -> Result<(), Box<dyn Error>> {
+    let mut pr = FakePr::new();
+    pr.forget(HEAD);
+
+    let planned = plan_for(&pr)?;
+
+    assert_matches!(
+        planned,
+        Err(PlanError::Objects {
+            step: ObjectsStep::ListHead,
+            source: FakeError,
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn a_failing_read_names_the_read_step() -> Result<(), Box<dyn Error>> {
+    let mut pr = FakePr::new();
+    pr.failing_reads = true;
+
+    let planned = plan_for(&pr)?;
+
+    assert_matches!(
+        planned,
+        Err(PlanError::Objects {
+            step: ObjectsStep::Read,
+            source: FakeError,
+        })
+    );
     Ok(())
 }
 

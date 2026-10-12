@@ -34,9 +34,9 @@ pub use model_runner::{
 };
 pub use plan::{
     ArtifactJob, ArtifactNonce, BaseConfigError, ChangedFiles, EntryKind, EvidenceKey,
-    FileListError, IncludeTargets, NonceSource, ParseNonceError, PlanError, PlanRequest,
-    PlannedRun, PullRequestEvent, PullRequestObjects, REST_FILE_CAP, RestFile, RestFiles,
-    TreeEntry, plan,
+    FileListError, IncludeTargets, NonceSource, ObjectsStep, ParseNonceError, PlanError,
+    PlanRequest, PlannedRun, PullRequestEvent, PullRequestObjects, REST_FILE_CAP, RestFile,
+    RestFiles, TreeEntry, plan,
 };
 pub use prompt_bundle::{
     BundleFile, BundleFileError, BundleFiles, InvalidBundle, PromptBundle, Role,

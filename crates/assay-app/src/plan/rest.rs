@@ -46,6 +46,15 @@ pub enum FileListError {
         /// The PR's `changed_files`.
         changed_files: u64,
     },
+    /// The REST list is truncated and git lists fewer paths than the PR changed files: git's
+    /// list cannot be complete, and nothing else can confirm it.
+    #[error("git lists {git_paths} paths, but the PR changed {changed_files} files")]
+    GitShort {
+        /// Distinct paths git lists, both sides of every rename.
+        git_paths: usize,
+        /// The PR's `changed_files`.
+        changed_files: u64,
+    },
     /// The REST list names one file twice.
     #[error("the REST list names a file twice")]
     Repeated,
@@ -93,6 +102,15 @@ pub(super) fn check(rest: &RestFiles, git: &[FileChange]) -> Result<(), FileList
         .flat_map(|file| std::iter::once(file.path.as_str()).chain(file.previous_path.as_deref()))
         .collect();
     let git_paths: BTreeSet<&str> = git.iter().flat_map(FileChange::sides).collect();
+    // GitHub counts a file once (a rename too), so a complete git list names at least as many
+    // distinct paths as `changed_files`; the subset check alone would accept a short one.
+    let git_count = u64::try_from(git_paths.len()).unwrap_or(u64::MAX);
+    if truncated && git_count < rest.changed_files {
+        return Err(FileListError::GitShort {
+            git_paths: git_paths.len(),
+            changed_files: rest.changed_files,
+        });
+    }
     let only_in_rest: Vec<&str> = rest_paths.difference(&git_paths).copied().collect();
     let only_in_git: Vec<&str> = if truncated {
         Vec::new()

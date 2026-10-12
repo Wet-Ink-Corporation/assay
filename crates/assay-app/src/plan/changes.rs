@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use assay_domain::{BaselineChange, ChangeSet, FileChange, ManifestTrustChange};
 
-use super::objects::{EntryKind, PullRequestObjects};
-use super::{IncludeTargets, PlanError, PlanRequest, read_entries};
+use super::objects::{EntryKind, PullRequestObjects, TreeEntry};
+use super::{IncludeTargets, ObjectsStep, PlanError, PlanRequest, PullRequestEvent, read_entries};
 use crate::config::CommitId;
 use crate::tiering::{baseline_change, exec_surface, manifest_exec_roots, manifest_trust_keys};
 
@@ -30,8 +30,8 @@ pub(super) fn change_set<O: PullRequestObjects, N>(
     files: Vec<FileChange>,
 ) -> Result<ChangeSet, PlanError<O::Error, N>> {
     let pull_request = &request.pull_request;
-    let base = manifests(objects, &pull_request.base_sha)?;
-    let head = manifests(objects, &pull_request.head_sha)?;
+    let base = manifests(objects, &Side::base(pull_request))?;
+    let head = manifests(objects, &Side::head(pull_request))?;
     let paths: BTreeSet<&str> = base.keys().chain(head.keys()).map(String::as_str).collect();
     let declared: Vec<_> = paths
         .iter()
@@ -89,12 +89,45 @@ fn is_manifest(path: &str) -> bool {
         .is_some_and(|name| name.eq_ignore_ascii_case("Cargo.toml"))
 }
 
-/// Every manifest in `commit`'s tree, by path.
+/// One of the two pinned commits, with the step a failure to list it reports.
+struct Side<'a> {
+    commit: &'a CommitId,
+    step: ObjectsStep,
+}
+
+impl<'a> Side<'a> {
+    const fn base(pull_request: &'a PullRequestEvent) -> Self {
+        Self {
+            commit: &pull_request.base_sha,
+            step: ObjectsStep::ListBase,
+        }
+    }
+
+    const fn head(pull_request: &'a PullRequestEvent) -> Self {
+        Self {
+            commit: &pull_request.head_sha,
+            step: ObjectsStep::ListHead,
+        }
+    }
+
+    /// The entries at `path` (the whole tree for `None`) on this side.
+    fn list<O: PullRequestObjects, N>(
+        &self,
+        objects: &O,
+        path: Option<&str>,
+    ) -> Result<Vec<TreeEntry>, PlanError<O::Error, N>> {
+        objects
+            .list(self.commit, path)
+            .map_err(PlanError::objects(self.step))
+    }
+}
+
+/// Every manifest in one side's tree, by path.
 fn manifests<O: PullRequestObjects, N>(
     objects: &O,
-    commit: &CommitId,
+    side: &Side<'_>,
 ) -> Result<Manifests, PlanError<O::Error, N>> {
-    let mut found = objects.list(commit, None).map_err(PlanError::Objects)?;
+    let mut found = side.list(objects, None)?;
     found.retain(|entry| is_manifest(&entry.path));
     let readable: Vec<_> = found
         .iter()
@@ -127,21 +160,19 @@ fn baseline<O: PullRequestObjects, N>(
     request: &PlanRequest,
 ) -> Result<BaselineChange, PlanError<O::Error, N>> {
     let pull_request = &request.pull_request;
-    let base = file_text(objects, &pull_request.base_sha, TEMPER_BASELINE)?;
-    let head = file_text(objects, &pull_request.head_sha, TEMPER_BASELINE)?;
+    let base = file_text(objects, &Side::base(pull_request), TEMPER_BASELINE)?;
+    let head = file_text(objects, &Side::head(pull_request), TEMPER_BASELINE)?;
     Ok(baseline_change(base.as_deref(), head.as_deref()))
 }
 
-/// The text of the regular file at exactly `path` in `commit`; `None` when there is none, or
+/// The text of the regular file at exactly `path` on one side; `None` when there is none, or
 /// it is not a regular UTF-8 file (which `baseline_change` reads as any other change).
 fn file_text<O: PullRequestObjects, N>(
     objects: &O,
-    commit: &CommitId,
+    side: &Side<'_>,
     path: &str,
 ) -> Result<Option<String>, PlanError<O::Error, N>> {
-    let entries = objects
-        .list(commit, Some(path))
-        .map_err(PlanError::Objects)?;
+    let entries = side.list(objects, Some(path))?;
     let Some(entry) = entries
         .iter()
         .find(|entry| entry.path == path && entry.kind == EntryKind::File)

@@ -11,8 +11,9 @@ use std::process::Command;
 use std::time::Duration;
 
 use assay_app::{
-    ArtifactNonce, ContractValidator, FileListError, IncludeTargets, NonceSource, PackageSet,
-    PlanError, PlanRequest, PlannedRun, PullRequestEvent, RestFile, RestFiles, plan,
+    ArtifactNonce, BaseConfigError, ContractValidator, EntryKind, FileListError, IncludeTargets,
+    NonceSource, PackageSet, PlanError, PlanRequest, PlannedRun, PullRequestEvent, RestFile,
+    RestFiles, plan,
 };
 use assay_cli::{ForgeObjectsError, ForgePullRequest};
 use assay_domain::{ContentHash, RunUid};
@@ -41,6 +42,22 @@ struct Pr {
 /// The fork point holds `.assay/plugins.toml`, a manifest and a library; `base_files` are
 /// committed on top of it as the base, and `head_files` on top of the fork point as the head.
 fn pr(base_files: &[(&str, &str)], head_files: &[(&str, &str)]) -> Result<Pr, Box<dyn Error>> {
+    pr_with_base_edit(
+        |work| {
+            for (path, contents) in base_files {
+                write(work, path, contents)?;
+            }
+            Ok(())
+        },
+        head_files,
+    )
+}
+
+/// Like [`pr`], with the base commit made by `edit_base` in the scratch worktree.
+fn pr_with_base_edit(
+    edit_base: impl FnOnce(&Path) -> Result<(), Box<dyn Error>>,
+    head_files: &[(&str, &str)],
+) -> Result<Pr, Box<dyn Error>> {
     let scratch = tempfile::tempdir()?;
     let work = scratch.path().join("work");
     plain_git(scratch.path(), &["init", "--quiet", "work"])?;
@@ -53,7 +70,8 @@ fn pr(base_files: &[(&str, &str)], head_files: &[(&str, &str)]) -> Result<Pr, Bo
     )?;
     write(&work, "src/lib.rs", "pub fn one() {}\n")?;
     let fork = commit(&work, &[], "fork")?;
-    let base = commit(&work, base_files, "base")?;
+    edit_base(&work)?;
+    let base = commit(&work, &[], "base")?;
     plain_git(&work, &["checkout", "--quiet", "-b", "pr", fork.as_str()])?;
     let head = commit(&work, head_files, "head")?;
     let git_dir = scratch.path().join("objects.git");
@@ -277,6 +295,43 @@ fn a_rest_list_git_does_not_confirm_fails_the_plan() -> Result<(), Box<dyn Error
             }))
         ),
         "a mismatch must fail loudly, got {planned:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_submodule_in_the_base_config_fails_the_plan() -> Result<(), Box<dyn Error>> {
+    let pr = pr_with_base_edit(
+        |work| {
+            // An unpopulated submodule's directory, so `git add --all` keeps the gitlink.
+            fs::create_dir_all(work.join(".assay/vendored"))?;
+            plain_git(
+                work,
+                &[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    "160000,0123456789abcdef0123456789abcdef01234567,.assay/vendored",
+                ],
+            )?;
+            Ok(())
+        },
+        &[("src/lib.rs", "pub fn two() {}\n")],
+    )?;
+    let request = request(&pr, &["src/lib.rs"])?;
+
+    let planned = run(&pr, &request)?;
+
+    assert!(
+        matches!(
+            planned,
+            Err(PlanError::BaseConfig(BaseConfigError::NotARegularFile {
+                ref path,
+                kind: EntryKind::Submodule,
+            })) if path == ".assay/vendored"
+        ),
+        "a gitlink under base `.assay/` is refused, never followed, got {planned:?}"
     );
     Ok(())
 }

@@ -151,6 +151,40 @@ fn reports_a_symlink_by_its_mode() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn lists_a_file_turned_into_a_symlink_once_with_both_kinds() -> Result<(), Box<dyn Error>> {
+    // A typechange (`T`): the path keeps its name but changes mode.
+    let fixture = fixture_with_head(|work| {
+        std::fs::remove_file(work.join("README.md"))?;
+        std::os::unix::fs::symlink("src/lib.rs", work.join("README.md"))?;
+        Ok(())
+    })?;
+
+    let files = listed(&fixture)?;
+
+    assert_eq!(
+        files
+            .iter()
+            .map(|file| (
+                file.path(),
+                file.previous_path(),
+                file.base_kind(),
+                file.head_kind()
+            ))
+            .collect::<Vec<_>>(),
+        [(
+            "README.md",
+            None,
+            Some(EntryKind::File),
+            Some(EntryKind::Symlink)
+        )],
+        "a typechange is one record carrying both sides' modes"
+    );
+    Ok(())
+}
+
 #[test]
 #[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
 fn reports_a_submodule_by_its_mode() -> Result<(), Box<dyn Error>> {

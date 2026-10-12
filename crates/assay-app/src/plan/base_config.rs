@@ -5,7 +5,7 @@ use assay_domain::{ContentHash, RepoGlobs};
 use thiserror::Error;
 
 use super::objects::{EntryKind, PullRequestObjects};
-use super::{PlanError, read_entries};
+use super::{ObjectsStep, PlanError, read_entries};
 use crate::config::{CommitId, ConfigError, GlobsConfigError, PluginsConfig, parse_globs};
 
 /// The base configuration directory.
@@ -63,7 +63,7 @@ pub(super) fn read<O: PullRequestObjects, N>(
 ) -> Result<BaseConfig, PlanError<O::Error, N>> {
     let entries = objects
         .list(base, Some(CONFIG_DIR))
-        .map_err(PlanError::Objects)?;
+        .map_err(PlanError::objects(ObjectsStep::ListBase))?;
     if let Some(entry) = entries.iter().find(|entry| entry.kind != EntryKind::File) {
         return Err(PlanError::BaseConfig(BaseConfigError::NotARegularFile {
             // The error owns the path it names.

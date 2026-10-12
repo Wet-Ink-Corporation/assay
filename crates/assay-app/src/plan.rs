@@ -110,12 +110,43 @@ impl PlannedRun {
     }
 }
 
+/// Which call to the objects port failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectsStep {
+    /// [`PullRequestObjects::changed_files`].
+    ChangedFiles,
+    /// [`PullRequestObjects::list`] at `base_sha`.
+    ListBase,
+    /// [`PullRequestObjects::list`] at `head_sha`.
+    ListHead,
+    /// [`PullRequestObjects::read`].
+    Read,
+}
+
+impl ObjectsStep {
+    /// The step as the error message names it.
+    const fn describe(self) -> &'static str {
+        match self {
+            Self::ChangedFiles => "list the changed files",
+            Self::ListBase => "list the base tree",
+            Self::ListHead => "list the head tree",
+            Self::Read => "read blobs",
+        }
+    }
+}
+
 /// Why no run description was written. Every variant fails the run.
 #[derive(Debug, Error)]
 pub enum PlanError<O, N> {
     /// The PR's objects could not be read.
-    #[error("could not read the pull request's objects")]
-    Objects(#[source] O),
+    #[error("could not {} of the pull request", step.describe())]
+    Objects {
+        /// The port call that failed.
+        step: ObjectsStep,
+        /// The port's error.
+        #[source]
+        source: O,
+    },
     /// The objects port returned a different number of blobs than entries asked for.
     #[error("asked for {asked} blobs, read {returned}")]
     ShortRead {
@@ -149,6 +180,13 @@ pub enum PlanError<O, N> {
     /// The document failed its own schema: a defect in `plan`, never written out.
     #[error("the run description failed its schema")]
     Invalid(#[source] ReadContractError),
+}
+
+impl<O, N> PlanError<O, N> {
+    /// Wraps a port error from `step`, for `map_err`.
+    const fn objects(step: ObjectsStep) -> impl FnOnce(O) -> Self {
+        move |source| Self::Objects { step, source }
+    }
 }
 
 /// Plans one PR head: `request`'s PR read through `objects`, artifact nonces from `nonces`,
@@ -190,7 +228,7 @@ pub fn plan<O: PullRequestObjects, N: NonceSource>(
     let pull_request = &request.pull_request;
     let files = match objects
         .changed_files(&pull_request.base_sha, &pull_request.head_sha)
-        .map_err(PlanError::Objects)?
+        .map_err(PlanError::objects(ObjectsStep::ChangedFiles))?
     {
         ChangedFiles::Listed(files) => files,
         ChangedFiles::TooSlow => return Err(PlanError::DiffTooSlow),
@@ -247,7 +285,9 @@ fn read_entries<O: PullRequestObjects, N>(
     if entries.is_empty() {
         return Ok(Vec::new());
     }
-    let blobs = objects.read(entries).map_err(PlanError::Objects)?;
+    let blobs = objects
+        .read(entries)
+        .map_err(PlanError::objects(ObjectsStep::Read))?;
     if blobs.len() == entries.len() {
         Ok(blobs)
     } else {
