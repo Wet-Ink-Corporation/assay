@@ -11,7 +11,16 @@ workspace = true
 # Workspace edges allowed: assay-app and assay-domain (02 §2). Added by the story that first uses them.
 [dependencies]
 assay-app = { workspace = true }
+# The temper adapter (#63) builds its `assay.findings/1` document from the domain's types, parses
+# temper's JSON (baseline, temper.json, scan output) with serde_json and base
+# `.assay/exceptions.toml` with toml. All pre-approved and already workspace dependencies.
+assay-domain = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
+# The lexer's token boundaries against proc-macro2's (src/temper/corpus.rs).
+syn = { workspace = true }
 tempfile = { workspace = true }

@@ -12,6 +12,7 @@ use super::attributes::{
 use super::command::{GitEnvironment, GitOperation, git};
 use super::numstat::{self, DiffOutcome, FileChange};
 use super::sha::{CommitSha, HttpsRemote};
+use super::tree::{self, BlobRef, TreeEntry, TreeLimits};
 use super::{GitError, Malformed};
 use crate::process::{self, Captured, Limits, ProcessError};
 
@@ -201,6 +202,110 @@ impl ObjectRepo {
             }
         })?;
         attributes::judge(found, allowlist)
+    }
+
+    /// Lists the entries at or under `path` in `commit`'s tree (the whole tree for `None`), in
+    /// git's path order, with their kinds, object ids and sizes; nothing is read. `path` is
+    /// literal (ls-tree matches whole path components and expands no wildcard), so
+    /// `.claude/temper` never matches `.claude/temper.json`.
+    ///
+    /// # Errors
+    /// [`GitError::TooManyEntries`] past `limits.max_entries`, and [`GitError`] when `ls-tree`
+    /// cannot run, fails, or prints output this layer cannot read (an unknown mode, a short
+    /// object id, a non-UTF-8 path).
+    pub fn list_tree(
+        &self,
+        commit: &CommitSha,
+        path: Option<&str>,
+        limits: TreeLimits,
+    ) -> Result<Vec<TreeEntry>, GitError> {
+        let mut args = vec![commit.as_str(), "--"];
+        args.extend(path);
+        let captured = self.run(self.call(GitOperation::ListTree, &args))?;
+        let entries =
+            tree::parse(&captured.stdout).map_err(|Malformed(detail)| GitError::Malformed {
+                operation: GitOperation::ListTree,
+                detail,
+            })?;
+        if entries.len() > limits.max_entries {
+            return Err(GitError::TooManyEntries {
+                max: limits.max_entries,
+                found: entries.len(),
+            });
+        }
+        Ok(entries)
+    }
+
+    /// Reads `blobs` (files, executables and symlinks from [`Self::list_tree`], borrowed as
+    /// [`BlobRef`]s) with one `git cat-file --batch`, in order. The listed sizes are summed and
+    /// checked against `limits.max_total_bytes` before anything is read, and each blob must
+    /// come back at its listed size.
+    ///
+    /// # Errors
+    /// [`GitError::TooManyBytes`] past the limit, [`GitError::NotABlob`] for a submodule, and
+    /// [`GitError`] when cat-file cannot run, fails, or prints anything but the listed blobs.
+    pub fn read_blobs(
+        &self,
+        blobs: &[BlobRef<'_>],
+        limits: TreeLimits,
+    ) -> Result<Vec<Vec<u8>>, GitError> {
+        let mut expected = Vec::with_capacity(blobs.len());
+        let mut total = 0_u64;
+        for blob in blobs {
+            let (Some(size), true) = (blob.size, tree::is_object_id(blob.object)) else {
+                return Err(GitError::NotABlob {
+                    // The error owns the path it names.
+                    path: blob.path.to_owned(),
+                });
+            };
+            total = total.saturating_add(size);
+            expected.push((blob.object, size));
+        }
+        if total > limits.max_total_bytes {
+            return Err(GitError::TooManyBytes {
+                max: limits.max_total_bytes,
+                found: total,
+            });
+        }
+        if expected.is_empty() {
+            return Ok(Vec::new());
+        }
+        let input: String = expected
+            .iter()
+            .flat_map(|(object, _)| [*object, "\n"])
+            .collect();
+        let captured = self.run(Call {
+            input: input.as_bytes(),
+            ..self.call(GitOperation::ReadBlobs, &[])
+        })?;
+        tree::parse_batch(&captured.stdout, &expected).map_err(|Malformed(detail)| {
+            GitError::Malformed {
+                operation: GitOperation::ReadBlobs,
+                detail,
+            }
+        })
+    }
+
+    /// The object id `bytes` have as a blob in this repository (`git hash-object --no-filters
+    /// --stdin`, nothing written), so content can be compared with a listing without reading
+    /// the listed blob.
+    ///
+    /// # Errors
+    /// [`GitError`] when hash-object cannot run, fails or prints something other than an id.
+    pub fn hash_blob(&self, bytes: &[u8]) -> Result<String, GitError> {
+        let captured = self.run(Call {
+            input: bytes,
+            ..self.call(GitOperation::HashBlob, &[])
+        })?;
+        str::from_utf8(&captured.stdout)
+            .ok()
+            .and_then(|text| text.strip_suffix('\n'))
+            .filter(|id| tree::is_object_id(id))
+            .map(str::to_owned)
+            .ok_or(GitError::Malformed {
+                operation: GitOperation::HashBlob,
+                detail: "hash-object did not print one object id",
+            })
     }
 
     /// The hardened command for `operation` with `args` appended.

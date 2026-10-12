@@ -1,0 +1,23 @@
+[
+  {
+    "key": "expect-attr",
+    "id": "H-05",
+    "severity": "ask",
+    "line": 1,
+    "text": "#[expect(clippy::too_many_lines, clippy::unwrap_used, reason = \"one state machine\")]",
+    "exception": "clippy::too_many_lines",
+    "msg": "lint exception requested for `clippy::too_many_lines`",
+    "fix": "Exception requests need human approval (H-05).",
+    "file": "src/lib.rs"
+  },
+  {
+    "key": "commented-code",
+    "id": "H-06",
+    "severity": "soft",
+    "line": 5,
+    "text": "// let x = 1;",
+    "msg": "commented-out code",
+    "fix": "Delete it; version control remembers.",
+    "file": "src/lib.rs"
+  }
+]
