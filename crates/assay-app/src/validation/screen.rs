@@ -227,8 +227,8 @@ fn has_email(prose: &str) -> bool {
     })
 }
 
-/// Whether lowercase `text` opens a fenced block whose info string is `suggestion`, inside any
-/// number of containers (`> - ```suggestion`).
+/// Whether lowercase `text` opens a fenced block whose info string is `suggestion`, or holds a
+/// `&` or `\` that could spell it, inside any number of containers (`> - ```suggestion`).
 fn has_suggestion_fence(text: &str) -> bool {
     text.lines().any(|line| {
         let mut inner = line;
@@ -238,9 +238,9 @@ fn has_suggestion_fence(text: &str) -> bool {
         let trimmed = inner.trim_start();
         ["```", "~~~"].iter().any(|fence| {
             trimmed.strip_prefix(fence).is_some_and(|info| {
-                info.trim_start_matches(['`', '~'])
-                    .trim_start()
-                    .starts_with("suggestion")
+                // An entity or backslash can spell `suggestion` in an info string: fail closed.
+                let info = info.trim_start_matches(['`', '~']).trim_start();
+                info.starts_with("suggestion") || info.contains(['&', '\\'])
             })
         })
     })
@@ -367,7 +367,7 @@ pub(super) fn is_invisible(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Suspicion, screen};
+    use super::{Suspicion, has_suggestion_fence, screen};
 
     const REPO: &str = "Wet-Ink-Corporation/assay";
 
@@ -560,6 +560,53 @@ mod tests {
         ];
 
         assert_eq!(texts.map(screened), [Some(Suspicion::Url); 2]);
+    }
+
+    #[test]
+    fn removes_only_fences_of_allowlisted_inert_languages() {
+        // Round 8: an info string off the allowlist, encoded or with extra words, is prose.
+        let texts = [
+            "```&#109;ermaid\ngraph TD\nA[\"<img src=x>\"]\n```",
+            "```rust ignore\n<img src=x>\n```",
+            "```unknown\n<img src=x>\n```",
+            "~~~mer\\maid\n<img src=x>\n~~~",
+            "```RUST\nlet v: Vec<u8> = x;\n```",
+            "```\nlet v: Vec<u8> = x;\n```",
+        ];
+
+        assert_eq!(
+            texts.map(screened),
+            [
+                Some(Suspicion::Html),
+                Some(Suspicion::Html),
+                Some(Suspicion::Html),
+                Some(Suspicion::Html),
+                None,
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn catches_an_encoded_suggestion_fence() {
+        let encoded = ["```&#115;uggestion", "~~~ \\suggestion", "```rust"];
+
+        assert_eq!(
+            (
+                screened("```&#115;uggestion\nfoo();\n```").is_some(),
+                encoded.map(has_suggestion_fence)
+            ),
+            (true, [true, true, false])
+        );
+    }
+
+    #[test]
+    fn keeps_an_unclosed_fence_raw() {
+        // Round 8 F2: spans inside an unclosed fence are not stripped.
+        assert_eq!(
+            screened("~~~mermaid\nA[\"`<img src=x>`\"]"),
+            Some(Suspicion::Html)
+        );
     }
 
     #[test]

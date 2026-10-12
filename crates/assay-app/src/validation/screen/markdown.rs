@@ -3,7 +3,8 @@
 //!
 //! Only what is unambiguously code is removed (wi-b5affa: refuse rather than model). Text that
 //! is not plain (a `|`, whitespace other than space, tab and line feed, or a container line)
-//! keeps everything; in plain text, an unclosed fence, an indented code block and every code
+//! keeps everything; in plain text, an unclosed fence, a fence whose info string is neither
+//! empty nor an allowlisted language, an indented code block and every code
 //! span of a paragraph in which some backtick run does not pair within its own line stay prose,
 //! and so are screened: a false suspect costs a finding, a false exemption lets markup through.
 //! Link destinations are read before code spans are paired (`links.rs`): a backtick inside a
@@ -17,9 +18,42 @@ const MAX_FENCE_INDENT: usize = 3;
 /// The shortest run of backticks or tildes that opens a fence.
 const MIN_FENCE_RUN: usize = 3;
 
-/// The info words of fences GitHub renders rather than shows as code (mermaid has click links,
-/// math has `\href`), so their lines are prose (wi-b5affa).
-const LIVE_FENCES: [&str; 5] = ["mermaid", "math", "geojson", "topojson", "stl"];
+/// The languages whose fences GitHub only highlights, never renders: a closed fence is removed
+/// as code only if its info string is empty or one of these. Any other (mermaid and math render
+/// live, an encoded or unknown word may too) leaves its lines prose (wi-b5affa: an allowlist,
+/// not a list of what renders).
+const INERT_LANGUAGES: [&str; 30] = [
+    "rust",
+    "rs",
+    "toml",
+    "json",
+    "yaml",
+    "yml",
+    "text",
+    "txt",
+    "plain",
+    "sh",
+    "bash",
+    "shell",
+    "console",
+    "diff",
+    "patch",
+    "sql",
+    "c",
+    "cpp",
+    "go",
+    "python",
+    "py",
+    "js",
+    "ts",
+    "javascript",
+    "typescript",
+    "html",
+    "xml",
+    "ini",
+    "makefile",
+    "dockerfile",
+];
 
 /// The most digits an ordered list marker may have (`CommonMark`).
 const MAX_ORDERED_DIGITS: usize = 9;
@@ -58,12 +92,9 @@ pub(super) fn prose(text: &str) -> Cow<'_, str> {
     for line in text.lines() {
         open = match open {
             Some((fence, lines)) if fence.closed_by(line) => {
-                // A fence GitHub renders live is closed as a block, but its lines stay prose.
-                if fence.live {
-                    for kept in lines.into_iter().chain([line]) {
-                        prose.push_str(kept);
-                        prose.push('\n');
-                    }
+                // A fence not known inert is closed as a block, but its lines stay prose.
+                if !fence.inert {
+                    push_raw(lines.into_iter().chain([line]), &mut prose);
                 }
                 None
             }
@@ -83,13 +114,20 @@ pub(super) fn prose(text: &str) -> Cow<'_, str> {
         };
     }
     // A fence never closed is ambiguous: CommonMark runs it to the end, a later edit may not.
+    // Its lines are kept raw, so no code span is stripped from them either.
     if let Some((_, lines)) = open {
-        for line in lines {
-            add(line, &mut paragraph, &mut prose);
-        }
+        push_raw(lines, &mut prose);
     }
     flush(&mut paragraph, &mut prose);
     Cow::Owned(prose)
+}
+
+/// Appends `lines` to `prose` as written, each ended by a line feed.
+fn push_raw<'t>(lines: impl IntoIterator<Item = &'t str>, prose: &mut String) {
+    for line in lines {
+        prose.push_str(line);
+        prose.push('\n');
+    }
 }
 
 /// Adds `line` to the open `paragraph`, or ends it at a blank line.
@@ -142,34 +180,28 @@ pub(super) fn container_marker(line: &str) -> Option<&str> {
     (rest.is_empty() || rest.starts_with([' ', '\t'])).then_some(rest)
 }
 
-/// An open fenced block: its character, the length of its opening run, and whether GitHub
-/// renders it live.
+/// An open fenced block: its character, the length of its opening run, and whether its info
+/// string marks it as code GitHub only highlights.
 #[derive(Debug, Clone, Copy)]
 struct Fence {
     marker: char,
     run: usize,
-    live: bool,
+    inert: bool,
 }
 
 impl Fence {
     /// The fence `line` opens: at most three spaces, then three or more backticks or tildes;
-    /// a backtick fence's info string may not hold a backtick. It is live if its info string's
-    /// first word is one of [`LIVE_FENCES`], ASCII case-insensitive.
+    /// a backtick fence's info string may not hold a backtick. See [`is_inert`] for `inert`.
     fn opened_by(line: &str) -> Option<Self> {
         let body = unindented(line)?;
         let marker = body.chars().next().filter(|&c| c == '`' || c == '~')?;
         let run = run_length(body, marker);
         let info = body.get(run..)?;
         let opens = run >= MIN_FENCE_RUN && !(marker == '`' && info.contains('`'));
-        let rendered = info.split_whitespace().next().is_some_and(|word| {
-            LIVE_FENCES
-                .iter()
-                .any(|name| name.eq_ignore_ascii_case(word))
-        });
         opens.then_some(Self {
             marker,
             run,
-            live: rendered,
+            inert: is_inert(info),
         })
     }
 
@@ -184,6 +216,20 @@ impl Fence {
                     .is_some_and(|rest| rest.trim_matches([' ', '\t']).is_empty())
         })
     }
+}
+
+/// Whether a fence with info string `info` is code GitHub only highlights: `info` is empty, or
+/// one word of ASCII letters, digits, `_`, `+` or `-` that is in [`INERT_LANGUAGES`], ASCII
+/// case-insensitive. An entity, a backslash or a second word makes it not inert.
+fn is_inert(info: &str) -> bool {
+    let word = info.trim_matches([' ', '\t']);
+    word.is_empty()
+        || (word
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'-'))
+            && INERT_LANGUAGES
+                .iter()
+                .any(|language| language.eq_ignore_ascii_case(word)))
 }
 
 /// `line` without its leading spaces, if there are at most [`MAX_FENCE_INDENT`]. A tab is not
