@@ -87,17 +87,63 @@ impl ExecLimits {
     };
 }
 
-/// Where and how exec gates run in this job.
+/// Where and how exec gates run in this job. Both directories are absolute, so neither depends
+/// on this process's working directory.
 #[derive(Debug, Clone)]
 pub struct ExecSettings {
-    /// The head checkout, the command's working directory.
-    pub checkout: PathBuf,
-    /// An existing directory; each run creates `<output_root>/<plugin>/` and fails if it exists.
-    pub output_root: PathBuf,
-    /// The inherited variables a gate may see.
-    pub environment: GateEnvironment,
-    /// Size caps.
-    pub limits: ExecLimits,
+    checkout: PathBuf,
+    output_root: PathBuf,
+    environment: GateEnvironment,
+    limits: ExecLimits,
+}
+
+/// Why [`ExecSettings`] were refused.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ExecSettingsError {
+    /// The head checkout is a relative path.
+    #[error("the checkout {} is not an absolute path", path.display())]
+    RelativeCheckout {
+        /// The refused path.
+        path: PathBuf,
+    },
+    /// The output root is a relative path.
+    #[error("the output root {} is not an absolute path", path.display())]
+    RelativeOutputRoot {
+        /// The refused path.
+        path: PathBuf,
+    },
+}
+
+impl ExecSettings {
+    /// Settings that run commands from `checkout` (the head checkout), give each run a fresh
+    /// `<output_root>/<plugin>/` (`output_root` must exist), pass `environment` and enforce
+    /// `limits`.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecSettingsError::RelativeCheckout`] or [`ExecSettingsError::RelativeOutputRoot`]
+    /// when either directory is a relative path.
+    pub fn new(
+        checkout: impl Into<PathBuf>,
+        output_root: impl Into<PathBuf>,
+        environment: GateEnvironment,
+        limits: ExecLimits,
+    ) -> Result<Self, ExecSettingsError> {
+        let checkout = checkout.into();
+        if !checkout.is_absolute() {
+            return Err(ExecSettingsError::RelativeCheckout { path: checkout });
+        }
+        let output_root = output_root.into();
+        if !output_root.is_absolute() {
+            return Err(ExecSettingsError::RelativeOutputRoot { path: output_root });
+        }
+        Ok(Self {
+            checkout,
+            output_root,
+            environment,
+            limits,
+        })
+    }
 }
 
 /// The `exec` adapter, generic over the process supervisor that bounds the run.
@@ -173,16 +219,11 @@ impl<S: Supervisor> GateRunner for ExecAdapter<S> {
 }
 
 impl<S> ExecAdapter<S> {
-    /// The allowlisted variables without any inherited findings path, then this run's.
+    /// The allowlisted variables, then this run's findings path.
     fn environment(&self, document: &Path) -> Vec<(OsString, OsString)> {
-        let mut env: Vec<_> = self
-            .settings
-            .environment
-            .vars()
-            .iter()
-            .filter(|(name, _)| name != FINDINGS_OUT_VAR)
-            .cloned()
-            .collect();
+        // The allowlist never holds an inherited `ASSAY_FINDINGS_OUT` (only the six names of
+        // 03 §2), so this run's path is the only one.
+        let mut env = self.settings.environment.vars().to_vec();
         env.push((FINDINGS_OUT_VAR.into(), document.into()));
         env
     }
@@ -243,7 +284,7 @@ pub enum ExecError<E> {
     #[error("exec gates run only in a Z2b job, never in gates-static")]
     OutsideBuildJob,
     /// The job is a Z2b job other than the plugin's own.
-    #[error("plugin `{plugin}` does not run in {job:?}")]
+    #[error("plugin `{plugin}` does not run in {job}")]
     WrongJob {
         /// The plugin.
         plugin: String,

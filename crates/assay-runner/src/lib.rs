@@ -11,6 +11,6 @@ mod replay;
 mod stream;
 
 pub use headless::{
-    ClaudeHeadless, EnvVarError, HeadlessEnv, HeadlessError, Workdir, WorkdirError,
+    ClaudeHeadless, EnvVarError, GroupKill, HeadlessEnv, HeadlessError, Workdir, WorkdirError,
 };
 pub use replay::{Recording, Replay, ReplayError};
