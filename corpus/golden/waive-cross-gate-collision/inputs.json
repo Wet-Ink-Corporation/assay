@@ -20,6 +20,7 @@
     "classes": [],
     "owner_approval": "not-approved",
     "authorship": "other",
+    "readiness": "ready",
     "requeues": 0
   },
   "gates": [
@@ -29,7 +30,9 @@
       "outcome": {
         "status": "ran",
         "conclusion": "fail",
-        "failed_steps": []
+        "steps": {
+          "known": []
+        }
       },
       "findings": [
         {
@@ -45,7 +48,9 @@
       "outcome": {
         "status": "ran",
         "conclusion": "fail",
-        "failed_steps": []
+        "steps": {
+          "known": []
+        }
       },
       "findings": [
         {

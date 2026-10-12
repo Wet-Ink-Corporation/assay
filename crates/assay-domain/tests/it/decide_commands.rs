@@ -5,11 +5,11 @@ use std::error::Error;
 
 use assay_domain::{
     Conclusion, Counts, Decision, DecisionInputs, Deferral, DegradedRole, Disposition,
-    FindingDisposition, GateConclusion, InfraPolicy, LlmStage, Override, OverrideScope,
-    OwnerApproval, PrClass, ReasonCode, Severity, Tier, Waived, Waiver, decide,
+    FindingDisposition, InfraPolicy, LlmStage, Override, OverrideScope, OwnerApproval, PrClass,
+    ReasonCode, Severity, Tier, Waived, Waiver, decide,
 };
 
-use crate::support::{clean_inputs, confirmed, gate, gate_finding, reason, rubric_v1};
+use crate::support::{attested_gate, clean_inputs, confirmed, gate_finding, reason, rubric_v1};
 
 /// `printf 'gate-failed\n' | sha256sum`
 const GATE_FAILED_DIGEST: &str =
@@ -32,8 +32,8 @@ fn decided(inputs: &DecisionInputs) -> Result<Decision, Box<dyn Error>> {
     Ok(decide(&rubric_v1()?, inputs))
 }
 
-/// A failed temper gate with a raised baseline (waivable) and, when `with_clippy`, a clippy
-/// finding (never waivable).
+/// A failed temper gate, its steps attested, with a raised baseline (waivable) and, when
+/// `with_clippy`, a clippy finding (never waivable).
 fn temper_failed(with_clippy: bool) -> DecisionInputs {
     let mut findings = vec![gate_finding("00000000000000a1", "raised", Severity::Major)];
     if with_clippy {
@@ -44,7 +44,7 @@ fn temper_failed(with_clippy: bool) -> DecisionInputs {
         ));
     }
     let mut inputs = clean_inputs();
-    inputs.gates = vec![gate("temper", GateConclusion::Fail, findings)];
+    inputs.gates = vec![attested_gate("temper", findings)];
     inputs
 }
 
@@ -250,6 +250,20 @@ fn an_override_is_void_once_a_quoted_reason_disappears() -> Result<(), Box<dyn E
         OverrideScope::All,
         GATE_FAILED_NEEDS_SPLIT_DIGEST,
     ));
+
+    let decision = decided(&inputs)?;
+
+    assert_eq!(decision.conclusion, Conclusion::Failure);
+    assert_eq!(decision.reasons, [reason(ReasonCode::GateFailed, "temper")]);
+    Ok(())
+}
+
+#[test]
+fn an_override_without_an_actor_is_not_applied() -> Result<(), Box<dyn Error>> {
+    let mut inputs = temper_failed(true);
+    let mut record = override_record(OverrideScope::All, GATE_FAILED_DIGEST);
+    record.by = String::new();
+    inputs.override_record = Some(record);
 
     let decision = decided(&inputs)?;
 

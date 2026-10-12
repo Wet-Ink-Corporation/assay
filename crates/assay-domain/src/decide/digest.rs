@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use crate::decide::inputs::{
     Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
     LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
-    ReviewedFinding, Waiver, WeighIn,
+    Readiness, ReviewedFinding, StepAttribution, Waiver, WeighIn,
 };
 use crate::decision::{DegradedRole, FindingDisposition, Reason};
 use crate::disposition::Disposition;
@@ -159,6 +159,7 @@ canonical_by_code!(
     OverrideScope,
     OwnerApproval,
     PrClass,
+    Readiness,
     Severity,
     Tier,
     VerifierVerdict,
@@ -205,6 +206,7 @@ canonical_struct!(PullRequest {
     classes,
     owner_approval,
     authorship,
+    readiness,
     requeues,
 });
 canonical_struct!(GateReport {
@@ -234,19 +236,28 @@ canonical_struct!(Override {
 impl Canonical for GateOutcome {
     fn encode(&self, encoder: &mut Encoder) {
         match self {
-            Self::Ran {
-                conclusion,
-                failed_steps,
-            } => {
+            Self::Ran { conclusion, steps } => {
                 "ran".encode(encoder);
                 conclusion.encode(encoder);
-                failed_steps.encode(encoder);
+                steps.encode(encoder);
             }
             Self::Error { detail } => {
                 "error".encode(encoder);
                 detail.encode(encoder);
             }
             Self::Skipped => "skipped".encode(encoder),
+        }
+    }
+}
+
+impl Canonical for StepAttribution {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::Unknown => "unknown".encode(encoder),
+            Self::Known(steps) => {
+                "known".encode(encoder);
+                steps.encode(encoder);
+            }
         }
     }
 }

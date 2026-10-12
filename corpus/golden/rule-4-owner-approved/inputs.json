@@ -23,6 +23,7 @@
     ],
     "owner_approval": "approved",
     "authorship": "other",
+    "readiness": "ready",
     "requeues": 0
   },
   "gates": [
@@ -32,7 +33,7 @@
       "outcome": {
         "status": "ran",
         "conclusion": "pass",
-        "failed_steps": []
+        "steps": "unknown"
       },
       "findings": []
     }

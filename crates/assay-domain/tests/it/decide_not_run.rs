@@ -5,7 +5,7 @@ use std::error::Error;
 
 use assay_domain::{
     Conclusion, Decision, DecisionInputs, LlmStage, NotRunReason, OwnerApproval, PrClass,
-    ReasonCode, Tier, decide,
+    Readiness, ReasonCode, Tier, decide,
 };
 
 use crate::support::{clean_inputs, reason, rubric_v1};
@@ -32,10 +32,28 @@ fn a_trivial_pr_without_an_llm_stage_succeeds() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn a_draft_without_an_llm_stage_succeeds() -> Result<(), Box<dyn Error>> {
-    let decision = decided(&not_run(Tier::Full, NotRunReason::Draft))?;
+    let mut inputs = not_run(Tier::Full, NotRunReason::Draft);
+    inputs.pr.readiness = Readiness::Draft;
+
+    let decision = decided(&inputs)?;
 
     assert_eq!(decision.conclusion, Conclusion::Success);
     assert_eq!(decision.reasons, []);
+    Ok(())
+}
+
+#[test]
+fn a_ready_pr_excused_as_a_draft_warns_llm_unavailable() -> Result<(), Box<dyn Error>> {
+    let mut inputs = not_run(Tier::Lite, NotRunReason::Draft);
+    inputs.pr.readiness = Readiness::Ready;
+
+    let decision = decided(&inputs)?;
+
+    assert_eq!(decision.conclusion, Conclusion::Success);
+    assert_eq!(
+        decision.reasons,
+        [reason(ReasonCode::LlmDegraded, "infra-llm-unavailable")]
+    );
     Ok(())
 }
 

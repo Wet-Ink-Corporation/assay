@@ -20,6 +20,7 @@
     "classes": [],
     "owner_approval": "not-approved",
     "authorship": "other",
+    "readiness": "ready",
     "requeues": 0
   },
   "gates": [

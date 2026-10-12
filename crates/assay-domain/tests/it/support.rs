@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use assay_domain::{
     Authorship, DecisionInputs, GateConclusion, GateFinding, GateOutcome, GateReport, InfraPolicy,
-    LlmPolicy, LlmStage, OwnerApproval, Policy, PrClass, PullRequest, Reason, ReasonCode,
-    ReviewedFinding, Rubric, Severity, Tier, VerifierVerdict, WeighIn,
+    LlmPolicy, LlmStage, OwnerApproval, Policy, PrClass, PullRequest, Readiness, Reason,
+    ReasonCode, ReviewedFinding, Rubric, Severity, StepAttribution, Tier, VerifierVerdict, WeighIn,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -111,6 +111,7 @@ pub(crate) fn clean_inputs() -> DecisionInputs {
             classes: Vec::new(),
             owner_approval: OwnerApproval::NotApproved,
             authorship: Authorship::Other,
+            readiness: Readiness::Ready,
             requeues: 0,
         },
         gates: vec![gate("temper", GateConclusion::Pass, Vec::new())],
@@ -124,7 +125,8 @@ pub(crate) fn clean_inputs() -> DecisionInputs {
     }
 }
 
-/// A required gate that ran and concluded `conclusion` with `findings`.
+/// A required gate that ran and concluded `conclusion` with `findings`, whose adapter did not
+/// attest its steps (what any adapter gives until the findings contract carries step results).
 pub(crate) fn gate(
     name: &str,
     conclusion: GateConclusion,
@@ -135,7 +137,21 @@ pub(crate) fn gate(
         required: true,
         outcome: GateOutcome::Ran {
             conclusion,
-            failed_steps: Vec::new(),
+            steps: StepAttribution::Unknown,
+        },
+        findings,
+    }
+}
+
+/// A required gate that failed with `findings` and whose adapter attested that no step failed
+/// without a finding, so waivers may clear it.
+pub(crate) fn attested_gate(name: &str, findings: Vec<GateFinding>) -> GateReport {
+    GateReport {
+        name: name.to_owned(),
+        required: true,
+        outcome: GateOutcome::Ran {
+            conclusion: GateConclusion::Fail,
+            steps: StepAttribution::Known(Vec::new()),
         },
         findings,
     }

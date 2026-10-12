@@ -15,6 +15,7 @@ use crate::rubric::Rubric;
 /// The waivers of one decision, resolved against its gates.
 pub(super) struct Waivers<'a> {
     rubric: &'a Rubric,
+    gates: &'a [GateReport],
     /// (gate name, fingerprint) of each waived finding, and who waived it.
     applied: BTreeMap<(&'a str, &'a str), &'a str>,
 }
@@ -40,7 +41,11 @@ impl<'a> Waivers<'a> {
                 }
             }
         }
-        Self { rubric, applied }
+        Self {
+            rubric,
+            gates: &inputs.gates,
+            applied,
+        }
     }
 
     /// Whether `finding` of `gate` is waived: its own rule is waivable and its own
@@ -52,7 +57,9 @@ impl<'a> Waivers<'a> {
                 .contains_key(&(gate.name.as_str(), finding.fp.as_str()))
     }
 
-    /// The decision's `waived` list: one entry per waived fingerprint, sorted.
+    /// The decision's `waived` list: one entry per fingerprint that every gate finding carrying
+    /// it is waived under, sorted. A fingerprint some other finding still carries unwaived is
+    /// not reported, so the decision never says a finding was waived that still counts.
     pub(super) fn waived(&self) -> Vec<Waived> {
         let by_fp: BTreeMap<&str, &str> = self
             .applied
@@ -61,11 +68,21 @@ impl<'a> Waivers<'a> {
             .collect();
         by_fp
             .into_iter()
+            .filter(|&(fp, _)| self.every_carrier_covered(fp))
             .map(|(fp, by)| Waived {
                 fp: fp.to_owned(),
                 by: by.to_owned(),
             })
             .collect()
+    }
+
+    fn every_carrier_covered(&self, fp: &str) -> bool {
+        self.gates.iter().all(|gate| {
+            gate.findings
+                .iter()
+                .filter(|finding| finding.fp == fp)
+                .all(|finding| self.covers(gate, finding))
+        })
     }
 }
 

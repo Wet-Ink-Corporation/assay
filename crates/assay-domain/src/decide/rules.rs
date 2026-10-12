@@ -75,8 +75,8 @@ fn gates<'a>(
         .filter_map(|gate| match &gate.outcome {
             GateOutcome::Ran {
                 conclusion: GateConclusion::Fail,
-                failed_steps,
-            } if !failed_steps.is_empty() || !fully_waived(gate, waivers) => {
+                steps,
+            } if !steps.all_failures_are_findings() || !fully_waived(gate, waivers) => {
                 Some(firing(Effect::Fail, ReasonCode::GateFailed, &*gate.name))
             }
             GateOutcome::Ran { .. } => None,
@@ -214,7 +214,7 @@ fn llm(rubric: &Rubric, inputs: &DecisionInputs) -> Vec<Firing> {
             .iter()
             .any(|class| policy.block_on_infra_for.contains(class));
     let mut firings = Vec::new();
-    if let LlmStage::Deferred { reason } = inputs.llm.effective(pr.tier) {
+    if let LlmStage::Deferred { reason } = inputs.llm.effective(pr) {
         let holds =
             blocks_on_infra || (reason == Deferral::SlotBusy && pr.authorship == Authorship::Agent);
         let max = rubric.max_requeues();

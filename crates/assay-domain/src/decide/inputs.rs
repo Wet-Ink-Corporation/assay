@@ -97,6 +97,9 @@ pub struct PullRequest {
     pub owner_approval: OwnerApproval,
     /// Whether an agent identity authored the PR (rule 8a, `slot-busy`).
     pub authorship: Authorship,
+    /// Whether the PR is a draft (04 §2.4: drafts run gates only); checked against an LLM stage
+    /// excused as a draft.
+    pub readiness: Readiness,
     /// How many times this head's deferred run was already requeued (rule 8a).
     pub requeues: u32,
 }
@@ -121,13 +124,22 @@ closed_enum! {
     }
 }
 
+closed_enum! {
+    /// Whether the PR is a draft, from the event that triggered the run.
+    pub enum Readiness {
+        /// A draft: the LLM stage runs on `ready_for_review` (04 §2.4).
+        Draft => "draft",
+        /// Ready for review.
+        Ready => "ready",
+    }
+}
+
 /// One gate of the plan and what it reported.
 ///
-/// A failed gate is cleared by waivers only when every cause of its failure is a finding, and
-/// every finding is a waived human-decision finding. A failure with no finding behind it (a
-/// declared step such as `fmt`, `deny` or `tests` that failed) is listed in
-/// [`GateOutcome::Ran`]'s `failed_steps`, which the adapter must fill (03 §2.1), and such a gate
-/// is never cleared.
+/// A failed gate is cleared by waivers only when its adapter attested that every cause of the
+/// failure is a finding ([`StepAttribution::Known`] with no failed step) and every finding is a
+/// waived human-decision finding. A gate whose steps are [`StepAttribution::Unknown`] (no
+/// contract carries step results yet, 03 §2.1) or that names a failed step is never cleared.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GateReport {
@@ -149,9 +161,8 @@ pub enum GateOutcome {
     Ran {
         /// The gate's conclusion.
         conclusion: GateConclusion,
-        /// Steps that failed without a finding to show for it (`fmt`, `deny`, `tests`); a gate
-        /// with any is never cleared by waivers. Required, so an adapter cannot omit it.
-        failed_steps: Vec<String>,
+        /// What the adapter attests about failures with no finding behind them.
+        steps: StepAttribution,
     },
     /// Bad exit, signal, timeout, or a missing or invalid document.
     Error {
@@ -160,6 +171,26 @@ pub enum GateOutcome {
     },
     /// A required gate did not run; never a pass.
     Skipped,
+}
+
+/// Whether a gate's adapter attested which of its steps failed without a finding (03 §2.1).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum StepAttribution {
+    /// The adapter did not attest: some failure may have no finding, so waivers never clear
+    /// the gate. What every gate is until the findings contract carries step results.
+    Unknown,
+    /// The steps (`fmt`, `deny`, `tests`) that failed without a finding; empty means every
+    /// failure cause is a finding. Waivers clear the gate only when it is empty.
+    Known(Vec<String>),
+}
+
+impl StepAttribution {
+    /// Whether the adapter attested that every failure cause is a finding.
+    #[must_use]
+    pub fn all_failures_are_findings(&self) -> bool {
+        matches!(self, Self::Known(steps) if steps.is_empty())
+    }
 }
 
 /// One gate finding.
@@ -212,20 +243,28 @@ pub enum LlmStage {
 }
 
 impl LlmStage {
-    /// The stage as rule 8 reads it: a stage that did not run on a non-draft PR whose tier has
-    /// one (`full`, `lite`, `micro`) is an unavailable LLM, so nothing downgrades silently.
+    /// The stage as rule 8 reads it. On a PR whose tier has an LLM stage (`full`, `lite`,
+    /// `micro`), a stage that did not run is an unavailable LLM unless the PR really is a draft,
+    /// so nothing downgrades silently: `NoLlmTier` contradicts the tier, and `Draft` must match
+    /// the PR's `readiness`.
     #[must_use]
-    pub const fn effective(self, tier: Tier) -> Self {
-        match (self, tier) {
-            (
-                Self::NotRun {
-                    reason: NotRunReason::NoLlmTier,
-                },
-                Tier::Full | Tier::Lite | Tier::Micro,
-            ) => Self::Deferred {
+    pub const fn effective(self, pr: &PullRequest) -> Self {
+        let reviewed_tier = matches!(pr.tier, Tier::Full | Tier::Lite | Tier::Micro);
+        let excused = match self {
+            Self::NotRun {
+                reason: NotRunReason::Draft,
+            } => matches!(pr.readiness, Readiness::Draft),
+            Self::NotRun {
+                reason: NotRunReason::NoLlmTier,
+            } => !reviewed_tier,
+            Self::Completed | Self::Deferred { .. } => true,
+        };
+        if reviewed_tier && !excused {
+            Self::Deferred {
                 reason: Deferral::InfraLlmUnavailable,
-            },
-            (stage, _) => stage,
+            }
+        } else {
+            self
         }
     }
 }

@@ -16,19 +16,9 @@
     "nit": 0
   },
   "advisory_blockers": [],
-  "dispositions": [
-    {
-      "fp": "00000000000000c1",
-      "code": "waived-by-owner"
-    }
-  ],
-  "waived": [
-    {
-      "fp": "00000000000000c1",
-      "by": "owner"
-    }
-  ],
+  "dispositions": [],
+  "waived": [],
   "degraded": [],
   "rubric_version": "1",
-  "inputs_digest": "sha256:49988c6b489bd700307faa385cfc805c98bbfd22714d7a9168834fdde887cf9f"
+  "inputs_digest": "sha256:c45407eb82ae3b9104a6fde86dfd6074d97843a31483130fa87e16998cfa303b"
 }

@@ -20,6 +20,7 @@
     "classes": [],
     "owner_approval": "not-approved",
     "authorship": "other",
+    "readiness": "draft",
     "requeues": 0
   },
   "gates": [
@@ -29,7 +30,7 @@
       "outcome": {
         "status": "ran",
         "conclusion": "pass",
-        "failed_steps": []
+        "steps": "unknown"
       },
       "findings": []
     }

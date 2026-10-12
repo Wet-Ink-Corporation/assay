@@ -96,6 +96,9 @@ fn overriding_scope(
     firings: &[Firing],
 ) -> Option<OverrideScope> {
     let record = inputs.override_record.as_ref()?;
+    if record.by.is_empty() {
+        return None;
+    }
     if !matches!(conclusion, Conclusion::Failure | Conclusion::Pending) {
         return None;
     }
