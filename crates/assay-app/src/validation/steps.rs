@@ -201,12 +201,15 @@ fn has_content(trigger: &str) -> bool {
 }
 
 /// Step 1 for one finding: the schema's conditional requirements, which the domain type cannot
-/// state, hold, and the free-text fields the schema leaves unbounded are within their caps.
+/// state, hold; only an interaction has a caller; and the free-text fields the schema leaves
+/// unbounded are within their caps.
 fn shape(finding: &Finding) -> Result<(), Disposition> {
     let omission_without_expectation =
         finding.kind == FindingKind::Omission && finding.expected_behavior.is_none();
-    let interaction_without_caller =
-        finding.introduced_by == Some(IntroducedBy::Interaction) && finding.caller.is_none();
+    // A caller is model text only an interaction's step 2 checks and replaces; on any other
+    // finding it would reach the output as written, so it must be absent.
+    let interaction = finding.introduced_by == Some(IntroducedBy::Interaction);
+    let caller_mismatch = interaction != finding.caller.is_some();
     let over_cap = finding
         .rule
         .as_ref()
@@ -215,7 +218,7 @@ fn shape(finding: &Finding) -> Result<(), Disposition> {
             .group_hint
             .as_ref()
             .is_some_and(|hint| hint.chars().count() > MAX_GROUP_HINT_CHARS);
-    if omission_without_expectation || interaction_without_caller || over_cap {
+    if omission_without_expectation || caller_mismatch || over_cap {
         Err(Disposition::Schema)
     } else {
         Ok(())

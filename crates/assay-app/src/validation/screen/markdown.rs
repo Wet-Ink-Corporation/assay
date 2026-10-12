@@ -3,7 +3,8 @@
 //!
 //! Only what is unambiguously code is removed. An unclosed fence, a code span crossing a line
 //! and an indented code block stay prose, and so are screened: a false suspect costs a finding,
-//! a false exemption lets markup through.
+//! a false exemption lets markup through. Link destinations are read before code spans are
+//! paired (`links.rs`): one holding a backtick, which a span could claim, flags the text.
 
 /// The most spaces a fence line may be indented by; four make an indented code line.
 const MAX_FENCE_INDENT: usize = 3;

@@ -2,7 +2,7 @@
 //! that every finding ends kept or dropped exactly once.
 
 use assay_app::{ContractSchemaError, FindingRef, Validated};
-use assay_domain::{Disposition, Side};
+use assay_domain::{Disposition, Side, normalise};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
@@ -79,14 +79,24 @@ proptest! {
                 Side::Right => LIB_AT_HEAD,
                 Side::Left => LIB_AT_BASE,
             };
-            let index = usize::try_from(kept.finding.line.get() - 1).expect("lines fit usize");
-            let line = text.lines().nth(index);
-            // Evidence is replaced by the tree's lines, starting at the finding's line.
-            prop_assert_eq!(
-                line,
-                kept.finding.evidence.lines().next(),
-                "line {} on {:?}", kept.finding.line, side
+            let FindingRef::Finding { index, .. } = kept.at else {
+                return Err(TestCaseError::fail("a kept finding refers to a finding"));
+            };
+            let quoted = findings[index]["evidence"].as_str().expect("generated evidence");
+            let first_piece = normalise(quoted)
+                .split('\u{2026}')
+                .find(|piece| !piece.is_empty())
+                .expect("generated evidence has content")
+                .to_owned();
+            let line_index = usize::try_from(kept.finding.line.get() - 1).expect("lines fit");
+            let line = text.lines().nth(line_index).expect("the kept line is in the tree");
+            // Every generated quote's first piece fits on one line, so the tree's line at the
+            // kept `line` holds it; and the evidence now starts with that tree line.
+            prop_assert!(
+                normalise(line).contains(&first_piece),
+                "line {} on {:?} does not hold {:?}", kept.finding.line, side, quoted
             );
+            prop_assert_eq!(Some(line), kept.finding.evidence.lines().next());
         }
     }
 
@@ -104,7 +114,14 @@ proptest! {
                 .iter()
                 .filter(|t| t.at == at && DROPPING.contains(&t.code))
                 .count();
-            prop_assert_eq!(kept + dropped, 1, "finding {} is kept {} and dropped {} times", index, kept, dropped);
+            prop_assert_eq!(
+                kept + dropped,
+                1,
+                "finding {} is kept {} and dropped {} times",
+                index,
+                kept,
+                dropped
+            );
         }
     }
 }

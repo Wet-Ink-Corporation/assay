@@ -28,15 +28,40 @@ fn drops_a_finding_whose_free_text_links_outside_the_allowlist() -> Result<(), B
 
 #[test]
 fn screens_every_free_text_field() -> Result<(), Box<dyn Error>> {
-    let suspects = ["title", "body", "fix", "trigger", "group_hint", "rule"]
-        .map(|field| finding_with(json!({ field: "cc @owner" })));
+    let fields = [
+        "title",
+        "body",
+        "fix",
+        "trigger",
+        "group_hint",
+        "rule",
+        "expected_behavior",
+    ];
+    let mut suspects: Vec<_> = fields
+        .iter()
+        .map(|field| finding_with(json!({ *field: "cc @owner" })))
+        .collect();
+    // The caller's evidence as the model wrote it, on an interaction.
+    let caller = |introduced_by: &str| {
+        finding_with(json!({
+            "introduced_by": introduced_by,
+            "caller": {
+                "file": "src/lib.rs",
+                "line": 2,
+                "evidence": "let x = input.parse().unwrap(); // cc @owner",
+            },
+        }))
+    };
+    suspects.push(caller("interaction"));
+    // On any other finding a caller is refused before the screen could read it.
+    suspects.push(caller("diff"));
 
     let validated = validate_one(&suspects)?;
 
-    assert_eq!(
-        (validated.findings.len(), validated.injection_suspects()),
-        (0, 6)
-    );
+    let codes: Vec<_> = validated.transitions.iter().map(|t| t.code).collect();
+    let mut expected = vec![Disposition::InjectionSuspect; 8];
+    expected.push(Disposition::Schema);
+    assert_eq!((validated.findings.len(), codes), (0, expected));
     Ok(())
 }
 

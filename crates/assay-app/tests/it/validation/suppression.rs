@@ -104,8 +104,7 @@ fn drops_a_duplicate_of_a_gate_finding_within_three_lines() -> Result<(), Box<dy
 }
 
 #[test]
-fn keeps_a_finding_four_lines_from_a_gate_finding_or_of_another_class() -> Result<(), Box<dyn Error>>
-{
+fn keeps_findings_four_lines_from_or_unlike_a_gate_finding() -> Result<(), Box<dyn Error>> {
     let run = Run {
         gate_findings: vec![
             gate_finding("error-handling", 6)?,

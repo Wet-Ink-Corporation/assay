@@ -220,6 +220,36 @@ fn drops_an_omission_whose_expected_behavior_has_no_content() -> Result<(), Box<
 }
 
 #[test]
+fn gives_one_line_one_fingerprint_whatever_part_of_it_is_quoted() -> Result<(), Box<dyn Error>> {
+    let mut run = Run::default();
+    run.change.head_files.insert(
+        "src/twice.rs".to_owned(),
+        "fn f() {\n    audit_entry(item);\n    audit_entry(item); record_event(id);\n}\n"
+            .to_owned(),
+    );
+    // The first quote also occurs on line 2, the second only on line 3.
+    let quoting = |evidence: &str| {
+        finding_with(json!({ "file": "src/twice.rs", "line": 3, "evidence": evidence }))
+    };
+
+    let validated = run.validate(&[document(&[
+        quoting("audit_entry(item);"),
+        quoting("record_event(id);"),
+    ])])?;
+
+    let anchors: Vec<_> = validated
+        .findings
+        .iter()
+        .map(|kept| (kept.occurrence_index, kept.fingerprint))
+        .collect();
+    let [first, second] = anchors.as_slice() else {
+        return Err(format!("both findings are kept: {anchors:?}").into());
+    };
+    assert_eq!((first.0, first), (0, second));
+    Ok(())
+}
+
+#[test]
 fn counts_earlier_matches_in_the_same_function_as_the_occurrence_index()
 -> Result<(), Box<dyn Error>> {
     let mut run = Run::default();

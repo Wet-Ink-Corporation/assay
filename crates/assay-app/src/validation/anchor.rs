@@ -68,7 +68,9 @@ pub(super) fn anchor<'c>(
     finding.line = NonZeroU64::new(found.line).ok_or(Disposition::EvidenceMissing)?;
     finding.side = Some(located.side);
     finding.evidence = indexed.span(found).ok_or(Disposition::EvidenceMissing)?;
-    let occurrence_index = occurrence(indexed, &matches, found, enclosing_symbol);
+    // Counted over the tree's lines, not the quote, so every quote of one line gets one index.
+    let occurrences = indexed.find(&finding.evidence);
+    let occurrence_index = occurrence(indexed, &occurrences, found, enclosing_symbol);
     let fingerprint = finding
         .anchor(&located.file_at_head, enclosing_symbol)
         .fingerprint(occurrence_index)

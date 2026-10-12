@@ -80,11 +80,17 @@ impl Joined {
     /// first starting on the match line, and the match must end within [`MAX_SPAN_LINES`] lines
     /// of it. Evidence without content matches nowhere.
     ///
-    /// Cost: the first piece is searched from each candidate start, so at worst the joined text
-    /// times that piece's length (evidence is capped at 400 characters); each later piece is
-    /// matched at its first occurrence after the previous one, and since starts only move forward
-    /// so do those occurrences, so each later piece is searched forward once in total.
+    /// Cost: linear in the joined text plus, per kept line, the evidence's length. The first
+    /// piece is searched from the start of each line after the last one tried, since a line
+    /// yields one match at most and a later start on the same line can only end later; each
+    /// later piece is matched at its first occurrence after the previous one, and as starts only
+    /// move forward so do those occurrences, so each later piece is searched forward once.
     pub(super) fn find(&self, evidence: &str) -> Vec<Match> {
+        self.search(evidence, &mut 0)
+    }
+
+    /// [`Joined::find`], adding to `work` the bytes each search covered.
+    fn search(&self, evidence: &str, work: &mut usize) -> Vec<Match> {
         let normalised = normalise(evidence);
         let pieces: Vec<&str> = normalised
             .split(WILDCARD)
@@ -96,13 +102,13 @@ impl Joined {
         let mut matches: Vec<Match> = Vec::new();
         let mut found: Vec<Option<usize>> = vec![None; rest.len()];
         let mut from = 0;
-        while let Some(start) = self.find_piece(first, from) {
+        while let Some(start) = self.find_piece(first, from, work) {
             let mut end = Some(start.saturating_add(first.len()));
             for (piece, last) in rest.iter().zip(found.iter_mut()) {
                 end = end.and_then(|needed| {
                     let at = match *last {
                         Some(at) if at >= needed => at,
-                        _ => self.find_piece(piece, needed)?,
+                        _ => self.find_piece(piece, needed, work)?,
                     };
                     *last = Some(at);
                     Some(at.saturating_add(piece.len()))
@@ -116,21 +122,32 @@ impl Joined {
                 line: self.line_at(start),
                 last: self.line_at(end.saturating_sub(1)),
             };
-            let new_line = matches
-                .last()
-                .is_none_or(|previous| previous.line != found.line);
-            if found.last.saturating_sub(found.line) < MAX_SPAN_LINES && new_line {
+            if found.last.saturating_sub(found.line) < MAX_SPAN_LINES {
                 matches.push(found);
             }
-            from = start.saturating_add(first.chars().next().map_or(1, char::len_utf8));
+            // Every later start on this line would give this line again, ending no earlier.
+            let Some(next) = self.next_line_start(start) else {
+                break;
+            };
+            from = next;
         }
         matches
     }
 
-    /// The first byte offset at or after `from` where `piece` occurs.
-    fn find_piece(&self, piece: &str, from: usize) -> Option<usize> {
-        let at = self.text.get(from..)?.find(piece)?;
-        Some(from.saturating_add(at))
+    /// The first byte offset at or after `from` where `piece` occurs, adding to `work` the bytes
+    /// the search covered.
+    fn find_piece(&self, piece: &str, from: usize, work: &mut usize) -> Option<usize> {
+        let rest = self.text.get(from..)?;
+        let found = rest.find(piece);
+        let covered = found.map_or(rest.len(), |at| at.saturating_add(piece.len()));
+        *work = work.saturating_add(covered);
+        Some(from.saturating_add(found?))
+    }
+
+    /// Where the kept line after the one holding byte `offset` starts, if there is one.
+    fn next_line_start(&self, offset: usize) -> Option<usize> {
+        let index = self.starts.partition_point(|&(start, _)| start <= offset);
+        self.starts.get(index).map(|&(start, _)| start)
     }
 
     /// The line number of the line the byte at `offset` belongs to.
@@ -230,6 +247,38 @@ fn b() {
         text.push_str("end\n");
 
         assert_eq!(find(&text, "start ... end"), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn searches_a_long_repetitive_line_once_not_once_per_character() {
+        let text = format!("{}\nlet tail = 1;\n", "a".repeat(1_000_000));
+        let joined = Joined::of(&text);
+        let mut work = 0;
+
+        let matches = joined.search(&"a".repeat(400), &mut work);
+
+        assert_eq!(matches, [Match { line: 1, last: 1 }]);
+        assert!(
+            work <= 2 * text.len(),
+            "{work} bytes searched for {} bytes of text",
+            text.len()
+        );
+    }
+
+    #[test]
+    fn searches_repetitive_lines_once_each() {
+        let text = format!("{}\n", "ab".repeat(500)).repeat(1_000);
+        let joined = Joined::of(&text);
+        let mut work = 0;
+
+        let matches = joined.search(&format!("{} ... b", "ab".repeat(200)), &mut work);
+
+        assert_eq!(matches.len(), 1_000);
+        assert!(
+            work <= 3 * text.len(),
+            "{work} bytes searched for {} bytes of text",
+            text.len()
+        );
     }
 
     #[test]

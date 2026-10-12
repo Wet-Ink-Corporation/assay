@@ -32,9 +32,26 @@ fn keeps_a_valid_finding_inline_with_no_transition() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+// A caller is model text that only an interaction has a use for; on any other finding it would
+// reach the output unchecked by step 2.
 #[test]
-fn disposes_of_a_document_failing_its_schema_as_one_schema_transition() -> Result<(), Box<dyn Error>>
-{
+fn rejects_a_caller_on_a_finding_that_is_not_an_interaction() -> Result<(), Box<dyn Error>> {
+    let caller = json!({ "file": "src/lib.rs", "line": 2, "evidence": "cc @owner <img src=x>" });
+
+    let (on_diff, on_absent) = (
+        codes_with(json!({ "introduced_by": "diff", "caller": caller }))?,
+        codes_with(json!({ "introduced_by": null, "caller": caller }))?,
+    );
+
+    assert_eq!(
+        (on_diff, on_absent),
+        (vec![Disposition::Schema], vec![Disposition::Schema])
+    );
+    Ok(())
+}
+
+#[test]
+fn disposes_of_a_schema_invalid_document_as_one_transition() -> Result<(), Box<dyn Error>> {
     let over_length = finding_with(json!({ "title": "t".repeat(101) }));
 
     let validated = Run::default().validate(&[document(&[finding()]), document(&[over_length])])?;

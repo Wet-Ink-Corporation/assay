@@ -380,6 +380,17 @@ mod tests {
     }
 
     #[test]
+    fn flags_a_link_destination_a_code_span_could_claim() {
+        let texts = [
+            "See [the code](https://github.com/wet-ink-corporation/assay/`)\
+             <a href=//evil.example>click</a> @owner `.",
+            "`[x](` https://github.com/wet-ink-corporation/assay/x) <b>",
+        ];
+
+        assert_eq!(texts.map(screened), [Some(Suspicion::Url); 2]);
+    }
+
+    #[test]
     fn passes_html_inside_real_code() {
         let texts = [
             "``a`b <img src=x>``",

@@ -4,9 +4,18 @@
 //! allowlist or the repository. A markdown link hides its target behind its text, so its target
 //! must be an absolute `https` URL into the repository; reference links and their definitions,
 //! whose targets sit elsewhere, are always foreign.
+//!
+//! Every URL is judged on the longest extent a renderer could read: a written-out one up to
+//! whitespace or `<` (GFM autolinks), a link destination up to whitespace or an unbalanced `)`
+//! (`CommonMark`). Where a narrower reading is possible, the text is flagged rather than parsed
+//! more cleverly: a written-out URL cut by a character other than `)` or `>`, and a destination
+//! holding a backtick, which a code span could claim instead.
 
 /// Hosts a written-out URL may point to besides the repository, with their subdomains.
 const ALLOWED_HOSTS: [&str; 3] = ["rust-lang.org", "docs.rs", "owasp.org"];
+
+/// Characters that end a URL in running text for some renderer or reader.
+const TERMINATORS: [char; 10] = ['(', ')', '[', ']', '<', '>', '"', '\'', '`', '|'];
 
 /// The most characters one URL may run to; a longer one is foreign.
 const MAX_URL: usize = 2048;
@@ -19,11 +28,17 @@ const MAX_SCHEME: usize = 32;
 pub(super) fn has_foreign_link(lower: &str, prose_lower: &str, repository: &str) -> bool {
     let repository = repository.to_lowercase();
     let written = Links::new(lower, Scan::Written).any(|link| match link {
-        Link::Absolute { scheme, url } => scheme != "https" || !is_allowed(url, &repository),
-        Link::Bare { url } => !is_allowed(url, &repository),
+        Link::Absolute { scheme, url, clean } => {
+            scheme != "https" || !clean || !is_allowed(url, &repository)
+        }
+        Link::Bare { url, clean } => !clean || !is_allowed(url, &repository),
         Link::Overlong => true,
         Link::Target { .. } | Link::Reference => false,
     });
+    // Destinations are found in the whole text, before code spans are paired, so a backtick
+    // inside one (which a code span could claim, hiding what follows) flags the text.
+    let ambiguous = Links::new(lower, Scan::Markdown)
+        .any(|link| matches!(link, Link::Target { target } if target.contains('`')));
     let markdown = Links::new(prose_lower, Scan::Markdown).any(|link| match link {
         Link::Target { target } => !target
             .strip_prefix("https://")
@@ -31,7 +46,53 @@ pub(super) fn has_foreign_link(lower: &str, prose_lower: &str, repository: &str)
         Link::Reference | Link::Overlong => true,
         Link::Absolute { .. } | Link::Bare { .. } => false,
     });
-    written || markdown || has_definition(prose_lower)
+    written || ambiguous || markdown || has_definition(prose_lower)
+}
+
+/// Whether a written-out URL, read up to `following` (the character after it, if any), has one
+/// reading only: no character in it ends a URL for some reader except `)` or `>`, and it was
+/// not cut short by `<`.
+fn clean_cut(url: &str, following: Option<char>) -> bool {
+    let cut = url
+        .find(TERMINATORS)
+        .and_then(|at| url.get(at..))
+        .and_then(|from| from.chars().next());
+    cut.is_none_or(|c| c == ')' || c == '>') && following.is_none_or(char::is_whitespace)
+}
+
+/// Where a URL's extent ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Extent {
+    /// A written-out URL (GFM autolink): at whitespace or `<`.
+    Autolink,
+    /// An inline link destination: at whitespace or an unbalanced `)`.
+    Destination,
+    /// A destination in angle brackets: at `>`, `<` or a line break.
+    Angled,
+}
+
+impl Extent {
+    /// Whether `c` ends the extent, with `depth` the parentheses open so far.
+    fn ends_at(self, c: char, depth: &mut usize) -> bool {
+        match self {
+            Self::Autolink => c.is_whitespace() || c == '<',
+            Self::Angled => matches!(c, '>' | '<' | '\n' | '\r'),
+            Self::Destination => match c {
+                '(' => {
+                    *depth = depth.saturating_add(1);
+                    false
+                }
+                ')' => match depth.checked_sub(1) {
+                    Some(open) => {
+                        *depth = open;
+                        false
+                    }
+                    None => true,
+                },
+                c => c.is_whitespace(),
+            },
+        }
+    }
 }
 
 /// Which links a scan looks for.
@@ -46,11 +107,15 @@ enum Scan {
 /// One link a scan found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Link<'t> {
-    /// `scheme://url`.
-    Absolute { scheme: &'t str, url: &'t str },
+    /// `scheme://url`; `clean` as [`clean_cut`] says.
+    Absolute {
+        scheme: &'t str,
+        url: &'t str,
+        clean: bool,
+    },
     /// A `www.` host GitHub autolinks; `url` starts at `www.`.
-    Bare { url: &'t str },
-    /// A markdown link's target, after `](`, leading spaces and `<`.
+    Bare { url: &'t str, clean: bool },
+    /// A markdown link's destination, after `](` and leading spaces, without angle brackets.
     Target { target: &'t str },
     /// A reference link, `[text][label]`.
     Reference,
@@ -79,25 +144,39 @@ impl<'t> Links<'t> {
         }
     }
 
-    /// The URL starting at byte `start`, ending before the first character that ends a URL in
-    /// running text, and the cursor after it; `None` for the URL if it is overlong.
-    fn url_at(&mut self, start: usize) -> Option<(Option<&'t str>, usize)> {
+    /// The URL starting at byte `start` up to where `extent` ends it, and the cursor after it;
+    /// `None` for the URL if it is overlong.
+    fn url_at(&mut self, start: usize, extent: Extent) -> Option<(Option<&'t str>, usize)> {
         let rest = self.text.get(start..)?;
         let mut length = rest.len();
         let mut fits = true;
+        let mut depth = 0_usize;
         for (count, (index, c)) in rest.char_indices().enumerate() {
-            if ends_url(c) {
-                length = index;
-                break;
-            }
             if count >= MAX_URL {
                 (length, fits) = (index, false);
+                break;
+            }
+            if extent.ends_at(c, &mut depth) {
+                length = index;
                 break;
             }
         }
         self.touched = self.touched.saturating_add(length);
         let url = rest.get(..length)?;
         Some((fits.then_some(url), start.checked_add(length)?))
+    }
+
+    /// A written-out URL starting at byte `start`, as `make` builds it from the URL and whether
+    /// it is [`clean_cut`], and the cursor after it.
+    fn written_at(
+        &mut self,
+        start: usize,
+        make: impl FnOnce(&'t str, bool) -> Link<'t>,
+    ) -> Option<(Option<Link<'t>>, usize)> {
+        let (url, next) = self.url_at(start, Extent::Autolink)?;
+        let following = self.text.get(next..)?.chars().next();
+        let link = url.map_or(Link::Overlong, |url| make(url, clean_cut(url, following)));
+        Some((Some(link), next))
     }
 
     /// The scheme ending at byte `end`: up to [`MAX_SCHEME`] scheme characters before it.
@@ -120,25 +199,29 @@ impl<'t> Links<'t> {
         let link = match self.scan {
             Scan::Written if from.starts_with("://") => {
                 let scheme = self.scheme_before(start)?;
-                let (url, next) = self.url_at(start.checked_add(3)?)?;
-                let link = url.map_or(Link::Overlong, |url| Link::Absolute { scheme, url });
-                return Some((Some(link), next));
+                return self.written_at(start.checked_add(3)?, |url, clean| Link::Absolute {
+                    scheme,
+                    url,
+                    clean,
+                });
             }
             Scan::Written if from.starts_with("www.") && self.autolinked(start) => {
-                let (url, next) = self.url_at(start)?;
-                return Some((
-                    Some(url.map_or(Link::Overlong, |url| Link::Bare { url })),
-                    next,
-                ));
+                return self.written_at(start, |url, clean| Link::Bare { url, clean });
             }
             Scan::Markdown if from.starts_with("](") => {
                 let after = start.checked_add(2)?;
                 let spaces = self.text.get(after..)?;
                 let skipped = spaces
                     .len()
-                    .saturating_sub(spaces.trim_start_matches([' ', '<']).len());
+                    .saturating_sub(spaces.trim_start_matches([' ', '\t']).len());
                 self.touched = self.touched.saturating_add(skipped);
-                let (target, next) = self.url_at(after.checked_add(skipped)?)?;
+                let at = after.checked_add(skipped)?;
+                let (at, extent) = if self.text.get(at..)?.starts_with('<') {
+                    (at.checked_add(1)?, Extent::Angled)
+                } else {
+                    (at, Extent::Destination)
+                };
+                let (target, next) = self.url_at(at, extent)?;
                 return Some((
                     Some(target.map_or(Link::Overlong, |target| Link::Target { target })),
                     next,
@@ -238,16 +321,76 @@ fn split_authority(url: &str) -> (&str, &str) {
         .unwrap_or((url, ""))
 }
 
-/// Whether `c` ends a URL in running text.
-fn ends_url(c: char) -> bool {
-    c.is_whitespace() || "()[]<>\"'`|".contains(c)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Link, Links, Scan, in_repository};
+    use super::{Link, Links, Scan, TERMINATORS, has_foreign_link, in_repository};
 
     const REPO: &str = "wet-ink-corporation/assay";
+
+    /// Whether `text` (taken as prose) has a foreign link.
+    fn foreign(text: &str) -> bool {
+        let lower = text.to_lowercase();
+        has_foreign_link(&lower, &lower, REPO)
+    }
+
+    #[test]
+    fn flags_a_written_url_any_terminator_could_cut_or_extend() {
+        let flagged = TERMINATORS.map(|terminator| {
+            foreign(&format!(
+                "See https://github.com/wet-ink-corporation/assay/{terminator}/../../../evil/repo"
+            ))
+        });
+
+        assert_eq!(flagged, [true; 10]);
+    }
+
+    #[test]
+    fn flags_an_allowed_url_cut_by_anything_but_a_closer() {
+        let flagged =
+            TERMINATORS.map(|terminator| foreign(&format!("https://docs.rs/x{terminator}y")));
+
+        assert_eq!(
+            flagged,
+            [true, false, true, true, true, false, true, true, true, true]
+        );
+    }
+
+    #[test]
+    fn flags_a_destination_any_terminator_could_extend() {
+        // `)` closes the destination inside the repository; what follows it is plain text.
+        let flagged = TERMINATORS
+            .into_iter()
+            .filter(|&terminator| terminator != ')')
+            .map(|terminator| {
+                let target = format!(
+                    "https://github.com/wet-ink-corporation/assay/{terminator}/../../../evil/repo"
+                );
+                foreign(&format!("[x]({target})"))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(flagged, [true; 9]);
+    }
+
+    #[test]
+    fn reads_a_destination_through_balanced_parentheses_and_angle_brackets() {
+        let texts = [
+            "[x](https://github.com/wet-ink-corporation/assay/'/../../../evil/repo)",
+            "[x](https://github.com/wet-ink-corporation/assay/(a)/../../../evil/repo)",
+            "[x](<https://github.com/wet-ink-corporation/assay/ /../../../evil/repo>)",
+            "[x](https://github.com/wet-ink-corporation/assay/blob/main/x.rs)",
+            "See https://docs.rs/x) and (https://docs.rs/y).",
+        ];
+
+        assert_eq!(texts.map(foreign), [true, true, true, false, false]);
+    }
+
+    #[test]
+    fn flags_a_destination_holding_a_backtick() {
+        assert!(foreign(
+            "[x](https://github.com/wet-ink-corporation/assay/`)"
+        ));
+    }
 
     #[test]
     fn resolves_dot_segments_before_checking_the_repository() {
@@ -277,12 +420,17 @@ mod tests {
             [
                 Link::Absolute {
                     scheme: "https",
-                    url: "x.y/z"
+                    url: "x.y/z",
+                    clean: true
                 },
-                Link::Bare { url: "www.q.r" },
+                Link::Bare {
+                    url: "www.q.r",
+                    clean: true
+                },
                 Link::Absolute {
                     scheme: "ftp",
-                    url: "s"
+                    url: "s",
+                    clean: true
                 },
             ]
         );
