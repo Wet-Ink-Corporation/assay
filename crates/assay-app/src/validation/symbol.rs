@@ -27,7 +27,7 @@ struct Opener<'t> {
 ///
 /// One forward pass keeps the chain of open blocks as a stack of strictly increasing depth, so
 /// every line is answered in a single pass over the file, not one scan per line asked about.
-pub(super) fn enclosing_functions(text: &str) -> Vec<&str> {
+pub(crate) fn enclosing_functions(text: &str) -> Vec<&str> {
     let mut open: Vec<Opener<'_>> = Vec::new();
     let mut functions = Vec::new();
     for line in text.lines() {
