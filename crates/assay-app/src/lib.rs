@@ -18,8 +18,8 @@ pub use config::{
     PluginsConfig, PrClass, Promotion, RunnerKind, Sha256Digest, Step, TomlError,
 };
 pub use contract::{
-    Contract, ContractSchemaError, ContractValidator, ReadContractError, SchemaCompileError,
-    SchemaViolation,
+    Contract, ContractSchemaError, ContractValidator, MAX_DOCUMENT_BYTES, ReadContractError,
+    SchemaCompileError, SchemaViolation,
 };
 pub use gate::{
     BuildJob, Conclusion, GateDocument, GateError, GateJob, GateOutcome, GateReport, GateRun,
