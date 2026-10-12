@@ -33,6 +33,8 @@ pub(crate) enum SelfGateError {
     Usage,
     /// A variable the gate contract sets is missing or empty.
     Variable(&'static str),
+    /// A variable the gate contract sets is not valid Unicode.
+    VariableNotUnicode(&'static str),
     /// A path could not be listed or read.
     Read { path: PathBuf, source: io::Error },
     /// A path is not what it must be (the corpus a directory, the rubric a regular file) or
@@ -54,11 +56,26 @@ impl fmt::Display for SelfGateError {
         match self {
             Self::Usage => f.write_str("usage: assay self-gate <corpus-dir> <rubric-file>"),
             Self::Variable(name) => write!(f, "{name} is not set"),
+            Self::VariableNotUnicode(name) => write!(f, "{name} is not valid Unicode"),
             Self::Read { path, source } => write!(f, "cannot read {}: {source}", path.display()),
             Self::Shape { path, expected } => write!(f, "{} is not {expected}", path.display()),
             Self::TooLarge { path } => write!(f, "{} is past the read caps", path.display()),
             Self::Encode(source) => write!(f, "cannot encode the document: {source}"),
             Self::Write { path, source } => write!(f, "cannot write {}: {source}", path.display()),
+        }
+    }
+}
+
+impl std::error::Error for SelfGateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Read { source, .. } | Self::Write { source, .. } => Some(source),
+            Self::Encode(source) => Some(source),
+            Self::Usage
+            | Self::Variable(_)
+            | Self::VariableNotUnicode(_)
+            | Self::Shape { .. }
+            | Self::TooLarge { .. } => None,
         }
     }
 }
@@ -90,9 +107,10 @@ pub(crate) fn run(
         .ok_or(SelfGateError::Variable(FINDINGS_OUT))?;
     let run_key = variables
         .run_key
-        .and_then(|value| value.into_string().ok())
         .filter(|value| !value.is_empty())
-        .ok_or(SelfGateError::Variable(RUN_KEY))?;
+        .ok_or(SelfGateError::Variable(RUN_KEY))?
+        .into_string()
+        .map_err(|_not_unicode| SelfGateError::VariableNotUnicode(RUN_KEY))?;
 
     let mut budget = Budget::new();
     let entries = read_corpus(Path::new(&corpus_dir), &mut budget)?;
@@ -135,15 +153,26 @@ fn arguments(mut args: impl Iterator<Item = OsString>) -> Result<[String; 2], Se
 /// What is left of the read caps.
 #[derive(Debug)]
 struct Budget {
+    /// Entries still allowed under the corpus directory.
     entries: usize,
+    /// Bytes still allowed across all files.
     bytes: u64,
+    /// Largest single file, in bytes.
+    file_bytes: u64,
 }
 
 impl Budget {
+    /// The documented caps.
     const fn new() -> Self {
+        Self::with(MAX_ENTRIES, MAX_TOTAL_BYTES, MAX_FILE_BYTES)
+    }
+
+    /// Caps of `entries` entries, `bytes` bytes in all and `file_bytes` per file.
+    const fn with(entries: usize, bytes: u64, file_bytes: u64) -> Self {
         Self {
-            entries: MAX_ENTRIES,
-            bytes: MAX_TOTAL_BYTES,
+            entries,
+            bytes,
+            file_bytes,
         }
     }
 }
@@ -213,9 +242,9 @@ fn read_file(path: &Path, budget: &mut Budget) -> Result<Vec<u8>, SelfGateError>
     read_bounded(path, budget)
 }
 
-/// The bytes of the file at `path`, refused past [`MAX_FILE_BYTES`] or the remaining budget.
+/// The bytes of the file at `path`, refused past the per-file cap or the remaining budget.
 fn read_bounded(path: &Path, budget: &mut Budget) -> Result<Vec<u8>, SelfGateError> {
-    let cap = MAX_FILE_BYTES.min(budget.bytes);
+    let cap = budget.file_bytes.min(budget.bytes);
     let mut bytes = Vec::new();
     File::open(path)
         .and_then(|file| file.take(cap.saturating_add(1)).read_to_end(&mut bytes))
@@ -236,3 +265,6 @@ fn read_error(path: &Path, source: io::Error) -> SelfGateError {
         source,
     }
 }
+
+#[cfg(test)]
+mod tests;

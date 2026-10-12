@@ -10,6 +10,7 @@
 mod report;
 
 use std::collections::BTreeMap;
+use std::mem;
 
 use assay_domain::{
     DecisionInputs, Finding, FindingsDocument, FindingsSchema, GateConclusion, Rubric, Source,
@@ -196,11 +197,15 @@ fn replay_case<'a>(
 struct Layout<'a> {
     cases: BTreeMap<&'a str, Case<'a>>,
     unexpected: Vec<&'a str>,
+    /// Whether the root `README.md` was seen.
+    readme: bool,
 }
 
 /// One case's two files, as far as they were found.
 #[derive(Debug, Default)]
 struct Case<'a> {
+    /// Whether the case's directory entry was seen.
+    listed: bool,
     inputs: Option<&'a [u8]>,
     decision: Option<&'a [u8]>,
 }
@@ -212,11 +217,12 @@ impl<'a> Layout<'a> {
         let mut layout = Self::default();
         for entry in entries {
             let segments: Vec<&str> = entry.path.split('/').collect();
+            // Each entry is placed once; a repeat is refused and the first one kept.
             let placed = match (segments.as_slice(), &entry.kind) {
-                ([README], CorpusEntryKind::File(_)) => true,
+                ([README], CorpusEntryKind::File(_)) => !mem::replace(&mut layout.readme, true),
                 ([name], CorpusEntryKind::Directory) if is_name(name) => {
-                    layout.cases.entry(name).or_default();
-                    true
+                    let case = layout.cases.entry(name).or_default();
+                    !mem::replace(&mut case.listed, true)
                 }
                 ([name, file], CorpusEntryKind::File(bytes)) if is_name(name) => {
                     let case = layout.cases.entry(name).or_default();
@@ -225,7 +231,6 @@ impl<'a> Layout<'a> {
                         DECISION => Some(&mut case.decision),
                         _ => None,
                     };
-                    // A repeated file is refused and the first one kept.
                     match slot {
                         Some(empty @ None) => {
                             *empty = Some(bytes);

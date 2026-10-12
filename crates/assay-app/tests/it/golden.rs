@@ -425,6 +425,29 @@ fn every_entry_outside_the_allowlist_is_refused() -> TestResult {
 }
 
 #[test]
+fn a_repeated_readme_or_case_directory_is_refused() -> TestResult {
+    let mut entries = recorded_corpus()?;
+    let repeats: Vec<CorpusEntry> = entries
+        .iter()
+        .filter(|entry| matches!(entry.path.as_str(), "README.md" | "rule-9-success"))
+        .cloned()
+        .collect();
+    entries.extend(repeats);
+
+    let document = replay(&entries, &recorded_rubric()?);
+
+    assert_eq!(
+        rules_and_files(&document),
+        vec![
+            ("golden-unexpected-entry", "corpus/golden/README.md"),
+            ("golden-unexpected-entry", "corpus/golden/rule-9-success"),
+        ],
+        "each entry is allowed once"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_empty_corpus_fails() -> TestResult {
     let entries = [CorpusEntry {
         path: "README.md".to_owned(),

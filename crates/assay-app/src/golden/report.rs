@@ -53,7 +53,7 @@ impl Problem {
         };
         let evidence = quoted
             .and_then(|bytes| line_text(bytes, line))
-            .unwrap_or_else(|| clip(file, EVIDENCE_CHARS));
+            .unwrap_or_else(|| clip(&plain(file), EVIDENCE_CHARS));
         Finding {
             class,
             rule: Some(rule.to_owned()),
@@ -194,6 +194,16 @@ mod tests {
     use super::*;
 
     const TEXT: &[u8] = b"{\n  \"a\": 1,\n\n  \"b\": 2\n}\n";
+
+    #[test]
+    fn a_path_quoted_as_evidence_is_reduced_like_the_title() {
+        let finding = Problem::UnexpectedEntry.finding("corpus/golden/x`\n[l](https://e)", None);
+
+        assert_eq!(
+            finding.evidence, "corpus/golden/x???l??https?e?",
+            "no PR-controlled backtick, newline, markup or link reaches the evidence"
+        );
+    }
 
     #[test]
     fn line_at_counts_the_newlines_before_the_offset() {
