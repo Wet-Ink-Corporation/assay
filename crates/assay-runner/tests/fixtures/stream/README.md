@@ -20,3 +20,15 @@ a live call; replace them with captured transcripts when the doctor (#84) record
 | `no_structured_output.jsonl` | `Malformed`: a successful `result` without `structured_output` |
 | `error_during_execution.jsonl` | `Malformed`: an execution error |
 | `partial.jsonl` | the start of a call cut off by its timeout |
+
+Session-init fixtures (#121) for `read_session_init` and the clean-init rule. `init_2_1_296.jsonl`
+is captured from a real Claude Code 2.1.296 call under the 03 §8 profile, with its working
+directory and ids sanitised; the others change one thing in it.
+
+| File | Init |
+|---|---|
+| `init_2_1_296.jsonl` | clean against `../plugins-2.1.296.toml`; answers `ready` |
+| `init_extra_builtin.jsonl` | an extra built-in plugin not on the allowlist |
+| `init_non_builtin_plugin.jsonl` | a plugin that is not a built-in |
+| `init_unlisted_skill.jsonl` | a skill not on the allowlist |
+| `init_extra_tool.jsonl` | a tool beyond `Glob`, `Grep`, `Read` |
