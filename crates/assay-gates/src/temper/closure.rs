@@ -16,12 +16,19 @@ use toml::{Table, Value};
 
 use super::head::{is_manifest, is_rust};
 use super::reach::{FileReach, Include, scan};
-use super::statics::{Files, Tree};
+use super::statics::{BlobCount, Files, Tree};
 use super::tokens::Source;
 use crate::revision::{EntryKind, Revision, RevisionFiles, TreeEntry};
 
-/// Most files the closure visits before it gives up and returns `Everything` (H-13).
+mod targets;
+
+/// Most files the closure visits, or include targets it scans, before it gives up and places
+/// nothing (H-13).
 const MAX_VISITS: usize = 10_000;
+
+/// Most files the closure's queue holds at once before it gives up and returns `Everything`
+/// (H-13): one file can name many, each with its own context.
+const MAX_QUEUED: usize = 10_000;
 
 /// What one revision's Rust reads at compile time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -58,7 +65,16 @@ pub fn compile_time_reach<R: RevisionFiles>(
     };
     let selected: Vec<&TreeEntry> = entries.iter().filter(|entry| wanted(entry)).collect();
     let blobs = revisions.read(&selected)?;
-    let files = Files::new(entries, blobs, wanted);
+    let files = match Files::new(entries, blobs, wanted) {
+        Ok(files) => files,
+        // Which bytes belong to which file is unknown: nothing can be placed.
+        Err(BlobCount { .. }) => {
+            return Ok(CompileTimeReach {
+                include_targets: vec![unplaced()],
+                exec_roots: vec![ExecRoot::Everything],
+            });
+        }
+    };
     let tree = Tree::new(files.files());
     let mut walk = Walk::new(revisions, &tree);
     let include_targets = walk.include_targets()?;
@@ -82,6 +98,9 @@ struct Context {
     module_dirs: BTreeSet<String>,
     /// The directories its include and `#[path]` literals resolve from.
     file_dirs: BTreeSet<String>,
+    /// Whether it was included inside brackets, here or further up, where the module directory
+    /// a `mod` or `#[path]` in it resolves from is not modelled.
+    modules_unplaced: bool,
 }
 
 impl Context {
@@ -91,6 +110,7 @@ impl Context {
         Self {
             module_dirs: BTreeSet::from([dir.to_owned()]),
             file_dirs: BTreeSet::from([dir.to_owned()]),
+            modules_unplaced: false,
         }
     }
 
@@ -107,28 +127,41 @@ impl Context {
         Self {
             module_dirs,
             file_dirs: BTreeSet::from([dir.to_owned()]),
+            modules_unplaced: false,
         }
     }
 
     /// An included file's: its includer's module directories, and its own directory and its
-    /// includer's for literals. The includer keeps its context, so this one owns a copy.
-    fn included(path: &str, includer: &Self) -> Self {
+    /// includer's for literals; its modules cannot be placed when it was included inside
+    /// brackets (`nested`) or its includer's could not. The includer keeps its context, so
+    /// this one owns a copy.
+    fn included(path: &str, includer: &Self, nested: bool) -> Self {
         let mut file_dirs = includer.file_dirs.clone();
         file_dirs.insert(directory(path).to_owned());
         Self {
             module_dirs: includer.module_dirs.clone(),
             file_dirs,
+            modules_unplaced: includer.modules_unplaced || nested,
         }
     }
 
-    /// Adds `other`'s directories; whether any was new.
+    /// Adds `other`'s directories and whether its modules cannot be placed; whether anything
+    /// was new.
     ///
     /// A file is walked again only when it is reached from somewhere new, so the walk ends.
     fn absorb(&mut self, other: Self) -> bool {
-        let before = (self.module_dirs.len(), self.file_dirs.len());
+        let shape = |context: &Self| {
+            (
+                context.module_dirs.len(),
+                context.file_dirs.len(),
+                context.modules_unplaced,
+            )
+        };
+        let before = shape(self);
         self.module_dirs.extend(other.module_dirs);
         self.file_dirs.extend(other.file_dirs);
-        before != (self.module_dirs.len(), self.file_dirs.len())
+        self.modules_unplaced |= other.modules_unplaced;
+        before != shape(self)
     }
 }
 
@@ -166,31 +199,6 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
             directories,
             reaches: HashMap::new(),
         }
-    }
-
-    /// The include targets of every Rust file of the tree, sorted.
-    fn include_targets(&mut self) -> Result<Vec<String>, R::Error> {
-        let mut targets = BTreeSet::new();
-        for path in self.tree.files(is_rust) {
-            self.load(path)?;
-            let Some(Some(reach)) = self.reaches.get(path) else {
-                targets.insert(unplaced());
-                continue;
-            };
-            let literals = reach
-                .includes
-                .iter()
-                .map(|(_, literal)| literal)
-                .chain(reach.modules.iter().filter_map(|(_, path)| path.as_ref()));
-            for literal in literals {
-                let target = self.resolve(directory(path), literal);
-                targets.insert(target.unwrap_or_else(unplaced));
-            }
-            if reach.uncertain {
-                targets.insert(unplaced());
-            }
-        }
-        Ok(targets.into_iter().collect())
     }
 
     /// `literal` resolved from `dir`: canonical, inside the repository, every `..` leaving a
@@ -295,6 +303,9 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
                 Some(next) => queue.extend(next),
                 None => return Ok(vec![ExecRoot::Everything]),
             }
+            if queue.len() > MAX_QUEUED {
+                return Ok(vec![ExecRoot::Everything]);
+            }
         }
         data.extend(seen.into_keys());
         Ok(data.into_iter().map(ExecRoot::Path).collect())
@@ -318,7 +329,7 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
         let Some(Some(reach)) = self.reaches.get(path) else {
             return Ok(None);
         };
-        if reach.uncertain {
+        if reach.uncertain || (context.modules_unplaced && !reach.modules.is_empty()) {
             return Ok(None);
         }
         let mut next = Vec::new();
@@ -328,7 +339,8 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
                     return Ok(None);
                 };
                 let reached = match kind {
-                    Include::Code => Reached::Code(Context::included(&target, context)),
+                    Include::Code => Reached::Code(Context::included(&target, context, false)),
+                    Include::NestedCode => Reached::Code(Context::included(&target, context, true)),
                     Include::Data => Reached::Data,
                 };
                 next.push((target, reached));

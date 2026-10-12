@@ -2,28 +2,43 @@
 //! (`docs/architecture/03-contracts.md` §2.1): the trees both checks read, and the test
 //! inventory compared file by file. The manifest checks are `manifests.rs`'s.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::head::is_rust;
 use super::inventory::{Inventory, inventory};
 use super::layout::module_files;
-use super::tokens::{Source, Unlexable};
+use super::tokens::Source;
 use crate::revision::{EntryKind, TreeEntry};
 
 /// A tree's entries, each with its bytes when they were read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Files(Vec<(TreeEntry, Option<Vec<u8>>)>);
 
+/// The reader returned another number of blobs than it was asked for, so which bytes belong
+/// to which file is unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BlobCount {
+    pub(super) asked: usize,
+    pub(super) read: usize,
+}
+
 impl Files {
     /// The tree from its `entries` and `blobs`, the bytes of the entries `wanted` selects, in
-    /// order. A blob that is missing leaves its entry unread.
+    /// order; an error unless there is exactly one blob for each, so no file is left unread.
     pub(super) fn new(
         entries: Vec<TreeEntry>,
         blobs: Vec<Vec<u8>>,
         wanted: impl Fn(&TreeEntry) -> bool,
-    ) -> Self {
+    ) -> Result<Self, BlobCount> {
+        let asked = entries.iter().filter(|entry| wanted(entry)).count();
+        if asked != blobs.len() {
+            return Err(BlobCount {
+                asked,
+                read: blobs.len(),
+            });
+        }
         let mut blobs = blobs.into_iter();
-        Self(
+        Ok(Self(
             entries
                 .into_iter()
                 .map(|entry| {
@@ -31,7 +46,7 @@ impl Files {
                     (entry, bytes)
                 })
                 .collect(),
-        )
+        ))
     }
 
     /// Every entry, with its bytes when they were read.
@@ -115,6 +130,8 @@ pub(super) fn base_needs_bytes(entry: &TreeEntry, head: &Tree<'_>) -> bool {
 pub(super) enum Loss {
     /// Fewer unconditional tests.
     Tests { from: u64, to: u64 },
+    /// A test under these conditions is gone, or its conditions changed.
+    Conditional(String),
     /// More ignores.
     Ignores { from: u64, to: u64 },
     /// A new condition on a module or the file (its text, as many times as it was added).
@@ -135,15 +152,15 @@ pub(super) struct InventoryChange<'t> {
     pub(super) losses: Vec<Loss>,
 }
 
-/// The inventory of the Rust file at `path` in `tree`: empty when there is none (or its bytes
-/// were not read), an error when it does not lex.
-fn counted(tree: &Tree<'_>, path: &str) -> Result<Inventory, Unlexable> {
-    let Some(bytes) = tree.bytes(path) else {
-        return Ok(Inventory::default());
-    };
-    let text = String::from_utf8_lossy(bytes);
+/// The inventory of the Rust file at `path` in `tree`: empty when there is no regular file
+/// there; `None` when its bytes were not read or it does not lex.
+fn counted(tree: &Tree<'_>, path: &str) -> Option<Inventory> {
+    if tree.object(path).is_none() {
+        return Some(Inventory::default());
+    }
+    let text = String::from_utf8_lossy(tree.bytes(path)?);
     let source = Source::new(&text);
-    source.tokens().map(|tokens| inventory(&tokens))
+    source.tokens().ok().map(|tokens| inventory(&tokens))
 }
 
 /// Every Rust file whose test inventory lost something between `base` and `head`, by path.
@@ -164,13 +181,13 @@ pub(super) fn test_inventory<'t>(base: &Tree<'t>, head: &Tree<'t>) -> Vec<Invent
         .collect()
 }
 
-/// What the file at `path` lost between `base` and `head`. A head file that does not lex is
-/// already a `blind-spot`, which no waiver clears, so it adds no loss here.
+/// What the file at `path` lost between `base` and `head`. A head file that does not lex or
+/// was not read is already a `blind-spot`, which no waiver clears, so it adds no loss here.
 fn losses(base: &Tree<'_>, head: &Tree<'_>, path: &str) -> Vec<Loss> {
     let (before, after) = match (counted(base, path), counted(head, path)) {
-        (Ok(before), Ok(after)) => (before, after),
-        (_, Err(_)) => return Vec::new(),
-        (Err(_), Ok(_)) => return vec![Loss::Unreadable],
+        (Some(before), Some(after)) => (before, after),
+        (_, None) => return Vec::new(),
+        (None, Some(_)) => return vec![Loss::Unreadable],
     };
     let mut losses = Vec::new();
     if after.tests < before.tests {
@@ -185,6 +202,7 @@ fn losses(base: &Tree<'_>, head: &Tree<'_>, path: &str) -> Vec<Loss> {
             to: after.ignores,
         });
     }
+    losses.extend(added(&after.conditional, &before.conditional).map(Loss::Conditional));
     losses.extend(added(&before.gates, &after.gates).map(Loss::Gate));
     losses.extend(
         added(&after.modules, &before.modules)
@@ -212,13 +230,40 @@ fn added(before: &[String], after: &[String]) -> impl Iterator<Item = String> {
     extra.into_iter()
 }
 
-/// Whether a file `mod name;` in the file at `from` could name is still in the head tree and
-/// held tests at base (or could not be counted there).
+/// Most files [`still_tested`] reads below one dropped module before it holds the module tested
+/// (H-13).
+const MAX_MODULE_FILES: usize = 1_000;
+
+/// Whether a file the dropped `mod name;` of the file at `from` compiled at base, directly or
+/// through the modules below it, is still in the head tree and held tests at base (or could
+/// not be counted there). Every place rustc could look is followed, and a walk past
+/// [`MAX_MODULE_FILES`] counts as tested.
 fn still_tested(base: &Tree<'_>, head: &Tree<'_>, from: &str, name: &str) -> bool {
-    module_files(from, name)
-        .iter()
-        .filter(|file| head.entry(file).is_some())
-        .any(|file| counted(base, file).map_or(true, |found| found.tests > 0))
+    let mut queue: Vec<String> = module_files(from, name).into();
+    let mut seen: HashSet<String> = HashSet::new();
+    while let Some(file) = queue.pop() {
+        if seen.contains(&file) || base.entry(&file).is_none() {
+            continue;
+        }
+        if seen.len() >= MAX_MODULE_FILES {
+            return true;
+        }
+        let Some(found) = counted(base, &file) else {
+            return true;
+        };
+        let tested = found.tests > 0 || !found.conditional.is_empty();
+        if tested && head.entry(&file).is_some() {
+            return true;
+        }
+        queue.extend(
+            found
+                .modules
+                .iter()
+                .flat_map(|module| module_files(&file, module)),
+        );
+        seen.insert(file);
+    }
+    false
 }
 
 #[cfg(test)]
@@ -243,6 +288,34 @@ mod tests {
             added(&before, &after).collect::<Vec<_>>(),
             ["a", "b"],
             "one `a` was there already"
+        );
+    }
+
+    #[test]
+    fn another_number_of_blobs_than_wanted_files_is_an_error() {
+        let entries = vec![entry("a.rs", "1"), entry("b.rs", "2")];
+
+        assert_eq!(
+            Files::new(entries, vec![b"x".to_vec()], |_| true),
+            Err(BlobCount { asked: 2, read: 1 }),
+            "`b.rs` would read as empty"
+        );
+    }
+
+    #[test]
+    fn a_base_file_whose_bytes_were_not_read_is_unreadable() {
+        let before = entry("t.rs", "1");
+        let after = entry("t.rs", "2");
+        let base = Tree::new([(&before, None)]);
+        let head = Tree::new([(&after, Some(&b"fn f() {}"[..]))]);
+
+        assert_eq!(
+            test_inventory(&base, &head)
+                .into_iter()
+                .map(|change| change.losses)
+                .collect::<Vec<_>>(),
+            [vec![Loss::Unreadable]],
+            "not read is not empty"
         );
     }
 

@@ -18,8 +18,13 @@ const TEST_NAMES: [&str; 2] = ["bench", "case"];
 /// What one file declares about its tests.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct Inventory {
-    /// Test-family attributes outside any run of attributes holding a condition.
+    /// Test-family attributes under no condition: none in their own run of attributes, none
+    /// on an item around them.
     pub(super) tests: u64,
+    /// For each test-family attribute under a condition, the conditions it is under, outermost
+    /// first, as one normalised text: a multiset, so a test that goes, or whose condition
+    /// changes, is a loss.
+    pub(super) conditional: Vec<String>,
     /// Attributes that can ignore a test: `ignore` itself, and any attribute naming `ignore`
     /// in its arguments (`cfg_attr(miri, ignore)`, `test_case(.. => ignore)`).
     pub(super) ignores: u64,
@@ -108,9 +113,12 @@ pub(super) fn inventory(tokens: &[Lexed<'_>]) -> Inventory {
             .collect(),
         ..Inventory::default()
     };
-    let mut rest = tokens;
-    while let [first, tail @ ..] = rest {
-        rest = tail;
+    // The conditions on the items being read: where each item ends, and its conditions' text.
+    let mut scopes: Vec<(usize, String)> = Vec::new();
+    let mut index = 0_usize;
+    while let Some((first, tail)) = tokens.get(index..).and_then(<[_]>::split_first) {
+        scopes.retain(|(end, _)| *end > index);
+        index = index.saturating_add(1);
         if first.token != Token::Punct('#') {
             continue;
         }
@@ -118,18 +126,55 @@ pub(super) fn inventory(tokens: &[Lexed<'_>]) -> Inventory {
         if run.is_empty() {
             continue;
         }
-        rest = after;
-        tally(&mut found, &run, gates_module(after));
+        index = tokens.len().saturating_sub(after.len());
+        let own: Vec<String> = run
+            .iter()
+            .filter(|attribute| !attribute.inner && attribute.is_condition())
+            .map(Attribute::text)
+            .collect();
+        let conditions: Vec<&str> = scopes
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .chain(own.iter().map(String::as_str))
+            .collect();
+        tally(&mut found, &run, &conditions, gates_module(after));
+        if !own.is_empty() {
+            scopes.push((index.saturating_add(item_length(after)), own.join(" & ")));
+        }
     }
     found
 }
 
-/// Counts one run of attributes, whose item is a module when `module` holds.
-fn tally(found: &mut Inventory, run: &[Attribute<'_, '_>], module: bool) {
-    let conditional = run.iter().any(Attribute::is_condition);
+/// The number of tokens of the item `after` starts: up to its first `;` or through its first
+/// `{ .. }` outside other brackets, or to the end.
+///
+/// A `{` inside generics (`S<{ N }>`) ends it early, so the tests after it read as under no
+/// condition and a condition later added on that item is not seen (a known gap).
+fn item_length(after: &[Lexed<'_>]) -> usize {
+    let mut index = 0_usize;
+    while let Some(lexed) = after.get(index) {
+        let inner = after.get(index.saturating_add(1)..).unwrap_or(&[]);
+        let group_end = index.saturating_add(group(inner).len()).saturating_add(2);
+        match lexed.token {
+            Token::Punct(';') => return index.saturating_add(1),
+            Token::Punct('{') => return group_end,
+            Token::Punct('(' | '[') => index = group_end,
+            _ => index = index.saturating_add(1),
+        }
+    }
+    after.len()
+}
+
+/// Counts one run of attributes under `conditions` (the items' around it, then its own); its
+/// item is a module when `module` holds.
+fn tally(found: &mut Inventory, run: &[Attribute<'_, '_>], conditions: &[&str], module: bool) {
     for attribute in run {
-        if attribute.is_test() && !conditional && !attribute.inner {
-            found.tests = found.tests.saturating_add(1);
+        if attribute.is_test() && !attribute.inner {
+            if conditions.is_empty() {
+                found.tests = found.tests.saturating_add(1);
+            } else {
+                found.conditional.push(conditions.join(" & "));
+            }
         }
         if attribute.is_ignore() {
             found.ignores = found.ignores.saturating_add(1);
@@ -288,6 +333,35 @@ mod tests {
                 vec!["b".to_owned()]
             ),
             "a condition on a function is not a module's"
+        );
+    }
+
+    #[test]
+    fn a_test_under_a_conditioned_item_is_keyed_by_every_condition() {
+        let source = Source::new(
+            "#[cfg(a)]\nmod m {\n    #[cfg(b)]\n    #[test]\n    fn t() {}\n}\n#[test]\nfn u() {}\n",
+        );
+        let lexed = source.tokens().expect("terminated");
+
+        let found = inventory(&lexed);
+
+        assert_eq!(
+            (found.tests, found.conditional),
+            (1, vec!["cfg ( a ) & cfg ( b )".to_owned()]),
+            "`t` is under both, outermost first; `u` is after `m` ends"
+        );
+    }
+
+    #[test]
+    fn an_item_ends_at_its_semicolon_or_its_body() {
+        let source = Source::new("f!(x, [y]); fn g() -> [u8; 2] { [0; 2] } z");
+        let lexed = source.tokens().expect("terminated");
+        let rest = lexed.get(10..).expect("the call is ten tokens");
+
+        assert_eq!(
+            (item_length(&lexed), item_length(rest)),
+            (10, 18),
+            "a `;` in brackets does not end an item; the body does"
         );
     }
 

@@ -100,16 +100,15 @@ pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> 
         if !changed {
             continue;
         }
-        if let Some(after) = &after {
-            let switches = changed_switches(before.as_ref(), after);
-            if !switches.is_empty() {
-                found.switches.push(SwitchChange {
-                    path,
-                    base: base.object(path),
-                    head: head.object(path),
-                    switches,
-                });
-            }
+        // A deleted manifest is compared with an empty head: every switch it set is gone.
+        let switches = changed_switches(before.as_ref(), after.as_ref().unwrap_or(&empty));
+        if !switches.is_empty() {
+            found.switches.push(SwitchChange {
+                path,
+                base: base.object(path),
+                head: head.object(path),
+                switches,
+            });
         }
         let weakened = weakened(before.as_ref().unwrap_or(&empty), after.as_ref());
         if !weakened.is_empty() {

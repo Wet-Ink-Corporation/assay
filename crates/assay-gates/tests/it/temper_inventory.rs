@@ -278,3 +278,108 @@ fn a_deletion_is_admitted_without_a_head_blob() -> Result<(), Box<dyn Error>> {
     assert_eq!(outcome, (PASSED, Vec::new()), "base blob, no head");
     Ok(())
 }
+
+/// A conditional test, then an unconditional one.
+const CONDITIONAL: &str = "#[cfg(unix)]\n#[test]\nfn a() {}\n\n#[test]\nfn b() {}\n";
+
+#[test]
+fn a_deleted_conditional_test_fails() -> Result<(), Box<dyn Error>> {
+    let mut pr = changed(CONDITIONAL, "#[test]\nfn b() {}\n")?;
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![inventory(FILE)]),
+        "the `cfg(unix)` test is gone"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_conditional_test_whose_condition_changes_fails() -> Result<(), Box<dyn Error>> {
+    let head = CONDITIONAL.replace("cfg(unix)", "cfg(any())");
+    let mut pr = changed(CONDITIONAL, &head)?;
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![inventory(FILE)]),
+        "`cfg(any())` never holds"
+    );
+    Ok(())
+}
+
+#[test]
+fn tests_under_a_new_condition_on_any_item_fail() -> Result<(), Box<dyn Error>> {
+    let calls = "proptest! {\n    #[test]\n    fn a(x in 0..1u8) {}\n}\n";
+    let function = "fn outer() {\n    #[test]\n    fn a() {}\n}\n";
+    let inline = "mod m {\n    #[test]\n    fn a() {}\n}\n";
+    for base in [calls, function, inline] {
+        let head = format!("#[cfg(any())]\n{base}");
+        let mut pr = changed(base, &head)?;
+
+        let outcome = pr.outcome()?;
+
+        assert_eq!(outcome, (FAILED, vec![inventory(FILE)]), "{head}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_condition_changed_on_an_enclosing_item_fails() -> Result<(), Box<dyn Error>> {
+    let base = "#[cfg(unix)]\nproptest! {\n    #[test]\n    fn a(x in 0..1u8) {}\n}\n";
+    let head = base.replace("cfg(unix)", "cfg(any())");
+    let mut pr = changed(base, &head)?;
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![inventory(FILE)]),
+        "the call's tests are keyed by the condition around them"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_module_dropped_above_its_tests_fails() -> Result<(), Box<dyn Error>> {
+    let lib = "crates/x/src/lib.rs";
+    let mut pr = Pr::new()?;
+    pr.both(MANIFEST.0, MANIFEST.1);
+    pr.set(Revision::Base, lib, "mod foo;\n");
+    pr.set(Revision::Head, lib, "");
+    pr.both("crates/x/src/foo.rs", "#[cfg(test)]\nmod tests;\n");
+    pr.both("crates/x/src/foo/tests.rs", ONE_TEST);
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![inventory(lib)]),
+        "`foo/tests.rs` still holds its test, two modules down"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_module_dropped_whose_file_is_deleted_still_reaches_its_tests() -> Result<(), Box<dyn Error>> {
+    let lib = "crates/x/src/lib.rs";
+    let foo = "crates/x/src/foo.rs";
+    let mut pr = Pr::new()?;
+    pr.both(MANIFEST.0, MANIFEST.1);
+    pr.set(Revision::Base, lib, "mod foo;\n");
+    pr.set(Revision::Head, lib, "");
+    pr.set(Revision::Base, foo, "#[cfg(test)]\nmod tests;\n");
+    pr.both("crates/x/src/foo/tests.rs", ONE_TEST);
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![inventory(foo), inventory(lib)]),
+        "`foo/tests.rs` is still in head and compiled by nothing: both drops reach it"
+    );
+    Ok(())
+}

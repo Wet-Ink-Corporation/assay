@@ -6,8 +6,11 @@
 //! `[patch]` by another name), every `auto*` discovery switch (`autobins = false` drops the
 //! unit tests of every binary) and a target's `required-features` and `path` (a test target
 //! that needs a feature the test job does not enable, or that points at another file, stops
-//! running its tests). Values are compared parsed, so formatting does not count; targets are
-//! compared in file order, so reordering targets that set a switch counts.
+//! running its tests), and by workspace membership: `[workspace] members` and
+//! `default-members`, the presence of a `[workspace]` table and `package.workspace` (a crate
+//! leaving the workspace leaves its lints and its test job). Values are compared parsed, so
+//! formatting does not count; targets are compared in file order, so reordering targets that
+//! set a switch counts. A deleted manifest is compared with an empty one.
 
 use toml::{Table, Value};
 
@@ -25,13 +28,21 @@ enum Switch {
     Harness,
     RequiredFeatures,
     Path,
+    Members,
+    DefaultMembers,
+    Workspace,
+    PackageWorkspace,
 }
 
 /// Every switch, with its name in findings.
-const SWITCHES: [(Switch, &str); 11] = [
+const SWITCHES: [(Switch, &str); 15] = [
     (Switch::Patch, "[patch]"),
     (Switch::Replace, "[replace]"),
     (Switch::Exclude, "[workspace] exclude"),
+    (Switch::Members, "[workspace] members"),
+    (Switch::DefaultMembers, "[workspace] default-members"),
+    (Switch::Workspace, "[workspace] table"),
+    (Switch::PackageWorkspace, "package workspace"),
     (Switch::RustVersion, "rust-version"),
     (Switch::Edition, "edition"),
     (
@@ -44,6 +55,9 @@ const SWITCHES: [(Switch, &str); 11] = [
     (Switch::RequiredFeatures, "target required-features"),
     (Switch::Path, "target path"),
 ];
+
+/// What a table that is present projects to, whatever it holds: its presence is the switch.
+static PRESENT: Value = Value::Boolean(true);
 
 /// The target-discovery switches of `[package]`.
 const DISCOVERY: [&str; 5] = [
@@ -86,6 +100,12 @@ fn projection(manifest: &Table, switch: Switch, new: bool) -> Vec<Option<&Value>
         Switch::Patch => vec![at(&["patch"])],
         Switch::Replace => vec![at(&["replace"])],
         Switch::Exclude => vec![at(&["workspace", "exclude"])],
+        Switch::Members => vec![at(&["workspace", "members"])],
+        Switch::DefaultMembers => vec![at(&["workspace", "default-members"])],
+        Switch::Workspace => vec![at(&["workspace"]).map(|_| &PRESENT)],
+        Switch::PackageWorkspace => {
+            vec![at(&["package", "workspace"]), at(&["project", "workspace"])]
+        }
         Switch::RustVersion => inherited(package("rust-version").into_iter().collect(), new),
         Switch::Edition => inherited(
             package("edition")

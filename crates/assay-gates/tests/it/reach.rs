@@ -308,6 +308,105 @@ fn a_symlinked_or_unparseable_entry_makes_everything_exec_surface() -> Result<()
 }
 
 #[test]
+fn a_module_in_a_nested_include_makes_everything_exec_surface() -> Result<(), Box<dyn Error>> {
+    for build in [
+        "mod gen {\n    include!(\"x.rs\");\n}\nfn main() {}\n",
+        "fn main() {\n    include!(\"x.rs\");\n}\n",
+    ] {
+        let found = reach(&[
+            ("Cargo.toml", &package("")),
+            ("build.rs", build),
+            ("x.rs", "mod bar;\n"),
+            ("bar.rs", "pub fn bar() {}\n"),
+            ("gen/bar.rs", "pub fn bar() {}\n"),
+        ])?;
+
+        assert_eq!(
+            found.exec_roots,
+            [ExecRoot::Everything],
+            "rustc looks for `bar` in the enclosing module's directory: {build}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_symlink_or_a_submodule_is_an_unplaced_include_target() -> Result<(), Box<dyn Error>> {
+    let mut linked = Pr::new()?;
+    linked.set(Revision::Head, "crates/x/src/lib.rs", "pub fn f() {}\n");
+    linked.link(Revision::Head, "crates/x/src/gen.rs", "../../../gen.rs");
+    let mut submodule = Pr::new()?;
+    submodule.set(Revision::Head, "crates/x/src/lib.rs", "pub fn f() {}\n");
+    submodule.submodule(Revision::Head, "vendor/dep");
+
+    let found = (
+        compile_time_reach(&linked.revisions, Revision::Head)?.include_targets,
+        compile_time_reach(&submodule.revisions, Revision::Head)?.include_targets,
+    );
+
+    assert_eq!(
+        found,
+        (vec![String::new()], vec![String::new()]),
+        "what Rust behind a link or in a submodule includes is not seen"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_include_through_a_symlink_is_unplaced() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(
+        Revision::Head,
+        "crates/x/src/lib.rs",
+        "include!(\"gen.in\");\n",
+    );
+    pr.link(Revision::Head, "crates/x/src/gen.in", "../../../gen.in");
+    pr.set(
+        Revision::Head,
+        "gen.in",
+        "const D: &str = include_str!(\"d.md\");\n",
+    );
+
+    let found = compile_time_reach(&pr.revisions, Revision::Head)?;
+
+    assert_eq!(
+        found.include_targets,
+        [String::new(), "crates/x/src/gen.in".to_owned()],
+        "the link's target includes a file this scan does not place"
+    );
+    Ok(())
+}
+
+#[test]
+fn code_read_under_another_name_is_scanned_too() -> Result<(), Box<dyn Error>> {
+    let lib = "include!(\"gen.txt\");\n#[path = \"m.txt\"]\nmod m;\n";
+
+    let found = reach(&[
+        ("crates/x/src/lib.rs", lib),
+        (
+            "crates/x/src/gen.txt",
+            "const D: &str = include_str!(\"d.md\");\n",
+        ),
+        (
+            "crates/x/src/m.txt",
+            "const N: &[u8] = include_bytes!(\"n.bin\");\n",
+        ),
+    ])?;
+
+    assert_eq!(
+        found.include_targets,
+        [
+            "crates/x/src/d.md",
+            "crates/x/src/gen.txt",
+            "crates/x/src/m.txt",
+            "crates/x/src/n.bin",
+        ],
+        "a `.txt` file read as Rust has its own include targets"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_crate_without_build_time_code_has_no_exec_roots() -> Result<(), Box<dyn Error>> {
     let found = reach(&[
         ("crates/x/Cargo.toml", &package("")),

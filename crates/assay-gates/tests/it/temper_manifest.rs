@@ -230,8 +230,11 @@ fn removing_the_workspace_manifest_weakens_its_lints() -> Result<(), Box<dyn Err
 
     assert_eq!(
         outcome,
-        (FAILED, vec![seen("lints-table", ROOT)]),
-        "every workspace lint is gone"
+        (
+            FAILED,
+            vec![seen("manifest-switch", ROOT), seen("lints-table", ROOT)]
+        ),
+        "every workspace lint is gone, and every switch with them (#64 review F4)"
     );
     Ok(())
 }
@@ -326,6 +329,68 @@ fn a_manifest_that_does_not_parse_fails() -> Result<(), Box<dyn Error>> {
         outcome,
         (FAILED, vec![seen("manifest-unreadable", MEMBER)]),
         "nothing in it can be compared"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_workspace_membership_change_fails() -> Result<(), Box<dyn Error>> {
+    for (root, member, changed) in [
+        (
+            WORKSPACE.replace("members = [\"crates/*\"]\n", ""),
+            CRATE.to_owned(),
+            ROOT,
+        ),
+        (
+            WORKSPACE.replace("members = [\"crates/*\"]", "members = [\"crates/y\"]"),
+            CRATE.to_owned(),
+            ROOT,
+        ),
+        (
+            WORKSPACE.replace(
+                "exclude = [\"fuzz\"]",
+                "exclude = [\"fuzz\"]\ndefault-members = [\"crates/y\"]",
+            ),
+            CRATE.to_owned(),
+            ROOT,
+        ),
+        (
+            WORKSPACE.to_owned(),
+            package_with("workspace = \"../..\""),
+            MEMBER,
+        ),
+        (
+            WORKSPACE.to_owned(),
+            format!("{CRATE}\n[workspace]\n"),
+            MEMBER,
+        ),
+    ] {
+        let mut pr = pr(&root, &member)?;
+
+        let outcome = pr.outcome()?;
+
+        assert_eq!(
+            outcome,
+            (FAILED, vec![seen("manifest-switch", changed)]),
+            "{root}\n{member}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_deleted_manifest_removes_its_switches() -> Result<(), Box<dyn Error>> {
+    let member = format!("{CRATE}\n[lib]\nharness = false\n");
+    let mut pr = pr(WORKSPACE, &member)?;
+    pr.set(Revision::Base, MEMBER, &member);
+    pr.remove(Revision::Head, MEMBER);
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![seen("manifest-switch", MEMBER)]),
+        "every switch it set is gone with it"
     );
     Ok(())
 }

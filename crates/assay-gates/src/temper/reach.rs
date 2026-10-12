@@ -16,8 +16,12 @@ use super::tokens::{Lexed, Token};
 /// What an include macro reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Include {
-    /// `include!`: Rust, parsed in the including file.
+    /// `include!` at the top level of the file: Rust, parsed in the including module.
     Code,
+    /// `include!` inside any bracket (an inline module, a function body, a macro call): Rust
+    /// whose module directory this scan does not model, so its `mod` and `#[path]` cannot be
+    /// placed.
+    NestedCode,
     /// `include_str!` or `include_bytes!`: data.
     Data,
 }
@@ -69,7 +73,12 @@ pub(super) fn scan(tokens: &[Lexed<'_>]) -> FileReach {
                 found.uncertain |= nested;
             }
             Token::Ident { name, .. } if INCLUDES.contains(&name) && opens(tail, '!') => {
-                record_include(&mut found, name, tail, in_macro);
+                let place = match (in_macro, depth) {
+                    (true, _) => Place::Macro,
+                    (false, 0) => Place::Top,
+                    (false, _) => Place::Nested,
+                };
+                record_include(&mut found, name, tail, place);
             }
             Token::Ident { name: "mod", .. } if recorded_mod != Some(index) => {
                 module(&mut found, tail, nested);
@@ -92,16 +101,27 @@ pub(super) fn scan(tokens: &[Lexed<'_>]) -> FileReach {
     found
 }
 
-/// Records a call of the include macro `name`, from the tokens after its name. In a
-/// `macro_rules!` body its path resolves from the caller, so it is uncertain there.
-fn record_include(found: &mut FileReach, name: &str, tail: &[Lexed<'_>], in_macro: bool) {
-    let kind = if name == "include" {
-        Include::Code
-    } else {
-        Include::Data
+/// Where an include macro is called.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// At the top level of the file.
+    Top,
+    /// Inside a bracket.
+    Nested,
+    /// In a `macro_rules!` body, where its path resolves from the caller.
+    Macro,
+}
+
+/// Records a call of the include macro `name` at `place`, from the tokens after its name. In a
+/// `macro_rules!` body it is uncertain.
+fn record_include(found: &mut FileReach, name: &str, tail: &[Lexed<'_>], place: Place) {
+    let kind = match (name, place) {
+        ("include", Place::Top) => Include::Code,
+        ("include", _) => Include::NestedCode,
+        _ => Include::Data,
     };
     match tail.get(1..).and_then(one_literal) {
-        Some(path) if !in_macro => found.includes.push((kind, path)),
+        Some(path) if place != Place::Macro => found.includes.push((kind, path)),
         _ => found.uncertain = true,
     }
 }
@@ -294,6 +314,20 @@ mod tests {
                 uncertain: false,
             },
             "the `mod` after a `#[path]` is recorded once"
+        );
+    }
+
+    #[test]
+    fn an_include_inside_brackets_is_nested_code() {
+        assert_eq!(
+            of("mod g { include!(\"a.rs\"); }\nfn f() { include!(\"b.rs\") }\ninclude!(\"c.rs\");")
+                .includes,
+            [
+                (Include::NestedCode, "a.rs".to_owned()),
+                (Include::NestedCode, "b.rs".to_owned()),
+                (Include::Code, "c.rs".to_owned())
+            ],
+            "only the top level's module directory is known"
         );
     }
 

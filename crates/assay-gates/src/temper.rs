@@ -349,7 +349,14 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
         let wanted = |entry: &TreeEntry| statics::base_needs_bytes(entry, head);
         let selected: Vec<&TreeEntry> = entries.iter().filter(|entry| wanted(entry)).collect();
         let blobs = self.revisions.read(&selected).map_err(failed)?;
-        Ok(Files::new(entries, blobs, wanted))
+        Files::new(entries, blobs, wanted).map_err(|count| TemperError::Malformed {
+            revision: Revision::Base,
+            path: TREE,
+            detail: format!(
+                "the reader returned {} blobs for {} files",
+                count.read, count.asked
+            ),
+        })
     }
 
     /// Step 2: the exception requests and `allow` hits of the pinned scan over the head tree.

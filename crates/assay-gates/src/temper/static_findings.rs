@@ -51,6 +51,7 @@ pub(super) fn inventory(changes: &[InventoryChange<'_>], allowlist: &Allowlist) 
 fn describe(loss: &Loss) -> String {
     match loss {
         Loss::Tests { from, to } => format!("tests {from} -> {to}"),
+        Loss::Conditional(text) => format!("a test under `{}` is gone", plain(text)),
         Loss::Ignores { from, to } => format!("ignores {from} -> {to}"),
         Loss::Gate(text) => format!("new condition `{}`", plain(text)),
         Loss::Module(name) => format!("module `{}` no longer declared", plain(name)),
