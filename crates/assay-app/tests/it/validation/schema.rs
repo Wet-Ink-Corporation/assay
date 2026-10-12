@@ -145,6 +145,31 @@ fn rejects_a_group_hint_over_100_characters() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+// Each finding costs a search of its file, so a document's findings are capped before step 2.
+#[test]
+fn drops_findings_past_256_in_a_document_as_cap_exceeded() -> Result<(), Box<dyn Error>> {
+    let findings = vec![finding(); 257];
+
+    let validated = validate_one(&findings)?;
+
+    assert_eq!(
+        (validated.findings.len(), validated.transitions),
+        (
+            256,
+            vec![Transition {
+                at: FindingRef::Finding {
+                    document: 0,
+                    index: 256
+                },
+                code: Disposition::CapExceeded,
+                from: None,
+                to: None
+            }]
+        )
+    );
+    Ok(())
+}
+
 // A role outside the roster has no severity ceiling to hold its findings to.
 #[test]
 fn disposes_of_a_document_from_a_role_outside_the_roster_as_schema() -> Result<(), Box<dyn Error>> {

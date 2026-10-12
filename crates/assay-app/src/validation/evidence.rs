@@ -73,10 +73,17 @@ impl Joined {
         }
     }
 
-    /// Every occurrence of `evidence`, one per start line, ascending.
+    /// [`Joined::find_normalised`] after normalising `evidence`.
+    #[cfg(test)]
+    pub(super) fn find(&self, evidence: &str) -> Vec<Match> {
+        self.find_normalised(&normalise(evidence))
+    }
+
+    /// Every occurrence of evidence normalised with the shared normaliser (`normalised`), one
+    /// per start line, ascending.
     ///
-    /// The evidence is normalised with the shared normaliser, so a span quoted across lines
-    /// matches as it would in one string. Its pieces between wildcards must occur in order, the
+    /// Normalised, a span quoted across lines matches as it would in one string. Its pieces
+    /// between wildcards must occur in order, the
     /// first starting on the match line, and the match must end within [`MAX_SPAN_LINES`] lines
     /// of it. Evidence without content matches nowhere.
     ///
@@ -85,13 +92,12 @@ impl Joined {
     /// yields one match at most and a later start on the same line can only end later; each
     /// later piece is matched at its first occurrence after the previous one, and as starts only
     /// move forward so do those occurrences, so each later piece is searched forward once.
-    pub(super) fn find(&self, evidence: &str) -> Vec<Match> {
-        self.search(evidence, &mut 0)
+    pub(super) fn find_normalised(&self, normalised: &str) -> Vec<Match> {
+        self.search(normalised, &mut 0)
     }
 
-    /// [`Joined::find`], adding to `work` the bytes each search covered.
-    fn search(&self, evidence: &str, work: &mut usize) -> Vec<Match> {
-        let normalised = normalise(evidence);
+    /// [`Joined::find_normalised`], adding to `work` the bytes each search covered.
+    fn search(&self, normalised: &str, work: &mut usize) -> Vec<Match> {
         let pieces: Vec<&str> = normalised
             .split(WILDCARD)
             .filter(|piece| !piece.is_empty())
@@ -170,7 +176,7 @@ pub(super) fn line_number(index: usize) -> u64 {
 mod tests {
     use proptest::prelude::*;
 
-    use super::{Joined, Match, has_enough_content, nearest};
+    use super::{Joined, Match, has_enough_content, nearest, normalise};
 
     const FILE: &str = "\
 fn a() {
@@ -255,7 +261,7 @@ fn b() {
         let joined = Joined::of(&text);
         let mut work = 0;
 
-        let matches = joined.search(&"a".repeat(400), &mut work);
+        let matches = joined.search(&normalise(&"a".repeat(400)), &mut work);
 
         assert_eq!(matches, [Match { line: 1, last: 1 }]);
         assert!(
@@ -271,7 +277,10 @@ fn b() {
         let joined = Joined::of(&text);
         let mut work = 0;
 
-        let matches = joined.search(&format!("{} ... b", "ab".repeat(200)), &mut work);
+        let matches = joined.search(
+            &normalise(&format!("{} ... b", "ab".repeat(200))),
+            &mut work,
+        );
 
         assert_eq!(matches.len(), 1_000);
         assert!(

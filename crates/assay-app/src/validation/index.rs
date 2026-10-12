@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use assay_domain::Side;
+use assay_domain::{Side, normalise};
 
 use super::change::Text;
 use super::evidence::{Joined, Match};
@@ -43,12 +43,13 @@ impl<'c> Indexed<'c> {
     /// Every occurrence of `evidence`, one per start line, ascending; searched once per
     /// distinct `evidence` and shared after that.
     pub(super) fn find(&mut self, evidence: &str) -> Rc<[Match]> {
-        if let Some(found) = self.found.get(evidence) {
+        // Keyed by the normalised evidence: quotes that normalise alike match alike.
+        let normalised = normalise(evidence);
+        if let Some(found) = self.found.get(&normalised) {
             return Rc::clone(found);
         }
-        let found: Rc<[Match]> = self.joined.find(evidence).into();
-        // The key is stored, so it is owned.
-        self.found.insert(evidence.to_owned(), Rc::clone(&found));
+        let found: Rc<[Match]> = self.joined.find_normalised(&normalised).into();
+        self.found.insert(normalised, Rc::clone(&found));
         found
     }
 
@@ -150,7 +151,8 @@ mod tests {
             content: FILE,
         });
 
-        let (first, again) = (indexed.find("a();"), indexed.find("a();"));
+        // Both normalise to `a();`, so they are one search.
+        let (first, again) = (indexed.find("a();"), indexed.find("a();   // again"));
 
         assert!(
             Rc::ptr_eq(&first, &again),

@@ -1,12 +1,15 @@
 //! What GitHub renders as code in reviewer text, by the `CommonMark` rules for fenced blocks
 //! and code spans, so the screen can tell code from prose.
 //!
-//! Only what is unambiguously code is removed (wi-b5affa: refuse rather than model). An
-//! unclosed fence, an indented code block, any fence in text with a container line (`>`, a
-//! list marker), and every code span of a paragraph in which some backtick run does not pair
-//! within its own line stay prose, and so are screened: a false suspect costs a finding, a
-//! false exemption lets markup through. Link destinations are read before code spans are
-//! paired (`links.rs`): a backtick inside a link, which a span could claim, flags the text.
+//! Only what is unambiguously code is removed (wi-b5affa: refuse rather than model). Text that
+//! is not plain (a `|`, whitespace other than space, tab and line feed, or a container line)
+//! keeps everything; in plain text, an unclosed fence, an indented code block and every code
+//! span of a paragraph in which some backtick run does not pair within its own line stay prose,
+//! and so are screened: a false suspect costs a finding, a false exemption lets markup through.
+//! Link destinations are read before code spans are paired (`links.rs`): a backtick inside a
+//! link, which a span could claim, flags the text.
+
+use std::borrow::Cow;
 
 /// The most spaces a fence line may be indented by; four make an indented code line.
 const MAX_FENCE_INDENT: usize = 3;
@@ -17,19 +20,33 @@ const MIN_FENCE_RUN: usize = 3;
 /// The most digits an ordered list marker may have (`CommonMark`).
 const MAX_ORDERED_DIGITS: usize = 9;
 
-/// `text` without its fenced blocks and code spans, line by line.
+/// Whether `text` is plain: no `|` (a table GitHub splits into cells before pairing
+/// backticks), no whitespace but ASCII space, tab and line feed (a lone CR, NBSP and the like
+/// break or join lines differently for GitHub), and no line beginning with a container marker
+/// (a container can end a fence or paragraph GitHub opened inside it). Only plain text has
+/// anything removed as code (wi-b5affa).
+fn is_plain(text: &str) -> bool {
+    !text.contains('|')
+        && !text
+            .chars()
+            .any(|c| c.is_whitespace() && !matches!(c, ' ' | '\t' | '\n'))
+        && !text.lines().any(|line| container_marker(line).is_some())
+}
+
+/// `text` without its fenced blocks and code spans, line by line; `text` as written if it is
+/// not plain ([`is_plain`]).
 ///
-/// Fences are removed only if no line of `text` begins with a container marker: a container
-/// can end a fence GitHub opened inside it before its closing line. Code spans are removed
-/// paragraph by paragraph, and only from a paragraph every backtick run of which pairs within
-/// its own line: GitHub pairs runs across the lines of a paragraph.
+/// Code spans are removed paragraph by paragraph, and only from a paragraph every backtick run
+/// of which pairs within its own line: GitHub pairs runs across the lines of a paragraph.
 ///
 /// Cost: every line is scanned once for fences. Within a line, each backtick run that opens a
 /// span is matched by scanning forward for a run of the same length, so a line costs at most
 /// its length times its number of runs. Fields are capped by the schema (1200 characters at
 /// most), which bounds that product.
-pub(super) fn prose(text: &str) -> String {
-    let fences = !text.lines().any(|line| container_marker(line).is_some());
+pub(super) fn prose(text: &str) -> Cow<'_, str> {
+    if !is_plain(text) {
+        return Cow::Borrowed(text);
+    }
     let mut prose = String::with_capacity(text.len());
     let mut paragraph: Vec<&str> = Vec::new();
     // The open fence and its lines, opening line included, until a closing line arrives.
@@ -42,7 +59,7 @@ pub(super) fn prose(text: &str) -> String {
                 Some((fence, lines))
             }
             None => {
-                if let Some(fence) = Fence::opened_by(line).filter(|_| fences) {
+                if let Some(fence) = Fence::opened_by(line) {
                     flush(&mut paragraph, &mut prose);
                     Some((fence, vec![line]))
                 } else {
@@ -59,12 +76,12 @@ pub(super) fn prose(text: &str) -> String {
         }
     }
     flush(&mut paragraph, &mut prose);
-    prose
+    Cow::Owned(prose)
 }
 
 /// Adds `line` to the open `paragraph`, or ends it at a blank line.
 fn add<'t>(line: &'t str, paragraph: &mut Vec<&'t str>, prose: &mut String) {
-    if line.trim().is_empty() {
+    if line.trim_matches([' ', '\t']).is_empty() {
         flush(paragraph, prose);
         prose.push('\n');
     } else {
@@ -235,7 +252,7 @@ mod tests {
 
     #[test]
     fn keeps_a_fence_as_prose_in_text_with_a_container() {
-        assert_eq!(prose("> a\n```\ny\n```"), "> a\n```\ny\n```\n");
+        assert_eq!(prose("> a\n```\ny\n```"), "> a\n```\ny\n```");
     }
 
     #[test]

@@ -292,11 +292,15 @@ impl<'t> Iterator for Links<'t> {
 }
 
 /// Whether `url` (after `https://`) names an allowed host, or a path in `repository` on GitHub.
-/// Credentials and ports are never allowed.
+/// The authority must hold only `[a-z0-9.-]` (`url` is lowercased): a `\`, `%` or any other
+/// character can end or respell the host a browser reads, so credentials and ports are never
+/// allowed either.
 fn is_allowed(url: &str, repository: &str) -> bool {
     let (authority, _) = split_authority(url);
     let host = authority.trim_end_matches('.');
-    let allowed_host = !authority.contains(['@', ':'])
+    let allowed_host = authority
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
         && ALLOWED_HOSTS.iter().any(|allowed| {
             host == *allowed
                 || host

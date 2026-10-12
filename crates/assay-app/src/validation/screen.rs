@@ -67,12 +67,22 @@ pub(super) enum Suspicion {
 }
 
 /// The first suspicion `text` raises, for a change to `repository` (`owner/name`).
+///
+/// A carriage return not followed by a line feed is `Html` outright: GitHub may break a line
+/// there that the checks here, which split at line feeds, do not see.
 pub(super) fn screen(text: &str, repository: &str) -> Option<Suspicion> {
+    let text = text.replace("\r\n", "\n");
+    if text.contains('\r') {
+        return Some(Suspicion::Html);
+    }
+    let text = text.as_str();
     let prose = markdown::prose(text);
     let lower = text.to_lowercase();
     [
         (
-            links::has_foreign_link(&lower, &prose.to_lowercase(), repository) || has_email(&prose),
+            links::has_foreign_link(&lower, &prose.to_lowercase(), repository)
+                || has_email(&prose)
+                || has_cross_reference(&prose, repository),
             Suspicion::Url,
         ),
         (prose.contains("!["), Suspicion::Image),
@@ -105,6 +115,46 @@ fn has_html(prose: &str) -> bool {
             }
         })
     })
+}
+
+/// Whether `prose` references another repository, which GitHub links: `owner/name#digits` (an
+/// issue or pull request) or `owner/name@` and 7 to 40 hex digits (a commit), unless
+/// `owner/name` is `repository` (ASCII case-insensitive).
+///
+/// Cost: linear. The name and owner read back from each `#` or `@` hold neither, nor `/`
+/// before the name, so no character is read back over for two markers.
+fn has_cross_reference(prose: &str, repository: &str) -> bool {
+    prose.match_indices(['#', '@']).any(|(at, marker)| {
+        let (Some(before), Some(after)) = (prose.get(..at), prose.get(at.saturating_add(1)..))
+        else {
+            return false;
+        };
+        let target = if marker == "#" {
+            after.starts_with(|c: char| c.is_ascii_digit())
+        } else {
+            let end = after
+                .find(|c: char| !c.is_ascii_alphanumeric())
+                .unwrap_or(after.len());
+            after.get(..end).is_some_and(|run| {
+                (7..=40).contains(&run.len()) && run.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        };
+        target && referenced(before).is_some_and(|named| !named.eq_ignore_ascii_case(repository))
+    })
+}
+
+/// The `owner/name` that `before` ends with, if it ends with one: a name of ASCII letters,
+/// digits, `.`, `_` or `-`, after a `/`, after an owner of ASCII letters, digits or `-`.
+fn referenced(before: &str) -> Option<&str> {
+    let is_name = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
+    let is_owner = |c: char| c.is_ascii_alphanumeric() || c == '-';
+    let rest = before.trim_end_matches(is_name);
+    let owner_end = rest.strip_suffix('/')?;
+    let start = owner_end.trim_end_matches(is_owner).len();
+    let named = before.get(start..)?;
+    let has_name = rest.len() < before.len();
+    let has_owner = start < owner_end.len();
+    (has_name && has_owner).then_some(named)
 }
 
 /// Whether `prose` holds a character reference (`&#64;`, `&lt;`), which GitHub decodes into
@@ -382,6 +432,83 @@ mod tests {
             screened("> - ```suggestion\n>   x\n> ```"),
             Some(Suspicion::SuggestionFence)
         );
+    }
+
+    // Round 5: a field that is not plain is read entirely as prose.
+    #[test]
+    fn reads_table_cells_as_prose() {
+        // F1: GitHub splits a table row at `|` before pairing backticks.
+        let texts = [
+            "| `a | <img src=x> | b` |\n|---|---|---|",
+            "| `a | @owner | b` |\n|---|---|---|",
+            "| `a | [c](//evil.example/a) | b` |\n|---|---|---|",
+            "| `a | ![p](//evil.example/p.png) | b` |\n|---|---|---|",
+        ];
+
+        assert_eq!(
+            texts.map(screened),
+            [
+                Some(Suspicion::Html),
+                Some(Suspicion::Mention),
+                Some(Suspicion::Url),
+                Some(Suspicion::Url)
+            ]
+        );
+    }
+
+    #[test]
+    fn flags_a_lone_carriage_return() {
+        // F2: `lines()` does not split at a lone CR; GitHub does.
+        let texts = [
+            "```suggestion\rx\r```",
+            "~~~\rcode\r~~~\r<img src=x>",
+            "`a\r\r` <img src=x> `b`",
+        ];
+
+        assert_eq!(texts.map(screened), [Some(Suspicion::Html); 3]);
+    }
+
+    #[test]
+    fn passes_crlf_line_endings_as_plain() {
+        assert_eq!(screened("Use `Vec<u8>` here.\r\nIt is shorter."), None);
+    }
+
+    #[test]
+    fn reads_lines_of_other_whitespace_as_prose() {
+        // F3: a line of NBSP or U+3000 is not blank to GitHub, so the paragraph goes on.
+        let texts = [
+            "`a\n\u{a0}\n` <img src=x> `",
+            "`a\n\u{3000}\n` <img src=x> `",
+        ];
+
+        assert_eq!(texts.map(screened), [Some(Suspicion::Html); 2]);
+    }
+
+    #[test]
+    fn flags_references_into_other_repositories() {
+        // F4: GitHub links `owner/name#1` and `owner/name@sha`.
+        let texts = [
+            "Fixed in other/repo#12.",
+            "See other/repo@abc1234.",
+            "See Wet-Ink-Corporation/assay#12 and wet-ink-corporation/ASSAY@abcdef0.",
+            "Half a/b# or c/d@xyz.",
+        ];
+
+        assert_eq!(
+            texts.map(screened),
+            [Some(Suspicion::Url), Some(Suspicion::Url), None, None]
+        );
+    }
+
+    #[test]
+    fn flags_an_authority_with_characters_a_host_cannot_have() {
+        // F5: browsers read `\` as `/`, so the host here is `evil.example`.
+        let texts = [
+            "See https://evil.example\\.docs.rs/x.",
+            "See https://evil.example%2f.docs.rs/x.",
+        ];
+
+        assert_eq!(texts.map(screened), [Some(Suspicion::Url); 2]);
     }
 
     #[test]

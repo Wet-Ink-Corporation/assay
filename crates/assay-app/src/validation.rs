@@ -28,6 +28,10 @@ use crate::prompt_bundle::Role;
 /// How many injection suspects in one run raise a visible warning (04 §4 step 5).
 const INJECTION_WARNING_AT: usize = 2;
 
+/// The most findings of one document validated; each costs a search of its file, so the rest
+/// are dropped as `cap-exceeded` before step 2 (caps enforced in validation, wi-641e1a).
+const MAX_FINDINGS_PER_DOCUMENT: usize = 256;
+
 /// The base `suppress` rules (`.assay/suppress.toml`, 03 §1), as the caller parsed them.
 ///
 /// A trait rather than data because how a rule's ids and path globs combine is the parser's to
@@ -246,7 +250,12 @@ pub fn validate(
         match read(validator, bytes) {
             Ok((ceiling, findings)) => {
                 for (index, finding) in findings.into_iter().enumerate() {
-                    run.check(FindingRef::Finding { document, index }, finding, ceiling);
+                    let at = FindingRef::Finding { document, index };
+                    if index < MAX_FINDINGS_PER_DOCUMENT {
+                        run.check(at, finding, ceiling);
+                    } else {
+                        run.reject(at, Disposition::CapExceeded);
+                    }
                 }
             }
             Err(code) => run.reject(FindingRef::Document { document }, code),
