@@ -3,6 +3,11 @@
 mod builtins;
 mod config;
 mod contract;
+mod decide;
+mod decide_evidence;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod decide_fakes;
+mod decide_refusals;
 mod doctor;
 mod domain_model;
 mod exec_roots;

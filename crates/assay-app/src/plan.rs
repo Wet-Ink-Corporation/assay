@@ -17,9 +17,10 @@ mod rest;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
-use assay_domain::{ContentHash, RunUid, Tiering, tier};
+use assay_domain::{ContentHash, FileChange, RunUid, Tiering, tier};
 use thiserror::Error;
 
+pub(crate) use self::base_config::BaseConfig;
 pub use self::base_config::BaseConfigError;
 pub use self::document::{ArtifactJob, EvidenceKey};
 pub use self::nonce::{ArtifactNonce, NonceSource, ParseNonceError};
@@ -225,6 +226,56 @@ pub fn plan<O: PullRequestObjects, N: NonceSource>(
     nonces: &mut N,
     validator: &ContractValidator,
 ) -> Result<PlannedRun, PlanError<O::Error, N::Error>> {
+    let recomputed = recompute(request, objects)?;
+    let artifact_names = artifact_names(nonces)?;
+    let json = recomputed
+        .to_json(request, &artifact_names)
+        .map_err(PlanError::Encode)?;
+    validator
+        .read(Contract::Run, &json)
+        .map_err(PlanError::Invalid)?;
+    Ok(PlannedRun {
+        json,
+        run_key: recomputed.run_key,
+        tiering: recomputed.tiering,
+        artifact_names,
+    })
+}
+
+/// Everything a run description is computed from but its artifact names: what `plan` writes and
+/// what `decide` recomputes to check it (02 §4).
+#[derive(Debug)]
+pub(crate) struct Recomputed {
+    pub(crate) config: BaseConfig,
+    pub(crate) files: Vec<FileChange>,
+    pub(crate) tiering: Tiering,
+    pub(crate) run_key: EvidenceKey,
+}
+
+impl Recomputed {
+    /// The `assay.run/1` document of this computation with `artifact_names`.
+    pub(crate) fn to_json(
+        &self,
+        request: &PlanRequest,
+        artifact_names: &BTreeMap<ArtifactJob, String>,
+    ) -> Result<Vec<u8>, serde_json::Error> {
+        document::to_json(&document::Inputs {
+            pull_request: &request.pull_request,
+            run_uid: request.run_uid,
+            run_key: self.run_key,
+            config: &self.config,
+            tiering: &self.tiering,
+            files: &self.files,
+            artifact_names,
+        })
+    }
+}
+
+/// Lists, confirms and tiers `request`'s change and reads its base configuration.
+pub(crate) fn recompute<O: PullRequestObjects, N>(
+    request: &PlanRequest,
+    objects: &O,
+) -> Result<Recomputed, PlanError<O::Error, N>> {
     let pull_request = &request.pull_request;
     let files = match objects
         .changed_files(&pull_request.base_sha, &pull_request.head_sha)
@@ -237,26 +288,12 @@ pub fn plan<O: PullRequestObjects, N: NonceSource>(
     let config = base_config::read(objects, &pull_request.base_sha)?;
     let change_set = changes::change_set(objects, request, files)?;
     let tiering = tier(&config.globs, &change_set);
-    let artifact_names = artifact_names(nonces)?;
     let run_key = EvidenceKey::new(pull_request, &config, request.prompt_bundle);
-    let json = document::to_json(&document::Inputs {
-        pull_request,
-        run_uid: request.run_uid,
-        run_key,
-        config: &config,
-        tiering: &tiering,
-        files: &change_set.files,
-        artifact_names: &artifact_names,
-    })
-    .map_err(PlanError::Encode)?;
-    validator
-        .read(Contract::Run, &json)
-        .map_err(PlanError::Invalid)?;
-    Ok(PlannedRun {
-        json,
-        run_key,
+    Ok(Recomputed {
+        config,
+        files: change_set.files,
         tiering,
-        artifact_names,
+        run_key,
     })
 }
 

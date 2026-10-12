@@ -3,6 +3,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const SHA256_PREFIX: &str = "sha256:";
@@ -17,11 +18,28 @@ fn is_lower_hex(text: &str, len: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
+/// Bytes displayed as lowercase hexadecimal, two digits each.
+struct LowerHex<'b>(&'b [u8]);
+
+impl fmt::Display for LowerHex<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
+    }
+}
+
 /// An OCI content digest, `sha256:<64 lowercase hex>`; a tag such as `latest` never parses.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Sha256Digest(String);
 
 impl Sha256Digest {
+    /// The SHA-256 digest of `bytes`: what a job publishes in its `outputs` for each artifact
+    /// it uploads, and what Z4 recomputes before using one (02 §1, F18).
+    #[must_use]
+    pub fn of(bytes: &[u8]) -> Self {
+        let digest = Sha256::digest(bytes);
+        Self(format!("{SHA256_PREFIX}{}", LowerHex(&digest)))
+    }
+
     /// The digest as written, `sha256:<hex>`.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -138,3 +156,23 @@ pub struct ParseCommitIdError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[error("a digest must be `sha256:` and 64 lowercase hexadecimal digits, never a tag")]
 pub struct ParseDigestError;
+
+#[cfg(test)]
+mod tests {
+    use super::Sha256Digest;
+
+    #[test]
+    fn the_digest_of_bytes_is_their_sha256_in_lowercase_hex() {
+        // FIPS 180-2 test vectors: the empty message and "abc".
+        let digests = [Sha256Digest::of(b""), Sha256Digest::of(b"abc")];
+
+        assert_eq!(
+            digests.map(|digest| digest.to_string()),
+            [
+                "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ]
+            .map(str::to_owned)
+        );
+    }
+}
