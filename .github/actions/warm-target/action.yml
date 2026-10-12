@@ -1,0 +1,74 @@
+# Restore the warm target/ in a Z2b job (ADR-21, 06 §3, 05 T6). Run it after checking the PR out
+# at the fixed path the warm build used (A-29, /work/ws by default) and installing the toolchain,
+# and before anything builds. It pulls the artifact by the digest pinned in base
+# `.assay/plugins.toml` `[assay] warm_target` and verifies it (fetch-by-digest), unpacks only
+# target/ and the registry index and cache (warm-target.sh: an entry outside that allowlist, a
+# link or a `..` refuses the whole archive before anything is written), then runs
+# `cargo clean -p` for every workspace crate, so only dependency artifacts are reused. A stale
+# digest only costs time; a malformed one, or any failed check, fails the step.
+#
+# The calling job grants `packages: read` and, to read the pin from base config,
+# `contents: read`. Read the pin only from a checkout of the base SHA, never the PR head (05 T3).
+name: warm-target
+description: Restore a digest-pinned warm target/ and cargo registry cache, then clean the workspace crates.
+inputs:
+  repository:
+    description: Registry repository of the warm target/, e.g. ghcr.io/wet-ink-corporation/assay-warm-target.
+    required: true
+  digest:
+    description: The pinned digest (sha256:<64 hex>). Give this or config.
+    required: false
+    default: ""
+  config:
+    description: Path to a base plugins.toml to read `[assay] warm_target` from (never the PR head).
+    required: false
+    default: ""
+  workspace:
+    description: The checked-out workspace, at the fixed path the warm build used.
+    required: false
+    default: /work/ws
+  cargo-home:
+    description: CARGO_HOME to restore the registry into; $CARGO_HOME, else ~/.cargo, when empty.
+    required: false
+    default: ""
+  token:
+    description: Registry password; the job's GITHUB_TOKEN with packages read.
+    required: false
+    default: ${{ github.token }}
+  username:
+    description: Registry user name.
+    required: false
+    default: ${{ github.actor }}
+runs:
+  using: composite
+  steps:
+    # setup-oras checks the downloaded oras release against the sha256 it ships for that version.
+    - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+      with:
+        version: 1.3.4
+    - shell: bash
+      env:
+        FETCH: ${{ github.action_path }}/../fetch-by-digest/fetch-by-digest.sh
+        SCRIPT: ${{ github.action_path }}/warm-target.sh
+        REPOSITORY: ${{ inputs.repository }}
+        DIGEST: ${{ inputs.digest }}
+        CONFIG: ${{ inputs.config }}
+        WORKSPACE: ${{ inputs.workspace }}
+        CARGO_HOME_INPUT: ${{ inputs.cargo-home }}
+        FETCH_BY_DIGEST_ARTIFACT_TYPE: application/vnd.wet-ink.assay.warm-target.v1
+        FETCH_BY_DIGEST_MODE: "0644"
+        FETCH_BY_DIGEST_USERNAME: ${{ inputs.username }}
+        FETCH_BY_DIGEST_PASSWORD: ${{ inputs.token }}
+      run: |
+        if [ -n "$DIGEST" ] && [ -n "$CONFIG" ]; then
+          echo "::error::warm-target: give digest or config, not both"
+          exit 2
+        fi
+        if [ -n "$CONFIG" ]; then
+          DIGEST=$(bash "$FETCH" digest-from-config "$CONFIG" assay.warm_target)
+        fi
+        out=$(mktemp -d "$RUNNER_TEMP/warm-target.XXXXXX")
+        bash "$FETCH" fetch "$REPOSITORY" "$DIGEST" "$out"
+        bash "$SCRIPT" unpack "$out/warm-target.tar.zst" "$WORKSPACE" "${CARGO_HOME_INPUT:-${CARGO_HOME:-$HOME/.cargo}}"
+        rm -rf -- "$out"
+        bash "$SCRIPT" clean "$WORKSPACE"

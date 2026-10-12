@@ -647,3 +647,34 @@ fn refuses_an_assay_digest_that_is_a_tag() -> Result<(), Box<dyn std::error::Err
     assert_eq!(output.stdout, b"", "no digest may be printed");
     Ok(())
 }
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
+fn reads_the_warm_target_digest_from_plugins_toml() -> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = Sandbox::new("config-warm-target")?;
+    let config = sandbox.write_config(&plugins_toml())?;
+
+    let output = sandbox.run(&["digest-from-config", &config, "assay.warm_target"])?;
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        String::from_utf8(output.stdout)?,
+        format!("sha256:{LAYER_HEX}\n")
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
+fn refuses_a_warm_target_that_is_a_tag() -> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = Sandbox::new("config-warm-target-tag")?;
+    let config = sandbox.write_config(&format!(
+        "[assay]\ndigest = \"sha256:{MANIFEST_HEX}\"\nwarm_target = \"main\"\n"
+    ))?;
+
+    let output = sandbox.run(&["digest-from-config", &config, "assay.warm_target"])?;
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(output.stdout, b"", "no digest may be printed");
+    Ok(())
+}

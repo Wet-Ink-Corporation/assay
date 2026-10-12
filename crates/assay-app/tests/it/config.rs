@@ -284,6 +284,39 @@ fn rejects_an_assay_digest_that_is_a_tag() {
 }
 
 #[test]
+fn rejects_a_warm_target_that_is_not_a_sha256_digest() {
+    let upper = format!("sha256:{}", HEX64.to_uppercase());
+    let short = format!("sha256:{}", HEX64.get(..63).unwrap_or_default());
+    let prefixed = format!("oci:sha256:{HEX64}");
+    let refused = ["latest", "main", HEX64, &upper, &short, &prefixed]
+        .into_iter()
+        .map(|warm| {
+            let text = format!("[assay]\ndigest = \"sha256:{HEX64}\"\nwarm_target = \"{warm}\"\n");
+            parse(&text)
+        })
+        .filter(|parsed| {
+            matches!(
+                parsed,
+                Err(ConfigError::Digest {
+                    field: "assay.warm_target",
+                    source: ParseDigestError
+                })
+            )
+        })
+        .count();
+
+    assert_eq!(refused, 6, "every malformed warm_target is a digest error");
+}
+
+#[test]
+fn a_file_without_warm_target_has_none() -> Result<(), Box<dyn Error>> {
+    let config = parse(&format!("[assay]\ndigest = \"sha256:{HEX64}\"\n"))?;
+
+    assert_eq!(config.assay().warm_target, None);
+    Ok(())
+}
+
+#[test]
 fn rejects_applies_when_because_required_gates_always_run() {
     let text = with_plugin(&format!(
         "name = \"temper\"\nadapter = \"builtin:temper\"\npin = \"git:{GIT}\"\nrequired = true\napplies_when = \"rust\""

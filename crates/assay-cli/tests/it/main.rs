@@ -16,3 +16,9 @@ mod release_workflow;
 mod supervisor;
 #[cfg(unix)] // process groups, Unix file modes and a `/bin/sh` stand-in for node
 mod temper;
+#[cfg(unix)] // drives a bash script and Unix symlinks
+mod warm_target;
+mod warm_target_workflow;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod workflow;
+mod workflow_cache;
