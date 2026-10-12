@@ -112,21 +112,48 @@ pub(crate) fn spec_line(prefix: &str) -> io::Result<String> {
 /// `StemA|B` expanded to `StemA` and `StemB` (the stem is the first name less its last
 /// capitalised word).
 pub(crate) fn spec_names(text: &str) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
+    text.split('`')
+        .skip(1)
+        .step_by(2)
+        .flat_map(|quoted| expand(quoted.split_once('{').map_or(quoted, |(name, _)| name)))
+        .collect()
+}
+
+/// For each name quoted in backticks in `text` with a `{fields}` list, the field names in that
+/// list without their `?` or `: values`; grouped names are expanded as in [`spec_names`].
+pub(crate) fn spec_fields(text: &str) -> BTreeMap<String, BTreeSet<String>> {
+    let mut fields = BTreeMap::new();
     for quoted in text.split('`').skip(1).step_by(2) {
-        let bare = quoted.split_once('{').map_or(quoted, |(name, _)| name);
-        let mut alternatives = bare.split('|');
-        let Some(first) = alternatives.next() else {
+        let Some((names, list)) = quoted.split_once('{') else {
             continue;
         };
-        let stem = first
-            .rfind(|c: char| c.is_ascii_uppercase())
-            .and_then(|at| first.get(..at))
-            .unwrap_or_default();
-        names.insert(first.to_owned());
-        for rest in alternatives {
-            names.insert(format!("{stem}{rest}"));
+        let listed: BTreeSet<String> = list
+            .trim_end_matches('}')
+            .split(", ")
+            .map(|field| {
+                let name = field.split_once(':').map_or(field, |(name, _)| name);
+                name.trim().trim_end_matches('?').to_owned()
+            })
+            .collect();
+        // Each kind of a group (`GateStarted|Finished`) gets its own copy of the shared list.
+        for name in expand(names) {
+            fields.insert(name, listed.clone());
         }
     }
-    names
+    fields
+}
+
+/// `StemA|B` as `StemA` and `StemB`; the stem is the first name less its last capitalised word.
+fn expand(grouped: &str) -> Vec<String> {
+    let mut alternatives = grouped.split('|');
+    let Some(first) = alternatives.next() else {
+        return Vec::new();
+    };
+    let stem = first
+        .rfind(|c: char| c.is_ascii_uppercase())
+        .and_then(|at| first.get(..at))
+        .unwrap_or_default();
+    std::iter::once(first.to_owned())
+        .chain(alternatives.map(|rest| format!("{stem}{rest}")))
+        .collect()
 }

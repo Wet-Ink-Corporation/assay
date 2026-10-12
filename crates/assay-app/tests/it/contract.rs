@@ -20,7 +20,7 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 36] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 37] = [
     (
         Contract::Findings,
         "reviewer-without-role",
@@ -45,6 +45,12 @@ const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 36] = [
         Contract::Run,
         "unknown-deferral",
         Rejection::Violation("/budget/deferral", "enum"),
+    ),
+    // Only a `full` run degrades, and it degrades to `lite` (04 §2.4).
+    (
+        Contract::Run,
+        "degraded-tier-not-lite",
+        Rejection::Violation("/tier", "const"),
     ),
     (
         Contract::Run,
@@ -193,8 +199,8 @@ fn rejection_of(error: &ReadContractError) -> Option<Rejection<'_>> {
     match error {
         ReadContractError::UnknownVersion { version, .. } => Some(Rejection::Version(*version)),
         ReadContractError::Invalid { violation, .. } => Some(Rejection::Violation(
-            &violation.instance_path,
-            &violation.keyword,
+            violation.instance_path(),
+            violation.keyword(),
         )),
         _ => None,
     }
@@ -379,9 +385,9 @@ fn violation_message_does_not_echo_the_rejected_value() -> Result<(), Box<dyn Er
         return Err(format!("expected a schema violation, got {read:?}").into());
     };
     assert!(
-        !violation.message.contains("xxxxxxxxxx"),
+        !violation.message().contains("xxxxxxxxxx"),
         "untrusted text must not reach error messages: {}",
-        violation.message
+        violation.message()
     );
     Ok(())
 }

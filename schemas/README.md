@@ -16,6 +16,6 @@ Every document carries its contract and version in a `schema` field (`"assay.run
 
 Text caps (`maxLength`, counted in characters) reject over-length input rather than truncating it.
 
-`assay-app` embeds these files and validates every document on read (`ContractValidator::read`); a rejection is disposition `schema`, and its error never quotes the document (keys the schema does not name are reported as `*`). A version is never edited once released: a new version is a new file plus an upcast, and is a human decision (H-16).
+`assay-app` embeds these files and validates every document on read (`ContractValidator::read`), refusing outright a document over 8 MiB (`MAX_DOCUMENT_BYTES`) or one in which an object repeats a key; a rejection is disposition `schema`, and its error never quotes the document (keys the schema does not name are reported as `*`). A version is never edited once released: a new version is a new file plus an upcast, and is a human decision (H-16).
 
 `fixtures/<contract>/valid/` and `fixtures/<contract>/invalid/` are the golden documents. `crates/assay-app/tests/it/contract.rs` accepts every valid one, and rejects each invalid one at the JSON Pointer and keyword it lists; an invalid fixture without an entry there fails the test.

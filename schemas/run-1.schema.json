@@ -97,6 +97,14 @@
       }
     }
   },
+  "if": {
+    "required": ["budget"],
+    "properties": { "budget": { "required": ["tier_degraded_from"] } }
+  },
+  "then": {
+    "description": "`admit` degrades a `full` run to `lite` only (04 §2.4), so a degraded run is `lite`.",
+    "properties": { "tier": { "const": "lite" } }
+  },
   "$defs": {
     "nonEmpty": { "type": "string", "minLength": 1 },
     "strings": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" } },
