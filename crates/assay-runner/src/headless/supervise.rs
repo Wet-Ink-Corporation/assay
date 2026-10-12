@@ -4,12 +4,13 @@
 //! stdin and stdout are anonymous temporary files, not pipes: the child reads its input from a
 //! file written in full before it starts, and writes its transcript to another, so no writer or
 //! reader can block on it. stderr is closed. The calling thread polls the child and the size of
-//! its output against one deadline. Past the deadline or the cap, the child is killed and reaped.
+//! its output against one deadline.
 //!
-//! The child leads its own process group, but only the child itself is killed: the group killer
-//! that also stops descendants lives in `assay-forge`, which this crate may not depend on
-//! (ADR-07). With no process-spawning tool (`--tools Read,Grep,Glob`, `--restricted`) the CLI's
-//! only descendants are its own helpers, which exit once the CLI is gone.
+//! The child leads its own process group, which the lent [`GroupKill`] kills whole. Past the
+//! deadline or the cap the group is killed while the child is still unreaped (so its pid, the
+//! group id, cannot have been reused), then the child itself is killed and reaped. A child that
+//! exits on its own is reaped, and then whatever is still alive in its group is killed, so no
+//! helper the CLI started outlives the call.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -18,7 +19,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::HeadlessError;
+use super::{GroupKill, HeadlessError};
 use crate::stream::Ending;
 
 /// How often the child and its output are checked.
@@ -40,13 +41,22 @@ enum Watched {
     Stop(Ending),
 }
 
-/// Runs `command` with `input` on its stdin until it exits, `timeout` passes or its stdout
-/// passes `cap` bytes.
+/// The limits of one call.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Bounds {
+    /// Wall-clock time from the start until the CLI's group is killed.
+    pub(super) timeout: Duration,
+    /// Most transcript bytes kept; past it the CLI's group is killed.
+    pub(super) cap: u64,
+}
+
+/// Runs `command` with `input` on its stdin until it exits, its timeout passes or its stdout
+/// passes the cap, and kills its process group with `killer`.
 pub(super) fn run(
     mut command: Command,
     input: &[u8],
-    timeout: Duration,
-    cap: u64,
+    Bounds { timeout, cap }: Bounds,
+    killer: &impl GroupKill,
 ) -> Result<Captured, HeadlessError> {
     let deadline = Instant::now()
         .checked_add(timeout)
@@ -65,6 +75,8 @@ pub(super) fn run(
 
     let ending = match watch(&mut child, &stdout, cap, deadline) {
         Ok(Watched::Exited) => {
+            // The CLI is reaped; a process it started may still be running in its group.
+            killer.kill_group(child.id()).map_err(HeadlessError::Kill)?;
             if size(&stdout).map_err(HeadlessError::Supervise)? > cap {
                 Ending::OutputCapped
             } else {
@@ -72,12 +84,12 @@ pub(super) fn run(
             }
         }
         Ok(Watched::Stop(ending)) => {
-            stop(&mut child)?;
+            stop(&mut child, killer)?;
             ending
         }
         Err(source) => {
             // A failed kill outranks the polling failure: the CLI may still be running.
-            stop(&mut child)?;
+            stop(&mut child, killer)?;
             return Err(HeadlessError::Supervise(source));
         }
     };
@@ -110,12 +122,19 @@ fn watch(child: &mut Child, stdout: &File, cap: u64, deadline: Instant) -> io::R
     }
 }
 
-/// Kills the child and reaps it. When the kill fails the child is not waited on, since the wait
-/// could be unbounded; the error says it may still be running.
-fn stop(child: &mut Child) -> Result<(), HeadlessError> {
+/// Kills the child's process group with [`GroupKill::kill_led_group`], then the child itself,
+/// and reaps it. The child is not yet reaped (watching stops before reaping it), so its pid
+/// still names its group.
+///
+/// The child is killed and reaped even when the group kill fails, whose error is then
+/// reported. When the child's own kill fails it is not waited on, since the wait could be
+/// unbounded; either error says it may still be running.
+fn stop(child: &mut Child, killer: &impl GroupKill) -> Result<(), HeadlessError> {
+    let group = killer.kill_led_group(child.id());
+    // Already-exited children report `Ok` here.
     child.kill().map_err(HeadlessError::Kill)?;
     child.wait().map_err(HeadlessError::Supervise)?;
-    Ok(())
+    group.map_err(HeadlessError::Kill)
 }
 
 fn size(file: &File) -> io::Result<u64> {

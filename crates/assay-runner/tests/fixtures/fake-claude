@@ -2,9 +2,10 @@
 # A stand-in for `claude` in the ClaudeHeadless tests: it records how it was started, prints a
 # recorded stream and, when asked, hangs. Its inputs arrive as environment variables passed
 # through HeadlessEnv, since the runner clears the rest:
-#   FAKE_RECORD  directory to write argv (NUL-separated), stdin, cwd and env into
+#   FAKE_RECORD  directory to write its pid, argv (NUL-separated), stdin, cwd and env into
 #   FAKE_STREAM  stream-json file to print on stdout
-#   FAKE_HANG    when 1, wait after printing until killed
+#   FAKE_HANG    when 1, wait after printing until killed (keeping its pid)
+echo $$ > "$FAKE_RECORD/pid"
 for arg in "$@"; do printf '%s\0' "$arg"; done > "$FAKE_RECORD/argv"
 /bin/cat > "$FAKE_RECORD/stdin"
 pwd -P > "$FAKE_RECORD/cwd"

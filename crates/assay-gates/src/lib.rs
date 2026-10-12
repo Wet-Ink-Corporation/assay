@@ -11,6 +11,6 @@ mod exec;
 
 pub use environment::GateEnvironment;
 pub use exec::{
-    ExecAdapter, ExecError, ExecLimits, ExecSettings, FINDINGS_FILE, FINDINGS_OUT_VAR, ProcessSpec,
-    Supervisor,
+    ExecAdapter, ExecError, ExecLimits, ExecSettings, ExecSettingsError, FINDINGS_FILE,
+    FINDINGS_OUT_VAR, ProcessSpec, Supervisor,
 };

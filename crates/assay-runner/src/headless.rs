@@ -1,6 +1,7 @@
 //! The `ClaudeHeadless` adapter: `claude -p` under the hardened headless profile (03 §8).
 
 mod env;
+mod group;
 mod supervise;
 mod workdir;
 
@@ -12,6 +13,7 @@ use std::time::Duration;
 use assay_app::{ModelCall, ModelResult, ModelRunner};
 
 pub use env::{EnvVarError, HeadlessEnv};
+pub use group::GroupKill;
 pub use workdir::{Workdir, WorkdirError};
 
 use crate::stream;
@@ -34,11 +36,17 @@ const SETTINGS: &str = r#"{"disableAllHooks":true,"permissions":{"deny":["Read(/
 /// `Replay` recording: a timeout is charged at the call's budget, as is a transcript cut off at
 /// the cap (reported [`Malformed`](assay_app::ModelOutcome::Malformed)). The exit status is not
 /// consulted: the transcript's `result` message decides. The CLI's stderr is discarded.
+///
+/// The CLI leads its own process group, and `killer` kills that whole group: at the timeout or
+/// the cap before the CLI is reaped, and after it exits, so no process it started outlives the
+/// call. A call returns only once the group has been shown gone, or with
+/// [`HeadlessError::Kill`].
 #[derive(Debug)]
-pub struct ClaudeHeadless {
+pub struct ClaudeHeadless<K> {
     program: PathBuf,
     workdir: Workdir,
     env: HeadlessEnv,
+    killer: K,
     max_output_bytes: u64,
 }
 
@@ -75,8 +83,9 @@ pub enum HeadlessError {
     /// The running CLI could not be polled or reaped.
     #[error("the claude CLI could not be supervised")]
     Supervise(#[source] io::Error),
-    /// The CLI could not be killed and may still be running: abort the job rather than retry.
-    #[error("the claude CLI could not be killed")]
+    /// The CLI, or a process in its group, could not be killed and may still be running: abort
+    /// the job rather than retry.
+    #[error("the claude CLI or its process group could not be killed")]
     Kill(#[source] io::Error),
     /// The transcript could not be read back after the CLI stopped.
     #[error("the transcript could not be read back")]
@@ -99,15 +108,17 @@ impl HeadlessError {
     }
 }
 
-impl ClaudeHeadless {
-    /// A runner that starts `program` (the pinned `claude` binary) in `workdir` with `env`, and
-    /// caps each transcript at 32 MiB.
+impl<K> ClaudeHeadless<K> {
+    /// A runner that starts `program` (the pinned `claude` binary) in `workdir` with `env`,
+    /// kills the CLI's process group with `killer`, and caps each transcript at 32 MiB. Pass
+    /// `&killer` to keep it.
     #[must_use]
-    pub fn new(program: impl Into<PathBuf>, workdir: Workdir, env: HeadlessEnv) -> Self {
+    pub fn new(program: impl Into<PathBuf>, workdir: Workdir, env: HeadlessEnv, killer: K) -> Self {
         Self {
             program: program.into(),
             workdir,
             env,
+            killer,
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
         }
     }
@@ -147,14 +158,14 @@ impl ClaudeHeadless {
     }
 }
 
-impl ModelRunner for ClaudeHeadless {
+impl<K: GroupKill> ModelRunner for ClaudeHeadless<K> {
     type Error = HeadlessError;
 
     /// Runs `call` once under the headless profile.
     ///
     /// # Errors
     /// Returns [`HeadlessError`] when a path in `call` is relative, the working directory is not
-    /// empty, or the CLI could not be started, supervised or killed.
+    /// empty, or the CLI could not be started, supervised or killed (its group included).
     fn run(&self, call: &ModelCall) -> Result<ModelResult, HeadlessError> {
         for path in [&call.system_prompt_file, &call.add_dir] {
             if !path.is_absolute() {
@@ -165,8 +176,11 @@ impl ModelRunner for ClaudeHeadless {
         let captured = supervise::run(
             self.command(call),
             call.user_prompt.as_str().as_bytes(),
-            call.timeout,
-            self.max_output_bytes,
+            supervise::Bounds {
+                timeout: call.timeout,
+                cap: self.max_output_bytes,
+            },
+            &self.killer,
         )?;
         Ok(stream::classify(
             &captured.transcript,

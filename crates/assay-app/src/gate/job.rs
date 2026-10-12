@@ -32,12 +32,21 @@ pub enum GateJob {
     Build(BuildJob),
 }
 
-impl fmt::Display for GateJob {
+impl fmt::Display for BuildJob {
+    /// The job's name: `gates-lint` or `gates-test`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Static => "gates-static",
-            Self::Build(BuildJob::Lint) => "gates-lint",
-            Self::Build(BuildJob::Test) => "gates-test",
+            Self::Lint => "gates-lint",
+            Self::Test => "gates-test",
         })
+    }
+}
+
+impl fmt::Display for GateJob {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Static => f.write_str("gates-static"),
+            Self::Build(job) => job.fmt(f),
+        }
     }
 }

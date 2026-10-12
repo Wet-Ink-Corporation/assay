@@ -1,6 +1,10 @@
 //! Bounded child processes: a wall-clock deadline, capped output, a process group that is
 //! killed rather than left behind, and a child that is always waited on (H-13).
 //!
+//! [`run`] supervises one child under [`Limits`]; [`GroupKiller::kill_group`] kills a process
+//! group that another supervisor started. The git layer uses both, and `assay-cli` lends them
+//! to the gate and model-runner adapters, which may not depend on this crate (wi-603c63).
+//!
 //! stdin, stdout and stderr are anonymous temporary files, not pipes, so this process never
 //! blocks on a descendant: there is no reader that a grandchild holding a pipe open could
 //! keep waiting, and so no join that could outlast the deadline. The calling thread polls the
@@ -53,20 +57,23 @@ const SELF_STAT: &str = "/proc/self/stat";
 const ESRCH: i32 = 3;
 
 /// Bounds for one child process.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Limits {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
     /// Wall-clock time from spawn until the child's group is killed.
-    pub(crate) timeout: Duration,
+    pub timeout: Duration,
     /// Most bytes accepted on stdout, and separately on stderr.
-    pub(crate) max_output_bytes: usize,
+    pub max_output_bytes: usize,
 }
 
 /// What a finished child produced.
 #[derive(Debug)]
-pub(crate) struct Captured {
-    pub(crate) status: ExitStatus,
-    pub(crate) stdout: Vec<u8>,
-    pub(crate) stderr: Vec<u8>,
+pub struct Captured {
+    /// How the child exited.
+    pub status: ExitStatus,
+    /// What it wrote on stdout, at most [`Limits::max_output_bytes`].
+    pub stdout: Vec<u8>,
+    /// What it wrote on stderr, at most [`Limits::max_output_bytes`].
+    pub stderr: Vec<u8>,
 }
 
 /// Why a child process produced no usable output.
@@ -203,9 +210,50 @@ impl GroupKiller {
         }
     }
 
+    /// Kills every live member of process group `group` and returns once `/proc` shows none
+    /// left, within the grace.
+    ///
+    /// `group` must be the id of a group that a child of this process leads (a child started
+    /// with `process_group(0)` leads the group named by its pid). Nothing is signalled when
+    /// `/proc` shows no live member: once the group is empty and its leader reaped, the id may
+    /// belong to an unrelated process. The window left is a member exiting between that scan
+    /// and the signal, after which an unrelated process would have to take the id as its own
+    /// group id before the signal lands.
+    ///
+    /// # Errors
+    /// [`io::ErrorKind::InvalidInput`] for group 0 or 1, which `kill` reads as this process's
+    /// own group and as every process, and for this process's pid or its own group, read from
+    /// `/proc/self/stat` (which failing to read is an error too). Otherwise an error when `/proc` cannot be read (nothing
+    /// is signalled), when the kill program cannot be run, or when a live member is still left
+    /// at the end of the grace: then the group may still be running.
+    pub fn kill_group(&self, group: u32) -> io::Result<()> {
+        check_target(group)?;
+        if group_alive(group)? {
+            self.signal_group(group)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Kills process group `group`, whose leader (the child with pid `group`) has not been
+    /// reaped yet, and returns once `/proc` shows no live member left, within the grace.
+    ///
+    /// The unreaped leader holds the id, so it cannot have been reused: the group is signalled
+    /// without first scanning `/proc` for a live member. Use [`kill_group`](Self::kill_group)
+    /// once the leader may have been reaped.
+    ///
+    /// # Errors
+    /// The same as [`kill_group`](Self::kill_group): [`io::ErrorKind::InvalidInput`] for a
+    /// group that names this process or every process, and otherwise an error when the kill
+    /// program cannot be run or a live member is still left at the end of the grace.
+    pub fn kill_led_group(&self, group: u32) -> io::Result<()> {
+        check_target(group)?;
+        self.signal_group(group)
+    }
+
     /// Sends SIGKILL to process group `group` and waits, within the grace, until no live
     /// member is left. The program's exit status is not believed either way.
-    fn kill_group(&self, group: u32) -> io::Result<()> {
+    fn signal_group(&self, group: u32) -> io::Result<()> {
         let deadline = Instant::now()
             .checked_add(self.grace)
             .ok_or_else(|| io::Error::other("the kill grace overflows the clock"))?;
@@ -235,9 +283,20 @@ impl GroupKiller {
 
 /// Runs `command` with `input` on stdin, within `limits`, and returns its output.
 ///
-/// The child leads a new process group. On a timeout or an over-cap output the group is
-/// killed with `killer`; the child is always waited on.
-pub(crate) fn run(
+/// The child leads a new process group, and its stdin, stdout and stderr are anonymous
+/// temporary files; its program, arguments, environment and working directory are the
+/// caller's. The run completes only when the child has exited and no live process is left in
+/// its group. On a timeout or an over-cap output the group is killed with `killer`; the child is
+/// always waited on.
+///
+/// # Errors
+/// [`ProcessError::TimedOut`] when the child or a process in its group was still running at
+/// the deadline, and [`ProcessError::OutputTooLarge`] when it wrote more than the cap: in both
+/// cases the group was killed and shown gone. [`ProcessError::Kill`] when the group could not
+/// be shown gone, so it may still be running: abort the job rather than retry.
+/// [`ProcessError::TimeoutTooLong`], [`ProcessError::Spool`] and [`ProcessError::Spawn`] when
+/// the child could not be started, and [`ProcessError::Io`] when it could not be observed.
+pub fn run(
     mut command: Command,
     input: &[u8],
     limits: Limits,
@@ -365,7 +424,7 @@ fn terminate(
             }
         }
     }
-    let group_killed = killer.kill_group(group);
+    let group_killed = killer.signal_group(group);
     // Already-exited children report `Ok` here.
     let leader_killed = child.kill();
     match group_killed.and(leader_killed) {
@@ -483,11 +542,39 @@ fn read_present(read: &mut impl FnMut() -> io::Result<Vec<u8>>) -> io::Result<Op
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UnreadableStat;
 
-/// Whether a `/proc/<pid>/stat` line (`pid (comm) state ppid pgrp ...`) is a live member of
-/// `group`. `comm` may contain `) ` and any other bytes, so the fields start after the last
-/// `) `, and only they must be text (the kernel writes them in ASCII). The kernel ends the line
-/// with `\n`; a line without it was cut off, possibly inside `pgrp`, and is unreadable.
+/// Whether a `/proc/<pid>/stat` line is a live (not zombie or dead) member of `group`; it is
+/// parsed by [`state_and_group`].
 fn in_group(stat: &[u8], group: u32) -> Result<bool, UnreadableStat> {
+    let (state, pgrp) = state_and_group(stat)?;
+    Ok(pgrp == group && state != "Z" && state != "X")
+}
+
+/// Fails with [`io::ErrorKind::InvalidInput`] unless `group` may be signalled: not 0 or 1
+/// (`kill` reads `-0` as this process's group and `-1` as every process), not this process's
+/// pid and not its own process group.
+fn check_target(group: u32) -> io::Result<()> {
+    let refused = |why: &str| Err(io::Error::new(io::ErrorKind::InvalidInput, why));
+    if group <= 1 {
+        return refused("process groups 0 and 1 name this process's group and every process");
+    }
+    if group == std::process::id() {
+        return refused("the process group is led by this process");
+    }
+    let stat = fs::read(SELF_STAT)?;
+    let (_, own) = state_and_group(&stat).map_err(|UnreadableStat| {
+        io::Error::new(io::ErrorKind::InvalidData, "unreadable /proc/self/stat")
+    })?;
+    if group == own {
+        return refused("the process group is this process's own");
+    }
+    Ok(())
+}
+
+/// The state (field 3) and process group (field 5) of a `/proc/<pid>/stat` line
+/// (`pid (comm) state ppid pgrp ...`). `comm` may contain `) ` and any other bytes, so the
+/// fields start after the last `) `, and only they must be text. A line without the kernel's
+/// trailing `\n` was cut off, possibly inside `pgrp`, and is unreadable.
+fn state_and_group(stat: &[u8]) -> Result<(&str, u32), UnreadableStat> {
     let line = stat.strip_suffix(b"\n").ok_or(UnreadableStat)?;
     let comm_end = line
         .windows(2)
@@ -504,7 +591,7 @@ fn in_group(stat: &[u8], group: u32) -> Result<bool, UnreadableStat> {
         .nth(1)
         .and_then(|pgrp| pgrp.parse().ok())
         .ok_or(UnreadableStat)?;
-    Ok(pgrp == group && state != "Z" && state != "X")
+    Ok((state, pgrp))
 }
 
 /// Calls `probe` until it yields `Some` or `deadline` passes (`None`). The deadline is checked
@@ -531,6 +618,9 @@ fn poll_until<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::io::BufRead;
+    use std::os::unix::process::ExitStatusExt;
+
     use super::*;
 
     const GENEROUS: Limits = Limits {
@@ -736,6 +826,194 @@ mod tests {
         assert!(
             !marker.exists(),
             "a group whose leader is reaped must not be signalled (pgid reuse)"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+    fn kill_group_kills_every_live_member_of_the_group() {
+        let mut shell = Command::new("sh");
+        shell
+            .args(["-c", "sleep 600 & echo $!; wait"])
+            .stdout(Stdio::piped())
+            .process_group(0);
+        let mut child = shell.spawn().expect("sh starts");
+        let mut grandchild = String::new();
+        // Reading the pid is the readiness signal: the grandchild exists before the kill.
+        io::BufReader::new(child.stdout.take().expect("stdout is piped"))
+            .read_line(&mut grandchild)
+            .expect("the shell prints the grandchild's pid");
+
+        let killed = system_killer().kill_group(child.id());
+
+        let status = child.wait().expect("the shell is reaped");
+        assert_eq!(
+            (killed.map_err(|error| error.kind()), status.signal()),
+            (Ok(()), Some(9)),
+            "the group leader dies of SIGKILL"
+        );
+        assert!(
+            is_dead(grandchild.trim()),
+            "the grandchild dies with its group"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+    fn kill_group_signals_nothing_when_no_member_is_alive() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let marker = scratch.path().join("killed");
+        let spy = script(
+            scratch.path(),
+            "kill",
+            &format!("touch '{}'", marker.display()),
+        );
+        let killer = GroupKiller::at(&spy, Duration::from_millis(100)).expect("executable");
+        let mut child = Command::new("true")
+            .process_group(0)
+            .spawn()
+            .expect("true starts");
+        child.wait().expect("true is reaped");
+
+        let outcome = killer.kill_group(child.id());
+
+        assert_eq!(
+            outcome.map_err(|error| error.kind()),
+            Ok(()),
+            "an empty group is already gone"
+        );
+        assert!(
+            !marker.exists(),
+            "a group with no live member must not be signalled (pgid reuse)"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "reads /proc; Miri isolates the file system")]
+    fn kill_group_refuses_the_ids_kill_reads_as_this_group_or_every_process() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let marker = scratch.path().join("killed");
+        let spy = script(
+            scratch.path(),
+            "kill",
+            &format!("touch '{}'", marker.display()),
+        );
+        let killer = GroupKiller::at(&spy, Duration::from_millis(100)).expect("executable");
+
+        let refused = [0, 1].map(|group| killer.kill_group(group).map_err(|error| error.kind()));
+
+        assert_eq!(
+            refused,
+            [
+                Err(io::ErrorKind::InvalidInput),
+                Err(io::ErrorKind::InvalidInput)
+            ],
+            "`kill -- -0` is this process's group and `-1` every process"
+        );
+        assert!(!marker.exists(), "nothing was signalled");
+    }
+
+    /// This process's process group, read independently of the code under test.
+    fn own_pgrp() -> u32 {
+        let stat = fs::read_to_string(SELF_STAT).expect("/proc/self/stat is readable");
+        let (_, fields) = stat
+            .rsplit_once(") ")
+            .expect("the stat line names a command");
+        fields
+            .split_whitespace()
+            .nth(2)
+            .and_then(|pgrp| pgrp.parse().ok())
+            .expect("field 5 is the process group")
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "reads /proc; Miri isolates the file system")]
+    fn both_kills_refuse_this_process_and_its_own_group() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let marker = scratch.path().join("killed");
+        let spy = script(
+            scratch.path(),
+            "kill",
+            &format!("touch '{}'", marker.display()),
+        );
+        let killer = GroupKiller::at(&spy, Duration::from_millis(100)).expect("executable");
+        let own = [0, 1, std::process::id(), own_pgrp()];
+
+        let refused: Vec<_> = own
+            .iter()
+            .flat_map(|&group| [killer.kill_group(group), killer.kill_led_group(group)])
+            .map(|killed| killed.map_err(|error| error.kind()))
+            .collect();
+
+        assert_eq!(
+            refused,
+            vec![Err(io::ErrorKind::InvalidInput); 8],
+            "a kill must never reach assay itself, its group, or every process"
+        );
+        assert!(!marker.exists(), "nothing was signalled");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+    fn kill_led_group_kills_the_leader_and_its_grandchild() {
+        let mut shell = Command::new("sh");
+        shell
+            .args(["-c", "sleep 600 & echo $!; wait"])
+            .stdout(Stdio::piped())
+            .process_group(0);
+        let mut child = shell.spawn().expect("sh starts");
+        let mut grandchild = String::new();
+        io::BufReader::new(child.stdout.take().expect("stdout is piped"))
+            .read_line(&mut grandchild)
+            .expect("the shell prints the grandchild's pid");
+
+        let killed = system_killer().kill_led_group(child.id());
+
+        let status = child.wait().expect("the shell is reaped");
+        assert_eq!(
+            (killed.map_err(|error| error.kind()), status.signal()),
+            (Ok(()), Some(9)),
+            "the group leader dies of SIGKILL"
+        );
+        assert!(
+            is_dead(grandchild.trim()),
+            "the grandchild dies with its group"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+    fn kill_led_group_signals_without_looking_for_a_live_member() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let marker = scratch.path().join("killed");
+        let spy = script(
+            scratch.path(),
+            "kill",
+            &format!("touch '{}'", marker.display()),
+        );
+        let killer = GroupKiller::at(&spy, Duration::from_secs(5)).expect("executable");
+        let mut child = Command::new("true")
+            .stdout(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .expect("true starts");
+        // End of file on its stdout: the leader is exiting or a zombie, and nothing in its
+        // group is alive, yet it is unreaped, so its id is still its group's.
+        io::BufReader::new(child.stdout.take().expect("stdout is piped"))
+            .read_line(&mut String::new())
+            .expect("true closes its stdout");
+
+        let outcome = killer.kill_led_group(child.id());
+
+        child.wait().expect("true is reaped");
+        assert_eq!(
+            outcome.map_err(|error| error.kind()),
+            Ok(()),
+            "the leader is gone"
+        );
+        assert!(
+            marker.exists(),
+            "an unreaped leader's group is signalled unconditionally"
         );
     }
 

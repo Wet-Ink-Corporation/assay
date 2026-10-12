@@ -56,6 +56,30 @@ fn matches_names_exactly_and_case_sensitively() {
 }
 
 #[test]
+fn keeps_only_the_three_assay_variables_of_the_gate_contract() {
+    // 03 §2 names three; a future ASSAY_* secret must not reach PR-controlled code.
+    let inherited = vars(&[
+        ("ASSAY_BASE_SHA", "abc"),
+        ("ASSAY_APP_PRIVATE_KEY", "secret"),
+        ("ASSAY_HEAD_SHA", "def"),
+        ("ASSAY_FINDINGS_OUT", "/tmp/elsewhere.json"),
+        ("ASSAY_RUN_KEY", "k"),
+        ("ASSAY_RUN_KEYS", "x"),
+    ]);
+
+    let environment = GateEnvironment::from_vars(inherited);
+
+    assert_eq!(
+        environment.vars(),
+        vars(&[
+            ("ASSAY_BASE_SHA", "abc"),
+            ("ASSAY_HEAD_SHA", "def"),
+            ("ASSAY_RUN_KEY", "k"),
+        ])
+    );
+}
+
+#[test]
 fn drops_names_that_are_not_unicode() {
     use std::os::unix::ffi::OsStringExt;
     let inherited = vec![(
