@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-8a-requeues-exhausted",
+  "evidence_key": "run-rule-8a-requeues-exhausted",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "infra-llm-unavailable",
+      "detail": "infra-llm-unavailable after 3 requeues"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:1cd833487ad7ee70805de3d67f28392aafa10b1627bd6df015a912152eaff0ed"
+}

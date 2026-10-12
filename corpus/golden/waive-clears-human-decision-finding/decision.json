@@ -1,0 +1,29 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-waive-clears-human-decision-finding",
+  "evidence_key": "run-waive-clears-human-decision-finding",
+  "conclusion": "success",
+  "reasons": [],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [
+    {
+      "fp": "00000000000000a1",
+      "code": "waived-by-owner"
+    }
+  ],
+  "waived": [
+    {
+      "fp": "00000000000000a1",
+      "by": "owner"
+    }
+  ],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:c9ce2f5c53aade73a9d55ddd8db3a6503bb8c1372c90159aa72ac524d80a5002"
+}

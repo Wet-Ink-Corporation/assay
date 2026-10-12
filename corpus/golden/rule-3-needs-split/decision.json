@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-3-needs-split",
+  "evidence_key": "run-rule-3-needs-split",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "needs-split",
+      "detail": "over the line budget"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:7f6bc3ef40d6d2c24d22f6999cf6b93aafb3879e6f905ff1e55eab5fd2eb9911"
+}

@@ -7,13 +7,13 @@ use std::num::NonZeroU64;
 
 use assay_app::{Contract, ContractValidator};
 use assay_domain::{
-    Disposition, Event, EventKind, EventPayload, EventSchema, FeedbackSignal, FindingsDocument,
-    GateConclusion, GateRun, Preflight, RateLimitStatus, RunUid, Severity, SpecialistRun,
-    VerifierVerdict, VoidReason,
+    Decision, Disposition, Event, EventKind, EventPayload, EventSchema, FeedbackSignal,
+    FindingsDocument, GateConclusion, GateRun, Preflight, RateLimitStatus, RunUid, Severity,
+    SpecialistRun, VerifierVerdict, VoidReason,
 };
 use serde_json::Value;
 
-use crate::support::{Validity, fixtures};
+use crate::support::{Validity, fixtures, golden_decisions};
 
 fn id(n: u64) -> Result<NonZeroU64, Box<dyn Error>> {
     Ok(NonZeroU64::new(n).ok_or("ids are positive")?)
@@ -257,4 +257,30 @@ fn every_event_fixture_rewritten_by_the_domain_is_schema_valid() -> Result<(), B
     rewritten_fixtures_validate(Contract::Event, |bytes| {
         serde_json::to_vec(&serde_json::from_slice::<Event>(bytes)?)
     })
+}
+
+#[test]
+fn every_decision_fixture_rewritten_by_the_domain_is_schema_valid() -> Result<(), Box<dyn Error>> {
+    rewritten_fixtures_validate(Contract::Decision, |bytes| {
+        serde_json::to_vec(&serde_json::from_slice::<Decision>(bytes)?)
+    })
+}
+
+/// The golden decisions are `decide`'s exact output (the domain's tests byte-compare them), so
+/// this checks that what `decide` writes passes `decision-1.schema.json`.
+#[test]
+fn every_golden_decision_is_schema_valid() -> Result<(), Box<dyn Error>> {
+    let validator = ContractValidator::new()?;
+    let decisions = golden_decisions()?;
+    assert!(!decisions.is_empty(), "corpus/golden/ holds no cases");
+
+    for (name, bytes) in &decisions {
+        let read = validator.read(Contract::Decision, bytes);
+
+        assert!(
+            matches!(read, Ok(Value::Object(_))),
+            "{name}: golden decision rejected: {read:?}"
+        );
+    }
+    Ok(())
 }

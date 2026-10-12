@@ -1,0 +1,60 @@
+{
+  "decision_key": "dec-override-void-after-added-reason",
+  "evidence_key": "run-override-void-after-added-reason",
+  "policy": {
+    "protected_bases": [
+      "main"
+    ],
+    "llm_blockers": "advisory",
+    "llm_majors": "advisory",
+    "on_infra_failure": "warn",
+    "block_on_infra_for": [
+      "trust-path",
+      "exec-surface"
+    ]
+  },
+  "pr": {
+    "base_ref": "main",
+    "open_prs_on_head": 2,
+    "tier": "lite",
+    "classes": [],
+    "owner_approval": "not-approved",
+    "authorship": "other",
+    "requeues": 0
+  },
+  "gates": [
+    {
+      "name": "temper",
+      "required": true,
+      "outcome": {
+        "status": "ran",
+        "conclusion": "fail"
+      },
+      "findings": [
+        {
+          "fp": "00000000000000a1",
+          "rule": "raised",
+          "severity": "major"
+        },
+        {
+          "fp": "00000000000000a2",
+          "rule": "clippy::unwrap_used",
+          "severity": "blocker"
+        }
+      ]
+    }
+  ],
+  "weigh_in": "not-required",
+  "llm": {
+    "status": "completed"
+  },
+  "findings": [],
+  "dispositions": [],
+  "degraded": [],
+  "waivers": [],
+  "override_record": {
+    "scope": "all",
+    "reasons_digest": "sha256:edfab635b96543711e1a2662a111f30252334d5a72e82c9d11bb62e35ad7e231",
+    "by": "owner"
+  }
+}

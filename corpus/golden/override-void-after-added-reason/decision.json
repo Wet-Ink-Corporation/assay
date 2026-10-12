@@ -1,0 +1,28 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-override-void-after-added-reason",
+  "evidence_key": "run-override-void-after-added-reason",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "gate-failed",
+      "detail": "temper"
+    },
+    {
+      "code": "ambiguous-head",
+      "detail": "2 open PRs on this head"
+    }
+  ],
+  "counts": {
+    "blocker": 1,
+    "major": 1,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:3e8a1a60df0d9ec71c7a954c188400850c54f6ffefab1ba8a90101dd7c110117"
+}

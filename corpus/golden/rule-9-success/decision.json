@@ -1,0 +1,19 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-9-success",
+  "evidence_key": "run-rule-9-success",
+  "conclusion": "success",
+  "reasons": [],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:d408bb392ea1030d563ddcfc96145b8972d2254eeabc9c95a3088e19efa5948b"
+}

@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-1-gate-skipped",
+  "evidence_key": "run-rule-1-gate-skipped",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "gate-skipped",
+      "detail": "temper"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:52dda233c31b53acabde626d7db81a9fa4f577e1231142880bcfe35947a01f6c"
+}

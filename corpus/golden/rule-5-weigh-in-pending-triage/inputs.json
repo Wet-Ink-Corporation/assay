@@ -1,0 +1,45 @@
+{
+  "decision_key": "dec-rule-5-weigh-in-pending-triage",
+  "evidence_key": "run-rule-5-weigh-in-pending-triage",
+  "policy": {
+    "protected_bases": [
+      "main"
+    ],
+    "llm_blockers": "advisory",
+    "llm_majors": "advisory",
+    "on_infra_failure": "warn",
+    "block_on_infra_for": [
+      "trust-path",
+      "exec-surface"
+    ]
+  },
+  "pr": {
+    "base_ref": "main",
+    "open_prs_on_head": 1,
+    "tier": "lite",
+    "classes": [],
+    "owner_approval": "not-approved",
+    "authorship": "other",
+    "requeues": 0
+  },
+  "gates": [
+    {
+      "name": "temper",
+      "required": true,
+      "outcome": {
+        "status": "ran",
+        "conclusion": "pass"
+      },
+      "findings": []
+    }
+  ],
+  "weigh_in": "pending-triage",
+  "llm": {
+    "status": "completed"
+  },
+  "findings": [],
+  "dispositions": [],
+  "degraded": [],
+  "waivers": [],
+  "override_record": null
+}

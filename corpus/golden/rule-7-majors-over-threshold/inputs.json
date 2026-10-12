@@ -1,0 +1,86 @@
+{
+  "decision_key": "dec-rule-7-majors-over-threshold",
+  "evidence_key": "run-rule-7-majors-over-threshold",
+  "policy": {
+    "protected_bases": [
+      "main"
+    ],
+    "llm_blockers": "advisory",
+    "llm_majors": "block",
+    "on_infra_failure": "warn",
+    "block_on_infra_for": [
+      "trust-path",
+      "exec-surface"
+    ]
+  },
+  "pr": {
+    "base_ref": "main",
+    "open_prs_on_head": 1,
+    "tier": "lite",
+    "classes": [],
+    "owner_approval": "not-approved",
+    "authorship": "other",
+    "requeues": 0
+  },
+  "gates": [
+    {
+      "name": "temper",
+      "required": true,
+      "outcome": {
+        "status": "ran",
+        "conclusion": "pass"
+      },
+      "findings": []
+    }
+  ],
+  "weigh_in": "not-required",
+  "llm": {
+    "status": "completed"
+  },
+  "findings": [
+    {
+      "fp": "0000000000000001",
+      "group_id": "g1",
+      "role": "bugs",
+      "severity": "major",
+      "pre_existing": false,
+      "verdict": "confirmed"
+    },
+    {
+      "fp": "0000000000000002",
+      "group_id": "g1",
+      "role": "bugs",
+      "severity": "major",
+      "pre_existing": false,
+      "verdict": "confirmed"
+    },
+    {
+      "fp": "0000000000000003",
+      "group_id": "g2",
+      "role": "bugs",
+      "severity": "major",
+      "pre_existing": false,
+      "verdict": "confirmed"
+    },
+    {
+      "fp": "0000000000000004",
+      "group_id": "g3",
+      "role": "bugs",
+      "severity": "major",
+      "pre_existing": false,
+      "verdict": "confirmed"
+    },
+    {
+      "fp": "0000000000000005",
+      "group_id": "g4",
+      "role": "combined-micro",
+      "severity": "major",
+      "pre_existing": false,
+      "verdict": null
+    }
+  ],
+  "dispositions": [],
+  "degraded": [],
+  "waivers": [],
+  "override_record": null
+}

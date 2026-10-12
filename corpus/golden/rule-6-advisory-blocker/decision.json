@@ -1,0 +1,21 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-6-advisory-blocker",
+  "evidence_key": "run-rule-6-advisory-blocker",
+  "conclusion": "success",
+  "reasons": [],
+  "counts": {
+    "blocker": 1,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [
+    "00000000000000b1"
+  ],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:23caee2f1433f2d021abde791f9e8e85ee6f6c042a9f28782ef6cec743161954"
+}

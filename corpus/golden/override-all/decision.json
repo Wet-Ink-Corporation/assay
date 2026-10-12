@@ -1,0 +1,32 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-override-all",
+  "evidence_key": "run-override-all",
+  "conclusion": "neutral",
+  "reasons": [
+    {
+      "code": "gate-failed",
+      "detail": "temper"
+    },
+    {
+      "code": "weigh-in-no-evidence",
+      "detail": "weigh-in"
+    },
+    {
+      "code": "override",
+      "detail": "all"
+    }
+  ],
+  "counts": {
+    "blocker": 1,
+    "major": 1,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:a6ea44742c033177f149cab9110c5dc77f0a41b69069aefb9060a641dcca7f0e"
+}

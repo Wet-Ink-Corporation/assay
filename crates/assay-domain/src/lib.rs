@@ -11,15 +11,28 @@
 mod vocabulary;
 
 mod aeu;
+mod decide;
+mod decision;
 mod disposition;
 mod event;
 mod finding;
 mod findings;
 mod reason;
+mod rubric;
 mod run_uid;
 mod severity;
+mod tier;
 
 pub use aeu::Aeu;
+pub use decide::decide;
+pub use decide::inputs::{
+    Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
+    LlmPolicy, LlmStage, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
+    ReviewedFinding, Waiver, WeighIn,
+};
+pub use decision::{
+    Conclusion, Counts, Decision, DecisionSchema, DegradedRole, FindingDisposition, Reason, Waived,
+};
 pub use disposition::Disposition;
 pub use event::{
     Event, EventKind, EventPayload, EventSchema, FeedbackSignal, GateRun, Preflight,
@@ -28,5 +41,7 @@ pub use event::{
 pub use finding::{Caller, Class, Confidence, Finding, FindingKind, IntroducedBy, Side};
 pub use findings::{FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind, Stats};
 pub use reason::ReasonCode;
+pub use rubric::{Rubric, RubricError};
 pub use run_uid::RunUid;
 pub use severity::{Marker, Severity};
+pub use tier::{PrClass, Tier};

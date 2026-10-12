@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-5-weigh-in-pending-triage",
+  "evidence_key": "run-rule-5-weigh-in-pending-triage",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "weigh-in-pending-triage",
+      "detail": "weigh-in"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:7fd4c886e1b02179c0d269ef7fe671e3dd3335b502a86615aefc5183e2ef3866"
+}

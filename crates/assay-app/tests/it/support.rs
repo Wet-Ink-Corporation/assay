@@ -57,6 +57,24 @@ pub(crate) fn fixtures(
     Ok(found)
 }
 
+/// The recorded `decision.json` of every case of `corpus/golden/`, by case name.
+pub(crate) fn golden_decisions() -> io::Result<BTreeMap<String, Vec<u8>>> {
+    let golden = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/golden");
+    let mut found = BTreeMap::new();
+    for entry in fs::read_dir(golden)? {
+        let dir = entry?.path();
+        if dir.is_dir() {
+            let name = dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| io::Error::other(format!("bad case name {}", dir.display())))?
+                .to_owned();
+            found.insert(name, fs::read(dir.join("decision.json"))?);
+        }
+    }
+    Ok(found)
+}
+
 /// The parsed schema `schemas/<stem>.schema.json`.
 pub(crate) fn schema(stem: &str) -> Result<Value, Box<dyn Error>> {
     let bytes = fs::read(schemas_dir().join(format!("{stem}.schema.json")))?;

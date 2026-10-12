@@ -1,0 +1,29 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-8b-required-role-degraded",
+  "evidence_key": "run-rule-8b-required-role-degraded",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "required-role-degraded",
+      "detail": "security: timeout"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [
+    {
+      "role": "security",
+      "reason": "timeout"
+    }
+  ],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:ed46c6982c6f56eb2b11c402fe8b13e5819e22894578185d25a8f427657d6566"
+}

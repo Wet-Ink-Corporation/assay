@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-1-gate-error",
+  "evidence_key": "run-rule-1-gate-error",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "gate-error",
+      "detail": "temper: gitattributes"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:5903ca53ea93257f64eb2359ceda8388c96f24080bb76931cfcde6ae4849cc03"
+}
