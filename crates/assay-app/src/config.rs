@@ -8,6 +8,7 @@
 mod assay;
 mod dto;
 mod error;
+mod globs;
 mod name;
 mod pin;
 
@@ -20,6 +21,7 @@ pub use self::assay::{
 };
 use self::dto::{AssayDto, FileDto, PluginDto, StepDto};
 pub use self::error::{ConfigError, TomlError};
+pub use self::globs::{GlobsConfigError, parse_globs};
 pub use self::name::GateName;
 pub use self::pin::{CommitId, ParseDigestError, ParsePinError, Pin, Sha256Digest};
 use crate::gate::BuildJob;

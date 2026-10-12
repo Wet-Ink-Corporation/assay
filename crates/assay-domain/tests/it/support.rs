@@ -12,6 +12,9 @@ use assay_domain::{
     Reason, ReasonCode, ReviewedFinding, Rubric, Severity, StepAttribution, Tier, VerifierVerdict,
     WeighIn,
 };
+use assay_domain::{
+    BaselineChange, ChangeSet, FileChange, Glob, GlobError, Lines, PackageDiff, RepoGlobs,
+};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -247,4 +250,40 @@ fn fixtures(contract: &str, validity: &str) -> io::Result<BTreeMap<String, Vec<u
         }
     }
     Ok(found)
+}
+
+/// A modified file with numstat `added` and `removed`.
+pub(crate) fn file(path: &str, added: u64, removed: u64) -> FileChange {
+    FileChange::new(path, Lines::Counted { added, removed })
+}
+
+/// A change set of `files` with no manifest trust keys, no `include_*!` targets, no package
+/// changes and no temper baseline change.
+pub(crate) fn changes(files: Vec<FileChange>) -> ChangeSet {
+    ChangeSet {
+        files,
+        manifests: Vec::new(),
+        include_targets: Vec::new(),
+        exec_roots: Vec::new(),
+        packages: PackageDiff::Computed(Vec::new()),
+        temper_baseline: BaselineChange::Other,
+    }
+}
+
+/// Repo glob additions, as `.assay/globs.toml` would give them.
+pub(crate) fn globs(
+    risk: &[&str],
+    trust: &[&str],
+    exclude: &[&str],
+    docs: &[&str],
+) -> Result<RepoGlobs, GlobError> {
+    let parse = |patterns: &[&str]| -> Result<Vec<Glob>, GlobError> {
+        patterns.iter().map(|p| p.parse()).collect()
+    };
+    Ok(RepoGlobs {
+        risk: parse(risk)?,
+        trust: parse(trust)?,
+        exclude: parse(exclude)?,
+        docs: parse(docs)?,
+    })
 }

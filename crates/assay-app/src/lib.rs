@@ -11,11 +11,13 @@ mod contract;
 mod gate;
 mod model_runner;
 mod prompt_bundle;
+mod tiering;
 
 pub use config::{
     Adapter, Argv, AssaySettings, CommitId, ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion,
-    GateName, InfraFailurePolicy, MAX_TIMEOUT_SECS, ParseDigestError, ParsePinError, Pin, Plugin,
-    PluginsConfig, PrClass, Promotion, RunnerKind, Sha256Digest, Step, TomlError,
+    GateName, GlobsConfigError, InfraFailurePolicy, MAX_TIMEOUT_SECS, ParseDigestError,
+    ParsePinError, Pin, Plugin, PluginsConfig, PrClass, Promotion, RunnerKind, Sha256Digest, Step,
+    TomlError, parse_globs,
 };
 pub use contract::{
     Contract, ContractSchemaError, ContractValidator, MAX_DOCUMENT_BYTES, ReadContractError,
@@ -32,3 +34,4 @@ pub use model_runner::{
 pub use prompt_bundle::{
     BundleFile, BundleFileError, BundleFiles, InvalidBundle, PromptBundle, Role,
 };
+pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};
