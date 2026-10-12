@@ -54,7 +54,16 @@ pub(super) enum Unplaced {
     /// names one; the inventory keeps such a name in `modules` and sets `modules_uncertain`.
     Uncertain(String),
     /// A reference `references` does not resolve, by kind.
-    Reference(&'static str),
+    Reference(ReferenceKind),
+}
+
+/// The kinds of reference `references` does not resolve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum ReferenceKind {
+    /// An include macro call, or a `mod` inside brackets or a macro (`Reference::Unresolvable`).
+    Unresolvable,
+    /// A `macro_rules` inside brackets or another macro body.
+    NestedMacro,
 }
 
 /// Most conditioned items a run of attributes can sit inside before the file is refused (H-13).
@@ -180,10 +189,8 @@ fn declared_modules(tokens: &[Lexed<'_>]) -> (Vec<String>, bool, Vec<Unplaced>) 
             .into_iter()
             .filter_map(|(_, reference)| match reference {
                 Reference::Module(_) => None,
-                Reference::Unresolvable => Some(Unplaced::Reference(
-                    "an include, or a `mod` inside brackets or a macro",
-                )),
-                Reference::NestedMacro => Some(Unplaced::Reference("a nested `macro_rules`")),
+                Reference::Unresolvable => Some(Unplaced::Reference(ReferenceKind::Unresolvable)),
+                Reference::NestedMacro => Some(Unplaced::Reference(ReferenceKind::NestedMacro)),
             }),
     );
     (placed, reach.uncertain, unplaced)

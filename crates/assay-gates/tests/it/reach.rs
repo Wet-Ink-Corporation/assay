@@ -425,6 +425,27 @@ fn a_closure_past_its_work_budget_makes_everything_exec_surface() -> Result<(), 
 }
 
 #[test]
+fn a_path_past_the_caps_places_nothing_quickly() -> Result<(), Box<dyn Error>> {
+    let deep = format!("{}deep.rs", "a/".repeat(20_000));
+    let manifest = package("");
+    let found = reach(&[
+        ("Cargo.toml", manifest.as_str()),
+        ("build.rs", "fn main() {}\n"),
+        (deep.as_str(), "fn f() {}\n"),
+    ])?;
+
+    assert_eq!(
+        (
+            found.exec_roots,
+            found.include_targets.contains(&String::new())
+        ),
+        (vec![ExecRoot::Everything], true),
+        "a tree path past 4 KiB or 256 segments is not walked prefix by prefix"
+    );
+    Ok(())
+}
+
+#[test]
 fn reads_past_the_byte_budget_place_nothing() -> Result<(), Box<dyn Error>> {
     let big = format!("fn x() {{}}\n//{}\n", "x".repeat(4 << 20));
     let names: Vec<String> = (0..9).map(|index| format!("g{index}.in")).collect();

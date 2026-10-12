@@ -77,17 +77,13 @@ impl Side {
 /// Steps 4b-4d over every manifest of `base` and `head`.
 pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> {
     let mut found = ManifestChecks::default();
-    let excluded = excluded(base, head);
+    let (base_owner, head_owner) = (Owner::of(base), Owner::of(head));
+    let excluded = excluded(&base_owner, &head_owner);
     let paths: BTreeSet<&'t str> = base
         .files(is_manifest)
         .chain(head.files(is_manifest))
         .collect();
     let empty = Table::new();
-    let (base_root, head_root) = (Side::of(base, ROOT), Side::of(head, ROOT));
-    let roots = Roots {
-        base: base_root.parsed(),
-        head: head_root.parsed(),
-    };
     for path in paths {
         let changed = base.object(path) != head.object(path);
         let (before, after) = match (Side::of(base, path), Side::of(head, path)) {
@@ -113,6 +109,10 @@ pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> 
         if !changed {
             continue;
         }
+        let roots = Roots {
+            base: base_owner.root_for(path),
+            head: head_owner.root_for(path),
+        };
         let switches = changed_switches(before.as_ref(), after.as_ref(), &roots);
         if !switches.is_empty() {
             found.switches.push(SwitchChange {
@@ -145,28 +145,66 @@ fn inherits(manifest: &Table) -> bool {
 }
 
 /// The directories the workspace manifest `exclude`s at both base and head, so a PR cannot
-/// exclude a package to spare it the inheritance check. An entry that is not a plain relative
-/// path (absolute, holding `\` or a `..` segment) is not honoured.
-fn excluded(base: &Tree<'_>, head: &Tree<'_>) -> Vec<String> {
-    let of = |tree: &Tree<'_>| -> BTreeSet<String> {
-        let Some(manifest) = tree.bytes(ROOT).and_then(parse) else {
-            return BTreeSet::new();
-        };
-        manifest
-            .get("workspace")
+/// exclude a package to spare it the inheritance check.
+fn excluded<'o>(base: &'o Owner<'_>, head: &Owner<'_>) -> Vec<&'o str> {
+    base.excluded
+        .iter()
+        .filter(|dir| head.excluded.contains(*dir))
+        .map(String::as_str)
+        .collect()
+}
+
+/// One side's workspace manifest and the manifests it does not own.
+struct Owner<'t> {
+    root: Side,
+    /// The directories its `[workspace] exclude` names. An entry that is not a plain relative
+    /// path (absolute, holding `\` or a `..` segment) is not honoured.
+    excluded: BTreeSet<String>,
+    /// The directory of every other manifest that holds a `[workspace]` table, or does not
+    /// parse: a workspace of its own, as far as this check can tell.
+    nested: Vec<&'t str>,
+}
+
+impl<'t> Owner<'t> {
+    fn of(tree: &Tree<'t>) -> Self {
+        let root = Side::of(tree, ROOT);
+        let excluded = root
+            .parsed()
+            .and_then(|manifest| manifest.get("workspace"))
             .and_then(|workspace| workspace.get("exclude"))
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
             .filter_map(directory)
-            .collect()
-    };
-    let at_head = of(head);
-    of(base)
-        .into_iter()
-        .filter(|dir| at_head.contains(dir))
-        .collect()
+            .collect();
+        let nested = tree
+            .files(is_manifest)
+            .filter(|path| {
+                tree.bytes(path)
+                    .and_then(parse)
+                    .is_none_or(|manifest| manifest.contains_key("workspace"))
+            })
+            .filter_map(|path| Some(path.rsplit_once('/')?.0))
+            .collect();
+        Self {
+            root,
+            excluded,
+            nested,
+        }
+    }
+
+    /// The workspace manifest, when it owns the manifest at `path`: `None` when it is absent
+    /// or does not parse, or `path` sits in a directory it excludes or in a nested workspace.
+    fn root_for(&self, path: &str) -> Option<&Table> {
+        let outside = self
+            .excluded
+            .iter()
+            .map(String::as_str)
+            .chain(self.nested.iter().copied())
+            .any(|dir| under(path, dir));
+        if outside { None } else { self.root.parsed() }
+    }
 }
 
 /// `entry` as a canonical directory, or `None` when it is not a plain relative path.

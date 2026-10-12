@@ -44,6 +44,7 @@ pub(super) fn scan(tokens: &[Lexed<'_>]) -> FileReach {
             matches!(
                 why,
                 Unread::CfgAttrPath
+                    | Unread::NestedCfgAttr
                     | Unread::RenamedInclude
                     | Unread::Raw
                     | Unread::Fragment

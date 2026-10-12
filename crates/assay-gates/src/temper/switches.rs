@@ -92,8 +92,9 @@ const DEPENDENCY_TABLES: [&str; 5] = [
 /// own: its tests leave the workspace with it. A path dependency is compared by table, name
 /// and path; only one that base has and head does not counts (it can take a crate and its
 /// tests out of the graph). An inherited dependency (`h = { workspace = true }`) is read
-/// through the `[workspace.dependencies]` of the side's root in `roots`; one the root does not
-/// resolve counts as a path dependency, failing closed.
+/// through the `[workspace.dependencies]` of the root in `roots` on its side. When that root is
+/// absent, or does not declare the dependency, the dependency still counts as a path
+/// dependency, failing closed.
 pub(super) fn changed_switches(
     base: Option<&Table>,
     head: Option<&Table>,
@@ -118,19 +119,29 @@ pub(super) fn changed_switches(
 }
 
 /// One path dependency: the target `cfg` its table sits under (`None` at the top level), the
-/// table (`dependencies`, `workspace.dependencies`), its name, and its path as written.
-type PathDependency<'m> = (Option<&'m str>, &'static str, &'m str, String);
+/// table (`dependencies`, `workspace.dependencies`), its name, and its path.
+type PathDependency<'m> = (Option<&'m str>, &'static str, &'m str, DependencyPath);
 
-/// The workspace manifest (`Cargo.toml` at the repository root) at base and at head; `None`
-/// where it is absent or does not parse.
+/// Where a path dependency points, as written.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum DependencyPath {
+    /// Its own `path`, relative to its manifest.
+    Own(String),
+    /// Inherited with `workspace = true`: the root's `path` for it, relative to the root.
+    Inherited(String),
+    /// Inherited with `workspace = true` from a root that does not declare it, or with no
+    /// root that owns the manifest; counted as a path dependency, failing closed.
+    Unresolved,
+}
+
+/// The workspace manifest (`Cargo.toml` at the repository root) at base and at head, where it
+/// owns the manifest being compared; `None` where it is absent, does not parse or does not own
+/// it (an excluded directory, or a nested workspace).
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct Roots<'r> {
     pub(super) base: Option<&'r Table>,
     pub(super) head: Option<&'r Table>,
 }
-
-/// The path an inherited dependency resolves to when the root does not resolve it.
-const UNRESOLVED: &str = "workspace, unresolved";
 
 /// Every path dependency of `manifest`, in its own tables, under `[target.<cfg>]` and in
 /// `[workspace.dependencies]`, with inherited ones read through `root`.
@@ -164,24 +175,24 @@ fn path_dependencies<'m>(
     found
 }
 
-/// The path of the dependency `name` declared by `spec`: its own `path`, or for one inherited
-/// with `workspace = true` the root's `path` for it, marked as inherited (the two are relative
-/// to different directories), or [`UNRESOLVED`] when `root` does not declare it. `None` for a
-/// dependency that is not a path dependency.
-fn dependency_path(name: &str, spec: &Value, root: Option<&Table>) -> Option<String> {
+/// The path of the dependency `name` declared by `spec`, or `None` when it is not a path
+/// dependency. An inherited one (`workspace = true`) is read through `root`'s
+/// `[workspace.dependencies]`; [`DependencyPath::Unresolved`] when there is no `root` or it
+/// does not declare `name`.
+fn dependency_path(name: &str, spec: &Value, root: Option<&Table>) -> Option<DependencyPath> {
     if let Some(path) = spec.get("path") {
-        return Some(written(path));
+        return Some(DependencyPath::Own(written(path)));
     }
     if spec.get("workspace") != Some(&Value::Boolean(true)) {
         return None;
     }
     let Some(declared) = root.and_then(|root| lookup(root, &["workspace", "dependencies", name]))
     else {
-        return Some(UNRESOLVED.to_owned());
+        return Some(DependencyPath::Unresolved);
     };
     declared
         .get("path")
-        .map(|path| format!("workspace, {}", written(path)))
+        .map(|path| DependencyPath::Inherited(written(path)))
 }
 
 /// A path as written; one that is not a string is kept in its debug form, so it still
@@ -364,6 +375,23 @@ mod tests {
                 Vec::new(),
             ),
             "a path in the root counts; one the root does not resolve counts too (fail closed)"
+        );
+    }
+
+    #[test]
+    fn an_own_path_never_equals_an_inherited_one_however_it_is_spelled() {
+        let base = table("[dependencies]\nh = { path = \"workspace, crates/h\" }\n");
+        let head = table("[dependencies]\nh = { workspace = true }\n");
+        let root = table("[workspace.dependencies]\nh = { path = \"crates/h\" }\n");
+        let roots = Roots {
+            base: Some(&root),
+            head: Some(&root),
+        };
+
+        assert_eq!(
+            changed_switches(Some(&base), Some(&head), &roots),
+            ["path dependency removed"],
+            "the two paths are relative to different directories"
         );
     }
 }

@@ -320,6 +320,25 @@ fn a_dropped_module_this_check_cannot_place_is_refused() -> Result<(), Box<dyn E
     Ok(())
 }
 
+#[test]
+fn many_drops_of_one_module_count_its_file_once() -> Result<(), Box<dyn Error>> {
+    let lib = "crates/x/src/lib.rs";
+    let mut pr = Pr::new()?;
+    pr.both(MANIFEST.0, MANIFEST.1);
+    pr.set(Revision::Base, lib, &"mod a;\n".repeat(2_000));
+    pr.set(Revision::Head, lib, "");
+    pr.both("crates/x/src/a.rs", &"fn f() {}\n".repeat(20_000));
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (PASSED, Vec::new()),
+        "`a.rs` held no test; it is counted once, not once per dropped declaration"
+    );
+    Ok(())
+}
+
 /// A conditional test, then an unconditional one.
 const CONDITIONAL: &str = "#[cfg(unix)]\n#[test]\nfn a() {}\n\n#[test]\nfn b() {}\n";
 

@@ -181,11 +181,16 @@ fn counted(tree: &Tree<'_>, path: &str) -> Result<Inventory, Uncounted> {
 /// Every Rust file whose test inventory lost something between `base` and `head`, by path.
 pub(super) fn test_inventory<'t>(base: &Tree<'t>, head: &Tree<'t>) -> Vec<InventoryChange<'t>> {
     let paths: BTreeSet<&'t str> = base.files(is_rust).chain(head.files(is_rust)).collect();
+    let mut walks = BaseWalks {
+        base,
+        visited: HashMap::new(),
+        visits_left: MAX_WALK_VISITS,
+    };
     paths
         .into_iter()
         .filter(|path| base.object(path) != head.object(path))
         .filter_map(|path| {
-            let losses = losses(base, head, path);
+            let losses = losses(&mut walks, head, path);
             (!losses.is_empty()).then(|| InventoryChange {
                 path,
                 base: base.object(path),
@@ -199,8 +204,8 @@ pub(super) fn test_inventory<'t>(base: &Tree<'t>, head: &Tree<'t>) -> Vec<Invent
 /// What the file at `path` lost between `base` and `head`. A head file that does not lex or
 /// was not read is already a `blind-spot`, which no waiver clears, so it adds no loss here;
 /// one past the work budget is refused.
-fn losses(base: &Tree<'_>, head: &Tree<'_>, path: &str) -> Vec<Loss> {
-    let (before, after) = match (counted(base, path), counted(head, path)) {
+fn losses(walks: &mut BaseWalks<'_, '_>, head: &Tree<'_>, path: &str) -> Vec<Loss> {
+    let (before, after) = match (counted(walks.base, path), counted(head, path)) {
         (Ok(before), Ok(after)) => (before, after),
         (_, Err(Uncounted::Refused)) => return vec![Loss::TooComplex],
         (_, Err(Uncounted::Unread)) => return Vec::new(),
@@ -223,7 +228,7 @@ fn losses(base: &Tree<'_>, head: &Tree<'_>, path: &str) -> Vec<Loss> {
     for name in added(&after.modules, &before.modules) {
         if before.modules_uncertain {
             losses.push(Loss::Unplaced(Unplaced::Uncertain(name)));
-        } else if still_tested(base, head, path, &name) {
+        } else if still_tested(walks, head, path, &name) {
             losses.push(Loss::Module(name));
         }
     }
@@ -264,25 +269,22 @@ const MAX_MODULE_FILES: usize = 1_000;
 /// through the modules below it, is still in the head tree and held tests at base (or could
 /// not be counted there). Every place rustc could look is followed; a file with a module
 /// reference this check cannot follow by name or whose modules the reach scan could not all
-/// place, and a walk past [`MAX_MODULE_FILES`], count as tested.
-fn still_tested(base: &Tree<'_>, head: &Tree<'_>, from: &str, name: &str) -> bool {
+/// place, and a walk past [`MAX_MODULE_FILES`] or past the visits left to every walk, count as
+/// tested.
+fn still_tested(walks: &mut BaseWalks<'_, '_>, head: &Tree<'_>, from: &str, name: &str) -> bool {
     let mut queue: Vec<String> = module_files(from, name).into();
     let mut seen: HashSet<String> = HashSet::new();
     while let Some(file) = queue.pop() {
-        if seen.contains(&file) || base.entry(&file).is_none() {
+        if seen.contains(&file) || walks.base.entry(&file).is_none() {
             continue;
         }
         if seen.len() >= MAX_MODULE_FILES {
             return true;
         }
-        let Ok(found) = counted(base, &file) else {
+        let Some(found) = walks.visit(&file) else {
             return true;
         };
-        if found.modules_uncertain || !found.unplaced_modules.is_empty() {
-            return true;
-        }
-        let tested = found.tests > 0 || !found.conditional.is_empty();
-        if tested && head.entry(&file).is_some() {
+        if found.tested && head.entry(&file).is_some() {
             return true;
         }
         queue.extend(
@@ -294,6 +296,47 @@ fn still_tested(base: &Tree<'_>, head: &Tree<'_>, from: &str, name: &str) -> boo
         seen.insert(file);
     }
     false
+}
+
+/// Most files every [`still_tested`] walk of one `test_inventory` visits together (H-13).
+const MAX_WALK_VISITS: usize = 10_000;
+
+/// What the [`still_tested`] walks of one `test_inventory` share: what each base file they
+/// visit holds, counted once, and the visits they may still make.
+struct BaseWalks<'b, 't> {
+    base: &'b Tree<'t>,
+    /// Each visited file's [`Visited`]; `None` when it could not be counted or declares a
+    /// module this check cannot place, either of which makes it count as tested.
+    visited: HashMap<String, Option<Visited>>,
+    visits_left: usize,
+}
+
+/// What a walk reads of one base file.
+struct Visited {
+    /// Whether it held a test, conditional or not.
+    tested: bool,
+    /// The `mod name;` declarations it places by name.
+    modules: Vec<String>,
+}
+
+impl BaseWalks<'_, '_> {
+    /// What `file` holds at base, counted on its first visit; `None`, so that it counts as
+    /// tested, once the visits are spent or when it could not be counted or placed.
+    fn visit(&mut self, file: &str) -> Option<&Visited> {
+        self.visits_left = self.visits_left.checked_sub(1)?;
+        let base = self.base;
+        self.visited
+            .entry(file.to_owned())
+            .or_insert_with(|| {
+                let found = counted(base, file).ok()?;
+                let placed = !found.modules_uncertain && found.unplaced_modules.is_empty();
+                placed.then_some(Visited {
+                    tested: found.tests > 0 || !found.conditional.is_empty(),
+                    modules: found.modules,
+                })
+            })
+            .as_ref()
+    }
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@
 use assay_domain::{Class, Finding, Severity, Side};
 
 use super::exceptions::Allowlist;
-use super::inventory::Unplaced;
+use super::inventory::{ReferenceKind, Unplaced};
 use super::manifests::{ManifestChecks, SwitchChange};
 use super::report::{Rule, Spot, finding, plain};
 use super::statics::{InventoryChange, Loss};
@@ -67,6 +67,10 @@ fn describe(loss: &Loss) -> String {
             plain(name)
         ),
         Loss::Unplaced(Unplaced::Reference(kind)) => {
+            let kind = match kind {
+                ReferenceKind::Unresolvable => "an include, or a `mod` inside brackets or a macro,",
+                ReferenceKind::NestedMacro => "a nested `macro_rules`",
+            };
             format!("{kind} that this check does not follow is gone")
         }
         Loss::Unreadable => "its base text could not be counted".to_owned(),
@@ -197,7 +201,7 @@ mod tests {
                 path: "t.rs".to_owned(),
             }),
             Loss::Unplaced(Unplaced::Uncertain("tests".to_owned())),
-            Loss::Unplaced(Unplaced::Reference("a nested `macro_rules`")),
+            Loss::Unplaced(Unplaced::Reference(ReferenceKind::NestedMacro)),
         ];
 
         assert_eq!(

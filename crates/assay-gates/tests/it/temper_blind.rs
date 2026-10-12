@@ -167,6 +167,29 @@ fn brackets_nested_past_the_cap_fail_quickly() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn a_cfg_attr_nested_in_another_fails_quickly() -> Result<(), Box<dyn Error>> {
+    // `#[` and 255 `cfg_attr(`: 256 open brackets, the deepest the lexer reads.
+    let levels = 255;
+    let nested = format!(
+        "fn f() {{}}\n#[{}{}{}]\nfn g() {{}}\n",
+        "cfg_attr(unix, ".repeat(levels),
+        "x, ".repeat(500_000),
+        ")".repeat(levels)
+    );
+    let mut pr = Pr::new()?;
+    pr.set(Revision::Head, "src/lib.rs", &nested);
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![blind("src/lib.rs", 2)]),
+        "a nested `cfg_attr` is refused, not read again at every level"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_symlink_to_a_directory_fails() -> Result<(), Box<dyn Error>> {
     let mut pr = Pr::new()?;
     pr.set(Revision::Head, "elsewhere/hidden.rs", "pub fn f() {}\n");

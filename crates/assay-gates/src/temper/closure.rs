@@ -63,6 +63,13 @@ pub fn compile_time_reach<R: RevisionFiles>(
     revision: Revision,
 ) -> Result<CompileTimeReach, R::Error> {
     let entries = revisions.list(revision, None)?;
+    let nothing_placed = || CompileTimeReach {
+        include_targets: vec![unplaced()],
+        exec_roots: vec![ExecRoot::Everything],
+    };
+    if !entries.iter().all(|entry| within_caps(&entry.path)) {
+        return Ok(nothing_placed());
+    }
     let wanted = |entry: &TreeEntry| {
         entry.kind == EntryKind::File && (is_rust(&entry.path) || is_manifest(&entry.path))
     };
@@ -71,12 +78,7 @@ pub fn compile_time_reach<R: RevisionFiles>(
     let files = match Files::new(entries, blobs, wanted) {
         Ok(files) => files,
         // Which bytes belong to which file is unknown: nothing can be placed.
-        Err(BlobCount { .. }) => {
-            return Ok(CompileTimeReach {
-                include_targets: vec![unplaced()],
-                exec_roots: vec![ExecRoot::Everything],
-            });
-        }
+        Err(BlobCount { .. }) => return Ok(nothing_placed()),
     };
     let tree = Tree::new(files.files());
     let mut walk = Walk::new(revisions, &tree);
@@ -86,6 +88,19 @@ pub fn compile_time_reach<R: RevisionFiles>(
         include_targets,
         exec_roots,
     })
+}
+
+/// Longest path, in bytes, the walk handles: a tree entry's, an include literal's, or one
+/// resolved from them (H-13).
+const MAX_PATH_BYTES: usize = 4 << 10;
+
+/// Most `/`-separated segments a path the walk handles may have (H-13).
+const MAX_SEGMENTS: usize = 256;
+
+/// Whether `path` is within [`MAX_PATH_BYTES`] and [`MAX_SEGMENTS`], so that walking its
+/// prefixes is bounded. Past either cap the walk refuses the path rather than read it.
+fn within_caps(path: &str) -> bool {
+    path.len() <= MAX_PATH_BYTES && path.split('/').nth(MAX_SEGMENTS).is_none()
 }
 
 /// The include target of a reference that cannot be placed: not canonical, so it matches
@@ -110,11 +125,14 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
     fn new(revisions: &'r R, tree: &'t Tree<'t>) -> Self {
         let mut directories = HashSet::from([""]);
         for entry in tree.entries() {
-            let path = entry.path.as_str();
-            directories.extend(
-                path.match_indices('/')
-                    .filter_map(|(slash, _)| path.get(..slash)),
-            );
+            // From the deepest directory up, stopping at one already known: its own are too.
+            let mut above = entry.path.as_str();
+            while let Some((directory, _)) = above.rsplit_once('/') {
+                if !directories.insert(directory) {
+                    break;
+                }
+                above = directory;
+            }
         }
         Self {
             revisions,
@@ -126,31 +144,44 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
     }
 
     /// `literal` resolved from `dir`: canonical, inside the repository, every `..` leaving a
-    /// real directory; `None` otherwise.
+    /// real directory, and within [`MAX_PATH_BYTES`] and [`MAX_SEGMENTS`] as written and as
+    /// resolved; `None` otherwise.
     fn resolve(&self, dir: &str, literal: &str) -> Option<String> {
         let unsafe_text = literal.starts_with('/')
             || literal.contains('\\')
-            || literal.chars().any(char::is_control);
+            || literal.chars().any(char::is_control)
+            || !within_caps(literal);
         if unsafe_text {
             return None;
         }
-        let mut parts: Vec<&str> = dir.split('/').filter(|part| !part.is_empty()).collect();
+        let mut resolved = dir
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("/");
         for part in literal.split('/') {
             match part {
                 "" | "." => {}
                 ".." => {
-                    if !self.directories.contains(parts.join("/").as_str()) {
+                    if resolved.is_empty() || !self.directories.contains(resolved.as_str()) {
                         return None;
                     }
-                    parts.pop()?;
+                    let parent = resolved.rfind('/').unwrap_or(0);
+                    resolved.truncate(parent);
                 }
-                part => parts.push(part),
+                part => {
+                    if !resolved.is_empty() {
+                        resolved.push('/');
+                    }
+                    resolved.push_str(part);
+                }
             }
         }
-        (!parts.is_empty()).then(|| parts.join("/"))
+        (!resolved.is_empty() && within_caps(&resolved)).then_some(resolved)
     }
 
-    /// Whether `path` or a directory above it is a symlink or a submodule in the tree.
+    /// Whether `path` or a directory above it is a symlink or a submodule in the tree. `path`
+    /// comes from [`Self::resolve`] or the tree, so its prefixes are within the caps.
     fn behind_link(&self, path: &str) -> bool {
         path.match_indices('/')
             .filter_map(|(slash, _)| path.get(..slash))

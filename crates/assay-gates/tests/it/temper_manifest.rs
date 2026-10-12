@@ -440,6 +440,32 @@ fn a_removed_inherited_path_dependency_fails() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn an_inherited_dependency_the_root_does_not_own_is_unresolved() -> Result<(), Box<dyn Error>> {
+    let registry = "\n[workspace.dependencies]\nhelper = \"1\"\n";
+    let excluding = format!(
+        "{}{registry}",
+        WORKSPACE.replace("exclude = [\"fuzz\"]", "exclude = [\"fuzz\", \"crates/x\"]")
+    );
+    let owning = format!("{WORKSPACE}{registry}");
+    for (root, own_workspace) in [(excluding, ""), (owning, "\n[workspace]\n")] {
+        let head = format!("{CRATE}{own_workspace}");
+        let base = format!("{head}\n[dependencies]\nhelper = {{ workspace = true }}\n");
+        let mut pr = pr(&root, &head)?;
+        pr.set(Revision::Base, ROOT, &root);
+        pr.set(Revision::Base, MEMBER, &base);
+
+        let outcome = pr.outcome()?;
+
+        assert_eq!(
+            outcome,
+            (FAILED, vec![seen("manifest-switch", MEMBER)]),
+            "an excluded crate or a workspace of its own does not inherit the root's: {root}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn an_added_path_dependency_passes() -> Result<(), Box<dyn Error>> {
     let member = format!("{CRATE}\n[dependencies]\nhelper = {{ path = \"../helper\" }}\n");
     let mut pr = pr(WORKSPACE, &member)?;
