@@ -8,6 +8,11 @@ publish.workspace = true
 [lints]
 workspace = true
 
-# Only serde, thiserror and sha2 may ever appear here (02 §2); none is used yet.
+# Only serde, thiserror and sha2 may ever appear here (02 §2).
 # crates/assay-cli/tests/it/architecture.rs enforces the allowlist.
 [dependencies]
+serde = { workspace = true }
+
+# Round-trip tests against the golden fixtures in schemas/ (pre-approved).
+[dev-dependencies]
+serde_json = { workspace = true }

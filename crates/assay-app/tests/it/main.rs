@@ -2,6 +2,7 @@
 
 mod config;
 mod contract;
+mod domain_model;
 mod gate;
 mod redaction;
 mod spec;
