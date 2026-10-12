@@ -5,7 +5,7 @@
 
 use std::error::Error;
 
-use assay_domain::{Event, FindingsDocument};
+use assay_domain::{Decision, Event, FindingsDocument};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -64,6 +64,34 @@ fn every_valid_event_fixture_round_trips() -> Result<(), Box<dyn Error>> {
 
     for (name, bytes) in &fixtures {
         assert_round_trips::<Event>(name, bytes)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn every_valid_decision_fixture_round_trips() -> Result<(), Box<dyn Error>> {
+    let fixtures = valid_fixtures("decision")?;
+    assert!(!fixtures.is_empty(), "no valid decision fixtures");
+
+    for (name, bytes) in &fixtures {
+        assert_round_trips::<Decision>(name, bytes)?;
+    }
+    Ok(())
+}
+
+/// Every invalid decision fixture is a shape fault, so the domain type refuses all of them.
+#[test]
+fn every_invalid_decision_fixture_is_refused() -> Result<(), Box<dyn Error>> {
+    let fixtures = invalid_fixtures("decision")?;
+    assert!(!fixtures.is_empty(), "no invalid decision fixtures");
+
+    for (name, bytes) in &fixtures {
+        let read = serde_json::from_slice::<Decision>(bytes);
+
+        assert!(
+            matches!(&read, Err(e) if e.is_data()),
+            "{name}: expected a data error, got {read:?}"
+        );
     }
     Ok(())
 }

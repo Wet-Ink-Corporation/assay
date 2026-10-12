@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-8a-budget-deferred-pending",
+  "evidence_key": "run-rule-8a-budget-deferred-pending",
+  "conclusion": "pending",
+  "reasons": [
+    {
+      "code": "budget-deferred",
+      "detail": "requeued 1 of 3 times"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:0be23d035023d84552905eed88da687dd223b92b6a2edc02b42110b564ef22d2"
+}

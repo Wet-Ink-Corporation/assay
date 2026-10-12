@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-waive-same-gate-collision",
+  "evidence_key": "run-waive-same-gate-collision",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "gate-failed",
+      "detail": "temper"
+    }
+  ],
+  "counts": {
+    "blocker": 1,
+    "major": 1,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:c45407eb82ae3b9104a6fde86dfd6074d97843a31483130fa87e16998cfa303b"
+}

@@ -1,0 +1,43 @@
+# assay decision rubric v1 (docs/architecture/04-pipeline.md §5).
+#
+# Data for the pure `decide` function in crates/assay-domain; the rules themselves are code.
+# Every decision records `version` as `rubric_version`. Changing this file changes verdicts:
+# it is a trust path (02 §7) and the golden corpus in corpus/golden/ must be updated with it.
+
+version = "1"
+
+# Rule 7: a PR fails `majors-over-threshold` when at least this many distinct root causes
+# (`group_id`) of majors are confirmed by the verifier, not pre-existing and not from a micro
+# role, while `llm_majors = "block"` (A-07).
+majors_block_threshold = 3
+
+# Rule 8a: a deferred run is requeued at most this many times, then fails
+# `infra-llm-unavailable` (03 §5).
+max_requeues = 3
+
+# Roles whose findings are advisory and never counted by rule 7 (04 §2.3, tier `micro`).
+micro_roles = ["combined-micro"]
+
+# `/assay waive <finding-id>` removes one human-decision gate finding from rule 1. Only the rules
+# listed here qualify; clippy, build, test and deny failures never do. The rule ids are those the
+# temper adapter writes for its Z2s steps (03 §2.1).
+
+[[waivable]]   # a raised lint baseline
+gate = "temper"
+rule = "raised"
+
+[[waivable]]   # a temper `ask` exception not named in .assay/exceptions.toml
+gate = "temper"
+rule = "exception"
+
+[[waivable]]   # gate-config drift in .claude/temper.json
+gate = "temper"
+rule = "gate-config"
+
+[[waivable]]   # a test-inventory decrease or a new ignore
+gate = "temper"
+rule = "test-inventory"
+
+[[waivable]]   # a manifest switch (test/doctest/harness/autotests, [patch], rust-version, ...)
+gate = "temper"
+rule = "manifest-switch"

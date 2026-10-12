@@ -1,0 +1,56 @@
+{
+  "decision_key": "dec-override-llm-on-required-role-degraded",
+  "evidence_key": "run-override-llm-on-required-role-degraded",
+  "policy": {
+    "protected_bases": [
+      "main"
+    ],
+    "llm_blockers": "advisory",
+    "llm_majors": "advisory",
+    "on_infra_failure": "block",
+    "block_on_infra_for": [
+      "trust-path",
+      "exec-surface"
+    ]
+  },
+  "pr": {
+    "base_ref": "main",
+    "open_prs_on_head": 1,
+    "tier": "lite",
+    "classes": [],
+    "owner_approval": "not-approved",
+    "authorship": "other",
+    "readiness": "ready",
+    "requeues": 0
+  },
+  "gates": [
+    {
+      "name": "temper",
+      "required": true,
+      "outcome": {
+        "status": "ran",
+        "conclusion": "pass",
+        "steps": "unknown"
+      },
+      "findings": []
+    }
+  ],
+  "weigh_in": "not-required",
+  "llm": {
+    "status": "completed"
+  },
+  "findings": [],
+  "dispositions": [],
+  "degraded": [
+    {
+      "role": "bugs",
+      "reason": "cap"
+    }
+  ],
+  "waivers": [],
+  "override_record": {
+    "scope": "llm",
+    "reasons_digest": "sha256:aa332cda0bc178fd07e089e308e9526626762da10c53c4cf1e6c89bca1282473",
+    "by": "owner"
+  }
+}

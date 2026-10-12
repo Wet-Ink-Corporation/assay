@@ -1,0 +1,34 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-waive-never-clears-clippy",
+  "evidence_key": "run-waive-never-clears-clippy",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "gate-failed",
+      "detail": "temper"
+    }
+  ],
+  "counts": {
+    "blocker": 1,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [
+    {
+      "fp": "00000000000000a1",
+      "code": "waived-by-owner"
+    }
+  ],
+  "waived": [
+    {
+      "fp": "00000000000000a1",
+      "by": "owner"
+    }
+  ],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:67d58753998c94636a853d4c268dd4ae0ceb99c0551e4c78ec83e231b3b7f05f"
+}

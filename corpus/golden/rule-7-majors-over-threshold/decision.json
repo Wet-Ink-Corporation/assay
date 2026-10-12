@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-7-majors-over-threshold",
+  "evidence_key": "run-rule-7-majors-over-threshold",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "majors-over-threshold",
+      "detail": "3 confirmed majors by root cause (threshold 3)"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 5,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:5ba08702874949f2085599fc37a93f17469a9235097566580a0f2b955a2b8517"
+}

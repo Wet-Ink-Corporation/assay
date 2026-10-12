@@ -12,6 +12,8 @@ mod vocabulary;
 
 mod aeu;
 mod content_hash;
+mod decide;
+mod decision;
 mod dismissal;
 mod disposition;
 mod event;
@@ -20,11 +22,22 @@ mod findings;
 mod fingerprint;
 mod normalise;
 mod reason;
+mod rubric;
 mod run_uid;
 mod severity;
+mod tier;
 
 pub use aeu::Aeu;
 pub use content_hash::ContentHash;
+pub use decide::decide;
+pub use decide::inputs::{
+    Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
+    LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
+    Readiness, ReviewedFinding, StepAttribution, Waiver, WeighIn,
+};
+pub use decision::{
+    Conclusion, Counts, Decision, DecisionSchema, DegradedRole, FindingDisposition, Reason, Waived,
+};
 pub use dismissal::{Dismissal, DismissalMatch};
 pub use disposition::Disposition;
 pub use event::{
@@ -36,5 +49,7 @@ pub use findings::{FindingsDocument, FindingsSchema, GateConclusion, Source, Sou
 pub use fingerprint::{Anchor, Fingerprint, ParseFingerprintError};
 pub use normalise::normalise;
 pub use reason::ReasonCode;
+pub use rubric::{Rubric, RubricError};
 pub use run_uid::RunUid;
 pub use severity::{Marker, Severity};
+pub use tier::{PrClass, Tier};

@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 # Workspace edge allowed: assay-domain only (02 §2). Added by the story that first uses it.
+# `toml` also lets the tests read rubric/v1.toml (Story #51).
 [dependencies]
 assay-domain = { workspace = true }
 jsonschema = { workspace = true }

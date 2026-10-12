@@ -1,0 +1,28 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-waive-cross-gate-collision",
+  "evidence_key": "run-waive-cross-gate-collision",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "gate-failed",
+      "detail": "temper"
+    },
+    {
+      "code": "gate-failed",
+      "detail": "custom-lint"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 2,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:42039fb33a23155b47fb27326e3379bd9b700f16e01902426b4ec3bc3d37a791"
+}

@@ -7,6 +7,7 @@ use std::io;
 use std::path::PathBuf;
 
 use assay_app::Contract;
+use assay_domain::Rubric;
 use serde_json::Value;
 
 /// Whether a fixture must pass or fail its schema.
@@ -52,6 +53,39 @@ pub(crate) fn fixtures(
                 .ok_or_else(|| io::Error::other(format!("bad fixture name {}", path.display())))?
                 .to_owned();
             found.insert(stem, fs::read(&path)?);
+        }
+    }
+    Ok(found)
+}
+
+/// `rubric/v1.toml`, parsed.
+pub(crate) fn rubric_v1() -> Result<Rubric, Box<dyn Error>> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../rubric/v1.toml");
+    Ok(toml::from_str(&fs::read_to_string(path)?)?)
+}
+
+/// The recorded `decision.json` of every case of `corpus/golden/`, by case name.
+pub(crate) fn golden_decisions() -> io::Result<BTreeMap<String, Vec<u8>>> {
+    golden_files("decision.json")
+}
+
+/// The `inputs.json` of every case of `corpus/golden/`, by case name.
+pub(crate) fn golden_inputs() -> io::Result<BTreeMap<String, Vec<u8>>> {
+    golden_files("inputs.json")
+}
+
+fn golden_files(file: &str) -> io::Result<BTreeMap<String, Vec<u8>>> {
+    let golden = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/golden");
+    let mut found = BTreeMap::new();
+    for entry in fs::read_dir(golden)? {
+        let dir = entry?.path();
+        if dir.is_dir() {
+            let name = dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| io::Error::other(format!("bad case name {}", dir.display())))?
+                .to_owned();
+            found.insert(name, fs::read(dir.join(file))?);
         }
     }
     Ok(found)

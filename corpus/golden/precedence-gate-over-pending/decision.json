@@ -1,0 +1,28 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-precedence-gate-over-pending",
+  "evidence_key": "run-precedence-gate-over-pending",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "gate-failed",
+      "detail": "temper"
+    },
+    {
+      "code": "slot-busy",
+      "detail": "requeued 0 of 3 times"
+    }
+  ],
+  "counts": {
+    "blocker": 1,
+    "major": 1,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:a90724b4219ff8a7b55e8cfde5ac9ad9ce903612309d95ab307d879482bac885"
+}

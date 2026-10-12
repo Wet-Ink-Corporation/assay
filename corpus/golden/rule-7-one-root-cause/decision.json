@@ -1,0 +1,19 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-7-one-root-cause",
+  "evidence_key": "run-rule-7-one-root-cause",
+  "conclusion": "success",
+  "reasons": [],
+  "counts": {
+    "blocker": 0,
+    "major": 3,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:f6871773c8f9f98baee0ab7129bf1d491d307a3147434c856d9b79876bd85480"
+}
