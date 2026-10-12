@@ -6,6 +6,7 @@ mod domain_model;
 mod exec_roots;
 mod gate;
 mod model_runner;
+mod package_set;
 mod prompt_bundle;
 mod read_limits;
 mod redaction;

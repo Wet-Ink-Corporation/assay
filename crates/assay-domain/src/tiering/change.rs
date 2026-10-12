@@ -21,8 +21,9 @@ pub struct ChangeSet {
     /// head: the directory of a custom build script (`[package] build`), a proc-macro crate's
     /// directory and its `[lib] path`, and each package's build sources. Any changed file a
     /// root holds is exec surface. Derived from the parsed manifests
-    /// (`assay_app::manifest_exec_roots`). #65 adds the directories of path crates reachable as
-    /// build-dependencies or as dependencies of a proc-macro, from the package-set diff.
+    /// (`assay_app::manifest_exec_roots`), plus the directories of path crates that run at
+    /// build time, reached from a build-dependency or a proc-macro crate at base or at head
+    /// (`assay_app::exec_surface`, #65).
     pub exec_roots: Vec<ExecRoot>,
     /// The package-set diff, base vs head.
     pub packages: PackageDiff,
@@ -62,7 +63,18 @@ impl ExecRoot {
     /// Whether `path` is this root or lies under it, ignoring ASCII case. A root that is not
     /// canonical (an empty `Path` included) holds every path, as `Everything` does (fail
     /// closed).
-    pub(super) fn holds(&self, path: &str) -> bool {
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use assay_domain::ExecRoot;
+    ///
+    /// let root = ExecRoot::Path("crates/helpers".to_owned());
+    /// assert!(root.holds("crates/helpers/src/lib.rs"));
+    /// assert!(!root.holds("crates/helpers-two/src/lib.rs"));
+    /// ```
+    #[must_use]
+    pub fn holds(&self, path: &str) -> bool {
         match self {
             Self::Path(root) => !is_canonical(root) || is_under(path, root),
             Self::BuildSources { crate_dir } => build_source(path, crate_dir),
@@ -238,7 +250,8 @@ closed_enum! {
     }
 }
 
-/// The package-set diff of `cargo metadata`, base vs head (04 §2.2, computed by #65).
+/// The package-set diff of `cargo metadata`, base vs head (04 §2.2, computed by
+/// `assay_app::exec_surface`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PackageDiff {
     /// The diff, one entry per changed package; empty when no package changed.

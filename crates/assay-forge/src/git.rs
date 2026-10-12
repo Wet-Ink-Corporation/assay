@@ -44,6 +44,7 @@ use std::process::ExitStatus;
 
 mod attributes;
 mod command;
+mod copy;
 mod glob;
 mod numstat;
 mod repository;
@@ -55,6 +56,7 @@ pub use attributes::{
     AttributeAllowlist, AttributeError, AttributeReport, PolicedAttribute, is_protected_path,
 };
 pub use command::{GitEnvironment, GitOperation};
+pub use copy::{CopiedSymlink, CopyError, ManifestCopy};
 pub use glob::GlobError;
 pub use numstat::{DiffOutcome, FileChange, LineCount};
 pub use repository::{GitLimits, ObjectRepo};

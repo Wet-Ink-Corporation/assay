@@ -7,14 +7,22 @@
 //! [`GateEnvironment`] allowlist. The [`TemperAdapter`] runs temper's Z2s checks in
 //! `gates-static`, reading the PR through [`RevisionFiles`] and running the pinned temper scan
 //! through a [`CaptureSupervisor`].
+//!
+//! [`PinnedCargo`] runs the pinned base cargo on a sanitised manifest-only copy in
+//! `gates-static`, through a [`CaptureSupervisor`], for exec-surface detection (#65).
 
 mod capture;
+mod cargo;
 mod environment;
 mod exec;
 mod revision;
 mod temper;
 
 pub use capture::{CaptureSupervisor, CapturedRun};
+pub use cargo::{
+    CargoEnvironment, CargoError, CargoLimits, CargoSettings, CargoSettingsError, CargoStep,
+    PinnedCargo, PinnedToolchain,
+};
 pub use environment::GateEnvironment;
 pub use exec::{
     ExecAdapter, ExecError, ExecLimits, ExecSettings, ExecSettingsError, FINDINGS_FILE,
