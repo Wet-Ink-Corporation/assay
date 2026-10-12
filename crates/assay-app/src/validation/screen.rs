@@ -77,10 +77,12 @@ pub(super) fn screen(text: &str, repository: &str) -> Option<Suspicion> {
     }
     let text = text.as_str();
     let prose = markdown::prose(text);
-    let lower = text.to_lowercase();
+    // ASCII only: full lowercasing folds some non-ASCII letters (U+212A KELVIN SIGN) into
+    // ASCII ones, which would hide them from the non-ASCII URL check.
+    let lower = text.to_ascii_lowercase();
     [
         (
-            links::has_foreign_link(&lower, &prose.to_lowercase(), repository)
+            links::has_foreign_link(&lower, &prose.to_ascii_lowercase(), repository)
                 || has_email(&prose)
                 || has_cross_reference(&prose, repository),
             Suspicion::Url,
@@ -547,6 +549,53 @@ mod tests {
             texts.map(screened),
             [Some(Suspicion::Url), Some(Suspicion::Url), None, None]
         );
+    }
+
+    #[test]
+    fn flags_a_repository_url_holding_a_kelvin_sign() {
+        // Round 7 F1: full lowercasing maps U+212A to ASCII `k`, hiding the non-ASCII URL.
+        let texts = [
+            "See https://github.com/wet-ink-corporation/assay/blob/main/\u{212a}.rs here.",
+            "See [it](https://github.com/wet-ink-corporation/assay/\u{212a}) here.",
+        ];
+
+        assert_eq!(texts.map(screened), [Some(Suspicion::Url); 2]);
+    }
+
+    #[test]
+    fn reads_fences_github_renders_live_as_prose() {
+        // Round 7 F2: mermaid, math, geojson, topojson and stl fences are rendered, not shown.
+        let texts = [
+            "```mermaid\ngraph TD\nA[\"<img src=x>\"]\n```",
+            "```MATH\n<img src=x>\n```",
+            "~~~geojson\n<img src=x>\n~~~",
+            "```topojson\n<img src=x>\n```",
+            "```stl extra\n<img src=x>\n```",
+            "```rust\nlet v: Vec<u8> = x;\n```",
+        ];
+
+        assert_eq!(
+            texts.map(screened),
+            [
+                Some(Suspicion::Html),
+                Some(Suspicion::Html),
+                Some(Suspicion::Html),
+                Some(Suspicion::Html),
+                Some(Suspicion::Html),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn flags_tex_link_commands_even_in_code() {
+        // Round 7 F2: math renders `\href` and `\url` as links.
+        let texts = [
+            "Use $\\href{https://docs.rs/x}{x}$ here.",
+            "Use `\\URL{https://docs.rs/x}` here.",
+        ];
+
+        assert_eq!(texts.map(screened), [Some(Suspicion::Url); 2]);
     }
 
     #[test]

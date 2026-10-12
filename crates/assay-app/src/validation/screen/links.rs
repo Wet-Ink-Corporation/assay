@@ -25,10 +25,11 @@ const MAX_URL: usize = 2048;
 /// The most characters read back from `://` for its scheme.
 const MAX_SCHEME: usize = 32;
 
-/// Whether `text` links outside where it may: `lower` is the text in lowercase, `prose_lower`
-/// its prose (code removed) in lowercase, and `repository` is `owner/name`.
+/// Whether `text` links outside where it may: `lower` is the text in ASCII lowercase,
+/// `prose_lower` its prose (code removed) in ASCII lowercase, and `repository` is `owner/name`.
+/// Only ASCII is lowercased, so no non-ASCII letter can fold into an ASCII one (U+212A).
 pub(super) fn has_foreign_link(lower: &str, prose_lower: &str, repository: &str) -> bool {
-    let repository = repository.to_lowercase();
+    let repository = repository.to_ascii_lowercase();
     // Only ASCII is judged: a renderer may end a URL at, or decode, anything else differently.
     let written = Links::new(lower, Scan::Written).any(|link| match link {
         Link::Absolute { scheme, url, clean } => {
@@ -58,7 +59,9 @@ pub(super) fn has_foreign_link(lower: &str, prose_lower: &str, repository: &str)
     });
     // `]:` defines a link reference wherever a container lets it start a line. Definitions are
     // parsed before code spans, so it is looked for in the whole text, spans included.
-    written || ambiguous || markdown || lower.contains("]:")
+    // Math renders TeX's `\href` and `\url` as links, inside code spans or not.
+    let tex = lower.contains("\\href") || lower.contains("\\url");
+    written || ambiguous || markdown || tex || lower.contains("]:")
 }
 
 /// Whether `c` ends a URL for every renderer: an ASCII space or control character.
@@ -357,7 +360,7 @@ mod tests {
 
     /// Whether `text` (taken as prose) has a foreign link.
     fn foreign(text: &str) -> bool {
-        let lower = text.to_lowercase();
+        let lower = text.to_ascii_lowercase();
         has_foreign_link(&lower, &lower, REPO)
     }
 

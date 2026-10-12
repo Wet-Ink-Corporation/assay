@@ -17,6 +17,10 @@ const MAX_FENCE_INDENT: usize = 3;
 /// The shortest run of backticks or tildes that opens a fence.
 const MIN_FENCE_RUN: usize = 3;
 
+/// The info words of fences GitHub renders rather than shows as code (mermaid has click links,
+/// math has `\href`), so their lines are prose (wi-b5affa).
+const LIVE_FENCES: [&str; 5] = ["mermaid", "math", "geojson", "topojson", "stl"];
+
 /// The most digits an ordered list marker may have (`CommonMark`).
 const MAX_ORDERED_DIGITS: usize = 9;
 
@@ -53,7 +57,16 @@ pub(super) fn prose(text: &str) -> Cow<'_, str> {
     let mut open: Option<(Fence, Vec<&str>)> = None;
     for line in text.lines() {
         open = match open {
-            Some((fence, _)) if fence.closed_by(line) => None,
+            Some((fence, lines)) if fence.closed_by(line) => {
+                // A fence GitHub renders live is closed as a block, but its lines stay prose.
+                if fence.live {
+                    for kept in lines.into_iter().chain([line]) {
+                        prose.push_str(kept);
+                        prose.push('\n');
+                    }
+                }
+                None
+            }
             Some((fence, mut lines)) => {
                 lines.push(line);
                 Some((fence, lines))
@@ -129,23 +142,35 @@ pub(super) fn container_marker(line: &str) -> Option<&str> {
     (rest.is_empty() || rest.starts_with([' ', '\t'])).then_some(rest)
 }
 
-/// An open fenced block: its character and the length of its opening run.
+/// An open fenced block: its character, the length of its opening run, and whether GitHub
+/// renders it live.
 #[derive(Debug, Clone, Copy)]
 struct Fence {
     marker: char,
     run: usize,
+    live: bool,
 }
 
 impl Fence {
     /// The fence `line` opens: at most three spaces, then three or more backticks or tildes;
-    /// a backtick fence's info string may not hold a backtick.
+    /// a backtick fence's info string may not hold a backtick. It is live if its info string's
+    /// first word is one of [`LIVE_FENCES`], ASCII case-insensitive.
     fn opened_by(line: &str) -> Option<Self> {
         let body = unindented(line)?;
         let marker = body.chars().next().filter(|&c| c == '`' || c == '~')?;
         let run = run_length(body, marker);
         let info = body.get(run..)?;
         let opens = run >= MIN_FENCE_RUN && !(marker == '`' && info.contains('`'));
-        opens.then_some(Self { marker, run })
+        let rendered = info.split_whitespace().next().is_some_and(|word| {
+            LIVE_FENCES
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(word))
+        });
+        opens.then_some(Self {
+            marker,
+            run,
+            live: rendered,
+        })
     }
 
     /// Whether `line` closes this fence: at most three spaces, a run of its character at least
@@ -260,6 +285,14 @@ mod tests {
         assert_eq!(
             [prose("`a` `b\nc`"), prose("`a` b\n\n`c")],
             ["`a` `b\nc`\n", "  b\n\n`c\n"]
+        );
+    }
+
+    #[test]
+    fn keeps_a_live_fence_as_prose_and_closes_it_as_a_block() {
+        assert_eq!(
+            prose("```Mermaid x\na\n```\nb\n```\nc\n```"),
+            "```Mermaid x\na\n```\nb\n"
         );
     }
 
