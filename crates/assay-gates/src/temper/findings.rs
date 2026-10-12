@@ -209,46 +209,7 @@ pub(super) fn blind(spots: &[Blind<'_>]) -> Vec<Finding> {
         .iter()
         .map(|spot| {
             let path = plain(spot.path);
-            let (title, body) = match spot.why {
-                Why::SkippedDirectory => (
-                    "Rust source where the temper scan does not look",
-                    "This `.rs` file sits under `target`, `.git`, `node_modules` or `.temper`, \
-                     which the temper scan skips, yet a `#[path]`, `include!` or build script \
-                     could compile it.",
-                ),
-                Why::Submodule => (
-                    "submodule the temper scan does not read",
-                    "A submodule's files are not in this tree, so the scan cannot see Rust \
-                     that a recursive checkout would compile.",
-                ),
-                Why::Symlink => (
-                    "symlink the temper scan cannot follow safely",
-                    "This symlink does not resolve, inside the tree and through real \
-                     directories only, to a regular file (a `.rs` one for a `.rs` link). The \
-                     scan does not walk symlinked directories, but rustc follows them.",
-                ),
-                Why::Extension => (
-                    "Rust source the temper scan does not match",
-                    "This Rust file's extension is not exactly `.rs`, so the temper scan \
-                     skips it, yet a `#[path]` or a Cargo target path could compile it. Name \
-                     it `.rs`.",
-                ),
-                Why::Attribute => (
-                    "attribute the temper scan does not read",
-                    "A `cfg_attr` carrying `allow`, `expect`, `path` or a macro fragment, a \
-                     `#[path]` attribute, a lint attribute without its `(..)` list, an \
-                     attribute named by `r#` or built from a macro fragment, or an `include!` \
-                     of anything but a named `.rs` file: the scan sees neither the suppression \
-                     nor the file it compiles. Write the attribute plainly, and keep modules \
-                     at their default paths.",
-                ),
-                Why::Unreadable => (
-                    "Rust source assay could not read",
-                    "A literal or comment in this file never ends, its code holds a character \
-                     outside ASCII, it starts with frontmatter, or its bytes were not read, so \
-                     its attributes cannot be checked.",
-                ),
-            };
+            let (title, body) = wording(spot.why);
             let fallback = format!("{path}: {title}");
             let located = Spot::at(
                 spot.path.to_owned(),
@@ -260,6 +221,58 @@ pub(super) fn blind(spots: &[Blind<'_>]) -> Vec<Finding> {
             finding(BLIND_SPOT, located, &format!("{title}: `{path}`"), &body)
         })
         .collect()
+}
+
+/// A blind spot's title and the body that explains it.
+const fn wording(why: Why) -> (&'static str, &'static str) {
+    match why {
+        Why::SkippedDirectory => (
+            "Rust source where the temper scan does not look",
+            "This `.rs` file sits under `target`, `.git`, `node_modules` or `.temper`, \
+                     which the temper scan skips, yet a `#[path]`, `include!` or build script \
+                     could compile it.",
+        ),
+        Why::Submodule => (
+            "submodule the temper scan does not read",
+            "A submodule's files are not in this tree, so the scan cannot see Rust \
+                     that a recursive checkout would compile.",
+        ),
+        Why::Symlink => (
+            "symlink the temper scan cannot follow safely",
+            "This symlink does not resolve, inside the tree and through real \
+                     directories only, to a regular file (a `.rs` one for a `.rs` link). The \
+                     scan does not walk symlinked directories, but rustc follows them.",
+        ),
+        Why::Extension => (
+            "Rust source the temper scan does not match",
+            "This Rust file's extension is not exactly `.rs`, so the temper scan \
+                     skips it, yet a `#[path]` or a Cargo target path could compile it. Name \
+                     it `.rs`.",
+        ),
+        Why::Attribute => (
+            "attribute the temper scan does not read",
+            "A `cfg_attr` carrying `allow`, `expect`, `path` or a macro fragment, a \
+                     `#[path]` attribute, a lint attribute without its `(..)` list, an \
+                     attribute named by `r#`, a `#` that does not start an attribute, a macro \
+                     fragment that can assemble one or name a macro, or a renamed `include`: \
+                     the scan sees neither the suppression nor the file it compiles. Write \
+                     the attribute plainly, and keep modules at their default paths.",
+        ),
+        Why::Reference => (
+            "file the temper scan cannot pin down",
+            "An `include!` or `mod` declaration that does not name, from this file, a \
+                     `.rs` file of the tree the scan reads: a build script can write the file \
+                     rustc compiles after the scan ran. Include and declare only files in the \
+                     tree, by literal path, outside macro bodies.",
+        ),
+        Why::Unreadable => (
+            "Rust source assay could not read",
+            "A literal or comment in this file never ends, its code holds a character \
+                     outside ASCII or a token edition 2018 reads differently (`cr\"`, `'r#a'`), \
+                     it starts with frontmatter, or its bytes were not read, so its attributes \
+                     cannot be checked.",
+        ),
+    }
 }
 
 /// One `gate-config` finding per drifted key, at its head line, or at its base line when head

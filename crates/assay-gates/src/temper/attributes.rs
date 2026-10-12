@@ -13,8 +13,8 @@ const HIDDEN: [&str; 3] = ["allow", "expect", "path"];
 /// can make them anything.
 const LISTED: [&str; 6] = ["allow", "expect", "warn", "deny", "forbid", "cfg_attr"];
 
-/// The macros that read another file into this one.
-const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes"];
+/// The macros that read another file into this one; `references.rs` resolves their calls.
+pub(super) const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes"];
 
 /// The lines of attributes the scan does not read, once each:
 /// - a `cfg_attr(..)` whose arguments name `allow`, `expect` or `path` anywhere (raw or not),
@@ -24,11 +24,13 @@ const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes"];
 ///   followed by `(`;
 /// - an attribute named by a raw identifier (`#[r#allow(..)]`), which temper's patterns do not
 ///   match;
-/// - an attribute built from a macro fragment: `#[$m]`, `# $m`, or a fragment or repetition
-///   followed by `[` or `! [` (`$hash [allow(x)]`), which a macro call can fill with any of
-///   these;
-/// - an `include!` of anything but one literal naming a `.rs` file, and an `include_str!` or
-///   `include_bytes!` of anything but one literal.
+/// - a `#` not followed by `[`, `! [` or `$`, and `#[$m]` or `# $m`: an attribute whose
+///   brackets or path a macro call supplies;
+/// - a fragment `$x`, or a repetition `$(..)op` that can end with one, followed by `[`, `$`,
+///   `#` or `!`: an attribute a macro call can assemble with no `#` beside its brackets
+///   (`$hash $list`), or a call of a macro a fragment names (`$m!`);
+/// - `include`, `include_str` or `include_bytes` not called with `!` (`use std::include as
+///   inc;`), which renames a macro `references.rs` resolves.
 pub(super) fn unread(tokens: &[Lexed<'_>]) -> Vec<NonZeroU64> {
     let mut lines = Vec::new();
     let mut rest = tokens;
@@ -42,19 +44,14 @@ pub(super) fn unread(tokens: &[Lexed<'_>]) -> Vec<NonZeroU64> {
             ) if open.token == Token::Punct('(') => {
                 group(inner).iter().any(|lexed| hides(lexed.token))
             }
-            (Token::Ident { name, .. }, [bang, after @ ..])
-                if INCLUDES.contains(&name) && bang.token == Token::Punct('!') =>
-            {
-                !included(name, after)
-            }
+            (Token::Ident { name, .. }, _) if INCLUDES.contains(&name) => !opens(tail, '!'),
             (Token::Punct('#'), _) => match attribute(tail) {
-                Some(Attribute::Fragment) => true,
+                Some(Attribute::Fragment) | None => true,
                 Some(Attribute::Named { name, raw, rest }) => {
                     raw || name == "path" || (LISTED.contains(&name) && !opens(rest, '('))
                 }
-                None => false,
             },
-            (Token::Punct('$'), _) => fragment_before_bracket(tail),
+            (Token::Punct('$'), _) => assembles(tail),
             _ => false,
         };
         if hidden && lines.last() != Some(&first.line) {
@@ -72,58 +69,46 @@ fn opens(tokens: &[Lexed<'_>], punct: char) -> bool {
         .is_some_and(|lexed| lexed.token == Token::Punct(punct))
 }
 
-/// Whether the call of `name` (one of [`INCLUDES`]), from the tokens after its `!`, reads a file
-/// the scan accounts for: one literal, which for `include!` names a `.rs` file.
-fn included(name: &str, after_bang: &[Lexed<'_>]) -> bool {
-    let [open, inner @ ..] = after_bang else {
-        return false;
-    };
-    if !matches!(open.token, Token::Punct('(' | '[' | '{')) {
-        return false;
-    }
-    let target = match group(inner) {
-        [only]
-        | [
-            only,
-            Lexed {
-                token: Token::Punct(','),
-                ..
-            },
-        ] => only.token,
-        _ => return false,
-    };
-    match target {
-        Token::Literal(literal) => name != "include" || names_rust_source(literal),
-        Token::Ident { .. } | Token::Lifetime(_) | Token::Punct(_) => false,
-    }
-}
-
-/// Whether `literal` is a string literal, plain without escapes or raw, whose text ends `.rs`.
-fn names_rust_source(literal: &str) -> bool {
-    let quoted = match literal.strip_prefix('r') {
-        Some(raw) => raw.trim_matches('#'),
-        None if literal.contains('\\') => return false,
-        None => literal,
-    };
-    quoted.len() >= 2 && quoted.starts_with('"') && quoted.ends_with(".rs\"")
-}
-
-/// Whether the tokens after a `$` are a fragment (`$x`) or a repetition (`$(..)*`, `$(..),+`)
-/// followed by `[` or `! [`: an attribute whose `#` the macro call supplies.
-fn fragment_before_bracket(after_dollar: &[Lexed<'_>]) -> bool {
+/// Whether the tokens after a `$` are a fragment (`$x`, not `$crate`), or a repetition
+/// (`$(..)*`, `$(..),+`) that can end with one, followed by `[`, `$`, `#` or `!`. A macro call
+/// can bind the fragment to `#` and the next to `[allow(..)]`, or name a macro with it.
+fn assembles(after_dollar: &[Lexed<'_>]) -> bool {
     let after = match after_dollar {
-        [name, rest @ ..] if matches!(name.token, Token::Ident { .. }) => rest,
-        [open, inner @ ..] if open.token == Token::Punct('(') => {
-            let Some(after_group) = inner.get(group(inner).len().saturating_add(1)..) else {
-                return false;
-            };
-            past_operator(after_group)
-        }
-        _ => return false,
+        [fragment, rest @ ..] => match fragment.token {
+            Token::Ident { name: "crate", .. } => return false,
+            Token::Ident { .. } => rest,
+            Token::Punct('(') => {
+                let body = group(rest);
+                if !open_ended(body) {
+                    return false;
+                }
+                let Some(after_group) = rest.get(body.len().saturating_add(1)..) else {
+                    return false;
+                };
+                past_operator(after_group)
+            }
+            Token::Punct(_) | Token::Lifetime(_) | Token::Literal(_) => return false,
+        },
+        [] => return false,
     };
-    match after {
-        [bang, rest @ ..] if bang.token == Token::Punct('!') => opens(rest, '['),
-        rest => opens(rest, '['),
+    after
+        .first()
+        .is_some_and(|next| matches!(next.token, Token::Punct('[' | '$' | '#' | '!')))
+}
+
+/// Whether a repetition's expansion can end with a token a macro call chose or with a lone
+/// punctuation mark: unless its body ends with a closing bracket, a plain identifier or a
+/// literal.
+fn open_ended(body: &[Lexed<'_>]) -> bool {
+    match body {
+        [] => false,
+        [.., before, last] if matches!(last.token, Token::Ident { .. }) => {
+            before.token == Token::Punct('$')
+        }
+        [.., last] => match last.token {
+            Token::Punct(')' | ']' | '}') | Token::Ident { .. } | Token::Literal(_) => false,
+            Token::Punct(_) | Token::Lifetime(_) => true,
+        },
     }
 }
 
@@ -207,7 +192,7 @@ fn attribute<'t, 'a>(after_hash: &'t [Lexed<'a>]) -> Option<Attribute<'t, 'a>> {
 
 /// The tokens inside a group whose opening bracket has been consumed, up to its matching
 /// close; all of `inner` when it never closes.
-fn group<'t, 'a>(inner: &'t [Lexed<'a>]) -> &'t [Lexed<'a>] {
+pub(super) fn group<'t, 'a>(inner: &'t [Lexed<'a>]) -> &'t [Lexed<'a>] {
     let mut depth = 0_usize;
     for (index, lexed) in inner.iter().enumerate() {
         match lexed.token {
@@ -337,42 +322,57 @@ mod tests {
     }
 
     #[test]
-    fn an_include_reads_one_literal_naming_rust_source() {
+    fn an_include_macro_is_read_only_where_it_is_called() {
         assert_eq!(
             [
                 "include!(\"a.rs\");",
-                "include!(r##\"a.rs\"##,);",
                 "include_str!(\"a.json\");",
-                "include_bytes!(b\"a\");",
-                "fn include() {} include();",
-                "include!(\"a.rs\", \"b.rs\");",
-                "include!(\"a.rs\".x);",
-                "include!(r\"a.rs\"x);",
-                "include!(b\"a.rs\");",
-                "include!;",
+                "use std::include;",
+                "use std::include_bytes as bytes;",
+                "fn include() {}",
             ]
             .map(|text| unread_in(text).len()),
-            [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-            "a literal for the data macros; a `.rs` literal for `include!`"
+            [0, 0, 1, 1, 1],
+            "any other use can rename it"
         );
     }
 
     #[test]
-    fn a_fragment_is_an_attribute_only_before_a_bracket() {
+    fn a_fragment_that_can_end_in_a_hash_cannot_precede_a_list_a_hash_or_a_bang() {
         assert_eq!(
             [
                 "$h [x]",
                 "$h![x]",
+                "$h $a",
+                "$h #",
+                "$m!(x)",
                 "$($h)?[x]",
                 "$($h);*[x]",
+                "$($h)* $a",
+                "$(x,)* $a",
                 "$h:tt [x]",
                 "$h (x)",
                 "$($h)* (x)",
                 "$crate::x",
+                "$(#[doc = $d])* $v",
+                "$(x)* $a",
+                "$(1)* #[x]",
             ]
             .map(|text| unread_in(text).len()),
-            [1, 1, 1, 1, 0, 0, 0, 0],
-            "`$h [` can be `# [`"
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+            "`$h` can be `#` and `$a` can be `[allow(..)]`"
+        );
+    }
+
+    #[test]
+    fn a_hash_starts_an_attribute_or_a_fragment() {
+        assert_eq!(
+            [
+                "#[x]", "#![x]", "# ! [x]", "#$a", "#", "#, [x]", "# ! x", "#[]", "#[::x]"
+            ]
+            .map(|text| unread_in(text).len()),
+            [0, 0, 0, 1, 1, 1, 1, 1, 1],
+            "a `#` a macro passes on can head an attribute assembled elsewhere"
         );
     }
 }

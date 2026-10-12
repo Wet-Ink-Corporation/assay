@@ -4,14 +4,15 @@
 
 use std::error::Error;
 use std::fs;
-use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
 use syn::buffer::Cursor;
 use syn::parse::{ParseStream, Parser};
 
-use super::attributes;
+use super::head::{self, HeadTree};
 use super::tokens::{Source, Token};
+use super::{attributes, references};
+use crate::revision::{EntryKind, TreeEntry};
 
 /// A test failure.
 type Failure = Box<dyn Error>;
@@ -25,8 +26,34 @@ enum Expected {
     Blind,
 }
 
-/// The forms review round 3 named, each with what the checks must do with it.
-const CASES: [(&str, Expected); 26] = [
+/// The forms reviews named, each with what the checks must do with it.
+const CASES: [(&str, Expected); 35] = [
+    (
+        "macro_rules! m { ($h:tt, $a:tt) => { $h $a fn f() {} }; } m!(#, [deny(dead_code)]);",
+        Expected::Blind,
+    ),
+    (
+        "macro_rules! m { ($h:tt $d:tt $a:tt) => { $h $a fn f() {} }; }\n\
+         m! { /// x\n [deny(dead_code)] }",
+        Expected::Blind,
+    ),
+    (
+        "macro_rules! m { ($(#[doc = $d:expr])* $v:vis $n:ident) => { $(#[doc = $d])* $v struct \
+         $n; }; }",
+        Expected::Agrees,
+    ),
+    (
+        "m!{ cr#\"x\" }\n#[cfg_attr(all(), path = \"x.rs\")]\nfn f(){}\nm!{ \"# }\n",
+        Expected::Blind,
+    ),
+    ("m!{ 'r#a'\"' }", Expected::Blind),
+    ("const C: &core::ffi::CStr = c\"z\";", Expected::Agrees),
+    ("use std::include as inc;", Expected::Blind),
+    (
+        "macro_rules! m { ($m:ident) => { $m!(\"x.txt\") }; }",
+        Expected::Blind,
+    ),
+    ("mod generated;", Expected::Blind),
     (
         "m!(r\"x\"\r\n);\r\nconst S: &str = \"a\r\nb\";\r\n",
         Expected::Agrees,
@@ -70,11 +97,12 @@ const CASES: [(&str, Expected); 26] = [
     ("include_bytes!(env!(\"X\"));", Expected::Blind),
 ];
 
-/// Whether the checks report a blind spot in `text`.
+/// Whether the checks report a blind spot in `text` alone: it does not lex, holds an attribute
+/// the scan does not read, or references a file (none resolves in an empty tree).
 fn blind(text: &str) -> bool {
-    Source::new(text)
-        .tokens()
-        .map_or(true, |lexed| !attributes::unread(&lexed).is_empty())
+    Source::new(text).tokens().map_or(true, |lexed| {
+        !attributes::unread(&lexed).is_empty() || !references::references(&lexed).is_empty()
+    })
 }
 
 /// Forms where a lexer can end a token somewhere other than rustc does.
@@ -84,7 +112,7 @@ const C: [char; 6] = ['a', '\'', '"', '\\', '\u{1F600}', '/'];
 const B: [u8; 2] = [b'a', b'\''];
 const S: [&str; 4] = ["a\"b", r"c\", r#"d"e"#, r##"f"#g"##];
 const BS: [&[u8]; 2] = [b"x\"", br#"y"#];
-const CS: [&core::ffi::CStr; 2] = [c"z", cr#"w"#];
+const CS: [&core::ffi::CStr; 2] = [c"z", c"w"];
 const N: [f64; 6] = [1.5, 1e3, 1.5e-3, 0.1_f64, 2., 1E+2];
 const I: [u64; 5] = [0x1F, 0o17, 0b1010_1010, 1_000, 7u64];
 fn g() { let r#match = 1; let a = r#match; let b = 1..2; let c = (1, (2, 3)).1.0; let d = 1.max(2); }
@@ -177,23 +205,73 @@ fn without_docs(tokens: &[String]) -> Vec<String> {
     out
 }
 
-/// Every `.rs` file of the workspace's crates, outside `target`, in path order.
-fn workspace_sources() -> Result<Vec<PathBuf>, Failure> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+/// The workspace root.
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Every file of the workspace's crates, outside `target`, in path order.
+fn workspace_files() -> Result<Vec<PathBuf>, Failure> {
     let mut found = Vec::new();
-    let mut pending = vec![root.join("crates")];
+    let mut pending = vec![workspace_root().join("crates")];
     while let Some(directory) = pending.pop() {
         for entry in fs::read_dir(&directory)? {
             let path = entry?.path();
             if path.is_dir() && !path.ends_with("target") {
                 pending.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
+            } else {
                 found.push(path);
             }
         }
     }
     found.sort();
     Ok(found)
+}
+
+/// Every `.rs` file of the workspace's crates, outside `target`, in path order.
+fn workspace_sources() -> Result<Vec<PathBuf>, Failure> {
+    Ok(workspace_files()?
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .collect())
+}
+
+/// The workspace's crates as a head tree, paths from the workspace root.
+fn workspace_tree() -> Result<HeadTree, Failure> {
+    let root = workspace_root();
+    let mut entries = Vec::new();
+    let mut blobs = Vec::new();
+    for path in workspace_files()? {
+        let relative = path
+            .strip_prefix(&root)?
+            .to_str()
+            .ok_or("a non-UTF-8 path")?;
+        let symlink = fs::symlink_metadata(&path)?.file_type().is_symlink();
+        let bytes = if symlink {
+            fs::read_link(&path)?
+                .to_str()
+                .ok_or("a non-UTF-8 link")?
+                .as_bytes()
+                .to_vec()
+        } else {
+            fs::read(&path)?
+        };
+        let entry = TreeEntry {
+            path: relative.to_owned(),
+            kind: if symlink {
+                EntryKind::Symlink
+            } else {
+                EntryKind::File
+            },
+            object: String::new(),
+            size: Some(u64::try_from(bytes.len())?),
+        };
+        if head::needs_bytes(&entry) {
+            blobs.push(bytes);
+        }
+        entries.push(entry);
+    }
+    Ok(HeadTree::new(entries, blobs))
 }
 
 #[test]
@@ -248,25 +326,18 @@ fn the_lexer_ends_tokens_where_proc_macro2_does_on_this_workspace() -> Result<()
 
 #[test]
 fn this_workspace_has_no_attribute_the_scan_cannot_read() -> Result<(), Failure> {
-    let mut unread = Vec::new();
-    for path in workspace_sources()? {
-        let text = fs::read_to_string(&path)?;
-        let source = Source::new(&text);
-        let lexed = source
-            .tokens()
-            .map_err(|unlexable| format!("{}: {unlexable:?}", path.display()))?;
-        let lines: Vec<u64> = attributes::unread(&lexed)
-            .into_iter()
-            .map(NonZeroU64::get)
-            .collect();
-        if !lines.is_empty() {
-            unread.push((path, lines));
-        }
-    }
+    let tree = workspace_tree()?;
+
+    let blind: Vec<String> = tree
+        .analyse()
+        .blind
+        .iter()
+        .map(|spot| format!("{}:{} {:?}", spot.path, spot.line, spot.why))
+        .collect();
 
     assert_eq!(
-        unread,
-        Vec::new(),
+        blind,
+        Vec::<String>::new(),
         "assay's own temper gate would fail on these"
     );
     Ok(())

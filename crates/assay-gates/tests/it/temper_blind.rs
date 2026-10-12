@@ -196,6 +196,7 @@ fn attributes_the_scan_does_not_read_fail_at_their_line() -> Result<(), Box<dyn 
         let mut pr = Pr::new()?;
         let source = format!("// one\n{attribute}\nmod m;\n");
         pr.set(Revision::Head, "src/lib.rs", &source);
+        pr.set(Revision::Head, "src/m.rs", "fn f() {}\n");
 
         let outcome = pr.outcome()?;
 
@@ -472,12 +473,260 @@ fn an_include_of_named_rust_source_passes() -> Result<(), Box<dyn Error>> {
     pr.set(
         Revision::Head,
         "src/lib.rs",
-        "include!(\"gen.rs\");\ninclude! { r#\"other.rs\"#, }\n",
+        "include!(\"gen.rs\");\ninclude! { r#\"a/other.rs\"#, }\nmod a;\n",
+    );
+    pr.set(Revision::Head, "src/gen.rs", "fn g() {}\n");
+    pr.set(
+        Revision::Head,
+        "src/a.rs",
+        "mod b;\ninclude!(\"gen.rs\");\n",
+    );
+    pr.set(Revision::Head, "src/a/other.rs", "fn o() {}\n");
+    pr.set(Revision::Head, "src/a/b.rs", "fn b() {}\n");
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (PASSED, Vec::new()),
+        "each names a `.rs` file of the tree, from the including file's directory"
+    );
+    Ok(())
+}
+
+/// A head holding `files`, each `(path, text)`.
+fn outcome_of(files: &[(&str, &str)]) -> Result<Outcome, Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    for (path, text) in files {
+        pr.set(Revision::Head, path, text);
+    }
+    pr.outcome()
+}
+
+#[test]
+fn an_include_that_does_not_resolve_to_a_scanned_rust_file_fails() -> Result<(), Box<dyn Error>> {
+    let cases: [&[(&str, &str)]; 6] = [
+        &[("src/lib.rs", "// one\ninclude!(\"/etc/x.rs\");\n")],
+        &[("src/lib.rs", "// one\ninclude!(\"../../x.rs\");\n")],
+        &[("src/lib.rs", "// one\ninclude!(\"gen.rs\");\n")],
+        &[
+            ("src/lib.rs", "// one\ninclude!(\"c.rs\");\n"),
+            ("c.rs", "fn c() {}\n"),
+        ],
+        &[
+            ("src/a/b.rs", "// one\ninclude!(\"c.rs\");\n"),
+            ("src/c.rs", "fn c() {}\n"),
+        ],
+        &[
+            ("src/lib.rs", "// one\ninclude!(\"gen/../out.rs\");\n"),
+            ("src/out.rs", "fn c() {}\n"),
+        ],
+    ];
+
+    let seen: Vec<Outcome> = cases
+        .iter()
+        .map(|files| outcome_of(files))
+        .collect::<Result<_, _>>()?;
+
+    let expected: Vec<Outcome> = cases
+        .iter()
+        .map(|files| (FAILED, vec![blind(files[0].0, 2)]))
+        .collect();
+    assert_eq!(
+        seen, expected,
+        "absolute, escaping, missing (build output), resolved from the wrong directory, or \
+         through a directory the tree does not have"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_include_of_a_skipped_file_fails_at_both_ends() -> Result<(), Box<dyn Error>> {
+    let outcome = outcome_of(&[
+        ("src/lib.rs", "// one\ninclude!(\"target/gen.rs\");\n"),
+        ("src/target/gen.rs", "fn g() {}\n"),
+    ])?;
+
+    assert_eq!(
+        outcome,
+        (
+            FAILED,
+            vec![blind("src/lib.rs", 2), blind("src/target/gen.rs", 1)]
+        ),
+        "the scan does not read the included file"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_include_the_scan_cannot_pin_to_a_file_fails() -> Result<(), Box<dyn Error>> {
+    let sources = [
+        ("// one\nuse std::include as inc;\n", 2),
+        ("// one\nuse std::{include_str, include_bytes};\n", 2),
+        ("// one\nuse std::fs as include;\n", 2),
+        (
+            "macro_rules! m {\n    ($m:ident) => { $m!(\"x.txt\") };\n}\n",
+            2,
+        ),
+        (
+            "macro_rules! m {\n    () => { include!(\"gen.rs\"); };\n}\n",
+            2,
+        ),
+    ];
+
+    let seen = owned_outcomes(&sources)?;
+
+    assert_eq!(
+        seen,
+        each_blind_at(&sources),
+        "a renamed include, a macro named by a fragment, or an include resolved from a caller"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_module_without_its_file_in_the_tree_fails() -> Result<(), Box<dyn Error>> {
+    let cases: [&[(&str, &str)]; 4] = [
+        &[("src/lib.rs", "// one\nmod generated;\n")],
+        &[
+            ("src/a.rs", "// one\nmod b;\n"),
+            ("src/b.rs", "fn b() {}\n"),
+            ("src/a/c.rs", "fn c() {}\n"),
+        ],
+        &[("src/lib.rs", "// one\nmod inner {\n    mod deep;\n}\n")],
+        &[(
+            "src/lib.rs",
+            "macro_rules! m {\n    ($n:ident) => { mod $n; };\n}\n",
+        )],
+    ];
+
+    let seen: Vec<Outcome> = cases
+        .iter()
+        .map(|files| outcome_of(files))
+        .collect::<Result<_, _>>()?;
+
+    let expected: Vec<Outcome> = [2, 2, 3, 2]
+        .into_iter()
+        .zip(&cases)
+        .map(|(line, files)| (FAILED, vec![blind(files[0].0, line)]))
+        .collect();
+    assert_eq!(
+        seen, expected,
+        "a build script can write the file rustc compiles after the scan ran"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_module_with_its_file_in_the_tree_passes() -> Result<(), Box<dyn Error>> {
+    let outcome = outcome_of(&[
+        (
+            "src/lib.rs",
+            "pub mod a;\nmod m;\n#[cfg(test)]\nmod tests {}\n",
+        ),
+        ("src/a.rs", "mod b;\n"),
+        ("src/a/b.rs", "mod c;\n"),
+        ("src/a/b/c/mod.rs", "fn c() {}\n"),
+        ("src/m/mod.rs", "fn m() {}\n"),
+        ("tests/it/main.rs", "mod support;\n"),
+        ("tests/it/support.rs", "fn s() {}\n"),
+    ])?;
+
+    assert_eq!(outcome, (PASSED, Vec::new()), "rustc's module paths");
+    Ok(())
+}
+
+#[test]
+fn an_attribute_assembled_by_a_macro_fails() -> Result<(), Box<dyn Error>> {
+    let cases = [
+        (
+            "macro_rules! m {\n    ($h:tt, $a:tt) => { $h $a fn f() {} };\n}\n\
+             m!(#, [allow(dead_code)]);\n",
+            vec![2, 4],
+        ),
+        (
+            "macro_rules! m {\n    ($h:tt $d:tt $a:tt) => { $h $a fn f() {} };\n}\n\
+             m! {\n    /// x\n    [allow(dead_code)]\n}\n",
+            vec![2],
+        ),
+        (
+            "macro_rules! m {\n    ($h:tt $a:tt) => { $h ! $a };\n}\n",
+            vec![2],
+        ),
+        (
+            "macro_rules! m {\n    ($h:tt) => { $h #[doc = \"\"] fn f() {} };\n}\n",
+            vec![2],
+        ),
+        (
+            "macro_rules! m {\n    ($($h:tt)*) => { $($h)* $($h)* };\n}\n",
+            vec![2],
+        ),
+        ("// one\nm!(# ! x);\n", vec![2]),
+        ("// one\nm!(#);\n", vec![2]),
+    ];
+
+    let sources: Vec<&str> = cases.iter().map(|(source, _)| *source).collect();
+    let seen = outcomes(&sources)?;
+
+    let expected: Vec<_> = cases
+        .iter()
+        .map(|(source, lines)| {
+            (
+                *source,
+                (
+                    FAILED,
+                    lines
+                        .iter()
+                        .map(|line| blind("src/lib.rs", *line))
+                        .collect(),
+                ),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen, expected,
+        "a `#` from the call site and a list from a fragment make an attribute"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_macro_forwarding_whole_attributes_passes() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(
+        Revision::Head,
+        "src/lib.rs",
+        "macro_rules! m {\n    ($(#[doc = $d:expr])* $v:vis $n:ident) => {\n        \
+         $(#[doc = $d])* $v struct $n; impl $n {}\n    };\n}\n",
     );
 
     let outcome = pr.outcome()?;
 
-    assert_eq!(outcome, (PASSED, Vec::new()), "the scan reads `.rs` files");
+    assert_eq!(
+        outcome,
+        (PASSED, Vec::new()),
+        "a repetition that ends in `]` cannot leave a `#` behind"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_token_whose_boundary_depends_on_the_edition_fails() -> Result<(), Box<dyn Error>> {
+    let raw_c = "m!{ cr#\"x\" }\n#[cfg_attr(all(), allow(dead_code))]\nfn f(){}\nm!{ \"# }\n";
+    let lifetime = format!("m!{{ 'r#a'\"' }}{HIDDEN}");
+    let sources = [
+        (raw_c, 1),
+        ("// one\nconst C: &core::ffi::CStr = cr\"x\";\n", 2),
+        (lifetime.as_str(), 1),
+    ];
+
+    let seen = owned_outcomes(&sources)?;
+
+    assert_eq!(
+        seen,
+        each_blind_at(&sources),
+        "edition 2018 lexes these differently from 2021"
+    );
     Ok(())
 }
 

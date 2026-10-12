@@ -7,6 +7,10 @@
 //! (the word after `r#` is a plain identifier), and a leading byte order mark and shebang line.
 //! `corpus.rs` checks the boundaries against `proc-macro2`'s lexer.
 //!
+//! Boundaries follow edition 2021 and later. The forms whose boundaries differ in an earlier
+//! edition, a `cr"` or `cr#` C string and a raw lifetime followed by a quote (`'r#a'`), are
+//! refused: a crate on edition 2018 would read the code after them differently.
+//!
 //! Code must be ASCII. rustc reads identifiers, lifetimes and some whitespace by Unicode tables
 //! (`XID_Start`, `Pattern_White_Space`) this lexer does not carry, so any other character
 //! outside a literal or comment is an error the caller fails on, as is a literal or comment
@@ -312,15 +316,19 @@ impl<'a> Lexer<'a> {
             return Some(());
         }
         let name_start = self.rest;
-        if self.first() == Some('r')
+        let raw = self.first() == Some('r')
             && self.nth(1) == Some('#')
-            && self.nth(2).is_some_and(is_ident_start)
-        {
+            && self.nth(2).is_some_and(is_ident_start);
+        if raw {
             self.skip(2)?;
         }
         self.bump()?;
         self.eat_while(is_ident_continue);
         if self.first() == Some('\'') {
+            // `'r#a'`: before edition 2021, `'r` then `#` then `a'..`, which ends elsewhere.
+            if raw {
+                return None;
+            }
             // `'ab'`: rustc reads a (malformed) character literal.
             self.bump()?;
             let consumed = start.len().saturating_sub(self.rest.len());
@@ -412,7 +420,9 @@ impl<'a> Lexer<'a> {
                 self.literal(start, line);
                 Some(())
             }
-            (Some('b' | 'c'), Some('r'), Some('"' | '#')) => {
+            // Before edition 2021, `cr` is an identifier and the string after it ends elsewhere.
+            (Some('c'), Some('r'), Some('"' | '#')) => None,
+            (Some('b'), Some('r'), Some('"' | '#')) => {
                 self.skip(2)?;
                 self.raw_string(start, line)
             }

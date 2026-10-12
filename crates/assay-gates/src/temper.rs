@@ -26,6 +26,7 @@ mod exceptions;
 mod findings;
 mod gate_config;
 mod head;
+mod references;
 mod report;
 mod scan;
 mod tokens;

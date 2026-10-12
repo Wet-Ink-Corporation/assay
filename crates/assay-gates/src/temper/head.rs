@@ -8,6 +8,7 @@ use std::num::NonZeroU64;
 use std::path::Path;
 
 use super::attributes::{self, Expect};
+use super::references::{self, Reference};
 use super::tokens::{Source, Unlexable};
 use crate::revision::{EntryKind, TreeEntry};
 
@@ -40,8 +41,11 @@ pub(super) enum Why {
     /// A Rust file whose extension is not exactly `.rs` (`lib.RS`), which the scan's walk
     /// skips.
     Extension,
-    /// An attribute or `include!` the scan does not read.
+    /// An attribute the scan does not read.
     Attribute,
+    /// An `include!` or `mod name;` whose file is not a `.rs` file of the tree the scan reads,
+    /// or that names no file this check can resolve.
+    Reference,
     /// A `.rs` file this adapter could not read: not listed with its bytes, or holding a
     /// literal or comment that never ends, code outside ASCII, or frontmatter.
     Unreadable,
@@ -114,24 +118,19 @@ impl HeadTree {
         for (entry, bytes) in &self.0 {
             let path = entry.path.as_str();
             let rust = is_rust(path);
-            let skipped = path
-                .rsplit_once('/')
-                .is_some_and(|(directory, _)| directory.split('/').any(|d| SKIPPED.contains(&d)));
             let why = match (entry.kind, bytes) {
                 (EntryKind::Submodule, _) => Some(Why::Submodule),
-                (EntryKind::File | EntryKind::Symlink, _) if rust && skipped => {
+                (EntryKind::File | EntryKind::Symlink, _) if rust && skipped(path) => {
                     Some(Why::SkippedDirectory)
                 }
                 // The scan's walk matches `.rs` exactly; `rust` matched it in any case.
-                (EntryKind::File | EntryKind::Symlink, _)
-                    if rust && Path::new(path).extension().is_none_or(|e| e != "rs") =>
-                {
+                (EntryKind::File | EntryKind::Symlink, _) if rust && !exactly_rs(path) => {
                     Some(Why::Extension)
                 }
-                (EntryKind::Symlink, Some(target)) if index.resolves(path, target) => None,
+                (EntryKind::Symlink, Some(target)) if index.link_resolves(path, target) => None,
                 (EntryKind::Symlink, _) => Some(Why::Symlink),
                 (EntryKind::File, Some(source)) if rust => {
-                    read_source(path, source, &mut analysis);
+                    read_source((path, source), &index, &mut analysis);
                     None
                 }
                 (EntryKind::File, None) if rust => Some(Why::Unreadable),
@@ -173,18 +172,24 @@ impl<'h> Index<'h> {
         Self { kinds, directories }
     }
 
-    /// Whether the symlink at `link` with target `target` resolves, lexically, to a regular
-    /// file of the tree: relative, never above the root, every `..` leaving a real directory,
-    /// and a `.rs` file when `link` is one.
-    fn resolves(&self, link: &str, target: &[u8]) -> bool {
-        let Ok(target) = str::from_utf8(target) else {
-            return false;
-        };
+    /// Whether the symlink at `link` with target `target` resolves to a regular file of the
+    /// tree ([`Self::resolve`]), a `.rs` one when `link` is one.
+    fn link_resolves(&self, link: &str, target: &[u8]) -> bool {
+        str::from_utf8(target)
+            .ok()
+            .and_then(|target| self.resolve(link, target))
+            .is_some_and(|resolved| !is_rust(link) || is_rust(&resolved))
+    }
+
+    /// The regular file of the tree that `target` names from the directory of the entry at
+    /// `from`, resolved lexically: relative, never above the root, and every `..` leaving a
+    /// real directory.
+    fn resolve(&self, from: &str, target: &str) -> Option<String> {
         if target.starts_with('/') {
-            return false;
+            return None;
         }
-        // A link at the root resolves from the root: no directory parts.
-        let mut parts: Vec<&str> = match link.rsplit_once('/') {
+        // An entry at the root resolves from the root: no directory parts.
+        let mut parts: Vec<&str> = match from.rsplit_once('/') {
             Some((directory, _)) => directory.split('/').collect(),
             None => Vec::new(),
         };
@@ -192,33 +197,104 @@ impl<'h> Index<'h> {
             match part {
                 "" | "." => {}
                 ".." => {
-                    if !self.directories.contains(parts.join("/").as_str()) || parts.pop().is_none()
-                    {
-                        return false;
+                    if !self.directories.contains(parts.join("/").as_str()) {
+                        return None;
                     }
+                    parts.pop()?;
                 }
                 part => parts.push(part),
             }
         }
         let resolved = parts.join("/");
-        self.kinds.get(resolved.as_str()) == Some(&EntryKind::File)
-            && (!is_rust(link) || is_rust(&resolved))
+        (self.kinds.get(resolved.as_str()) == Some(&EntryKind::File)).then_some(resolved)
+    }
+
+    /// Whether `path` is a regular `.rs` file of the tree that the scan reads.
+    fn scanned(&self, path: &str) -> bool {
+        self.kinds.get(path) == Some(&EntryKind::File) && exactly_rs(path) && !skipped(path)
+    }
+
+    /// Whether the file `reference` names from the `.rs` file at `from` is one the scan reads.
+    fn pins(&self, from: &str, reference: Reference<'_>) -> bool {
+        match reference {
+            Reference::Include(target) => self
+                .resolve(from, target)
+                .is_some_and(|resolved| self.scanned(&resolved)),
+            Reference::Module(name) => self.module_found(from, name),
+            Reference::Unresolvable => false,
+        }
+    }
+
+    /// Whether `mod name;` in the file at `from` has its file in the tree where rustc looks:
+    /// beside a crate root or `mod.rs` (`name.rs` or `name/mod.rs`), otherwise in the
+    /// directory named after the file. Crate roots are told by Cargo's conventions: `lib.rs`,
+    /// `main.rs`, `build.rs`, and files directly in `tests`, `examples`, `benches` or `bin`.
+    fn module_found(&self, from: &str, name: &str) -> bool {
+        let (directory, file) = from.rsplit_once('/').unwrap_or(("", from));
+        let root = matches!(file, "lib.rs" | "main.rs" | "build.rs" | "mod.rs")
+            || matches!(
+                directory.rsplit('/').next(),
+                Some("tests" | "examples" | "benches" | "bin")
+            );
+        let base = match (root, file.strip_suffix(".rs")) {
+            (true, _) => join(directory, name),
+            (false, Some(stem)) => join(&join(directory, stem), name),
+            (false, None) => return false,
+        };
+        self.scanned(&format!("{base}.rs")) || self.scanned(&format!("{base}/mod.rs"))
     }
 }
 
-/// Lexes the `.rs` file at `path`, recording its unread attributes and its `expect`s.
-fn read_source<'h>(path: &'h str, bytes: &[u8], analysis: &mut Analysis<'h>) {
+/// `directory/name`, or `name` at the root.
+fn join(directory: &str, name: &str) -> String {
+    if directory.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{directory}/{name}")
+    }
+}
+
+/// Whether `path` sits under a directory the scan's walk skips.
+fn skipped(path: &str) -> bool {
+    path.rsplit_once('/')
+        .is_some_and(|(directory, _)| directory.split('/').any(|d| SKIPPED.contains(&d)))
+}
+
+/// Whether `path`'s extension is exactly `rs`, as the scan's walk matches it.
+fn exactly_rs(path: &str) -> bool {
+    Path::new(path).extension().is_some_and(|e| e == "rs")
+}
+
+/// Lexes the `.rs` file at `path`, recording its unread attributes, the file references the
+/// tree does not back and its `expect`s, each blind line once.
+fn read_source<'h>(
+    (path, bytes): (&'h str, &[u8]),
+    index: &Index<'_>,
+    analysis: &mut Analysis<'h>,
+) {
     let lossy = String::from_utf8_lossy(bytes);
     let source = Source::new(&lossy);
     let text = source.text();
     match source.tokens() {
         Ok(lexed) => {
+            let mut lines: Vec<(NonZeroU64, Why)> = attributes::unread(&lexed)
+                .into_iter()
+                .map(|line| (line, Why::Attribute))
+                .chain(
+                    references::references(&lexed)
+                        .into_iter()
+                        .filter(|(_, reference)| !index.pins(path, *reference))
+                        .map(|(line, _)| (line, Why::Reference)),
+                )
+                .collect();
+            lines.sort_by_key(|(line, _)| *line);
+            lines.dedup_by_key(|(line, _)| *line);
             analysis
                 .blind
-                .extend(attributes::unread(&lexed).into_iter().map(|line| Blind {
+                .extend(lines.into_iter().map(|(line, why)| Blind {
                     path,
                     line,
-                    why: Why::Attribute,
+                    why,
                     quote: line_text(text, line),
                 }));
             analysis
