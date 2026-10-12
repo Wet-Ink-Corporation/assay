@@ -11,6 +11,7 @@
 mod vocabulary;
 
 mod aeu;
+mod content_hash;
 mod dismissal;
 mod disposition;
 mod event;
@@ -23,6 +24,7 @@ mod run_uid;
 mod severity;
 
 pub use aeu::Aeu;
+pub use content_hash::ContentHash;
 pub use dismissal::{Dismissal, DismissalMatch};
 pub use disposition::Disposition;
 pub use event::{

@@ -17,7 +17,9 @@ Dependencies point inward: domain, then application, then adapters, then the bin
 
 ## Repository layout
 
-`docs/architecture/02-architecture.md` §7. `schemas/` holds the contract JSON Schemas and their golden fixtures (its README indexes them). Directories without content yet (`plugin/`, `workflows/`, `rubric/`, `corpus/`, `docs/decisions/`) carry a README; `crates/assay-cli/tests/it/layout.rs` checks them.
+`docs/architecture/02-architecture.md` §7. `schemas/` holds the contract JSON Schemas and their golden fixtures (its README indexes them). `plugin/prompts/<version>/` holds the reviewer prompt bundles; their hash, computed by `assay_app::PromptBundle`, is part of the evidence key. Directories without content yet (`plugin/`, `workflows/`, `rubric/`, `corpus/`, `docs/decisions/`) carry a README; `crates/assay-cli/tests/it/layout.rs` checks them.
+
+**Prompt and rubric changes.** A PR that changes `plugin/prompts/**` or `rubric/**` changes what reviewers report. Once M5 exists, such PRs run the corpus replay gate (`docs/architecture/04-pipeline.md` §8, `06-operations.md` F11): k = 3 runs per `dev` case, accepted only when no case flips from detected to missed and the noise rate does not rise beyond its margin. Until then they are trust-path changes reviewed by the owner, and the PR says that the replay gate has not run.
 
 ## Commands
 
@@ -61,6 +63,7 @@ Pre-approved dependencies are listed in `.claude/temper.json`; any other is an H
 | 2026-10-11 | `sha2` (finding fingerprints in `assay-domain`, no default features) and `proptest` (dev-dependency for property tests, `std` only) enter the workspace with the fingerprint; both are pre-approved. | H-16, ARC-12 | #49 |
 | 2026-10-11 | `toml` (`std`, `parse`, `serde`; bounded nesting kept) enters the workspace, and `assay-app` takes it and the workspace `serde` entry (Story #48, same `std` and `derive` features), to parse base `.assay/plugins.toml`; both are pre-approved. `assay-gates` gains its `assay-app` edge with the `exec` adapter. | H-16, ARC-12 | Story #62 |
 | 2026-10-11 | Unused layer edges are not declared up front: `cargo machete` rejects unused dependencies, so each story adds the edge it first uses. | CRF-05 | Story #46 |
+| 2026-10-12 | Prompt bundle v1 (`combined`, `combined-micro`) in `plugin/prompts/v1/`, read by the caller (the app does no file I/O) and hashed in the domain (the only crate with `sha2`). The evidence key itself is composed by `plan` (#55), which takes `PromptBundle::hash` as `prompt_bundle_hash`. Prompt and rubric PRs run the corpus replay gate once M5 exists. | ARC-02, 04 §3, 04 §8 | #90 |
 | 2026-10-11 | Releases: `v*` tags (protected by ruleset) publish `assay` to GHCR as an OCI artifact with oras 1.3.4 (`oras-project/setup-oras`, SHA-pinned); consumers fetch and verify by digest with `.github/actions/fetch-by-digest`. Runbook `docs/operations/release.md`. `plugins.toml` parsing in Rust stays with #62; the action reads pins with python3 `tomllib`. | ADR-14, 05 T14 | Story #68 |
 | 2026-10-11 | `serde` (features `std`, `derive`; pre-approved and already in the lockfile through `serde_json`) enters the workspace for the contract types in `assay-domain`, one of the domain's three allowed dependencies (02 §2); `serde_json` is the domain's dev-dependency for fixture round-trips. | H-16, ARC-12 | Story #48 |
 | 2026-10-11 | Pre-approved normal dependencies of `assay-app`'s contract validation: `jsonschema` 0.58 (default features off, so no HTTP/TLS or file resolution; schemas are embedded), `serde_json`, `thiserror` 2 (workspace requirement raised to 2.0.12). | H-16, ARC-12 | Story #47 |

@@ -8,7 +8,7 @@ domain. Pure: no I/O, no clock, no randomness, no environment, no processes, no 
 
 ## Allowed dependencies
 - Workspace crates: none.
-- Third-party, and only these (02 §2): `serde` (derives on versioned contract types), `thiserror` (typed rejections, ERR-01), `sha2` (fingerprints). Each is added by the story that first uses it.
+- Third-party, and only these (02 §2): `serde` (derives on versioned contract types), `thiserror` (typed rejections, ERR-01), `sha2` (fingerprints and content hashes). Each is added by the story that first uses it.
 - Dev-dependencies: crates on the pre-approved list in `.claude/temper.json`. The architecture test does not check them (it exempts every third-party dev-dependency of the domain); temper's H-16 pre-approval hook governs them, and any other is a human decision.
 - Never: any other normal or build dependency, any `assay-*` crate (dev-dependencies included), `weighin-core` or temper code (P8). `crates/assay-cli/tests/it/architecture.rs` fails on a violation.
 
@@ -21,6 +21,7 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
 - `Aeu`: an amount of API-equivalent dollars held exactly in micro-AEU (`from_micros`, `micros`, `saturating_add`), displayed as a plain decimal (`0.74`), the form `--max-budget-usd` reads.
 - `normalise`: the one shared normaliser of 03 §3 (trailing `//` and ` # ` comments dropped, whitespace collapsed, quote styles unified to `"`, `...`/`…` made one wildcard `…` that absorbs adjacent spaces), for the fingerprint and the evidence check. Raw text only: it is not idempotent. Limits outside Rust: only `"` strings are tracked (a `#` or `//` in a single-quoted string can read as a comment), Python's `//` operator is stripped as a comment, and shell backticks are unified with `"`.
 - `Anchor` (`fingerprint`, returning `Option<Fingerprint>`; built by `Finding::anchor`, which carries `expected_behavior` for an omission only), `Fingerprint` (`FromStr`, `Display`, serde as 16 lowercase hex) and `ParseFingerprintError`: the fingerprint of 03 §3. `EventPayload::WaiverApplied` carries a `Fingerprint`.
+- `ContentHash` (`of_files`, `as_bytes`, `Display` as `sha256:<64 lowercase hex>`): SHA-256 over named files, each name and content prefixed by its byte length as a big-endian `u64`. The prompt bundle hash (04 §3) is one.
 - `Dismissal` (`judge`) and `DismissalMatch` (`Unrelated`, `Suppressed`, `MoreSevere`): the fuzzy dismissal match of 03 §3 and R3-25.
 
 ## Invariants
@@ -52,4 +53,5 @@ Unit tests beside the code. `tests/it/` (dev-dependencies `serde_json` and `prop
 | 2026-10-11 | Normaliser, fingerprint and fuzzy dismissal match (#49) add `sha2` and `thiserror`, and dev-dependency `proptest`, all pre-approved. Hex is written and parsed by hand (no `hex` here, ARC-02). Callers supply the rename-resolved path, the enclosing symbol (empty at file scope) and the occurrence index; the fuzzy match includes 03's class and severity-ceiling rule. | ARC-02, API-03, ERR-01 | #49 |
 | 2026-10-12 | wi-b2ac94 default revised on review: fuzzy match uses whole normalised evidence (the fingerprint stays first-line, 03 §3). Stricter, so it fails safe. | 03 §3, R3-25 | #49 review |
 | 2026-10-12 | Omissions fingerprint and fuzzy-match on their normalised `expected_behavior` as well as the signature line, so two omissions in one function stay apart; a fifth length-prefixed field, absent for defects. | 03 §3 | owner (Weigh-In wi-f39f2e, option A) |
+| 2026-10-12 | `ContentHash` added (#90) so the prompt bundle is content-addressed with the `sha2` already here; the encoding is the fingerprint's length prefixing, pinned by a golden vector computed independently. | ARC-02 | #90 |
 | 2026-10-12 | Content-less anchors fail closed: `Anchor::fingerprint` returns `Option` rather than taking a validated constructor, because `Anchor` is a short-lived borrowed view whose only producer is `Finding::anchor` and whose fuzzy match already judges content per call; a constructor would add a type and an error for the same check. | ERR-03, API-03 | #49 re-review |

@@ -62,7 +62,7 @@ Commit trailers (`Claude-Session`, `Co-Authored-By`) and signatures are recorded
 
 ## 3. Reviewer roster (S4–S6)
 
-All specialists share a fixed system-prompt bundle (identical across roles for cache reuse), read-only `Read/Grep/Glob`, the same cwd, and the same context pack placed **before** the role instruction.
+All specialists share a fixed system-prompt bundle (identical across roles for cache reuse), read-only `Read/Grep/Glob`, the same cwd, and the same context pack placed **before** the role instruction. Bundles live in `plugin/prompts/<version>/` (v1: `combined`, `combined-micro`); the bundle hash, SHA-256 over each file's versioned path and bytes, is the evidence key's `prompt_bundle_hash` (02 §3).
 
 **Blindness.** `bugs`, `security` and the `combined` roles receive the diff and tree but **no PR title, body or commit messages** (an agent's own "this is intentional because…" anchors the reviewer). `design` and `meta` receive intent text inside the untrusted envelope. The verifier receives only `{file, line, class, one-sentence claim, trigger}`, never the specialist's rationale, and is a different model tier from the specialists (the split is chosen by ablation, `A-14`).
 
