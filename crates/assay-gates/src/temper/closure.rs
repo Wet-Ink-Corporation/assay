@@ -4,31 +4,29 @@
 //!
 //! The closure starts at each package's build script (`build.rs` when present and `build` is
 //! not `false`, or each path `build` names) and at each proc-macro crate's lib (`[lib] path`,
-//! or `src/lib.rs`), and follows `include!`, `#[path]` and `mod`. Where rustc's reading is not
-//! certain it reads every place it could be: a module's `mod` beside it and in the directory
-//! named after it, and an included file's own references from it and from every file that
-//! included it. What it cannot place at all gives [`ExecRoot::Everything`].
+//! or `src/lib.rs`), and follows `include!`, `#[path]` and `mod` (`closure/visit.rs`). Where
+//! rustc's reading is not certain it reads every place it could be: a module's `mod` beside it
+//! and in the directory named after it, and an included file's own references from it and
+//! from every file that included it. What it cannot place at all gives
+//! [`ExecRoot::Everything`]. The include targets are `closure/targets.rs`'s.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use assay_domain::ExecRoot;
 use toml::{Table, Value};
 
 use super::head::{is_manifest, is_rust};
-use super::reach::{FileReach, Include, scan};
+use super::reach::{FileReach, scan};
 use super::statics::{BlobCount, Files, Tree};
 use super::tokens::Source;
 use crate::revision::{EntryKind, Revision, RevisionFiles, TreeEntry};
 
 mod targets;
+mod visit;
 
 /// Most files the closure visits, or include targets it scans, before it gives up and places
 /// nothing (H-13).
 const MAX_VISITS: usize = 10_000;
-
-/// Most files the closure's queue holds at once before it gives up and returns `Everything`
-/// (H-13): one file can name many, each with its own context.
-const MAX_QUEUED: usize = 10_000;
 
 /// What one revision's Rust reads at compile time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -49,8 +47,8 @@ pub struct CompileTimeReach {
 /// scripts and proc-macro libs. The caller unions base's and head's for a PR's `ChangeSet`.
 ///
 /// Fails closed: an unparseable manifest, an entry or a directory on the way to one that is a
-/// symlink or a submodule, a Rust file that does not lex, and any reference the scan cannot
-/// place make the closure [`ExecRoot::Everything`].
+/// symlink or a submodule, a Rust file that does not lex, any reference the scan cannot
+/// place, and a walk past its work budget make the closure [`ExecRoot::Everything`].
 ///
 /// # Errors
 ///
@@ -89,89 +87,6 @@ pub fn compile_time_reach<R: RevisionFiles>(
 /// every path.
 const fn unplaced() -> String {
     String::new()
-}
-
-/// How a visited file was reached: where its `mod name;` and its literal paths resolve from.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct Context {
-    /// The directories a `mod name;` in it looks in.
-    module_dirs: BTreeSet<String>,
-    /// The directories its include and `#[path]` literals resolve from.
-    file_dirs: BTreeSet<String>,
-    /// Whether it was included inside brackets, here or further up, where the module directory
-    /// a `mod` or `#[path]` in it resolves from is not modelled.
-    modules_unplaced: bool,
-}
-
-impl Context {
-    /// A crate root's: both beside it.
-    fn root(path: &str) -> Self {
-        let dir = directory(path);
-        Self {
-            module_dirs: BTreeSet::from([dir.to_owned()]),
-            file_dirs: BTreeSet::from([dir.to_owned()]),
-            modules_unplaced: false,
-        }
-    }
-
-    /// A module file's: `mod.rs` looks beside itself; any other module, or one a `#[path]`
-    /// placed, in both places it could.
-    fn module(path: &str) -> Self {
-        let dir = directory(path);
-        let mut module_dirs = BTreeSet::from([dir.to_owned()]);
-        let file = path.rsplit('/').next().unwrap_or(path);
-        if file != "mod.rs" {
-            let stem = file.strip_suffix(".rs").unwrap_or(file);
-            module_dirs.insert(join(dir, stem));
-        }
-        Self {
-            module_dirs,
-            file_dirs: BTreeSet::from([dir.to_owned()]),
-            modules_unplaced: false,
-        }
-    }
-
-    /// An included file's: its includer's module directories, and its own directory and its
-    /// includer's for literals; its modules cannot be placed when it was included inside
-    /// brackets (`nested`) or its includer's could not. The includer keeps its context, so
-    /// this one owns a copy.
-    fn included(path: &str, includer: &Self, nested: bool) -> Self {
-        let mut file_dirs = includer.file_dirs.clone();
-        file_dirs.insert(directory(path).to_owned());
-        Self {
-            module_dirs: includer.module_dirs.clone(),
-            file_dirs,
-            modules_unplaced: includer.modules_unplaced || nested,
-        }
-    }
-
-    /// Adds `other`'s directories and whether its modules cannot be placed; whether anything
-    /// was new.
-    ///
-    /// A file is walked again only when it is reached from somewhere new, so the walk ends.
-    fn absorb(&mut self, other: Self) -> bool {
-        let shape = |context: &Self| {
-            (
-                context.module_dirs.len(),
-                context.file_dirs.len(),
-                context.modules_unplaced,
-            )
-        };
-        let before = shape(self);
-        self.module_dirs.extend(other.module_dirs);
-        self.file_dirs.extend(other.file_dirs);
-        self.modules_unplaced |= other.modules_unplaced;
-        before != shape(self)
-    }
-}
-
-/// How the closure reached a file.
-#[derive(Debug)]
-enum Reached {
-    /// As Rust, from `Context`: the walk reads it.
-    Code(Context),
-    /// As data an `include_str!` or `include_bytes!` embeds: a root, never read as Rust.
-    Data,
 }
 
 /// The walk over one tree, reading files it does not hold on demand.
@@ -262,110 +177,15 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
         Ok(())
     }
 
-    /// The closure of every build script and proc-macro lib, as exec roots.
-    fn closure(&mut self) -> Result<Vec<ExecRoot>, R::Error> {
-        let Some(entries) = self.entries() else {
-            return Ok(vec![ExecRoot::Everything]);
-        };
-        let mut seen: BTreeMap<String, Context> = BTreeMap::new();
-        let mut queue: Vec<(String, Reached)> = entries
-            .into_iter()
+    /// Every parsed manifest of the tree, with its directory; `None` when one does not parse.
+    fn manifests(&self) -> Option<Vec<(&'t str, Table)>> {
+        self.tree
+            .files(is_manifest)
             .map(|path| {
-                let context = Context::root(&path);
-                (path, Reached::Code(context))
+                let manifest: Table = str::from_utf8(self.tree.bytes(path)?).ok()?.parse().ok()?;
+                Some((directory(path), manifest))
             })
-            .collect();
-        let mut data: BTreeSet<String> = BTreeSet::new();
-        let mut visits = 0_usize;
-        while let Some((path, reached)) = queue.pop() {
-            visits = visits.saturating_add(1);
-            if visits > MAX_VISITS {
-                return Ok(vec![ExecRoot::Everything]);
-            }
-            let Reached::Code(context) = reached else {
-                if self.behind_link(&path) {
-                    return Ok(vec![ExecRoot::Everything]);
-                }
-                data.insert(path);
-                continue;
-            };
-            let merged = match seen.get_mut(&path) {
-                Some(known) => {
-                    if !known.absorb(context) {
-                        continue;
-                    }
-                    known
-                }
-                // The map keeps its own copy of the path; the walk reads this one.
-                None => seen.entry(path.clone()).or_insert(context),
-            };
-            match self.visit(&path, merged)? {
-                Some(next) => queue.extend(next),
-                None => return Ok(vec![ExecRoot::Everything]),
-            }
-            if queue.len() > MAX_QUEUED {
-                return Ok(vec![ExecRoot::Everything]);
-            }
-        }
-        data.extend(seen.into_keys());
-        Ok(data.into_iter().map(ExecRoot::Path).collect())
-    }
-
-    /// The files `path` reaches with `context`, or `None` when it cannot be placed. A path the
-    /// tree does not hold reaches nothing; it stays a root, since a PR adding it is a change
-    /// there.
-    fn visit(
-        &mut self,
-        path: &str,
-        context: &Context,
-    ) -> Result<Option<Vec<(String, Reached)>>, R::Error> {
-        if self.behind_link(path) {
-            return Ok(None);
-        }
-        if self.tree.entry(path).is_none() {
-            return Ok(Some(Vec::new()));
-        }
-        self.load(path)?;
-        let Some(Some(reach)) = self.reaches.get(path) else {
-            return Ok(None);
-        };
-        if reach.uncertain || (context.modules_unplaced && !reach.modules.is_empty()) {
-            return Ok(None);
-        }
-        let mut next = Vec::new();
-        for (kind, literal) in &reach.includes {
-            for dir in &context.file_dirs {
-                let Some(target) = self.resolve(dir, literal) else {
-                    return Ok(None);
-                };
-                let reached = match kind {
-                    Include::Code => Reached::Code(Context::included(&target, context, false)),
-                    Include::NestedCode => Reached::Code(Context::included(&target, context, true)),
-                    Include::Data => Reached::Data,
-                };
-                next.push((target, reached));
-            }
-        }
-        for (name, literal) in &reach.modules {
-            if let Some(literal) = literal {
-                for dir in &context.file_dirs {
-                    let Some(target) = self.resolve(dir, literal) else {
-                        return Ok(None);
-                    };
-                    let reached = Reached::Code(Context::module(&target));
-                    next.push((target, reached));
-                }
-                continue;
-            }
-            for dir in &context.module_dirs {
-                let base = join(dir, name);
-                for file in [format!("{base}.rs"), format!("{base}/mod.rs")] {
-                    let reached = Reached::Code(Context::module(&file));
-                    next.push((file, reached));
-                }
-            }
-        }
-        Ok(Some(next))
+            .collect()
     }
 
     /// The entry files of every package's build script and proc-macro lib; `None` when one
@@ -380,9 +200,7 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
             return None;
         }
         let mut found = Vec::new();
-        for path in self.tree.files(is_manifest) {
-            let manifest: Table = str::from_utf8(self.tree.bytes(path)?).ok()?.parse().ok()?;
-            let dir = directory(path);
+        for (dir, manifest) in self.manifests()? {
             if let Some(package) = manifest.get("package").or_else(|| manifest.get("project")) {
                 found.extend(self.build_scripts(dir, package.get("build"))?);
             }

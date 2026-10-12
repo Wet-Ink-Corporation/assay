@@ -12,7 +12,11 @@
 //! formatting does not count; targets are compared in file order, so reordering targets that
 //! set a switch counts. A deleted manifest is compared with an empty one.
 
+use std::collections::BTreeSet;
+
 use toml::{Table, Value};
+
+use super::manifests::is_package;
 
 /// One switch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,21 +72,80 @@ const DISCOVERY: [&str; 5] = [
     "autolib",
 ];
 
+/// The dependency tables whose path dependencies are compared, in both spellings Cargo reads.
+const DEPENDENCY_TABLES: [&str; 5] = [
+    "dependencies",
+    "dev-dependencies",
+    "dev_dependencies",
+    "build-dependencies",
+    "build_dependencies",
+];
+
 /// The names of the switches whose values differ from `base` (`None`: a new manifest) to
-/// `head`, in [`SWITCHES`] order.
+/// `head` (`None`: a deleted one), in [`SWITCHES`] order, then a removed path dependency, then
+/// a removed package.
 ///
 /// A new manifest is compared with an empty one, except that inheriting the workspace's
 /// `edition` or `rust-version` (`edition.workspace = true`) is not a change, and a target's
-/// `required-features` and `path` are not either: no test of its can have run before.
-pub(super) fn changed_switches(base: Option<&Table>, head: &Table) -> Vec<&'static str> {
+/// `required-features` and `path` are not either: no test of its can have run before. A
+/// deleted manifest is compared with an empty one, and deleting a package is a switch of its
+/// own: its tests leave the workspace with it. A path dependency is compared by table, name
+/// and path; only one that base has and head does not counts (it can take a crate and its
+/// tests out of the graph).
+pub(super) fn changed_switches(base: Option<&Table>, head: Option<&Table>) -> Vec<&'static str> {
     let empty = Table::new();
     let new = base.is_none();
-    let base = base.unwrap_or(&empty);
-    SWITCHES
+    let before = base.unwrap_or(&empty);
+    let after = head.unwrap_or(&empty);
+    let mut changed: Vec<&'static str> = SWITCHES
         .into_iter()
-        .filter(|(switch, _)| projection(base, *switch, false) != projection(head, *switch, new))
+        .filter(|(switch, _)| projection(before, *switch, false) != projection(after, *switch, new))
         .map(|(_, name)| name)
-        .collect()
+        .collect();
+    if !path_dependencies(before).is_subset(&path_dependencies(after)) {
+        changed.push("path dependency removed");
+    }
+    if head.is_none() && is_package(before) {
+        changed.push("package removed");
+    }
+    changed
+}
+
+/// One path dependency: the target `cfg` its table sits under (`None` at the top level), the
+/// table (`dependencies`, `workspace.dependencies`), its name, and its path as written.
+type PathDependency<'m> = (Option<&'m str>, &'static str, &'m str, String);
+
+/// Every path dependency of `manifest`, in its own tables, under `[target.<cfg>]` and in
+/// `[workspace.dependencies]`.
+fn path_dependencies(manifest: &Table) -> BTreeSet<PathDependency<'_>> {
+    let mut tables: Vec<(Option<&str>, &'static str, &Value)> = DEPENDENCY_TABLES
+        .iter()
+        .filter_map(|table| Some((None, *table, manifest.get(*table)?)))
+        .collect();
+    let targets = lookup(manifest, &["target"]).and_then(Value::as_table);
+    for (cfg, target) in targets.into_iter().flatten() {
+        tables.extend(
+            DEPENDENCY_TABLES
+                .iter()
+                .filter_map(|table| Some((Some(cfg.as_str()), *table, target.get(*table)?))),
+        );
+    }
+    if let Some(workspace) = lookup(manifest, &["workspace", "dependencies"]) {
+        tables.push((None, "workspace.dependencies", workspace));
+    }
+    let mut found = BTreeSet::new();
+    for (cfg, table, dependencies) in tables {
+        for (name, spec) in dependencies.as_table().into_iter().flatten() {
+            if let Some(path) = spec.get("path") {
+                // A path that is not a string is kept in its debug form, so it still compares.
+                let path = path
+                    .as_str()
+                    .map_or_else(|| format!("{path:?}"), str::to_owned);
+                found.insert((cfg, table, name.as_str(), path));
+            }
+        }
+    }
+    found
 }
 
 /// The values of `manifest` that `switch` covers, in a fixed order; `None` for an absent value.
@@ -176,7 +239,7 @@ mod tests {
         let head = table("lib = { test = false }\n");
 
         assert_eq!(
-            changed_switches(Some(&base), &head),
+            changed_switches(Some(&base), Some(&head)),
             Vec::<&str>::new(),
             "compared parsed"
         );
@@ -188,7 +251,7 @@ mod tests {
         let head = table("[lib]\ntest = true\n");
 
         assert_eq!(
-            changed_switches(Some(&base), &head),
+            changed_switches(Some(&base), Some(&head)),
             ["target test"],
             "every change is a human decision"
         );
@@ -202,13 +265,31 @@ mod tests {
         );
 
         assert_eq!(
-            changed_switches(None, &head),
+            changed_switches(None, Some(&head)),
             [
                 "edition",
                 "autotests/autobenches/autobins/autoexamples/autolib",
                 "target harness"
             ],
             "its `path` hides no test that ran"
+        );
+    }
+
+    #[test]
+    fn a_moved_path_dependency_is_a_removal() {
+        let base = table("[dependencies]\nh = { path = \"../h\" }\n");
+        let moved = table("[dependencies]\nh = { path = \"../h2\" }\n");
+        let added = table(
+            "[dependencies]\nh = { path = \"../h\" }\n[target.'cfg(unix)'.dependencies]\ni = { path = \"../i\" }\n",
+        );
+
+        assert_eq!(
+            (
+                changed_switches(Some(&base), Some(&moved)),
+                changed_switches(Some(&base), Some(&added))
+            ),
+            (vec!["path dependency removed"], Vec::new()),
+            "the old path leaves the graph; an added one takes nothing out"
         );
     }
 }

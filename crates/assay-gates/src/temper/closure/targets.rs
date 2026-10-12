@@ -5,13 +5,44 @@
 //! a symlink or a submodule anywhere in the tree (Rust behind it is not read), a target that
 //! is a symlink or behind one, a file that does not lex or is uncertain, a literal that does
 //! not resolve, a `#[path]` in a file some `include!` reads (it resolves from the including
-//! module, not modelled), and more than [`MAX_VISITS`] files read.
+//! module, not modelled), a manifest that does not parse or names a target or build script
+//! that is not `.rs` (rustc compiles it; this walk does not read it), and more than
+//! [`MAX_VISITS`] files read.
 
 use std::collections::{BTreeSet, HashSet};
 
+use toml::{Table, Value};
+
 use super::{MAX_VISITS, Walk, directory, is_rust, unplaced};
 use crate::revision::{EntryKind, RevisionFiles};
+use crate::temper::layout::exactly_rs;
 use crate::temper::reach::{FileReach, Include};
+
+/// Whether every Cargo target path `manifest` names (`[lib]`, `[[bin]]`, `[[test]]`,
+/// `[[bench]]` and `[[example]]` `path`, and `build`) is a string ending in `.rs`: the walk
+/// reads only those, so rustc compiling any other file (#169) is refused.
+fn rust_targets(manifest: &Table) -> bool {
+    let is_rs = |value: &Value| value.as_str().is_some_and(exactly_rs);
+    let lib = manifest.get("lib").into_iter();
+    let arrays = ["bin", "test", "bench", "example"]
+        .into_iter()
+        .filter_map(|kind| manifest.get(kind))
+        .flat_map(|targets| targets.as_array().into_iter().flatten());
+    let paths_ok = lib
+        .chain(arrays)
+        .filter_map(|target| target.get("path"))
+        .all(is_rs);
+    let build = manifest
+        .get("package")
+        .or_else(|| manifest.get("project"))
+        .and_then(|package| package.get("build"));
+    let build_ok = match build {
+        None | Some(Value::Boolean(_)) => true,
+        Some(Value::Array(scripts)) => scripts.iter().all(is_rs),
+        Some(script) => is_rs(script),
+    };
+    paths_ok && build_ok
+}
 
 /// What the walk over the tree's include targets has found so far.
 #[derive(Debug, Default)]
@@ -31,10 +62,14 @@ impl<R: RevisionFiles> Walk<'_, '_, R> {
             queue: self.tree.files(is_rust).map(str::to_owned).collect(),
             ..Targets::default()
         };
-        if self
-            .tree
-            .entries()
-            .any(|entry| entry.kind != EntryKind::File)
+        let rust_targets = self
+            .manifests()
+            .is_some_and(|manifests| manifests.iter().all(|(_, manifest)| rust_targets(manifest)));
+        if !rust_targets
+            || self
+                .tree
+                .entries()
+                .any(|entry| entry.kind != EntryKind::File)
         {
             targets.found.insert(unplaced());
         }

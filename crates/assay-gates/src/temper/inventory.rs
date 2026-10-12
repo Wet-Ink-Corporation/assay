@@ -6,14 +6,16 @@
 //! counts once however many times the macro is called; the per-file comparison then sees the
 //! calls only as they change the file.
 
+use std::collections::BTreeMap;
+
 use super::attributes::group;
+use super::reach;
 use super::references::{self, Reference};
 use super::tokens::{Lexed, Token};
 
-/// Attribute names, by their last path segment, that mark a test besides any name holding
-/// `test` (`test`, `tokio::test`, `rstest`, `test_case`, `wasm_bindgen_test`): `bench`, and
-/// `case`, each of which is one more `rstest` case.
-const TEST_NAMES: [&str; 2] = ["bench", "case"];
+mod runs;
+
+use runs::{Attribute, gates_module, run};
 
 /// What one file declares about its tests.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -21,100 +23,68 @@ pub(super) struct Inventory {
     /// Test-family attributes under no condition: none in their own run of attributes, none
     /// on an item around them.
     pub(super) tests: u64,
-    /// For each test-family attribute under a condition, the conditions it is under, outermost
-    /// first, as one normalised text: a multiset, so a test that goes, or whose condition
-    /// changes, is a loss.
-    pub(super) conditional: Vec<String>,
+    /// How many test-family attributes sit under each set of conditions, keyed by those
+    /// conditions as one normalised text, outermost first: a multiset, so a test that goes, or
+    /// whose condition changes, is a loss.
+    pub(super) conditional: BTreeMap<String, u64>,
     /// Attributes that can ignore a test: `ignore` itself, and any attribute naming `ignore`
     /// in its arguments (`cfg_attr(miri, ignore)`, `test_case(.. => ignore)`).
     pub(super) ignores: u64,
     /// The text of each condition (`cfg` or `cfg_attr`, except exactly `cfg(test)`) on a
     /// module or written as an inner attribute, which can switch off every test below it.
     pub(super) gates: Vec<String>,
-    /// The name of each top-level `mod name;`, owned since the file's text is read only to
-    /// count it.
+    /// The name of each top-level `mod name;` without `#[path]`, owned since the file's text is
+    /// read only to count it.
     pub(super) modules: Vec<String>,
+    /// Each module reference this check cannot follow by name, described: a `#[path]` module
+    /// and each reference `references` cannot resolve. Dropping one is refused.
+    pub(super) unplaced_modules: Vec<String>,
 }
 
-/// One attribute: its path's segments and its arguments.
-struct Attribute<'t, 'a> {
-    inner: bool,
-    path: Vec<&'a str>,
-    arguments: &'t [Lexed<'a>],
-    tokens: &'t [Lexed<'a>],
+/// Most conditioned items a run of attributes can sit inside before the file is refused (H-13).
+const MAX_DEPTH: usize = 16;
+
+/// Most bytes of condition text one file's inventory builds before it is refused (H-13).
+const MAX_CONDITION_BYTES: usize = 1 << 20;
+
+/// The file asks for more work than the inventory's fixed budget, so it is not counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Refused;
+
+/// The work one file's inventory may still do.
+struct Budget {
+    /// Tokens the item scans may still walk.
+    scan: usize,
+    /// Bytes of condition text that may still be built.
+    text: usize,
 }
 
-impl Attribute<'_, '_> {
-    fn last(&self) -> &str {
-        self.path.last().copied().unwrap_or("")
-    }
-
-    fn is_test(&self) -> bool {
-        let last = self.last();
-        last.contains("test") || TEST_NAMES.contains(&last)
-    }
-
-    fn names(&self, ident: &str) -> bool {
-        self.arguments
-            .iter()
-            .any(|lexed| matches!(lexed.token, Token::Ident { name, .. } if name == ident))
-    }
-
-    fn is_ignore(&self) -> bool {
-        self.last() == "ignore" || self.names("ignore")
-    }
-
-    /// A `cfg` but exactly `cfg(test)`, which holds in every test build, or a `cfg_attr` that
-    /// names `cfg` or a macro fragment anywhere in its arguments, either of which can make it a
-    /// `cfg`. A `cfg_attr` naming `path` swaps a module's file instead; step 2 reports it as a
-    /// `blind-spot`, which no waiver clears.
-    fn is_condition(&self) -> bool {
-        match self.path.as_slice() {
-            ["cfg"] => !matches!(
-                self.arguments,
-                [only] if matches!(only.token, Token::Ident { name: "test", .. })
-            ),
-            ["cfg_attr"] => {
-                self.names("cfg")
-                    || self
-                        .arguments
-                        .iter()
-                        .any(|lexed| lexed.token == Token::Punct('$'))
-            }
-            _ => false,
-        }
-    }
-
-    /// The attribute as text, its tokens separated by spaces.
-    fn text(&self) -> String {
-        self.tokens
-            .iter()
-            .map(|lexed| match lexed.token {
-                Token::Ident { name, raw: false } => name.to_owned(),
-                Token::Ident { name, raw: true } => format!("r#{name}"),
-                Token::Lifetime(name) => format!("'{name}"),
-                Token::Punct(punct) => punct.to_string(),
-                Token::Literal(text) => text.to_owned(),
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+impl Budget {
+    fn spend(left: &mut usize, cost: usize) -> Result<(), Refused> {
+        *left = left.checked_sub(cost).ok_or(Refused)?;
+        Ok(())
     }
 }
 
-/// The inventory of a file whose tokens are `tokens`.
-pub(super) fn inventory(tokens: &[Lexed<'_>]) -> Inventory {
+/// The inventory of a file whose tokens are `tokens`, or [`Refused`] past the work budget:
+/// more than [`MAX_DEPTH`] nested conditioned items, more than [`MAX_CONDITION_BYTES`] of
+/// condition text, or item scans walking more than `MAX_DEPTH + 2` times the file's tokens.
+pub(super) fn inventory(tokens: &[Lexed<'_>]) -> Result<Inventory, Refused> {
+    let (modules, unplaced_modules) = declared_modules(tokens);
     let mut found = Inventory {
-        modules: references::references(tokens)
-            .into_iter()
-            .filter_map(|(_, reference)| match reference {
-                Reference::Module(name) => Some(name.to_owned()),
-                Reference::Unresolvable | Reference::NestedMacro => None,
-            })
-            .collect(),
+        modules,
+        unplaced_modules,
         ..Inventory::default()
     };
-    // The conditions on the items being read: where each item ends, and its conditions' text.
-    let mut scopes: Vec<(usize, String)> = Vec::new();
+    let mut budget = Budget {
+        scan: tokens.len().saturating_mul(MAX_DEPTH.saturating_add(2)),
+        text: MAX_CONDITION_BYTES,
+    };
+    // Each conditioned item's conditions, its enclosing items' first, built once; and how many
+    // tests sit under each.
+    let mut chains: Vec<(String, u64)> = Vec::new();
+    // The conditioned items being read: where each ends, and its index in `chains`.
+    let mut scopes: Vec<(usize, usize)> = Vec::new();
     let mut index = 0_usize;
     while let Some((first, tail)) = tokens.get(index..).and_then(<[_]>::split_first) {
         scopes.retain(|(end, _)| *end > index);
@@ -127,53 +97,111 @@ pub(super) fn inventory(tokens: &[Lexed<'_>]) -> Inventory {
             continue;
         }
         index = tokens.len().saturating_sub(after.len());
-        let own: Vec<String> = run
-            .iter()
-            .filter(|attribute| !attribute.inner && attribute.is_condition())
-            .map(Attribute::text)
-            .collect();
-        let conditions: Vec<&str> = scopes
-            .iter()
-            .map(|(_, text)| text.as_str())
-            .chain(own.iter().map(String::as_str))
-            .collect();
-        tally(&mut found, &run, &conditions, gates_module(after));
-        if !own.is_empty() {
-            scopes.push((index.saturating_add(item_length(after)), own.join(" & ")));
+        let outer = scopes.last().map(|(_, chain)| *chain);
+        let chain = match condition_text(&run) {
+            None => outer,
+            Some(own) => {
+                if scopes.len() >= MAX_DEPTH {
+                    return Err(Refused);
+                }
+                let outer_text = outer
+                    .and_then(|chain| chains.get(chain))
+                    .map(|(text, _)| text);
+                let text = match outer_text {
+                    Some(outer_text) => format!("{outer_text} & {own}"),
+                    None => own,
+                };
+                Budget::spend(&mut budget.text, text.len())?;
+                let end = index.saturating_add(item_length(after, &mut budget.scan)?);
+                chains.push((text, 0));
+                let chain = chains.len().saturating_sub(1);
+                scopes.push((end, chain));
+                Some(chain)
+            }
+        };
+        tally(
+            &mut found,
+            &run,
+            chain.and_then(|chain| chains.get_mut(chain)),
+            gates_module(after),
+        );
+    }
+    for (text, tests) in chains.into_iter().filter(|(_, tests)| *tests > 0) {
+        let count = found.conditional.entry(text).or_default();
+        *count = count.saturating_add(tests);
+    }
+    Ok(found)
+}
+
+/// The conditions in `run`'s own outer attributes, as one text; `None` when it holds none.
+fn condition_text(run: &[Attribute<'_, '_>]) -> Option<String> {
+    let own: Vec<String> = run
+        .iter()
+        .filter(|attribute| !attribute.inner && attribute.is_condition())
+        .map(Attribute::text)
+        .collect();
+    (!own.is_empty()).then(|| own.join(" & "))
+}
+
+/// The top-level `mod name;` declarations of a file, by name, and every module reference this
+/// check cannot place by name: a `#[path]` module (its name and path), and each reference
+/// `references` cannot resolve (a `mod` in brackets or a macro, an include, a nested macro).
+fn declared_modules(tokens: &[Lexed<'_>]) -> (Vec<String>, Vec<String>) {
+    let mut placed = Vec::new();
+    let mut unplaced = Vec::new();
+    for (name, path) in reach::scan(tokens).modules {
+        match path {
+            None => placed.push(name),
+            Some(path) => unplaced.push(format!("{name} (path {path})")),
         }
     }
-    found
+    unplaced.extend(
+        references::references(tokens)
+            .into_iter()
+            .filter(|(_, reference)| !matches!(reference, Reference::Module(_)))
+            .map(|_| "a reference this check does not follow".to_owned()),
+    );
+    (placed, unplaced)
 }
 
 /// The number of tokens of the item `after` starts: up to its first `;` or through its first
-/// `{ .. }` outside other brackets, or to the end.
+/// `{ .. }` outside other brackets, or to the end; each token walked is spent from `left`.
 ///
 /// A `{` inside generics (`S<{ N }>`) ends it early, so the tests after it read as under no
 /// condition and a condition later added on that item is not seen (a known gap).
-fn item_length(after: &[Lexed<'_>]) -> usize {
+fn item_length(after: &[Lexed<'_>], left: &mut usize) -> Result<usize, Refused> {
     let mut index = 0_usize;
     while let Some(lexed) = after.get(index) {
-        let inner = after.get(index.saturating_add(1)..).unwrap_or(&[]);
-        let group_end = index.saturating_add(group(inner).len()).saturating_add(2);
-        match lexed.token {
-            Token::Punct(';') => return index.saturating_add(1),
-            Token::Punct('{') => return group_end,
-            Token::Punct('(' | '[') => index = group_end,
-            _ => index = index.saturating_add(1),
+        let next = match lexed.token {
+            Token::Punct(';') => return Ok(index.saturating_add(1)),
+            Token::Punct('(' | '[' | '{') => {
+                let inner = after.get(index.saturating_add(1)..).unwrap_or(&[]);
+                index.saturating_add(group(inner).len()).saturating_add(2)
+            }
+            _ => index.saturating_add(1),
+        };
+        Budget::spend(left, next.saturating_sub(index))?;
+        if lexed.token == Token::Punct('{') {
+            return Ok(next);
         }
+        index = next;
     }
-    after.len()
+    Ok(after.len())
 }
 
-/// Counts one run of attributes under `conditions` (the items' around it, then its own); its
-/// item is a module when `module` holds.
-fn tally(found: &mut Inventory, run: &[Attribute<'_, '_>], conditions: &[&str], module: bool) {
+/// Counts one run of attributes, under the conditions of `chain` when it has any (the items'
+/// around it, then its own); its item is a module when `module` holds.
+fn tally(
+    found: &mut Inventory,
+    run: &[Attribute<'_, '_>],
+    mut chain: Option<&mut (String, u64)>,
+    module: bool,
+) {
     for attribute in run {
         if attribute.is_test() && !attribute.inner {
-            if conditions.is_empty() {
-                found.tests = found.tests.saturating_add(1);
-            } else {
-                found.conditional.push(conditions.join(" & "));
+            match chain.as_deref_mut() {
+                None => found.tests = found.tests.saturating_add(1),
+                Some((_, tests)) => *tests = tests.saturating_add(1),
             }
         }
         if attribute.is_ignore() {
@@ -185,109 +213,6 @@ fn tally(found: &mut Inventory, run: &[Attribute<'_, '_>], conditions: &[&str], 
     }
 }
 
-/// The attributes that start right after a `#` (whose own tokens are `after_hash`), each
-/// following one `#` after the first, and the tokens after the last. An inner attribute is a
-/// run of its own.
-fn run<'t, 'a>(after_hash: &'t [Lexed<'a>]) -> (Vec<Attribute<'t, 'a>>, &'t [Lexed<'a>]) {
-    let mut found = Vec::new();
-    let mut rest = after_hash;
-    while let Some((attribute, after)) = attribute(rest) {
-        let inner = attribute.inner;
-        found.push(attribute);
-        rest = after;
-        match rest {
-            [hash, tail @ ..] if !inner && hash.token == Token::Punct('#') => {
-                if matches!(tail.first(), Some(bang) if bang.token == Token::Punct('!')) {
-                    break;
-                }
-                rest = tail;
-            }
-            _ => break,
-        }
-    }
-    if found.is_empty() {
-        return (found, after_hash);
-    }
-    (found, rest)
-}
-
-/// The attribute the tokens after a `#` start, and the tokens after its `]`.
-fn attribute<'t, 'a>(after_hash: &'t [Lexed<'a>]) -> Option<(Attribute<'t, 'a>, &'t [Lexed<'a>])> {
-    let (inner, after_bang) = match after_hash {
-        [bang, rest @ ..] if bang.token == Token::Punct('!') => (true, rest),
-        rest => (false, rest),
-    };
-    let [open, inside @ ..] = after_bang else {
-        return None;
-    };
-    if open.token != Token::Punct('[') {
-        return None;
-    }
-    let tokens = group(inside);
-    let after = inside.get(tokens.len().saturating_add(1)..).unwrap_or(&[]);
-    let mut path = Vec::new();
-    let mut rest = tokens;
-    loop {
-        rest = match rest {
-            [colon, second, tail @ ..]
-                if colon.token == Token::Punct(':') && second.token == Token::Punct(':') =>
-            {
-                tail
-            }
-            _ => rest,
-        };
-        match rest {
-            [segment, tail @ ..] => match segment.token {
-                Token::Ident { name, .. } => {
-                    path.push(name);
-                    rest = tail;
-                }
-                Token::Punct(_) | Token::Lifetime(_) | Token::Literal(_) => break,
-            },
-            [] => break,
-        }
-        if !matches!(rest, [colon, ..] if colon.token == Token::Punct(':')) {
-            break;
-        }
-    }
-    let arguments = match rest {
-        [open, inner @ ..] if matches!(open.token, Token::Punct('(' | '[' | '{')) => group(inner),
-        rest => rest,
-    };
-    let attribute = Attribute {
-        inner,
-        path,
-        arguments,
-        tokens,
-    };
-    Some((attribute, after))
-}
-
-/// Whether the tokens after a run of outer attributes declare a module: `mod`, after an
-/// optional visibility (`pub`, `pub(crate)`, `pub(in path)`).
-fn gates_module(after: &[Lexed<'_>]) -> bool {
-    let after_visibility = match after {
-        [visibility, open, rest @ ..]
-            if matches!(visibility.token, Token::Ident { name: "pub", .. })
-                && open.token == Token::Punct('(') =>
-        {
-            rest.get(group(rest).len().saturating_add(1)..)
-                .unwrap_or(&[])
-        }
-        [visibility, rest @ ..] if matches!(visibility.token, Token::Ident { name: "pub", .. }) => {
-            rest
-        }
-        rest => rest,
-    };
-    matches!(
-        after_visibility.first(),
-        Some(Lexed {
-            token: Token::Ident { name: "mod", .. },
-            ..
-        })
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::tokens::Source;
@@ -296,7 +221,7 @@ mod tests {
     fn of(text: &str) -> (u64, u64, Vec<String>, Vec<String>) {
         let source = Source::new(text);
         let lexed = source.tokens().expect("terminated");
-        let found = inventory(&lexed);
+        let found = inventory(&lexed).expect("within the budget");
         (found.tests, found.ignores, found.gates, found.modules)
     }
 
@@ -343,11 +268,11 @@ mod tests {
         );
         let lexed = source.tokens().expect("terminated");
 
-        let found = inventory(&lexed);
+        let found = inventory(&lexed).expect("within the budget");
 
         assert_eq!(
             (found.tests, found.conditional),
-            (1, vec!["cfg ( a ) & cfg ( b )".to_owned()]),
+            (1, BTreeMap::from([("cfg ( a ) & cfg ( b )".to_owned(), 1)])),
             "`t` is under both, outermost first; `u` is after `m` ends"
         );
     }
@@ -357,11 +282,53 @@ mod tests {
         let source = Source::new("f!(x, [y]); fn g() -> [u8; 2] { [0; 2] } z");
         let lexed = source.tokens().expect("terminated");
         let rest = lexed.get(10..).expect("the call is ten tokens");
+        let mut left = usize::MAX;
 
         assert_eq!(
-            (item_length(&lexed), item_length(rest)),
-            (10, 18),
+            (item_length(&lexed, &mut left), item_length(rest, &mut left)),
+            (Ok(10), Ok(18)),
             "a `;` in brackets does not end an item; the body does"
+        );
+    }
+
+    #[test]
+    fn an_item_scan_past_its_budget_is_refused() {
+        let source = Source::new("a b c d e f g;");
+        let lexed = source.tokens().expect("terminated");
+        let mut left = 3;
+
+        assert_eq!(
+            item_length(&lexed, &mut left),
+            Err(Refused),
+            "the `;` is past three tokens"
+        );
+    }
+
+    #[test]
+    fn conditions_nested_past_the_depth_are_refused() {
+        let nested = "#[cfg(a)] x\n".repeat(MAX_DEPTH.saturating_add(1));
+        let flat = "#[cfg(a)] fn x() {}\n".repeat(MAX_DEPTH.saturating_add(1));
+        let refused = |text: &str| {
+            let source = Source::new(text);
+            inventory(&source.tokens().expect("terminated")).err()
+        };
+
+        assert_eq!(
+            (refused(&nested), refused(&flat)),
+            (Some(Refused), None),
+            "an item without `;` or `{{` runs to the end, so the next nests in it"
+        );
+    }
+
+    #[test]
+    fn condition_text_past_its_budget_is_refused() {
+        let long = format!("#[cfg({})] fn x() {{}}\n", "a".repeat(MAX_CONDITION_BYTES));
+        let source = Source::new(&long);
+
+        assert_eq!(
+            inventory(&source.tokens().expect("terminated")),
+            Err(Refused),
+            "one condition longer than the budget"
         );
     }
 

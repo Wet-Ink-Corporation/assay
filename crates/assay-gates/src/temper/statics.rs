@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::head::is_rust;
-use super::inventory::{Inventory, inventory};
+use super::inventory::{Inventory, Refused, inventory};
 use super::layout::module_files;
 use super::tokens::Source;
 use crate::revision::{EntryKind, TreeEntry};
@@ -138,8 +138,19 @@ pub(super) enum Loss {
     Gate(String),
     /// A `mod name;` no longer declared while a file it named still holds tests.
     Module(String),
-    /// The base file did not lex, so its tests could not be counted.
+    /// The base file did not lex or was not read, so its tests could not be counted.
     Unreadable,
+    /// The file asked for more work than the inventory's budget, so it was not counted.
+    TooComplex,
+}
+
+/// Why a file was not counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Uncounted {
+    /// Its bytes were not read, or it does not lex.
+    Unread,
+    /// It asked for more work than the inventory's budget.
+    Refused,
 }
 
 /// One file whose test inventory lost something, with the blob ids that bind an allowlist
@@ -153,14 +164,15 @@ pub(super) struct InventoryChange<'t> {
 }
 
 /// The inventory of the Rust file at `path` in `tree`: empty when there is no regular file
-/// there; `None` when its bytes were not read or it does not lex.
-fn counted(tree: &Tree<'_>, path: &str) -> Option<Inventory> {
+/// there.
+fn counted(tree: &Tree<'_>, path: &str) -> Result<Inventory, Uncounted> {
     if tree.object(path).is_none() {
-        return Some(Inventory::default());
+        return Ok(Inventory::default());
     }
-    let text = String::from_utf8_lossy(tree.bytes(path)?);
+    let text = String::from_utf8_lossy(tree.bytes(path).ok_or(Uncounted::Unread)?);
     let source = Source::new(&text);
-    source.tokens().ok().map(|tokens| inventory(&tokens))
+    let tokens = source.tokens().map_err(|_unlexable| Uncounted::Unread)?;
+    inventory(&tokens).map_err(|Refused| Uncounted::Refused)
 }
 
 /// Every Rust file whose test inventory lost something between `base` and `head`, by path.
@@ -182,12 +194,14 @@ pub(super) fn test_inventory<'t>(base: &Tree<'t>, head: &Tree<'t>) -> Vec<Invent
 }
 
 /// What the file at `path` lost between `base` and `head`. A head file that does not lex or
-/// was not read is already a `blind-spot`, which no waiver clears, so it adds no loss here.
+/// was not read is already a `blind-spot`, which no waiver clears, so it adds no loss here;
+/// one past the work budget is refused.
 fn losses(base: &Tree<'_>, head: &Tree<'_>, path: &str) -> Vec<Loss> {
     let (before, after) = match (counted(base, path), counted(head, path)) {
-        (Some(before), Some(after)) => (before, after),
-        (_, None) => return Vec::new(),
-        (None, Some(_)) => return vec![Loss::Unreadable],
+        (Ok(before), Ok(after)) => (before, after),
+        (_, Err(Uncounted::Refused)) => return vec![Loss::TooComplex],
+        (_, Err(Uncounted::Unread)) => return Vec::new(),
+        (Err(_), Ok(_)) => return vec![Loss::Unreadable],
     };
     let mut losses = Vec::new();
     if after.tests < before.tests {
@@ -202,12 +216,19 @@ fn losses(base: &Tree<'_>, head: &Tree<'_>, path: &str) -> Vec<Loss> {
             to: after.ignores,
         });
     }
-    losses.extend(added(&after.conditional, &before.conditional).map(Loss::Conditional));
     losses.extend(added(&before.gates, &after.gates).map(Loss::Gate));
     losses.extend(
         added(&after.modules, &before.modules)
             .filter(|name| still_tested(base, head, path, name))
             .map(Loss::Module),
+    );
+    losses.extend(added(&after.unplaced_modules, &before.unplaced_modules).map(Loss::Module));
+    losses.extend(
+        before
+            .conditional
+            .into_iter()
+            .filter(|(key, tests)| after.conditional.get(key).copied().unwrap_or(0) < *tests)
+            .map(|(key, _)| Loss::Conditional(key)),
     );
     losses
 }
@@ -236,8 +257,9 @@ const MAX_MODULE_FILES: usize = 1_000;
 
 /// Whether a file the dropped `mod name;` of the file at `from` compiled at base, directly or
 /// through the modules below it, is still in the head tree and held tests at base (or could
-/// not be counted there). Every place rustc could look is followed, and a walk past
-/// [`MAX_MODULE_FILES`] counts as tested.
+/// not be counted there). Every place rustc could look is followed; a file with a module
+/// reference this check cannot follow by name, and a walk past [`MAX_MODULE_FILES`], count as
+/// tested.
 fn still_tested(base: &Tree<'_>, head: &Tree<'_>, from: &str, name: &str) -> bool {
     let mut queue: Vec<String> = module_files(from, name).into();
     let mut seen: HashSet<String> = HashSet::new();
@@ -248,9 +270,12 @@ fn still_tested(base: &Tree<'_>, head: &Tree<'_>, from: &str, name: &str) -> boo
         if seen.len() >= MAX_MODULE_FILES {
             return true;
         }
-        let Some(found) = counted(base, &file) else {
+        let Ok(found) = counted(base, &file) else {
             return true;
         };
+        if !found.unplaced_modules.is_empty() {
+            return true;
+        }
         let tested = found.tests > 0 || !found.conditional.is_empty();
         if tested && head.entry(&file).is_some() {
             return true;

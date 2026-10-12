@@ -100,8 +100,7 @@ pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> 
         if !changed {
             continue;
         }
-        // A deleted manifest is compared with an empty head: every switch it set is gone.
-        let switches = changed_switches(before.as_ref(), after.as_ref().unwrap_or(&empty));
+        let switches = changed_switches(before.as_ref(), after.as_ref());
         if !switches.is_empty() {
             found.switches.push(SwitchChange {
                 path,
@@ -120,7 +119,7 @@ pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> 
 }
 
 /// Whether `manifest` declares a package (`[package]`, or the legacy `[project]`).
-fn is_package(manifest: &Table) -> bool {
+pub(super) fn is_package(manifest: &Table) -> bool {
     manifest.contains_key("package") || manifest.contains_key("project")
 }
 

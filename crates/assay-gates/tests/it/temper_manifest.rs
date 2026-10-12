@@ -379,6 +379,68 @@ fn a_workspace_membership_change_fails() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn a_removed_path_dependency_fails() -> Result<(), Box<dyn Error>> {
+    let root_dependency = "\n[workspace.dependencies]\nhelper = { path = \"crates/helper\" }\n";
+    for (table, root) in [
+        ("[dependencies]", WORKSPACE.to_owned()),
+        ("[dev-dependencies]", WORKSPACE.to_owned()),
+        ("[build-dependencies]", WORKSPACE.to_owned()),
+        (
+            "[target.'cfg(unix)'.dev-dependencies]",
+            WORKSPACE.to_owned(),
+        ),
+        ("", format!("{WORKSPACE}{root_dependency}")),
+    ] {
+        let mut pr = pr(WORKSPACE, CRATE)?;
+        let changed = if table.is_empty() {
+            pr.set(Revision::Base, ROOT, &root);
+            ROOT
+        } else {
+            let member = format!("{CRATE}\n{table}\nhelper = {{ path = \"../helper\" }}\n");
+            pr.set(Revision::Base, MEMBER, &member);
+            MEMBER
+        };
+
+        let outcome = pr.outcome()?;
+
+        assert_eq!(
+            outcome,
+            (FAILED, vec![seen("manifest-switch", changed)]),
+            "the helper and its tests leave the graph: {table}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn an_added_path_dependency_passes() -> Result<(), Box<dyn Error>> {
+    let member = format!("{CRATE}\n[dependencies]\nhelper = {{ path = \"../helper\" }}\n");
+    let mut pr = pr(WORKSPACE, &member)?;
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(outcome, (PASSED, Vec::new()), "nothing left the graph");
+    Ok(())
+}
+
+#[test]
+fn a_deleted_package_manifest_fails_whatever_it_set() -> Result<(), Box<dyn Error>> {
+    let bare = "[package]\nname = \"x\"\n\n[lints]\nworkspace = true\n";
+    let mut pr = pr(WORKSPACE, bare)?;
+    pr.set(Revision::Base, MEMBER, bare);
+    pr.remove(Revision::Head, MEMBER);
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![seen("manifest-switch", MEMBER)]),
+        "the package and its tests are gone"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_deleted_manifest_removes_its_switches() -> Result<(), Box<dyn Error>> {
     let member = format!("{CRATE}\n[lib]\nharness = false\n");
     let mut pr = pr(WORKSPACE, &member)?;

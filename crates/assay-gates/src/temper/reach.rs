@@ -260,12 +260,22 @@ fn path_attribute(after_hash: &[Lexed<'_>]) -> PathAttribute {
     }
 }
 
-/// `tokens` past any outer attributes (`#[..]`) and a visibility (`pub`, `pub(..)`).
+/// Most outer attributes skipped after a `#[path]` before its item is not looked for, so a run
+/// of attributes is not re-walked from each one (H-13); past it the `#[path]` is unplaced.
+const MAX_SKIPPED_ATTRIBUTES: usize = 64;
+
+/// `tokens` past any outer attributes (`#[..]`, at most [`MAX_SKIPPED_ATTRIBUTES`]; nothing
+/// past more) and a visibility (`pub`, `pub(..)`).
 fn past_attributes_and_visibility<'t, 'a>(tokens: &'t [Lexed<'a>]) -> &'t [Lexed<'a>] {
     let mut rest = tokens;
+    let mut skipped = 0_usize;
     while let [hash, open, inner @ ..] = rest {
         if hash.token != Token::Punct('#') || open.token != Token::Punct('[') {
             break;
+        }
+        skipped = skipped.saturating_add(1);
+        if skipped > MAX_SKIPPED_ATTRIBUTES {
+            return &[];
         }
         rest = inner
             .get(group(inner).len().saturating_add(1)..)
@@ -328,6 +338,19 @@ mod tests {
                 (Include::Code, "c.rs".to_owned())
             ],
             "only the top level's module directory is known"
+        );
+    }
+
+    #[test]
+    fn a_path_past_too_many_attributes_is_uncertain() {
+        let many = "#[a]\n".repeat(MAX_SKIPPED_ATTRIBUTES.saturating_add(1));
+        let few = "#[a]\n".repeat(MAX_SKIPPED_ATTRIBUTES);
+        let reach = |attributes: &str| of(&format!("#[path = \"x.rs\"]\n{attributes}mod x;\n"));
+
+        assert_eq!(
+            (reach(&many).uncertain, reach(&few).modules),
+            (true, vec![("x".to_owned(), Some("x.rs".to_owned()))]),
+            "the item is not looked for past the cap"
         );
     }
 

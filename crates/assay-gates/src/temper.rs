@@ -334,7 +334,14 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             .filter(|entry| head::needs_bytes(entry))
             .collect();
         let blobs = self.revisions.read(&wanted).map_err(failed)?;
-        Ok(HeadTree::new(entries, blobs))
+        HeadTree::new(entries, blobs).map_err(|count| TemperError::Malformed {
+            revision: Revision::Head,
+            path: TREE,
+            detail: format!(
+                "the reader returned {} blobs for {} files",
+                count.read, count.asked
+            ),
+        })
     }
 
     /// Step 4's base tree: every entry, with the bytes of its manifests and of the Rust files

@@ -56,6 +56,7 @@ fn describe(loss: &Loss) -> String {
         Loss::Gate(text) => format!("new condition `{}`", plain(text)),
         Loss::Module(name) => format!("module `{}` no longer declared", plain(name)),
         Loss::Unreadable => "its base text could not be counted".to_owned(),
+        Loss::TooComplex => "its text asks for more work than the count's budget".to_owned(),
     }
 }
 

@@ -279,6 +279,41 @@ fn a_deletion_is_admitted_without_a_head_blob() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+fn a_pathological_nest_of_conditions_is_refused() -> Result<(), Box<dyn Error>> {
+    let nest = "#[cfg(a)] x\n#[test] y\n".repeat(3_000);
+    let mut pr = changed(&nest, &format!("{nest}// changed\n"))?;
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![inventory(FILE)]),
+        "past the work budget the head is not counted, so it fails"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_dropped_module_this_check_cannot_place_is_refused() -> Result<(), Box<dyn Error>> {
+    let lib = "crates/x/src/lib.rs";
+    for base in [
+        "#[path = \"t.rs\"]\nmod tests;\n",
+        "fn f() {\n    mod inner;\n}\n",
+    ] {
+        let mut pr = Pr::new()?;
+        pr.both(MANIFEST.0, MANIFEST.1);
+        pr.set(Revision::Base, lib, base);
+        pr.set(Revision::Head, lib, "");
+        pr.both("crates/x/src/t.rs", ONE_TEST);
+
+        let outcome = pr.outcome()?;
+
+        assert_eq!(outcome, (FAILED, vec![inventory(lib)]), "{base}");
+    }
+    Ok(())
+}
+
 /// A conditional test, then an unconditional one.
 const CONDITIONAL: &str = "#[cfg(unix)]\n#[test]\nfn a() {}\n\n#[test]\nfn b() {}\n";
 

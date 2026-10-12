@@ -407,6 +407,47 @@ fn code_read_under_another_name_is_scanned_too() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn a_closure_past_its_work_budget_makes_everything_exec_surface() -> Result<(), Box<dyn Error>> {
+    let build = "include!(\"x.in\");\n".repeat(40_000);
+
+    let found = reach(&[
+        ("Cargo.toml", &package("")),
+        ("build.rs", &build),
+        ("x.in", "fn x() {}\n"),
+    ])?;
+
+    assert_eq!(
+        found.exec_roots,
+        [ExecRoot::Everything],
+        "one file naming too much is refused, not walked"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cargo_target_that_is_not_rs_is_an_unplaced_include_target() -> Result<(), Box<dyn Error>> {
+    for extra in [
+        "\n[lib]\npath = \"lib.txt\"\n",
+        "\n[[bin]]\nname = \"b\"\npath = \"main.in\"\n",
+    ] {
+        let found = reach(&[
+            ("crates/x/Cargo.toml", &package(extra)),
+            (
+                "crates/x/lib.txt",
+                "const D: &str = include_str!(\"d.md\");\n",
+            ),
+            ("crates/x/main.in", "fn main() {}\n"),
+        ])?;
+
+        assert!(
+            found.include_targets.contains(&String::new()),
+            "rustc compiles a file the Rust walk does not read: {extra}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn a_crate_without_build_time_code_has_no_exec_roots() -> Result<(), Box<dyn Error>> {
     let found = reach(&[
         ("crates/x/Cargo.toml", &package("")),
