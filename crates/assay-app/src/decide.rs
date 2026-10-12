@@ -89,6 +89,28 @@ pub(crate) struct RunRecord {
     pub(crate) review_files: Vec<ArtifactDocument>,
 }
 
+impl RunRecord {
+    /// The record of a run whose plan is `plan`, whose authentic gate documents are `gates` and
+    /// whose review documents were all fetched, in the order `request` lists them.
+    fn new(
+        request: &DecideRequest,
+        bundle_artifact: String,
+        plan: RunDocument,
+        gates: Vec<RunDocument>,
+    ) -> Self {
+        let mut documents = Vec::with_capacity(gates.len().saturating_add(1));
+        documents.push(plan);
+        documents.extend(gates);
+        Self {
+            bundle_artifact,
+            documents,
+            // `review_documents` fetched each of these in order, so the two line up; the
+            // record owns its copy of the names and digests.
+            review_files: request.review.documents.clone(),
+        }
+    }
+}
+
 /// An artifact document whose bytes hash to its producing job's output digest.
 #[derive(Debug)]
 pub(crate) struct RunDocument {
@@ -290,6 +312,8 @@ struct Reader<'r, O, A> {
     objects: &'r O,
     fetcher: Fetcher<'r, A>,
     validator: &'r ContractValidator,
+    /// Every authentic gate document read, valid or not, for the bundle.
+    kept: Vec<RunDocument>,
 }
 
 /// [`Halt`] over `ports`' error types.
@@ -408,6 +432,7 @@ fn run<O: PullRequestObjects, S: PullRequestState, A: RunArtifacts>(
         objects: ports.objects,
         fetcher: Fetcher::new(ports.artifacts),
         validator,
+        kept: Vec::new(),
     };
     let plan = recompute::authenticate_plan(request, &mut reader)?;
     let pulls = state
@@ -422,15 +447,7 @@ fn run<O: PullRequestObjects, S: PullRequestState, A: RunArtifacts>(
         document,
         tier,
     } = plan;
-    let mut documents = vec![document];
-    documents.extend(gates.documents);
-    let record = RunRecord {
-        bundle_artifact,
-        documents,
-        // `review_documents` fetched each of these in order, so the two line up; the run's
-        // record owns its copy of the names and digests.
-        review_files: request.review.documents.clone(),
-    };
+    let record = RunRecord::new(request, bundle_artifact, document, reader.kept);
     Ok(Authentication::Authenticated(Box::new(AuthenticatedRun {
         run_key: recomputed.run_key,
         artifact_names,

@@ -228,10 +228,8 @@ pub type PublishFailure<F, L> =
     PublishError<<F as VerdictForge>::Error, <L as PublishLedger>::Error>;
 
 /// What [`publish`] returns over `ports`' error types.
-pub type PublishOutcome<F, L, B> = Result<
-    Published<<L as PublishLedger>::Error, <B as BundleStore>::Error>,
-    PublishFailure<F, L>,
->;
+pub type PublishOutcome<F, L, B> =
+    Result<Published<<L as PublishLedger>::Error, <B as BundleStore>::Error>, PublishFailure<F, L>>;
 
 /// Publishes `publication`'s verdict through `ports`.
 ///
@@ -269,7 +267,9 @@ pub fn publish<F: VerdictForge, L: PublishLedger, B: BundleStore>(
     let target = &publication.target;
     match publication.verdict {
         Verdict::Silent => Ok(Published::Nothing),
-        Verdict::Refused(refusal) => write::write(target, ports, Pending::Refused(refused(target, refusal))),
+        Verdict::Refused(refusal) => {
+            write::write(target, ports, Pending::Refused(refused(target, refusal)))
+        }
         Verdict::Decided(decided) => {
             let inputs = decided.inputs;
             if inputs.decision_key.parse::<Sha256Digest>().is_err() {
@@ -317,15 +317,15 @@ fn refused(target: &Target<'_>, refusal: &Refusal) -> CheckUpdate {
 /// The key a refusal is published under, `sha256:<hex>` over the run and the reason: the same
 /// refusal of the same run has the same key.
 fn refusal_key(run_uid: RunUid, reason: &Reason) -> String {
-    let repo_id = run_uid.repo_id.to_string();
-    let run_id = run_uid.run_id.to_string();
-    let run_attempt = run_uid.run_attempt.to_string();
+    let repository = run_uid.repo_id.to_string();
+    let workflow_run = run_uid.run_id.to_string();
+    let attempt = run_uid.run_attempt.to_string();
     ContentHash::of_files([
         ("refusal", reason.code.code().as_bytes()),
         ("detail", reason.detail.as_bytes()),
-        ("repo_id", repo_id.as_bytes()),
-        ("run_id", run_id.as_bytes()),
-        ("run_attempt", run_attempt.as_bytes()),
+        ("repo_id", repository.as_bytes()),
+        ("run_id", workflow_run.as_bytes()),
+        ("run_attempt", attempt.as_bytes()),
     ])
     .to_string()
 }

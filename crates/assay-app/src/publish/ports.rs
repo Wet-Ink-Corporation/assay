@@ -20,8 +20,11 @@ pub trait VerdictForge {
     /// # Errors
     ///
     /// [`Self::Error`] when the check runs cannot be listed.
-    fn find_check(&self, head: &CommitId, name: &CheckName)
-    -> Result<Option<CheckRun>, Self::Error>;
+    fn find_check(
+        &self,
+        head: &CommitId,
+        name: &CheckName,
+    ) -> Result<Option<CheckRun>, Self::Error>;
 
     /// Overwrites the check's status, conclusion, output and `external_id` with `update`. The
     /// update carries no annotations, so none ever accumulate on the verdict check (R3-11).
@@ -72,8 +75,11 @@ pub trait PublishLedger {
     /// # Errors
     ///
     /// [`Self::Error`] when the ledger cannot be reached.
-    fn acquire(&self, repo_id: NonZeroU64, head: &CommitId)
-    -> Result<Option<Self::Lease>, Self::Error>;
+    fn acquire(
+        &self,
+        repo_id: NonZeroU64,
+        head: &CommitId,
+    ) -> Result<Option<Self::Lease>, Self::Error>;
 
     /// Releases the lock `lease` holds, by compare-and-set: a lock another writer took after this
     /// one expired is never released.

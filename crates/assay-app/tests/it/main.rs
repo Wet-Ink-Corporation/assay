@@ -17,6 +17,12 @@ mod plan;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod plan_fakes;
 mod prompt_bundle;
+mod publish;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod publish_fakes;
+mod publish_persist;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod publish_support;
 mod read_limits;
 mod redaction;
 mod self_trust;

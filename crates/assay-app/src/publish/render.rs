@@ -59,30 +59,23 @@ pub(super) fn title(conclusion: Conclusion, reasons: &[Reason]) -> String {
 /// `output.summary`: conclusion, tier and classes, AEU, counts, reasons, degraded roles, the
 /// reasons digest and how to respond.
 pub(super) fn summary(summary: &Summary<'_>) -> String {
-    let mut lines = vec![format!("**assay: {}**", summary.conclusion.code()), String::new()];
+    let mut lines = vec![
+        format!("**assay: {}**", summary.conclusion.code()),
+        String::new(),
+    ];
     if let Some(facts) = &summary.facts {
-        let classes: Vec<&str> = facts.classes.iter().map(|class| class.code()).collect();
-        let classes = if classes.is_empty() {
-            "none".to_owned()
-        } else {
-            classes.join(", ")
-        };
-        let counts = facts.counts;
-        lines.push(format!(
-            "Tier: {} · Classes: {classes} · AEU: {}",
-            facts.tier.code(),
-            facts.cost
-        ));
-        lines.push(format!(
-            "Findings: {} blocker · {} major · {} minor · {} nit",
-            counts.blocker, counts.major, counts.minor, counts.nit
-        ));
-        lines.push(String::new());
+        lines.extend(header(facts));
     }
     lines.push("Reasons:".to_owned());
     let reasons = summary.reasons.iter().map(|reason| {
         let fp = reason.fp.map(|fp| format!(" ({fp})")).unwrap_or_default();
-        [reason.code.code(), ": ", reason.detail.as_str(), fp.as_str()].concat()
+        [
+            reason.code.code(),
+            ": ",
+            reason.detail.as_str(),
+            fp.as_str(),
+        ]
+        .concat()
     });
     block(&mut lines, summary.reasons.len(), reasons);
     if let Some(facts) = &summary.facts {
@@ -119,6 +112,29 @@ pub(super) fn summary(summary: &Summary<'_>) -> String {
         .map(str::to_owned),
     );
     lines.join("\n")
+}
+
+/// The summary's first facts: tier, classes and AEU, the finding counts, then a blank line.
+fn header(facts: &Facts<'_>) -> [String; 3] {
+    let classes: Vec<&str> = facts.classes.iter().map(|class| class.code()).collect();
+    let classes = if classes.is_empty() {
+        "none".to_owned()
+    } else {
+        classes.join(", ")
+    };
+    let counts = facts.counts;
+    [
+        format!(
+            "Tier: {} · Classes: {classes} · AEU: {}",
+            facts.tier.code(),
+            facts.cost
+        ),
+        format!(
+            "Findings: {} blocker · {} major · {} minor · {} nit",
+            counts.blocker, counts.major, counts.minor, counts.nit
+        ),
+        String::new(),
+    ]
 }
 
 /// `output.text`: the ledger state the check projects.
@@ -222,7 +238,11 @@ mod tests {
 
         let lines = rendered(&items);
 
-        assert_eq!(lines.len(), MAX_ITEMS + 3, "fence, the cap, fence, the count");
+        assert_eq!(
+            lines.len(),
+            MAX_ITEMS + 3,
+            "fence, the cap, fence, the count"
+        );
         assert_eq!(
             lines.last().map(String::as_str),
             Some("and 1 more, listed in the decision.")
@@ -245,7 +265,10 @@ mod tests {
     fn an_item_past_the_cap_is_clipped_and_marked() {
         let item = "é".repeat(MAX_ITEM_CHARS + 1);
 
-        assert_eq!(clean(&item), ["é".repeat(MAX_ITEM_CHARS), "…".to_owned()].concat());
+        assert_eq!(
+            clean(&item),
+            ["é".repeat(MAX_ITEM_CHARS), "…".to_owned()].concat()
+        );
     }
 
     #[test]

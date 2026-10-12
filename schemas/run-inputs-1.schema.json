@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:assay:schema:run-inputs:1",
+  "title": "assay.run-inputs/1",
+  "description": "The bundle `decide` persists as `run-inputs.json` in its own artifact, the one the evidence pointer's sha256 names (docs/architecture/02-architecture.md §5, 03-contracts.md §6a): every authenticated input document as its job published it, the decision inputs, the decision and the run's events. Unknown fields are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "run_uid", "evidence_key", "documents", "inputs", "rubric_version", "decision", "events"
+  ],
+  "properties": {
+    "schema": { "const": "assay.run-inputs/1" },
+    "run_uid": {
+      "description": "The workflow run that decided, (repo_id, run_id, run_attempt) (03 §4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_id", "run_id", "run_attempt"],
+      "properties": {
+        "repo_id": { "type": "integer", "minimum": 1 },
+        "run_id": { "type": "integer", "minimum": 1 },
+        "run_attempt": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "evidence_key": { "$ref": "#/$defs/nonEmpty" },
+    "documents": {
+      "description": "Each authenticated document: plan's run.json, then the gate documents in job and plugin order, then the review documents in the order reported.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["job", "file", "sha256", "text"],
+        "properties": {
+          "job": { "enum": ["plan", "gates-static", "gates-lint", "gates-test", "review"] },
+          "file": { "$ref": "#/$defs/nonEmpty" },
+          "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "text": { "type": "string" }
+        }
+      }
+    },
+    "inputs": {
+      "description": "The domain's DecisionInputs exactly as `decide` judged them (validated by the domain's serde types on read).",
+      "type": "object"
+    },
+    "rubric_version": { "$ref": "#/$defs/nonEmpty" },
+    "decision": {
+      "description": "The decision, an assay.decision/1 document (validated against its own schema on read).",
+      "type": "object"
+    },
+    "events": {
+      "description": "The run's events (assay.event/1), ordered by job, then index.",
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 }
+  }
+}

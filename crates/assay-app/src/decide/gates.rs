@@ -27,8 +27,6 @@ use crate::plan::{ArtifactJob, PullRequestObjects};
 pub(super) struct Gates {
     pub(super) reports: Vec<GateReport>,
     pub(super) findings: Vec<assay_domain::Finding>,
-    /// Every gate document whose bytes matched their job's digest, valid or not, for the bundle.
-    pub(super) documents: Vec<RunDocument>,
 }
 
 /// One scheduled gate before its findings are anchored.
@@ -60,7 +58,6 @@ pub(super) fn gates<O: PullRequestObjects, S, A: RunArtifacts>(
         (GateJob::Build(BuildJob::Test), &request.gates_test),
     ];
     let mut pending = Vec::new();
-    let mut documents = Vec::new();
     for (job, outputs) in jobs {
         let plugins: Vec<&Plugin> = plan
             .recomputed
@@ -92,9 +89,7 @@ pub(super) fn gates<O: PullRequestObjects, S, A: RunArtifacts>(
                         artifact,
                         digest: document,
                     };
-                    let (state, authentic) = documented(&reported, plugin, reader)?;
-                    documents.extend(authentic);
-                    state
+                    documented(&reported, plugin, reader)?
                 }
                 (Some(Reported::Error(error)), _) => State::Settled(errored(&error.detail())),
                 (Some(Reported::Concluded { .. }), None) => {
@@ -112,9 +107,7 @@ pub(super) fn gates<O: PullRequestObjects, S, A: RunArtifacts>(
             pending.push(Pending { plugin, state });
         }
     }
-    let mut gates = anchored(request, plan, reader.objects, pending)?;
-    gates.documents = documents;
-    Ok(gates)
+    anchored(request, plan, reader.objects, pending)
 }
 
 /// What a gate's job reported with a document: its conclusion, the job's artifact and the
@@ -125,13 +118,13 @@ struct Report<'r> {
     digest: &'r Sha256Digest,
 }
 
-/// The state of a gate whose job `reported` a document, and the document when its bytes are the
-/// published ones. A document whose bytes are not refuses the run (F18).
+/// The state of a gate whose job `reported` a document. A document whose bytes are not the
+/// published ones refuses the run (F18); authentic ones, valid or not, are kept for the bundle.
 fn documented<O: PullRequestObjects, S, A: RunArtifacts>(
     reported: &Report<'_>,
     plugin: &Plugin,
     reader: &mut Reader<'_, O, A>,
-) -> Result<(State, Option<RunDocument>), Halt<O::Error, S, A::Error>> {
+) -> Result<State, Halt<O::Error, S, A::Error>> {
     let file = format!("{}.json", plugin.name());
     let fetched = reader
         .fetcher
@@ -142,21 +135,21 @@ fn documented<O: PullRequestObjects, S, A: RunArtifacts>(
             let job = reported.artifact.job;
             return Err(Refusal::ArtifactDigest { job, file }.into());
         }
-        Fetch::Missing => return Ok((State::Settled(errored("artifact-missing")), None)),
+        Fetch::Missing => return Ok(State::Settled(errored("artifact-missing"))),
         Fetch::TooLarge => {
             let detail = GateError::DocumentTooLarge.detail();
-            return Ok((State::Settled(errored(&detail)), None));
+            return Ok(State::Settled(errored(&detail)));
         }
     };
     let state = read_document(&bytes, plugin, reported.conclusion, reader.validator);
-    let document = RunDocument {
+    reader.kept.push(RunDocument {
         job: reported.artifact.job,
         file,
         // The bundle records the digest beside the bytes; the request keeps its own.
         digest: reported.digest.clone(),
         bytes,
-    };
-    Ok((state, Some(document)))
+    });
+    Ok(state)
 }
 
 /// The job's reports by plugin, refusing outputs that name a plugin base config does not

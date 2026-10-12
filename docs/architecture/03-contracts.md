@@ -187,6 +187,10 @@ Envelope `{schema, job, idx, ts, run_key, run_uid, stage, kind, data}`. Each job
 
 These streams support audit, metrics and the cost ledger (`06 §1`). They are an audit record, not an event-sourced aggregate (the domain `Decider` pattern applies inside `decide`, not across jobs). The verifier's live reject rate (QA-12) is computed from `FindingVerified`.
 
+## 6a. Persisted run inputs (`assay.run-inputs/1`)
+
+`{schema, run_uid, evidence_key, documents[{job: plan|gates-static|gates-lint|gates-test|review, file, sha256, text}], inputs, rubric_version, decision, events[]}`, written by `decide` as `run-inputs.json` in its own artifact (`02 §5`). `documents` holds every input document Z4 authenticated, as UTF-8 text exactly as its job published it and with the digest that job published: the plan's `run.json`, then each gate document in job and plugin order, then the review documents in the order reported (a document that is not UTF-8 is a persist failure, not an escape). `inputs` is the domain's `DecisionInputs` exactly as decided, `decision` an `assay.decision/1` document, `events` the run's events ordered by `(job, idx)`. A bundle over 96 MiB is not written (persist failure). The GitHub state snapshot (approvals, command records, eligibility lists, pusher set) is added by #58 as a new field and therefore a new version.
+
 ## 7. Model runner port
 
 ```rust
