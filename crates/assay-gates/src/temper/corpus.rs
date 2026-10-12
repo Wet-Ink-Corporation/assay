@@ -286,7 +286,7 @@ fn workspace_tree() -> Result<HeadTree, Failure> {
         }
         entries.push(entry);
     }
-    Ok(HeadTree::new(entries, blobs))
+    HeadTree::new(entries, blobs).map_err(|count| format!("{count:?}").into())
 }
 
 #[test]

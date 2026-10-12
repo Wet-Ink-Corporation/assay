@@ -60,10 +60,16 @@ impl Spot {
     /// Line 1 of `file`, quoting `evidence` that the adapter wrote (03 §2.1: gate evidence is
     /// synthesised by the adapter).
     pub(super) fn synthesised(file: &str, evidence: &str) -> Self {
+        Self::synthesised_on(file, Side::Right, evidence)
+    }
+
+    /// Line 1 of `file` on `side` (`Left` for a file only base holds), quoting `evidence` that
+    /// the adapter wrote.
+    pub(super) fn synthesised_on(file: &str, side: Side, evidence: &str) -> Self {
         Self {
             file: file.to_owned(),
             line: NonZeroU64::MIN,
-            side: Side::Right,
+            side,
             evidence: clip(evidence, EVIDENCE_CHARS),
         }
     }

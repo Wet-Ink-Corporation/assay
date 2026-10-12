@@ -12,9 +12,23 @@
 //! base = '{"allFeatures": true, "doc": true, "scan": true, "stepTimeoutSec": 900}'
 //! head = '{"allFeatures": true, "doc": true, "scan": true, "stepTimeoutSec": 1200}'
 //! reason = "why the gate changes"
+//!
+//! [[test_inventory]]            # every test-inventory loss of one file, between two blobs
+//! path = "crates/x/tests/it.rs"
+//! base = "<blob id at base>"    # omitted when the file is absent at base
+//! head = "<blob id at head>"    # omitted when the file is absent at head
+//! reason = "why the tests go"
+//!
+//! [[manifest_switch]]           # every manifest switch of one `Cargo.toml`, between two blobs
+//! path = "crates/x/Cargo.toml"
+//! base = "<blob id at base>"
+//! head = "<blob id at head>"
+//! reason = "why the switch changes"
 //! ```
 //!
-//! A `gate_config` entry without `base` admits adding the key; none admits removing one.
+//! A `gate_config` entry without `base` admits adding the key; none admits removing one. A
+//! `test_inventory` or `manifest_switch` entry binds the exact pair of blobs, so it admits that
+//! one change and cannot be replayed for another.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -31,6 +45,69 @@ struct FileDto {
     exception: Vec<ExceptionDto>,
     #[serde(default)]
     gate_config: Vec<GateConfigDto>,
+    #[serde(default)]
+    test_inventory: Vec<BlobChangeDto>,
+    #[serde(default)]
+    manifest_switch: Vec<BlobChangeDto>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BlobChangeDto {
+    path: String,
+    #[serde(default)]
+    base: Option<String>,
+    #[serde(default)]
+    head: Option<String>,
+    reason: String,
+}
+
+/// One admitted change of one file: its path and its exact blob ids at base and head (`None`:
+/// absent on that side).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BlobChange {
+    path: String,
+    base: Option<String>,
+    head: Option<String>,
+}
+
+impl BlobChange {
+    /// Whether this is the change of `path` from blob `base` to blob `head`.
+    fn is(&self, path: &str, base: Option<&str>, head: Option<&str>) -> bool {
+        self.path == path && self.base.as_deref() == base && self.head.as_deref() == head
+    }
+
+    /// Validates one `table` entry: a reason, at least one side, and git object ids.
+    fn parse(entry: BlobChangeDto, table: &str) -> Result<Self, String> {
+        reasoned(&entry.reason, table)?;
+        if entry.base.is_none() && entry.head.is_none() {
+            return Err(format!(
+                "a [[{table}]] entry for `{}` names neither a base nor a head blob",
+                entry.path
+            ));
+        }
+        for id in [&entry.base, &entry.head].into_iter().flatten() {
+            if !is_object_id(id) {
+                return Err(format!(
+                    "a [[{table}]] entry for `{}` has `{id}`, not a git object id",
+                    entry.path
+                ));
+            }
+        }
+        Ok(Self {
+            path: entry.path,
+            base: entry.base,
+            head: entry.head,
+        })
+    }
+}
+
+/// Whether `id` is a git object id: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits.
+fn is_object_id(id: &str) -> bool {
+    matches!(id.len(), 40 | 64)
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +143,8 @@ pub(super) struct Allowlist {
     /// (file, lint) pairs.
     exceptions: Vec<(String, String)>,
     gate_config: Vec<ConfigChange>,
+    test_inventory: Vec<BlobChange>,
+    manifest_switch: Vec<BlobChange>,
 }
 
 impl Allowlist {
@@ -87,10 +166,39 @@ impl Allowlist {
             .into_iter()
             .map(ConfigChange::try_from)
             .collect::<Result<_, String>>()?;
+        let blobs = |entries: Vec<BlobChangeDto>, table: &str| {
+            entries
+                .into_iter()
+                .map(|entry| BlobChange::parse(entry, table))
+                .collect::<Result<Vec<_>, String>>()
+        };
         Ok(Self {
             exceptions,
             gate_config,
+            test_inventory: blobs(dto.test_inventory, "test_inventory")?,
+            manifest_switch: blobs(dto.manifest_switch, "manifest_switch")?,
         })
+    }
+
+    /// Whether base admits the test-inventory losses of `path` changing from blob `base` to
+    /// blob `head` (`None`: absent).
+    pub(super) fn admits_inventory(
+        &self,
+        path: &str,
+        base: Option<&str>,
+        head: Option<&str>,
+    ) -> bool {
+        self.test_inventory
+            .iter()
+            .any(|change| change.is(path, base, head))
+    }
+
+    /// Whether base admits the manifest switches of `path` changing from blob `base` to blob
+    /// `head` (`None`: absent).
+    pub(super) fn admits_switch(&self, path: &str, base: Option<&str>, head: Option<&str>) -> bool {
+        self.manifest_switch
+            .iter()
+            .any(|change| change.is(path, base, head))
     }
 
     /// Whether base admits an `#[expect(lint, ..)]` in `file`.

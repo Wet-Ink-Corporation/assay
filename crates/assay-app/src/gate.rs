@@ -8,6 +8,8 @@
 
 mod job;
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 use thiserror::Error;
 
@@ -120,6 +122,23 @@ pub enum GateError {
     Skipped,
 }
 
+impl GateError {
+    /// The reason detail, `<detail>` of `gate-error:<detail>`.
+    pub(crate) fn detail(self) -> Cow<'static, str> {
+        match self {
+            Self::Exit(code) => Cow::Owned(format!("exit-{code}")),
+            Self::Signal => Cow::Borrowed("signal"),
+            Self::Timeout => Cow::Borrowed("timeout"),
+            Self::OutputTooLarge => Cow::Borrowed("output-too-large"),
+            Self::MissingDocument => Cow::Borrowed("missing-document"),
+            Self::DocumentTooLarge => Cow::Borrowed("document-too-large"),
+            Self::InvalidDocument => Cow::Borrowed("invalid-document"),
+            Self::NotRun => Cow::Borrowed("not-run"),
+            Self::Skipped => Cow::Borrowed("skipped"),
+        }
+    }
+}
+
 /// One gate's result in one job.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GateReport {
@@ -202,7 +221,7 @@ pub fn account_for_required(config: &PluginsConfig, job: GateJob, reports: &mut 
 }
 
 /// Whether `plugin` has work in `job`.
-fn scheduled(plugin: &Plugin, job: GateJob) -> bool {
+pub(crate) fn scheduled(plugin: &Plugin, job: GateJob) -> bool {
     match plugin.adapter() {
         Adapter::Temper { steps, .. } => match job {
             GateJob::Static | GateJob::Build(BuildJob::Lint) => true,
@@ -284,5 +303,33 @@ fn gate_conclusion(gate: &GateName, document: &Value) -> Option<Conclusion> {
         "fail" => Some(Conclusion::Fail),
         "neutral" => Some(Conclusion::Neutral),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GateError;
+
+    #[test]
+    fn a_gate_errors_detail_is_what_follows_gate_error_in_its_reason() {
+        let errors = [
+            GateError::Exit(3),
+            GateError::Signal,
+            GateError::Timeout,
+            GateError::OutputTooLarge,
+            GateError::MissingDocument,
+            GateError::DocumentTooLarge,
+            GateError::InvalidDocument,
+            GateError::NotRun,
+            GateError::Skipped,
+        ];
+
+        for error in errors {
+            assert_eq!(
+                format!("gate-error:{}", error.detail()),
+                error.to_string(),
+                "{error:?}"
+            );
+        }
     }
 }

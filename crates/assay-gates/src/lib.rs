@@ -29,4 +29,7 @@ pub use exec::{
     FINDINGS_OUT_VAR, ProcessSpec, Supervisor,
 };
 pub use revision::{EntryKind, Revision, RevisionFiles, TreeEntry};
-pub use temper::{TemperAdapter, TemperError, TemperPaths, TemperSettings, TemperSettingsError};
+pub use temper::{
+    CompileTimeReach, TemperAdapter, TemperError, TemperPaths, TemperSettings, TemperSettingsError,
+    compile_time_reach,
+};

@@ -15,6 +15,8 @@ assay-domain = { workspace = true }
 jsonschema = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
+# `decide` authenticates each artifact by its sha256 against the producing job's outputs (#56).
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 

@@ -329,11 +329,12 @@ fn exec_surface(lists: &Lists<'_>, changes: &ChangeSet) -> Vec<String> {
 /// Whether there is at least one file and every file is a regular file whose every side is
 /// allowlisted docs that no compile-time include names (compared ignoring ASCII case).
 fn docs_only(lists: &Lists<'_>, changes: &ChangeSet) -> bool {
+    // A target that is not canonical is one the scan could not place: it may name any file.
     let included = |path: &str| {
         changes
             .include_targets
             .iter()
-            .any(|target| target.eq_ignore_ascii_case(path))
+            .any(|target| !change::is_canonical(target) || target.eq_ignore_ascii_case(path))
     };
     !changes.files.is_empty()
         && changes.files.iter().all(|file| {

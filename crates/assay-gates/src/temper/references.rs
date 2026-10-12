@@ -80,7 +80,7 @@ fn macro_body_length(tail: &[Lexed<'_>]) -> Option<usize> {
         && matches!(name.token, Token::Ident { .. })
         && matches!(open.token, Token::Punct('(' | '[' | '{'));
     // `!`, the name, the opening bracket, the body and its closing bracket.
-    shaped.then(|| group(inner).len().saturating_add(4))
+    shaped.then(|| group(open, inner).len().saturating_add(4))
 }
 
 /// The reference a call of `name` (one of the include macros) makes, from the tokens after its
@@ -104,7 +104,7 @@ fn is_one_literal(after_bang: &[Lexed<'_>]) -> bool {
     if !matches!(open.token, Token::Punct('(' | '[' | '{')) {
         return false;
     }
-    match group(inner) {
+    match group(open, inner) {
         [only] => matches!(only.token, Token::Literal(_)),
         [only, comma] => {
             matches!(only.token, Token::Literal(_)) && comma.token == Token::Punct(',')

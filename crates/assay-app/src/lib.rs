@@ -8,7 +8,9 @@
 
 mod config;
 mod contract;
+mod decide;
 mod gate;
+mod golden;
 mod model_runner;
 mod plan;
 mod prompt_bundle;
@@ -24,10 +26,19 @@ pub use contract::{
     Contract, ContractSchemaError, ContractValidator, MAX_DOCUMENT_BYTES, ReadContractError,
     SchemaCompileError, SchemaViolation,
 };
+pub use decide::{
+    AdmitJob, ArtifactDocument, AuthenticatedRun, Authentication, CurrentPullRequest, DecideError,
+    DecideFailure, DecidePorts, DecideRequest, Fetched, GateJobOutputs, JobResult,
+    MAX_EVIDENCE_BYTES, MAX_EVIDENCE_FILES, MAX_FETCHED_BYTES, MAX_REVIEW_DOCUMENTS,
+    MAX_SYMBOL_BYTES, Moved, OutputsProblem, PlanJob, PlanMismatch, PlanRefusal, PullOnHead,
+    PullRequestState, Refusal, Reported, ReportedGate, ReviewJob, RunArtifacts, Snapshot,
+    StateStep, TierDegrade, Unreadable, UpstreamJob, authenticate,
+};
 pub use gate::{
     BuildJob, Conclusion, GateDocument, GateError, GateJob, GateOutcome, GateReport, GateRun,
     GateRunner, Termination, account_for_required, run_gates,
 };
+pub use golden::{CorpusEntry, CorpusEntryKind, GoldenReplay, SELF_GATE, replay_golden};
 pub use model_runner::{
     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
     PromptError, RateLimitObserved, RetryError, Structured, run_with_retry,

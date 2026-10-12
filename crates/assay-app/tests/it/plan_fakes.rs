@@ -66,6 +66,8 @@ impl Error for FakeError {}
 pub(crate) struct File {
     kind: EntryKind,
     bytes: Vec<u8>,
+    /// The size the listing reports, when it is not the blob's.
+    listed: Option<u64>,
 }
 
 /// A PR as data: two trees, keyed by commit, and the diff between them.
@@ -129,6 +131,23 @@ impl FakePr {
         self.put(commit, path, regular(bytes));
     }
 
+    /// Writes a regular file at `path` in `commit`'s tree whose listing reports `size` bytes.
+    pub(crate) fn write_listed_as(
+        &mut self,
+        (commit, path): (&str, &str),
+        bytes: &[u8],
+        size: u64,
+    ) {
+        self.put(
+            commit,
+            path,
+            File {
+                listed: Some(size),
+                ..regular(bytes)
+            },
+        );
+    }
+
     /// Puts a symlink to `target` at `path` in `commit`'s tree.
     pub(crate) fn symlink(&mut self, commit: &str, path: &str, target: &[u8]) {
         self.put(
@@ -137,6 +156,7 @@ impl FakePr {
             File {
                 kind: EntryKind::Symlink,
                 bytes: target.to_vec(),
+                listed: None,
             },
         );
     }
@@ -149,6 +169,7 @@ impl FakePr {
             File {
                 kind: EntryKind::Submodule,
                 bytes: Vec::new(),
+                listed: None,
             },
         );
     }
@@ -195,6 +216,7 @@ fn regular(bytes: &[u8]) -> File {
     File {
         kind: EntryKind::File,
         bytes: bytes.to_vec(),
+        listed: None,
     }
 }
 
@@ -225,8 +247,10 @@ impl PullRequestObjects for FakePr {
                 path: entry.clone(),
                 kind: file.kind,
                 object: format!("{}:{entry}", commit.as_str()),
-                size: (file.kind != EntryKind::Submodule)
-                    .then(|| u64::try_from(file.bytes.len()).unwrap_or(u64::MAX)),
+                size: (file.kind != EntryKind::Submodule).then(|| {
+                    file.listed
+                        .unwrap_or_else(|| u64::try_from(file.bytes.len()).unwrap_or(u64::MAX))
+                }),
             })
             .collect())
     }
