@@ -58,6 +58,12 @@ serde_json = { version = "1.0.140", default-features = false, features = ["std"]
 # Derives on the versioned contract types in assay-domain (Story #48, 02 §2).
 serde = { version = "1.0.219", default-features = false, features = ["std", "derive"] }
 
+# Finding fingerprints in assay-domain (#49, 02 §2, 03 §3). No `alloc`/`oid`: one-shot digests only.
+sha2 = { version = "0.11.0", default-features = false }
+
+# Property tests (TST-06), dev-dependency only: fingerprint stability in assay-domain (#49).
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"                                  # H-01
 missing_docs = "warn"                                   # H-15 / API-15

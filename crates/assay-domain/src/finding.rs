@@ -5,6 +5,7 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
+use crate::fingerprint::Anchor;
 use crate::severity::{Marker, Severity};
 use crate::vocabulary::closed_enum;
 
@@ -159,5 +160,18 @@ impl Finding {
     #[must_use]
     pub const fn marker(&self) -> Marker {
         Marker::of(self.severity, self.pre_existing)
+    }
+
+    /// Where this finding sits for its fingerprint and the dismissal match: its class and
+    /// evidence, in `file_at_head` (its path at head, rename-resolved by Z4) and within
+    /// `enclosing_symbol` (empty at file scope). Nothing else about the finding takes part.
+    #[must_use]
+    pub fn anchor<'a>(&'a self, file_at_head: &'a str, enclosing_symbol: &'a str) -> Anchor<'a> {
+        Anchor {
+            class: self.class,
+            file: file_at_head,
+            enclosing_symbol,
+            evidence: &self.evidence,
+        }
     }
 }

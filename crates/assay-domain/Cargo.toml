@@ -12,7 +12,10 @@ workspace = true
 # crates/assay-cli/tests/it/architecture.rs enforces the allowlist.
 [dependencies]
 serde = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
 
-# Round-trip tests against the golden fixtures in schemas/ (pre-approved).
+# Round-trip tests against the golden fixtures in schemas/, and property tests (pre-approved).
 [dev-dependencies]
+proptest = { workspace = true }
 serde_json = { workspace = true }
