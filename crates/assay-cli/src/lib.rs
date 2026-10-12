@@ -3,10 +3,13 @@
 //!
 //! [`ForgeSupervisor`] lends `assay-forge`'s process-group supervisor to the gate adapters and
 //! to `ClaudeHeadless` (wi-603c63). [`ForgeRevisions`] lends forge's object-only repository to
-//! the temper adapter as the PR's base and head files.
+//! the temper adapter as the PR's base and head files, and [`ForgePullRequest`] lends it to the
+//! `plan` use case as the PR's objects.
 
+mod pull_request;
 mod revisions;
 mod supervisor;
 
+pub use pull_request::{ForgeObjectsError, ForgePullRequest};
 pub use revisions::ForgeRevisions;
 pub use supervisor::ForgeSupervisor;

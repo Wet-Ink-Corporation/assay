@@ -1,0 +1,53 @@
+{
+  "schema": "assay.run/1",
+  "run_key": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "run_uid": {
+    "repo_id": 840213377,
+    "run_id": 18342009872,
+    "run_attempt": 1
+  },
+  "repo": "Wet-Ink-Corporation/assay",
+  "pr": 43,
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "base_ref": "main",
+  "tier": "needs-split",
+  "tier_reasons": [
+    "split-size"
+  ],
+  "classes": [],
+  "roles": [],
+  "required_roles": [],
+  "shards": [],
+  "plugins": [
+    {
+      "name": "temper",
+      "required": true,
+      "pin": "git:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "steps": [
+        {
+          "name": "fmt",
+          "job": "gates-lint",
+          "timeout_s": 300
+        }
+      ]
+    },
+    {
+      "name": "custom-lint",
+      "required": false,
+      "job": "gates-lint",
+      "steps": []
+    }
+  ],
+  "trust_paths_changed": [],
+  "exec_surface_changed": [],
+  "filtered_stats": {
+    "files": 1,
+    "lines": 5001,
+    "excluded": []
+  },
+  "artifact_names": {
+    "gates-lint": "assay-gates-lint-0123456789abcdef0123456789abcdef"
+  },
+  "draft": true
+}

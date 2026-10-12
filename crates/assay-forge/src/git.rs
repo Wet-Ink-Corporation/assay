@@ -43,6 +43,7 @@ use std::path::PathBuf;
 use std::process::ExitStatus;
 
 mod attributes;
+mod changes;
 mod command;
 mod copy;
 mod glob;
@@ -55,6 +56,7 @@ use crate::process::ProcessError;
 pub use attributes::{
     AttributeAllowlist, AttributeError, AttributeReport, PolicedAttribute, is_protected_path,
 };
+pub use changes::{ChangeListing, ChangedFile};
 pub use command::{GitEnvironment, GitOperation};
 pub use copy::{CopiedSymlink, CopyError, ManifestCopy};
 pub use glob::GlobError;
