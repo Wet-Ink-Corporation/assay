@@ -69,6 +69,10 @@ sha2 = { version = "0.11.0", default-features = false }
 # assay-domain. (`toml`, above, also reads rubric/v1.toml in tests.)
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 
+# Dev-dependency only (#63 review): the temper adapter's Rust lexer is checked against
+# proc-macro2's lexer, reached through syn's token cursor. syn 2 is already in the graph (jsonschema's strum_macros).
+syn = { version = "2.0.0", default-features = false, features = ["parsing"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"                                  # H-01
 missing_docs = "warn"                                   # H-15 / API-15
