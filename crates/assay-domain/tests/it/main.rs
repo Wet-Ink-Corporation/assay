@@ -7,6 +7,7 @@ mod decide_not_run;
 mod decide_properties;
 mod decide_waive;
 mod finding;
+mod fingerprint;
 mod golden;
 mod round_trip;
 mod rubric;

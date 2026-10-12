@@ -13,10 +13,13 @@ mod vocabulary;
 mod aeu;
 mod decide;
 mod decision;
+mod dismissal;
 mod disposition;
 mod event;
 mod finding;
 mod findings;
+mod fingerprint;
+mod normalise;
 mod reason;
 mod rubric;
 mod run_uid;
@@ -33,6 +36,7 @@ pub use decide::inputs::{
 pub use decision::{
     Conclusion, Counts, Decision, DecisionSchema, DegradedRole, FindingDisposition, Reason, Waived,
 };
+pub use dismissal::{Dismissal, DismissalMatch};
 pub use disposition::Disposition;
 pub use event::{
     Event, EventKind, EventPayload, EventSchema, FeedbackSignal, GateRun, Preflight,
@@ -40,6 +44,8 @@ pub use event::{
 };
 pub use finding::{Caller, Class, Confidence, Finding, FindingKind, IntroducedBy, Side};
 pub use findings::{FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind, Stats};
+pub use fingerprint::{Anchor, Fingerprint, ParseFingerprintError};
+pub use normalise::normalise;
 pub use reason::ReasonCode;
 pub use rubric::{Rubric, RubricError};
 pub use run_uid::RunUid;
