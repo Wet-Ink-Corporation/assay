@@ -1,0 +1,14 @@
+# A base `.assay/plugins.toml` pinning Claude Code 2.1.296 with the built-ins its `system/init`
+# listed under the 03 §8 profile on 2026-10-12 (`stream/init_2_1_296.jsonl`).
+[assay]
+digest = "sha256:dc7c1d8e3ccab68cfdb828ce40a446c3913f7172f899ffe3f439839cfd917a8b"
+claude_cli = "2.1.296"
+
+[assay.claude_cli_builtins]
+plugins = ["cc-plugin-agents-md", "cc-plugin-telemetry", "cc-plugin-plugin-authoring"]
+skills = [
+  "deep-research", "design", "design-sync", "dataviz", "update-config", "verify", "debug",
+  "code-review", "simplify", "batch", "fewer-permission-prompts", "doctor", "loop", "schedule",
+  "claude-api", "workflow-authoring", "run", "run-skill-generator", "plugin-authoring",
+]
+agents = ["claude", "Explore", "general-purpose", "Plan"]

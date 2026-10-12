@@ -565,6 +565,20 @@ fn api_keys_and_cloud_providers_cannot_be_passed() {
     }
 }
 
+/// `CLAUDE_CODE_PLUGIN_DIRS` loads mods from folders, which `--safe-mode` does not stop for
+/// every kind of mod (#121), so no caller may pass it.
+#[test]
+fn the_plugin_folder_variable_cannot_be_passed() {
+    let mut env = HeadlessEnv::new(TOKEN);
+
+    assert_eq!(
+        env.pass("CLAUDE_CODE_PLUGIN_DIRS", "/tmp/mods"),
+        Err(EnvVarError::Reserved {
+            name: "CLAUDE_CODE_PLUGIN_DIRS".to_owned()
+        })
+    );
+}
+
 #[test]
 fn a_variable_name_must_be_a_plain_identifier() {
     let mut env = HeadlessEnv::new(TOKEN);

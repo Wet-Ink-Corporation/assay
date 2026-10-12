@@ -52,6 +52,11 @@
   ],
   "$defs": {
     "nonEmpty": { "type": "string", "minLength": 1 },
+    "builtinNames": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+    },
     "count": { "type": "integer", "minimum": 0 },
     "githubId": { "type": "integer", "minimum": 1 },
     "aeu": { "type": "number", "minimum": 0 },
@@ -94,7 +99,17 @@
             "properties": {
               "auth_method": { "$ref": "#/$defs/nonEmpty" },
               "cli_version": { "$ref": "#/$defs/nonEmpty" },
-              "init_clean": { "type": "boolean" }
+              "init_clean": { "type": "boolean" },
+              "builtins": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["plugins", "skills", "agents"],
+                "properties": {
+                  "plugins": { "$ref": "#/$defs/builtinNames" },
+                  "skills": { "$ref": "#/$defs/builtinNames" },
+                  "agents": { "$ref": "#/$defs/builtinNames" }
+                }
+              }
             }
           }
         }

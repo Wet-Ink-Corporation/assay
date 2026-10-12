@@ -2,8 +2,10 @@
 //! and maps outcomes to exit codes (`docs/architecture/02-architecture.md` §2).
 //!
 //! Commands so far: `assay self-gate <corpus-dir> <rubric-file>`, the `assay-self` exec gate
-//! (02 §7, `05` T16). With no arguments it exits successfully without doing anything.
+//! (02 §7, `05` T16), and `assay doctor <plugins-toml> <claude-program>`, the session checks of
+//! 03 §8 (#121). With no arguments it exits successfully without doing anything.
 
+mod doctor;
 mod self_gate;
 
 use std::env;
@@ -20,6 +22,9 @@ fn main() -> ExitCode {
     let Some(command) = args.next() else {
         return ExitCode::SUCCESS;
     };
+    if command == "doctor" {
+        return run_doctor(args);
+    }
     if command != "self-gate" {
         return report(&self_gate::SelfGateError::Usage);
     }
@@ -33,6 +38,26 @@ fn main() -> ExitCode {
         Ok(GateConclusion::Pass) => ExitCode::SUCCESS,
         Ok(GateConclusion::Fail | GateConclusion::Neutral) => ExitCode::FAILURE,
         Err(error) => report(&error),
+    }
+}
+
+/// `assay doctor`: exit 0 when every check passes, 1 when one fails, 2 when they cannot run.
+fn run_doctor(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = doctor::DoctorVariables {
+        token: env::var_os(doctor::OAUTH_TOKEN),
+        path: env::var_os("PATH"),
+    };
+    let report = match doctor::run(args, variables) {
+        Ok(report) => report,
+        Err(error) => return report(&error),
+    };
+    if let Err(error) = doctor::write_report(&report, io::stdout().lock()) {
+        return self::report(&error);
+    }
+    if report.passed() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 

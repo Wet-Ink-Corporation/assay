@@ -7,7 +7,7 @@ use std::num::NonZeroU64;
 
 use assay_app::{Contract, ContractValidator};
 use assay_domain::{
-    Decision, DecisionInputs, Disposition, Event, EventKind, EventPayload, EventSchema,
+    BuiltinSet, Decision, DecisionInputs, Disposition, Event, EventKind, EventPayload, EventSchema,
     FeedbackSignal, FindingsDocument, GateConclusion, GateRun, Preflight, RateLimitStatus, RunUid,
     Severity, SpecialistRun, VerifierVerdict, VoidReason, decide,
 };
@@ -41,6 +41,11 @@ fn preflight() -> Preflight {
         auth_method: "oauth".to_owned(),
         cli_version: "2.1.296".to_owned(),
         init_clean: true,
+        builtins: Some(BuiltinSet {
+            plugins: vec!["cc-plugin-telemetry".to_owned()],
+            skills: vec!["debug".to_owned()],
+            agents: vec!["Explore".to_owned()],
+        }),
     }
 }
 

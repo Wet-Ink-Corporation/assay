@@ -1,5 +1,6 @@
 //! Integration tests for `assay-app`, compiled as one binary (TST-14).
 
+mod builtins;
 mod config;
 mod contract;
 mod decide;
@@ -7,6 +8,7 @@ mod decide_evidence;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod decide_fakes;
 mod decide_refusals;
+mod doctor;
 mod domain_model;
 mod exec_roots;
 mod gate;
@@ -20,6 +22,7 @@ mod prompt_bundle;
 mod read_limits;
 mod redaction;
 mod self_trust;
+mod session_init;
 mod spec;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod support;

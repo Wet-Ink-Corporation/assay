@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 use super::MAX_TIMEOUT_SECS;
+use super::builtins::BuiltinsError;
 use super::pin::{ParseDigestError, ParsePinError};
 
 /// Why `.assay/plugins.toml` was refused. The file comes from the protected base, so errors may
@@ -27,6 +28,9 @@ pub enum ConfigError {
         /// The value given.
         version: String,
     },
+    /// `claude_cli_builtins` was refused.
+    #[error(transparent)]
+    Builtins(#[from] BuiltinsError),
     /// A plugin's pin is a tag or has no known scheme.
     #[error("plugin `{plugin}` has an invalid pin")]
     Pin {

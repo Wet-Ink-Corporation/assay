@@ -6,6 +6,7 @@
 //! digests accept immutable identities only; a tag is [`ParsePinError::Tag`].
 
 mod assay;
+mod builtins;
 mod dto;
 mod error;
 mod globs;
@@ -18,6 +19,9 @@ use std::time::Duration;
 
 pub use self::assay::{
     AssaySettings, ExactVersion, InfraFailurePolicy, PrClass, Promotion, RunnerKind,
+};
+pub use self::builtins::{
+    BuiltinAllowlist, BuiltinKind, BuiltinsError, MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS,
 };
 use self::dto::{AssayDto, FileDto, PluginDto, StepDto};
 pub use self::error::{ConfigError, TomlError};
@@ -259,6 +263,15 @@ impl TryFrom<AssayDto> for AssaySettings {
             text.parse()
                 .map_err(|source| ConfigError::Digest { field, source })
         };
+        let claude_cli = dto
+            .claude_cli
+            .map(|text| ExactVersion::new(text).map_err(|version| ConfigError::Version { version }))
+            .transpose()?;
+        let claude_cli_builtins = match (dto.claude_cli_builtins, &claude_cli) {
+            (None, _) => BuiltinAllowlist::default(),
+            (Some(_), None) => return Err(BuiltinsError::WithoutCli.into()),
+            (Some(builtins), Some(_)) => BuiltinAllowlist::try_from(builtins)?,
+        };
         Ok(Self {
             digest: digest("assay.digest", &dto.digest)?,
             warm_target: dto
@@ -266,12 +279,8 @@ impl TryFrom<AssayDto> for AssaySettings {
                 .as_deref()
                 .map(|text| digest("assay.warm_target", text))
                 .transpose()?,
-            claude_cli: dto
-                .claude_cli
-                .map(|text| {
-                    ExactVersion::new(text).map_err(|version| ConfigError::Version { version })
-                })
-                .transpose()?,
+            claude_cli,
+            claude_cli_builtins,
             runner: dto.runner,
             protected_bases: dto.protected_bases,
             llm_blockers: dto.llm_blockers,
