@@ -4,11 +4,12 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::attributes::{
     self, AttributeAllowlist, AttributeError, AttributeReport, POLICED_ATTRIBUTES,
 };
+use super::changes::{self, ChangeListing};
 use super::command::{GitEnvironment, GitOperation, git};
 use super::numstat::{self, DiffOutcome, FileChange};
 use super::sha::{CommitSha, HttpsRemote};
@@ -144,21 +145,66 @@ impl ObjectRepo {
             head.as_str(),
             "--",
         ];
+        let Some(captured) = self.capped_diff(&args, cap)? else {
+            return Ok(DiffOutcome::NeedsSplit);
+        };
+        numstat::parse(&captured.stdout)
+            .map(DiffOutcome::Measured)
+            .map_err(|Malformed(detail)| GitError::Malformed {
+                operation: GitOperation::Diff,
+                detail,
+            })
+    }
+
+    /// The PR's changed files for `plan`: `git diff --raw` (the name-status with both sides'
+    /// modes) and `--numstat --text`, each with rename detection over `base...head`, so the
+    /// list runs from the merge base as GitHub's does, never against commits the base gained
+    /// after the fork. Both diffs together run within the wall-clock `cap`.
+    ///
+    /// # Errors
+    /// [`GitError`] when a diff cannot run or fails (including when the commits share no
+    /// merge base), or when the two diffs print output this layer cannot read or that
+    /// disagrees on any file. Running past `cap` is not an error:
+    /// it is [`ChangeListing::NeedsSplit`].
+    pub fn changed_files(
+        &self,
+        base: &CommitSha,
+        head: &CommitSha,
+        cap: Duration,
+    ) -> Result<ChangeListing, GitError> {
+        // One deadline for both diffs, measured from here so it cannot overflow an `Instant`.
+        let started = Instant::now();
+        let range = format!("{base}...{head}");
+        let raw = ["--raw", "-z", "--no-abbrev", "-M", &range, "--"];
+        let Some(raw) = self.capped_diff(&raw, cap)? else {
+            return Ok(ChangeListing::NeedsSplit);
+        };
+        let Some(left) = remaining(cap, started.elapsed()) else {
+            return Ok(ChangeListing::NeedsSplit);
+        };
+        let numstat = ["--numstat", "-z", "--text", "-M", &range, "--"];
+        let Some(numstat) = self.capped_diff(&numstat, left)? else {
+            return Ok(ChangeListing::NeedsSplit);
+        };
+        changes::parse(&raw.stdout, &numstat.stdout)
+            .map(ChangeListing::Listed)
+            .map_err(|Malformed(detail)| GitError::Malformed {
+                operation: GitOperation::Diff,
+                detail,
+            })
+    }
+
+    /// Runs `git diff` with `args` within `cap`; `None` when it ran past it.
+    fn capped_diff(&self, args: &[&str], cap: Duration) -> Result<Option<Captured>, GitError> {
         match self.run(Call {
             timeout: cap,
-            ..self.call(GitOperation::Diff, &args)
+            ..self.call(GitOperation::Diff, args)
         }) {
             Err(GitError::Process {
                 source: ProcessError::TimedOut,
                 ..
-            }) => Ok(DiffOutcome::NeedsSplit),
-            Err(error) => Err(error),
-            Ok(captured) => numstat::parse(&captured.stdout)
-                .map(DiffOutcome::Measured)
-                .map_err(|Malformed(detail)| GitError::Malformed {
-                    operation: GitOperation::Diff,
-                    detail,
-                }),
+            }) => Ok(None),
+            ran => ran.map(Some),
         }
     }
 
@@ -356,11 +402,33 @@ impl ObjectRepo {
     }
 }
 
+/// What is left of `cap` once `spent` has elapsed; `None` when nothing is.
+fn remaining(cap: Duration, spent: Duration) -> Option<Duration> {
+    cap.checked_sub(spent).filter(|left| !left.is_zero())
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
 
     use super::*;
+
+    #[test]
+    fn the_second_diff_gets_only_what_the_first_left_of_the_cap() {
+        let cap = Duration::from_secs(60);
+
+        let left = [
+            remaining(cap, Duration::from_secs(45)),
+            remaining(cap, cap),
+            remaining(cap, Duration::from_secs(90)),
+        ];
+
+        assert_eq!(
+            left,
+            [Some(Duration::from_secs(15)), None, None],
+            "the two diffs share one deadline; none left is needs-split"
+        );
+    }
 
     #[test]
     fn fetches_one_commit_by_sha_into_a_private_ref() {

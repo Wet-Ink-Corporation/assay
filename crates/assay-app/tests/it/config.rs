@@ -4,8 +4,8 @@ use std::error::Error;
 use std::time::Duration;
 
 use assay_app::{
-    Adapter, BuildJob, ConfigError, ExactVersion, InfraFailurePolicy, ParseDigestError,
-    ParsePinError, Pin, Plugin, PluginsConfig, PrClass, Promotion, RunnerKind,
+    Adapter, BuildJob, CommitId, ConfigError, ExactVersion, InfraFailurePolicy, ParseCommitIdError,
+    ParseDigestError, ParsePinError, Pin, Plugin, PluginsConfig, PrClass, Promotion, RunnerKind,
 };
 
 const GIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -506,4 +506,31 @@ fn rejects_an_uppercase_commit_pin() {
     let parsed = format!("git:{}", GIT.to_uppercase()).parse::<Pin>();
 
     assert_eq!(parsed, Err(ParsePinError::Tag));
+}
+
+#[test]
+fn a_commit_id_round_trips_through_display() -> Result<(), Box<dyn Error>> {
+    let commit: CommitId = GIT.parse()?;
+
+    assert_eq!(commit.as_str(), GIT);
+    Ok(())
+}
+
+#[test]
+fn a_commit_id_is_exactly_forty_lowercase_hex_digits() {
+    let short = GIT.get(..39).unwrap_or_default().to_owned();
+    for text in [
+        short,
+        format!("{GIT}0"),
+        GIT.to_uppercase(),
+        format!("g{}", GIT.get(1..).unwrap_or_default()),
+        format!("git:{GIT}"),
+        String::new(),
+    ] {
+        assert_eq!(
+            text.parse::<CommitId>(),
+            Err(ParseCommitIdError),
+            "{text:?} is not a full commit id"
+        );
+    }
 }

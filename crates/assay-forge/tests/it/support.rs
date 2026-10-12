@@ -92,6 +92,56 @@ pub(crate) fn fixture_with_head(
     })
 }
 
+/// A base branch that moved on after the PR forked from it: the fork point holds the files of
+/// [`fixture`], `base_files` are committed on top of it as the base commit, and `head_files`
+/// on top of the fork point as the head commit, so the base is not an ancestor of the head.
+pub(crate) fn forked_fixture(
+    base_files: &[(&str, &[u8])],
+    head_files: &[(&str, &[u8])],
+) -> Result<Fixture, Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    let work = scratch.path().join("work");
+    plain_git(scratch.path(), &["init", "--quiet", "work"])?;
+    write(&work, "README.md", b"# fixture\n")?;
+    write(&work, "Cargo.toml", b"[package]\nname = \"fixture\"\n")?;
+    write(&work, "src/lib.rs", b"pub fn one() -> u8 {\n    1\n}\n")?;
+    let fork = commit(&work, "fork")?;
+    for (path, contents) in base_files {
+        write(&work, path, contents)?;
+    }
+    let base = commit(&work, "base")?;
+    plain_git(&work, &["checkout", "--quiet", "-b", "pr", fork.as_str()])?;
+    for (path, contents) in head_files {
+        write(&work, path, contents)?;
+    }
+    let head = commit(&work, "head")?;
+
+    let git_dir = scratch.path().join("objects.git");
+    let repo = ObjectRepo::init(
+        &git_dir,
+        GitEnvironment::from_process_env()?,
+        GitLimits::default(),
+    )?;
+    let destination = git_dir.to_str().ok_or("scratch path is not UTF-8")?;
+    let base_ref = format!("{base}:refs/heads/base");
+    plain_git(
+        &work,
+        &[
+            "push",
+            "--quiet",
+            destination,
+            "pr:refs/heads/pr",
+            &base_ref,
+        ],
+    )?;
+    Ok(Fixture {
+        _scratch: scratch,
+        repo,
+        base,
+        head,
+    })
+}
+
 pub(crate) fn write(work: &Path, path: &str, contents: &[u8]) -> Result<(), Box<dyn Error>> {
     let path = work.join(path);
     if let Some(parent) = path.parent() {

@@ -109,7 +109,7 @@
     "nonEmpty": { "type": "string", "minLength": 1 },
     "strings": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" } },
     "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "tier": { "enum": ["trivial", "micro", "lite", "full"] },
+    "tier": { "enum": ["needs-split", "trivial", "full", "lite", "micro"] },
     "runUid": {
       "description": "One workflow run, (repo_id, run_id, run_attempt): keys leases, ledger records and the pending stamp (03 §4, 02 §5).",
       "type": "object",
@@ -124,13 +124,16 @@
     "count": { "type": "integer", "minimum": 0 },
     "aeu": { "type": "number", "minimum": 0 },
     "plugin": {
+      "description": "A gate of base `.assay/plugins.toml` (03 §1): a built-in adapter carries its `pin`; an `exec` gate has none and carries the Z2b `job` it runs in instead.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "required", "pin", "steps"],
+      "required": ["name", "required", "steps"],
+      "oneOf": [{ "required": ["pin"] }, { "required": ["job"] }],
       "properties": {
         "name": { "$ref": "#/$defs/nonEmpty" },
         "required": { "type": "boolean" },
         "pin": { "$ref": "#/$defs/nonEmpty" },
+        "job": { "enum": ["gates-lint", "gates-test"] },
         "steps": {
           "type": "array",
           "items": {

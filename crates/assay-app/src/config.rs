@@ -23,7 +23,9 @@ use self::dto::{AssayDto, FileDto, PluginDto, StepDto};
 pub use self::error::{ConfigError, TomlError};
 pub use self::globs::{GlobsConfigError, parse_globs};
 pub use self::name::GateName;
-pub use self::pin::{CommitId, ParseDigestError, ParsePinError, Pin, Sha256Digest};
+pub use self::pin::{
+    CommitId, ParseCommitIdError, ParseDigestError, ParsePinError, Pin, Sha256Digest,
+};
 use crate::gate::BuildJob;
 
 /// A gate's timeout when `timeout_s` is omitted, in seconds.
