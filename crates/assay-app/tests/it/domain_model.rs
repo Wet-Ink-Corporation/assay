@@ -117,7 +117,7 @@ fn finding_and_command_samples() -> Result<Vec<EventPayload>, Box<dyn Error>> {
         },
         EventPayload::WaiverApplied {
             who: "owner".to_owned(),
-            fp: "0123456789abcdef".to_owned(),
+            fp: "0123456789abcdef".parse()?,
         },
         EventPayload::OverrideApplied {
             who: "owner".to_owned(),

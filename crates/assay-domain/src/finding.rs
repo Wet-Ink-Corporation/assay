@@ -5,6 +5,7 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
+use crate::fingerprint::Anchor;
 use crate::severity::{Marker, Severity};
 use crate::vocabulary::closed_enum;
 
@@ -159,5 +160,27 @@ impl Finding {
     #[must_use]
     pub const fn marker(&self) -> Marker {
         Marker::of(self.severity, self.pre_existing)
+    }
+
+    /// Where this finding sits for its fingerprint and the dismissal match: its class and
+    /// evidence, in `file_at_head` (its path at head, rename-resolved by Z4) and within
+    /// `enclosing_symbol` (empty at file scope), plus `expected_behavior` for an omission, so
+    /// two omissions in one function stay apart (Weigh-In wi-f39f2e). Nothing else about the
+    /// finding takes part; a defect's `expected_behavior` is ignored, and an omission without
+    /// one anchors on an empty one, so it never hashes or matches as a defect (and, having no
+    /// content, has no fingerprint).
+    #[must_use]
+    pub fn anchor<'a>(&'a self, file_at_head: &'a str, enclosing_symbol: &'a str) -> Anchor<'a> {
+        let expected_behavior = match self.kind {
+            FindingKind::Omission => Some(self.expected_behavior.as_deref().unwrap_or_default()),
+            FindingKind::Defect => None,
+        };
+        Anchor {
+            class: self.class,
+            file: file_at_head,
+            enclosing_symbol,
+            evidence: &self.evidence,
+            expected_behavior,
+        }
     }
 }
