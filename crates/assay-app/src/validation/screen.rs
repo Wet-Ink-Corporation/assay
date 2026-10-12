@@ -72,11 +72,14 @@ pub(super) fn screen(text: &str, repository: &str) -> Option<Suspicion> {
     let lower = text.to_lowercase();
     [
         (
-            links::has_foreign_link(&lower, &prose.to_lowercase(), repository),
+            links::has_foreign_link(&lower, &prose.to_lowercase(), repository) || has_email(&prose),
             Suspicion::Url,
         ),
         (prose.contains("!["), Suspicion::Image),
-        (has_html(&prose), Suspicion::Html),
+        (
+            has_html(&prose) || has_character_reference(&prose),
+            Suspicion::Html,
+        ),
         (has_mention(&prose), Suspicion::Mention),
         (has_suggestion_fence(&lower), Suspicion::SuggestionFence),
         (has_token(text), Suspicion::TokenShaped),
@@ -104,13 +107,28 @@ fn has_html(prose: &str) -> bool {
     })
 }
 
-/// Whether `prose` mentions a user or team: `@` at a word start, followed by a name character.
+/// Whether `prose` holds a character reference (`&#64;`, `&lt;`), which GitHub decodes into
+/// whatever it spells, past every other check here.
+fn has_character_reference(prose: &str) -> bool {
+    prose.split('&').skip(1).any(|after| {
+        // ASCII letters and digits are one byte each, so the count is also a byte offset.
+        let name = after
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .count();
+        after.starts_with('#')
+            || (name > 0 && after.get(name..).is_some_and(|rest| rest.starts_with(';')))
+    })
+}
+
+/// Whether `prose` mentions a user or team: an `@` followed by a name character, unless an
+/// ASCII letter or digit precedes it (as in an address, which [`has_email`] checks).
 fn has_mention(prose: &str) -> bool {
     let mut previous: Option<char> = None;
     let mut chars = prose.chars().peekable();
     while let Some(c) = chars.next() {
-        let at_word_start = previous.is_none_or(|p| !(p.is_alphanumeric() || "_.-/".contains(p)));
-        if c == '@' && at_word_start && chars.peek().is_some_and(char::is_ascii_alphanumeric) {
+        let exempt = previous.is_some_and(|p| p.is_ascii_alphanumeric());
+        if c == '@' && !exempt && chars.peek().is_some_and(char::is_ascii_alphanumeric) {
             return true;
         }
         previous = Some(c);
@@ -118,10 +136,34 @@ fn has_mention(prose: &str) -> bool {
     false
 }
 
-/// Whether lowercase `text` opens a fenced block whose info string is `suggestion`.
+/// Whether `prose` holds an email address shape, which GFM turns into a `mailto:` link: an
+/// `@` after a local-part character and before a domain with a dot followed by more of it.
+fn has_email(prose: &str) -> bool {
+    let is_local = |c: char| c.is_ascii_alphanumeric() || "._+-".contains(c);
+    let is_domain = |c: char| c.is_ascii_alphanumeric() || "-_.".contains(c);
+    let pieces: Vec<&str> = prose.split('@').collect();
+    pieces.windows(2).any(|pair| {
+        let [before, after] = pair else {
+            return false;
+        };
+        let local = before.chars().next_back().is_some_and(is_local);
+        let domain = after
+            .split(|c: char| !is_domain(c))
+            .next()
+            .is_some_and(|domain| domain.trim_end_matches(['.', '-', '_']).contains('.'));
+        local && domain
+    })
+}
+
+/// Whether lowercase `text` opens a fenced block whose info string is `suggestion`, inside any
+/// number of containers (`> - ```suggestion`).
 fn has_suggestion_fence(text: &str) -> bool {
     text.lines().any(|line| {
-        let trimmed = line.trim_start();
+        let mut inner = line;
+        while let Some(rest) = markdown::container_marker(inner) {
+            inner = rest;
+        }
+        let trimmed = inner.trim_start();
         ["```", "~~~"].iter().any(|fence| {
             trimmed.strip_prefix(fence).is_some_and(|info| {
                 info.trim_start_matches(['`', '~'])
@@ -267,10 +309,79 @@ mod tests {
             "`parse` fails on non-numeric input, so the handler panics.",
             "Return `Vec<u8>` instead; see `x @ 1..=5` and `<a href>` in code.",
             "Use `Option<A>` here.\n```rust\nlet s = \"<img src=x>\";\n```",
-            "Contact me at dev@example.com; the 7 tests pass.",
+            "Ask x@y; the 7 tests pass.",
         ];
 
         assert_eq!(texts.map(screened), [None; 4]);
+    }
+
+    // Round 4 (wi-b5affa): where the screen cannot be sure how GitHub renders text, it reads
+    // it as prose and flags it.
+    #[test]
+    fn flags_urls_holding_characters_github_may_not_end_them_at() {
+        let texts = [
+            // B1: U+3000 is whitespace to Rust, not to a link destination.
+            "[x](https://github.com/wet-ink-corporation/assay/\u{3000}/../../../evil/repo)",
+            "See https://github.com/wet-ink-corporation/assay/\u{a0}/../../../evil/repo now.",
+            "See https://docs.rs/\u{e9}t\u{e9}.",
+            // B2: character references decode inside a destination.
+            "[x](https://github.com/wet-ink-corporation/assay/&#46;&#46;/&#46;&#46;/&#46;&#46;/e)",
+            // B3: a definition inside a container.
+            "> [x]: //evil.example\n\nSee [x].",
+            // B6: a backtick in the title, which a later backtick could pair with.
+            "[x](https://github.com/wet-ink-corporation/assay \"`\")<img src=x> `",
+            // m3: GFM links an email address as `mailto:`.
+            "Contact me at dev@example.com.",
+        ];
+
+        assert_eq!(texts.map(screened), [Some(Suspicion::Url); 7]);
+    }
+
+    #[test]
+    fn reads_a_paragraph_whose_backticks_do_not_pair_per_line_as_prose() {
+        // B4: GitHub pairs the first two backticks across the line break.
+        assert_eq!(screened("`x\n` <img src=x> `y`"), Some(Suspicion::Html));
+    }
+
+    #[test]
+    fn keeps_fences_as_prose_when_a_container_could_close_them() {
+        // B5: the list item ends at the unindented line, closing its fence before the tag.
+        assert_eq!(
+            screened("* a\n  ```\n<img src=x>\n  ```"),
+            Some(Suspicion::Html)
+        );
+    }
+
+    #[test]
+    fn flags_character_references_and_mentions_after_punctuation() {
+        // B7.
+        let texts = [
+            "Thanks &#64;owner.",
+            "See &lt;b&gt;.",
+            "_@owner",
+            "a.@owner",
+            "x/@owner",
+        ];
+
+        assert_eq!(
+            texts.map(screened),
+            [
+                Some(Suspicion::Html),
+                Some(Suspicion::Html),
+                Some(Suspicion::Mention),
+                Some(Suspicion::Mention),
+                Some(Suspicion::Mention)
+            ]
+        );
+    }
+
+    #[test]
+    fn flags_a_suggestion_fence_inside_containers() {
+        // m2.
+        assert_eq!(
+            screened("> - ```suggestion\n>   x\n> ```"),
+            Some(Suspicion::SuggestionFence)
+        );
     }
 
     #[test]

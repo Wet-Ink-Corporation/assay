@@ -1,10 +1,12 @@
 //! What GitHub renders as code in reviewer text, by the `CommonMark` rules for fenced blocks
 //! and code spans, so the screen can tell code from prose.
 //!
-//! Only what is unambiguously code is removed. An unclosed fence, a code span crossing a line
-//! and an indented code block stay prose, and so are screened: a false suspect costs a finding,
-//! a false exemption lets markup through. Link destinations are read before code spans are
-//! paired (`links.rs`): one holding a backtick, which a span could claim, flags the text.
+//! Only what is unambiguously code is removed (wi-b5affa: refuse rather than model). An
+//! unclosed fence, an indented code block, any fence in text with a container line (`>`, a
+//! list marker), and every code span of a paragraph in which some backtick run does not pair
+//! within its own line stay prose, and so are screened: a false suspect costs a finding, a
+//! false exemption lets markup through. Link destinations are read before code spans are
+//! paired (`links.rs`): a backtick inside a link, which a span could claim, flags the text.
 
 /// The most spaces a fence line may be indented by; four make an indented code line.
 const MAX_FENCE_INDENT: usize = 3;
@@ -12,14 +14,24 @@ const MAX_FENCE_INDENT: usize = 3;
 /// The shortest run of backticks or tildes that opens a fence.
 const MIN_FENCE_RUN: usize = 3;
 
+/// The most digits an ordered list marker may have (`CommonMark`).
+const MAX_ORDERED_DIGITS: usize = 9;
+
 /// `text` without its fenced blocks and code spans, line by line.
+///
+/// Fences are removed only if no line of `text` begins with a container marker: a container
+/// can end a fence GitHub opened inside it before its closing line. Code spans are removed
+/// paragraph by paragraph, and only from a paragraph every backtick run of which pairs within
+/// its own line: GitHub pairs runs across the lines of a paragraph.
 ///
 /// Cost: every line is scanned once for fences. Within a line, each backtick run that opens a
 /// span is matched by scanning forward for a run of the same length, so a line costs at most
 /// its length times its number of runs. Fields are capped by the schema (1200 characters at
 /// most), which bounds that product.
 pub(super) fn prose(text: &str) -> String {
+    let fences = !text.lines().any(|line| container_marker(line).is_some());
     let mut prose = String::with_capacity(text.len());
+    let mut paragraph: Vec<&str> = Vec::new();
     // The open fence and its lines, opening line included, until a closing line arrives.
     let mut open: Option<(Fence, Vec<&str>)> = None;
     for line in text.lines() {
@@ -30,21 +42,74 @@ pub(super) fn prose(text: &str) -> String {
                 Some((fence, lines))
             }
             None => {
-                let fence = Fence::opened_by(line);
-                if fence.is_none() {
-                    push_line(line, &mut prose);
+                if let Some(fence) = Fence::opened_by(line).filter(|_| fences) {
+                    flush(&mut paragraph, &mut prose);
+                    Some((fence, vec![line]))
+                } else {
+                    add(line, &mut paragraph, &mut prose);
+                    None
                 }
-                fence.map(|fence| (fence, vec![line]))
             }
         };
     }
     // A fence never closed is ambiguous: CommonMark runs it to the end, a later edit may not.
     if let Some((_, lines)) = open {
         for line in lines {
-            push_line(line, &mut prose);
+            add(line, &mut paragraph, &mut prose);
         }
     }
+    flush(&mut paragraph, &mut prose);
     prose
+}
+
+/// Adds `line` to the open `paragraph`, or ends it at a blank line.
+fn add<'t>(line: &'t str, paragraph: &mut Vec<&'t str>, prose: &mut String) {
+    if line.trim().is_empty() {
+        flush(paragraph, prose);
+        prose.push('\n');
+    } else {
+        paragraph.push(line);
+    }
+}
+
+/// Appends `paragraph` to `prose`, without its code spans if every line's backtick runs pair
+/// within that line, else as written; then empties it.
+fn flush(paragraph: &mut Vec<&str>, prose: &mut String) {
+    let stripped: Option<Vec<String>> = paragraph.iter().map(|line| without_spans(line)).collect();
+    match stripped {
+        Some(lines) => {
+            for line in lines {
+                prose.push_str(&line);
+                prose.push('\n');
+            }
+        }
+        None => {
+            for line in paragraph.iter() {
+                prose.push_str(line);
+                prose.push('\n');
+            }
+        }
+    }
+    paragraph.clear();
+}
+
+/// The rest of `line` after one container marker, if it starts with one: a `>`, or a `-`, `*`
+/// or `+` bullet, or an ordered marker (`1.`, `1)`), each after any indentation; a list marker
+/// must be followed by a space, a tab or the end of the line.
+pub(super) fn container_marker(line: &str) -> Option<&str> {
+    let body = line.trim_start_matches([' ', '\t']);
+    if let Some(rest) = body.strip_prefix('>') {
+        return Some(rest);
+    }
+    let digits = body.chars().take_while(char::is_ascii_digit).count();
+    let rest = if digits == 0 {
+        body.strip_prefix(['-', '*', '+'])?
+    } else if digits <= MAX_ORDERED_DIGITS {
+        body.get(digits..)?.strip_prefix(['.', ')'])?
+    } else {
+        return None;
+    };
+    (rest.is_empty() || rest.starts_with([' ', '\t'])).then_some(rest)
 }
 
 /// An open fenced block: its character and the length of its opening run.
@@ -92,36 +157,25 @@ fn run_length(text: &str, marker: char) -> usize {
     text.chars().take_while(|&c| c == marker).count()
 }
 
-/// Appends `line` to `prose` without its code spans, each replaced by a space.
-///
-/// A span opens at a backtick run not preceded by a backslash and closes at the next run of the
-/// same length on the line; an opening run with no such closer is literal text.
-fn push_line(line: &str, prose: &mut String) {
+/// `line` without its code spans, each replaced by a space; `None` if any backtick run on it
+/// does not pair: one preceded by a backslash, or one with no later run of the same length.
+fn without_spans(line: &str) -> Option<String> {
+    let mut prose = String::with_capacity(line.len());
     let mut rest = line;
     while let Some(open) = rest.find('`') {
-        let Some((before, from)) = rest.split_at_checked(open) else {
-            break;
-        };
-        let run = run_length(from, '`');
-        let Some((opener, after)) = from.split_at_checked(run) else {
-            break;
-        };
-        prose.push_str(before);
-        let span_end = if before.ends_with('\\') {
-            None
-        } else {
-            closing(after, run).and_then(|close| close.checked_add(run))
-        };
-        if let Some(remaining) = span_end.and_then(|end| after.get(end..)) {
-            prose.push(' ');
-            rest = remaining;
-        } else {
-            prose.push_str(opener);
-            rest = after;
+        let (before, from) = rest.split_at_checked(open)?;
+        if before.ends_with('\\') {
+            return None;
         }
+        let run = run_length(from, '`');
+        let after = from.get(run..)?;
+        let end = closing(after, run)?.checked_add(run)?;
+        prose.push_str(before);
+        prose.push(' ');
+        rest = after.get(end..)?;
     }
     prose.push_str(rest);
-    prose.push('\n');
+    Some(prose)
 }
 
 /// The byte offset in `text` of the first backtick run exactly `run` long.
@@ -139,7 +193,7 @@ fn closing(text: &str, run: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::prose;
+    use super::{container_marker, prose};
 
     #[test]
     fn removes_a_span_and_keeps_the_text_around_it() {
@@ -154,6 +208,42 @@ mod tests {
     #[test]
     fn keeps_an_unmatched_or_escaped_opener_as_text() {
         assert_eq!([prose("`` a"), prose("\\`a` b")], ["`` a\n", "\\`a` b\n"]);
+    }
+
+    #[test]
+    fn recognises_container_markers() {
+        let lines = [
+            "> x",
+            "  - x",
+            "* x",
+            "+",
+            "1. x",
+            "12) x",
+            "-x",
+            "1.x",
+            "1234567890. x",
+            "x",
+        ];
+
+        assert_eq!(
+            lines.map(|line| container_marker(line).is_some()),
+            [
+                true, true, true, true, true, true, false, false, false, false
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_a_fence_as_prose_in_text_with_a_container() {
+        assert_eq!(prose("> a\n```\ny\n```"), "> a\n```\ny\n```\n");
+    }
+
+    #[test]
+    fn keeps_a_paragraph_as_written_when_a_run_pairs_only_across_lines() {
+        assert_eq!(
+            [prose("`a` `b\nc`"), prose("`a` b\n\n`c")],
+            ["`a` `b\nc`\n", "  b\n\n`c\n"]
+        );
     }
 
     #[test]

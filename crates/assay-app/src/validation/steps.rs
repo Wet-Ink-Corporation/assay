@@ -82,7 +82,7 @@ impl Steps<'_, '_> {
         let anchored = anchor(self.inputs.change, self.files, &mut finding)?;
         let placement = self.place(&mut finding, &anchored);
         self.cap(&mut finding);
-        if free_text(&finding, anchored.quoted_caller.as_ref())
+        if free_text(&finding, anchored.quoted_caller.as_deref())
             .any(|text| screen::screen(text, self.inputs.repository).is_some())
         {
             return Err(Disposition::InjectionSuspect);
@@ -231,19 +231,18 @@ fn shape(finding: &Finding) -> Result<(), Disposition> {
 /// content, published as code, so not screened (wi-d4735c).
 fn free_text<'f>(
     finding: &'f Finding,
-    quoted_caller: Option<&'f String>,
+    quoted_caller: Option<&'f str>,
 ) -> impl Iterator<Item = &'f str> {
     [
-        Some(&finding.title),
-        Some(&finding.body),
-        finding.fix.as_ref(),
-        finding.trigger.as_ref(),
-        finding.expected_behavior.as_ref(),
-        finding.group_hint.as_ref(),
-        finding.rule.as_ref(),
+        Some(finding.title.as_str()),
+        Some(finding.body.as_str()),
+        finding.fix.as_deref(),
+        finding.trigger.as_deref(),
+        finding.expected_behavior.as_deref(),
+        finding.group_hint.as_deref(),
+        finding.rule.as_deref(),
         quoted_caller,
     ]
     .into_iter()
     .flatten()
-    .map(String::as_str)
 }

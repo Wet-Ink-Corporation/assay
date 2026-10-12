@@ -187,7 +187,10 @@ impl Validated {
 /// injection screen and suppression. Pure and total: every input ends kept or with a
 /// disposition. A document that fails its schema, is not a reviewer's or names a role outside
 /// the roster is one `schema` transition. Each file is indexed once per call, however many
-/// findings cite it. Nothing here quotes model text: evidence is replaced by the tree's lines.
+/// findings cite it. No transition quotes model text. A kept finding's `evidence` and
+/// `caller.evidence` are replaced by the tree's lines; its other free-text fields are still
+/// model text, which the injection screen checks heuristically, refusing what it cannot be
+/// sure GitHub renders harmlessly.
 ///
 /// # Examples
 ///

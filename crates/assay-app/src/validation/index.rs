@@ -2,6 +2,7 @@
 //! file: its lines, its normalised search text and the function each line belongs to.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use assay_domain::Side;
 
@@ -22,6 +23,9 @@ pub(super) struct Indexed<'c> {
     joined: Joined,
     /// The function each line belongs to, by 0-based line index.
     functions: Vec<&'c str>,
+    /// The matches of each evidence searched for so far, so many findings quoting the same
+    /// text search the file once.
+    found: HashMap<String, Rc<[Match]>>,
 }
 
 impl<'c> Indexed<'c> {
@@ -32,12 +36,20 @@ impl<'c> Indexed<'c> {
             lines: content.lines().collect(),
             joined: Joined::of(content),
             functions: symbol::enclosing_functions(content),
+            found: HashMap::new(),
         }
     }
 
-    /// Every occurrence of `evidence`, one per start line, ascending.
-    pub(super) fn find(&self, evidence: &str) -> Vec<Match> {
-        self.joined.find(evidence)
+    /// Every occurrence of `evidence`, one per start line, ascending; searched once per
+    /// distinct `evidence` and shared after that.
+    pub(super) fn find(&mut self, evidence: &str) -> Rc<[Match]> {
+        if let Some(found) = self.found.get(evidence) {
+            return Rc::clone(found);
+        }
+        let found: Rc<[Match]> = self.joined.find(evidence).into();
+        // The key is stored, so it is owned.
+        self.found.insert(evidence.to_owned(), Rc::clone(&found));
+        found
     }
 
     /// How many lines the file has.
@@ -78,7 +90,7 @@ pub(super) struct Files<'c> {
 
 impl<'c> Files<'c> {
     /// The index of `text`, built on first use.
-    pub(super) fn index(&mut self, text: Text<'c>) -> &Indexed<'c> {
+    pub(super) fn index(&mut self, text: Text<'c>) -> &mut Indexed<'c> {
         self.indexed
             .entry((text.side, text.path))
             .or_insert_with(|| Indexed::of(text.content))
@@ -87,6 +99,8 @@ impl<'c> Files<'c> {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use super::{Files, Match, Text};
     use assay_domain::Side;
 
@@ -125,6 +139,24 @@ mod tests {
             ),
             (4, Some("    a();"), Some("f"), None, None)
         );
+    }
+
+    #[test]
+    fn searches_a_file_once_per_distinct_evidence() {
+        let mut files = Files::default();
+        let indexed = files.index(Text {
+            side: Side::Right,
+            path: "f.rs",
+            content: FILE,
+        });
+
+        let (first, again) = (indexed.find("a();"), indexed.find("a();"));
+
+        assert!(
+            Rc::ptr_eq(&first, &again),
+            "the second search reuses the first"
+        );
+        assert_eq!(*first, [Match { line: 2, last: 2 }]);
     }
 
     #[test]

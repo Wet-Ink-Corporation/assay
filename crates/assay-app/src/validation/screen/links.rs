@@ -5,11 +5,13 @@
 //! must be an absolute `https` URL into the repository; reference links and their definitions,
 //! whose targets sit elsewhere, are always foreign.
 //!
-//! Every URL is judged on the longest extent a renderer could read: a written-out one up to
-//! whitespace or `<` (GFM autolinks), a link destination up to whitespace or an unbalanced `)`
-//! (`CommonMark`). Where a narrower reading is possible, the text is flagged rather than parsed
-//! more cleverly: a written-out URL cut by a character other than `)` or `>`, and a destination
-//! holding a backtick, which a code span could claim instead.
+//! Every URL is judged on the longest extent a renderer could read: a written-out one up to an
+//! ASCII space, control or `<` (GFM autolinks), a link destination up to an ASCII space,
+//! control or unbalanced `)` (`CommonMark`). Where the screen cannot be sure how GitHub reads
+//! one, the text is flagged rather than modelled more closely (wi-b5affa): a URL holding a
+//! non-ASCII character, a written-out URL cut by a character other than `)` or `>`, a
+//! repository URL holding `&` (a character reference), a backtick anywhere between `](` and
+//! the link's closing `)`, which a code span could claim instead, and any `]:`.
 
 /// Hosts a written-out URL may point to besides the repository, with their subdomains.
 const ALLOWED_HOSTS: [&str; 3] = ["rust-lang.org", "docs.rs", "owasp.org"];
@@ -27,26 +29,40 @@ const MAX_SCHEME: usize = 32;
 /// its prose (code removed) in lowercase, and `repository` is `owner/name`.
 pub(super) fn has_foreign_link(lower: &str, prose_lower: &str, repository: &str) -> bool {
     let repository = repository.to_lowercase();
+    // Only ASCII is judged: a renderer may end a URL at, or decode, anything else differently.
     let written = Links::new(lower, Scan::Written).any(|link| match link {
         Link::Absolute { scheme, url, clean } => {
-            scheme != "https" || !clean || !is_allowed(url, &repository)
+            scheme != "https" || !clean || !url.is_ascii() || !is_allowed(url, &repository)
         }
-        Link::Bare { url, clean } => !clean || !is_allowed(url, &repository),
+        Link::Bare { url, clean } => !clean || !url.is_ascii() || !is_allowed(url, &repository),
         Link::Overlong => true,
         Link::Target { .. } | Link::Reference => false,
     });
-    // Destinations are found in the whole text, before code spans are paired, so a backtick
-    // inside one (which a code span could claim, hiding what follows) flags the text.
-    let ambiguous = Links::new(lower, Scan::Markdown)
-        .any(|link| matches!(link, Link::Target { target } if target.contains('`')));
+    // Links are found in the whole text, before code spans are paired, so a backtick anywhere
+    // between `](` and the link's closing `)` (title included), which a code span could claim
+    // and so hide what follows, flags the text.
+    let ambiguous = Links::new(lower, Scan::Enclosed).any(|link| match link {
+        Link::Target { target } => target.contains('`'),
+        Link::Overlong => true,
+        Link::Absolute { .. } | Link::Bare { .. } | Link::Reference => false,
+    });
     let markdown = Links::new(prose_lower, Scan::Markdown).any(|link| match link {
-        Link::Target { target } => !target
-            .strip_prefix("https://")
-            .is_some_and(|url| in_repository(url, &repository)),
+        Link::Target { target } => {
+            !target.is_ascii()
+                || !target
+                    .strip_prefix("https://")
+                    .is_some_and(|url| in_repository(url, &repository))
+        }
         Link::Reference | Link::Overlong => true,
         Link::Absolute { .. } | Link::Bare { .. } => false,
     });
-    written || ambiguous || markdown || has_definition(prose_lower)
+    // `]:` defines a link reference wherever a container lets it start a line.
+    written || ambiguous || markdown || prose_lower.contains("]:")
+}
+
+/// Whether `c` ends a URL for every renderer: an ASCII space or control character.
+const fn is_url_end(c: char) -> bool {
+    c == ' ' || c.is_ascii_control()
 }
 
 /// Whether a written-out URL, read up to `following` (the character after it, if any), has one
@@ -57,27 +73,30 @@ fn clean_cut(url: &str, following: Option<char>) -> bool {
         .find(TERMINATORS)
         .and_then(|at| url.get(at..))
         .and_then(|from| from.chars().next());
-    cut.is_none_or(|c| c == ')' || c == '>') && following.is_none_or(char::is_whitespace)
+    cut.is_none_or(|c| c == ')' || c == '>') && following.is_none_or(is_url_end)
 }
 
-/// Where a URL's extent ends.
+/// Where a URL's extent ends. Only ASCII spaces and controls end one anywhere: other
+/// whitespace is part of the URL, and its non-ASCII content flags it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Extent {
-    /// A written-out URL (GFM autolink): at whitespace or `<`.
+    /// A written-out URL (GFM autolink): at a space, a control or `<`.
     Autolink,
-    /// An inline link destination: at whitespace or an unbalanced `)`.
+    /// An inline link destination: at a space, a control or an unbalanced `)`.
     Destination,
-    /// A destination in angle brackets: at `>`, `<` or a line break.
+    /// A destination in angle brackets: at `>`, `<` or a control.
     Angled,
+    /// A whole inline link after `](`, title included: at an unbalanced `)` only.
+    Enclosed,
 }
 
 impl Extent {
     /// Whether `c` ends the extent, with `depth` the parentheses open so far.
     fn ends_at(self, c: char, depth: &mut usize) -> bool {
         match self {
-            Self::Autolink => c.is_whitespace() || c == '<',
-            Self::Angled => matches!(c, '>' | '<' | '\n' | '\r'),
-            Self::Destination => match c {
+            Self::Autolink => is_url_end(c) || c == '<',
+            Self::Angled => c == '>' || c == '<' || c.is_ascii_control(),
+            Self::Destination | Self::Enclosed => match c {
                 '(' => {
                     *depth = depth.saturating_add(1);
                     false
@@ -89,7 +108,7 @@ impl Extent {
                     }
                     None => true,
                 },
-                c => c.is_whitespace(),
+                c => self == Self::Destination && is_url_end(c),
             },
         }
     }
@@ -100,8 +119,10 @@ impl Extent {
 enum Scan {
     /// `scheme://` and `www.`, anywhere in the text.
     Written,
-    /// `](` and `][`, in prose.
+    /// `](` and `][`, in prose; a target is the destination.
     Markdown,
+    /// `](` and `][`; a target is everything up to the link's closing `)`.
+    Enclosed,
 }
 
 /// One link a scan found.
@@ -208,6 +229,13 @@ impl<'t> Links<'t> {
             Scan::Written if from.starts_with("www.") && self.autolinked(start) => {
                 return self.written_at(start, |url, clean| Link::Bare { url, clean });
             }
+            Scan::Enclosed if from.starts_with("](") => {
+                let (target, next) = self.url_at(start.checked_add(2)?, Extent::Enclosed)?;
+                return Some((
+                    Some(target.map_or(Link::Overlong, |target| Link::Target { target })),
+                    next,
+                ));
+            }
             Scan::Markdown if from.starts_with("](") => {
                 let after = start.checked_add(2)?;
                 let spaces = self.text.get(after..)?;
@@ -227,8 +255,8 @@ impl<'t> Links<'t> {
                     next,
                 ));
             }
-            Scan::Markdown if from.starts_with("][") => Some(Link::Reference),
-            Scan::Written | Scan::Markdown => None,
+            Scan::Markdown | Scan::Enclosed if from.starts_with("][") => Some(Link::Reference),
+            Scan::Written | Scan::Markdown | Scan::Enclosed => None,
         };
         Some((link, start.checked_add(1)?))
     }
@@ -248,7 +276,7 @@ impl<'t> Iterator for Links<'t> {
     fn next(&mut self) -> Option<Link<'t>> {
         let markers: &[char] = match self.scan {
             Scan::Written => &[':', 'w'],
-            Scan::Markdown => &[']'],
+            Scan::Markdown | Scan::Enclosed => &[']'],
         };
         loop {
             let found = self.text.get(self.at..)?.find(markers)?;
@@ -261,15 +289,6 @@ impl<'t> Iterator for Links<'t> {
             }
         }
     }
-}
-
-/// Whether a line of `prose` defines a link reference, `[label]: target`.
-fn has_definition(prose: &str) -> bool {
-    prose.lines().any(|line| {
-        line.trim_start()
-            .strip_prefix('[')
-            .is_some_and(|rest| rest.contains("]:"))
-    })
 }
 
 /// Whether `url` (after `https://`) names an allowed host, or a path in `repository` on GitHub.
@@ -288,12 +307,16 @@ fn is_allowed(url: &str, repository: &str) -> bool {
 }
 
 /// Whether `url` (after `https://`) is `github.com/<repository>` or a path under it, after
-/// resolving `.` and `..` segments as a browser would. A path holding `%` or `\` is refused,
-/// since either can spell a segment the resolution does not see.
+/// resolving `.` and `..` segments as a browser would. A path holding `%` or `\`, or a URL
+/// holding `&` anywhere, is refused, since each can spell a segment the resolution does not
+/// see (`&#46;` is a character reference to `.`).
 fn in_repository(url: &str, repository: &str) -> bool {
     let (authority, path) = split_authority(url);
     let path = path.split(['?', '#']).next().unwrap_or(path);
-    if !matches!(authority, "github.com" | "www.github.com") || path.contains(['%', '\\']) {
+    if !matches!(authority, "github.com" | "www.github.com")
+        || path.contains(['%', '\\'])
+        || url.contains('&')
+    {
         return false;
     }
     let mut segments: Vec<&str> = Vec::new();

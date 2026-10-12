@@ -45,10 +45,12 @@ pub(super) fn enclosing_functions(text: &str) -> Vec<&str> {
                 open.pop();
             }
         }
-        let outer = open
-            .iter()
-            .rev()
-            .find(|opener| opener.depth < depth)
+        // Depths rise strictly up the stack, so the nearest shallower opener is found by binary
+        // search: O(log d) per line, however deep the nesting and however many blank lines.
+        let shallower = open.partition_point(|opener| opener.depth < depth);
+        let outer = shallower
+            .checked_sub(1)
+            .and_then(|index| open.get(index))
             .map_or("", |opener| opener.function);
         let function = signature_name(line).unwrap_or(outer);
         functions.push(function);
