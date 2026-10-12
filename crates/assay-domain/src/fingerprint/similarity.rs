@@ -5,19 +5,33 @@ const NUMERATOR: usize = 4;
 /// See [`NUMERATOR`].
 const DENOMINATOR: usize = 5;
 
-/// Whether two normalised lines are at least 0.8 similar, similarity being
+/// The longest text compared, in characters: the schema's cap on `evidence` (03 §3). Anything
+/// longer is never similar, so the quadratic comparison stays bounded and fails safe.
+const MAX_CHARS: usize = 400;
+
+/// Whether two normalised texts are at least 0.8 similar, similarity being
 /// `1 - edit_distance / longer_length` over characters.
 ///
-/// Compared in integers, `5 * distance <= longer_length`, so the threshold is exact. Takes
-/// time proportional to the product of the lengths; evidence is capped at 400 characters by the
-/// schema before it gets here.
+/// Compared in integers, `5 * distance <= longer_length`, so the threshold is exact. A text over
+/// [`MAX_CHARS`] is never similar. Since the distance is at least the difference in length,
+/// texts whose lengths differ by more than a fifth of the longer are rejected before the
+/// quadratic edit distance runs.
 pub(super) fn similar(left: &str, right: &str) -> bool {
+    let (left_len, right_len) = (left.chars().count(), right.chars().count());
+    let longer = left_len.max(right_len);
+    let shorter = left_len.min(right_len);
+    if longer > MAX_CHARS || !within_threshold(longer.saturating_sub(shorter), longer) {
+        return false;
+    }
     let left: Vec<char> = left.chars().collect();
     let right: Vec<char> = right.chars().collect();
-    let longer = left.len().max(right.len());
-    // 1 - d / n >= 4 / 5  <=>  5 * d <= (5 - 4) * n.
-    edit_distance(&left, &right).saturating_mul(DENOMINATOR)
-        <= longer.saturating_mul(DENOMINATOR - NUMERATOR)
+    within_threshold(edit_distance(&left, &right), longer)
+}
+
+/// Whether `distance` edits over `longer` characters leave at least 0.8 similarity:
+/// `1 - d / n >= 4 / 5  <=>  5 * d <= (5 - 4) * n`.
+const fn within_threshold(distance: usize, longer: usize) -> bool {
+    distance.saturating_mul(DENOMINATOR) <= longer.saturating_mul(DENOMINATOR - NUMERATOR)
 }
 
 /// The Levenshtein distance between `left` and `right`: the fewest single-character
@@ -82,6 +96,19 @@ mod tests {
         assert_eq!(
             (similar("kitten", "sitting"), similar("kitten", "kittens")),
             (false, true)
+        );
+    }
+
+    #[test]
+    fn refuses_text_over_the_evidence_cap_even_when_identical() {
+        let over = "a".repeat(401);
+
+        assert_eq!(
+            (
+                similar(&"a".repeat(400), &"a".repeat(400)),
+                similar(&over, &over)
+            ),
+            (true, false)
         );
     }
 

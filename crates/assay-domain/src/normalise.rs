@@ -21,6 +21,17 @@ const OTHER_QUOTES: [char; 6] = ['\'', '`', '\u{2018}', '\u{2019}', '\u{201c}', 
 ///
 /// Linear in the length of `text`.
 ///
+/// # Limits
+///
+/// The comment rule is tuned for Rust and stays approximate elsewhere: only `"` strings are
+/// tracked, so a `#` or `//` inside a single-quoted string (YAML, shell) can be taken for a
+/// comment; Python's floor division `a // b` is stripped as a comment; shell backticks become
+/// `"` like any other quote. Both sides of a comparison go through the same function, so these
+/// limits cost precision, never consistency.
+///
+/// Apply it to raw text only. It is not idempotent: unifying quotes can open a `"` string that
+/// changes how a second pass reads comments, so normalised text is never normalised again.
+///
 /// # Examples
 ///
 /// ```
@@ -38,12 +49,21 @@ pub fn normalise(text: &str) -> String {
         }
         spaced.extend(word.chars().map(unify_quote));
     }
-    spaced
-        .replace(ASCII_WILDCARD, WILDCARD)
-        .split(WILDCARD)
-        .map(|piece| piece.trim_matches(' '))
-        .collect::<Vec<_>>()
-        .join(WILDCARD)
+    let wildcarded = spaced.replace(ASCII_WILDCARD, WILDCARD);
+    let mut normalised = String::with_capacity(wildcarded.len());
+    for (index, piece) in wildcarded.split(WILDCARD).enumerate() {
+        if index > 0 {
+            normalised.push_str(WILDCARD);
+        }
+        normalised.push_str(piece.trim_matches(' '));
+    }
+    normalised
+}
+
+/// Whether normalised text has content: anything but wildcards. Blank and elision-only text
+/// (`""`, `"…"`, `"……"`) has none.
+pub(crate) fn has_content(normalised: &str) -> bool {
+    normalised.split(WILDCARD).any(|piece| !piece.is_empty())
 }
 
 /// `line` without its trailing comment; a line that is only a comment is returned whole.

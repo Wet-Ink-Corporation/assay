@@ -31,8 +31,14 @@ pub enum DismissalMatch {
 
 impl Dismissal<'_> {
     /// Judges a finding at `anchor` with `severity` against this dismissal: it matches when it
-    /// is in the same file and enclosing symbol, of the same class, and its normalised first
-    /// line of evidence is at least 0.8 similar to the dismissed one's.
+    /// is in the same file and enclosing symbol, of the same class, has a line of evidence with
+    /// content, and its whole normalised evidence (and, for an omission, its normalised
+    /// `expected_behavior`) is at least 0.8 similar to the dismissed one's.
+    ///
+    /// Precondition: evidence within the schema's 400-character cap (03 §3). The comparison
+    /// takes time proportional to the product of the two lengths, so a normalised text over
+    /// 400 characters is never similar: the finding is `Unrelated` and gets published, which
+    /// fails safe.
     #[must_use]
     pub fn judge(&self, anchor: &Anchor<'_>, severity: Severity) -> DismissalMatch {
         if !anchor.resembles(&self.anchor) {
@@ -61,6 +67,7 @@ mod tests {
             file: "src/lib.rs",
             enclosing_symbol: "parse",
             evidence,
+            expected_behavior: None,
         }
     }
 

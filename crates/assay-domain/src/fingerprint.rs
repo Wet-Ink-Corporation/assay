@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
 use crate::finding::Class;
-use crate::normalise::normalise;
+use crate::normalise::{has_content, normalise};
 
 /// Hex digits in the wire form: two per byte of the 8-byte fingerprint.
 const HEX_DIGITS: usize = 16;
@@ -28,22 +28,36 @@ pub struct Anchor<'a> {
     pub file: &'a str,
     /// The enclosing symbol, empty at file scope.
     pub enclosing_symbol: &'a str,
-    /// The finding's evidence, verbatim; only its first non-blank line, normalised, counts.
+    /// The finding's evidence, verbatim. The fingerprint uses its first line with content,
+    /// normalised; the fuzzy match uses all of it, normalised.
     pub evidence: &'a str,
+    /// For an omission, what should happen instead; `None` for a defect.
+    pub expected_behavior: Option<&'a str>,
 }
 
 impl Anchor<'_> {
     /// The fingerprint of this anchor's `occurrence_index`-th occurrence, counting from 0, of
     /// its normalised first line of evidence within the file and symbol (03 §3).
     ///
-    /// The digest is over class code, file, enclosing symbol and normalised first line, each
-    /// prefixed with its byte length as a big-endian `u64` so no boundary can move, then the
-    /// index as a big-endian `u32`; the fingerprint is the digest's first 8 bytes.
+    /// The digest is over class code, file, enclosing symbol, the first line of evidence with
+    /// content (normalised, neither blank nor only wildcards) and, for an omission, its
+    /// normalised `expected_behavior`, each prefixed with its byte length as a big-endian `u64`
+    /// so no boundary can move, then the index as a big-endian `u32`; the fingerprint is the
+    /// digest's first 8 bytes. A defect has no fifth field, so its fingerprint is what it was
+    /// before omissions gained one.
     #[must_use]
     pub fn fingerprint(&self, occurrence_index: u32) -> Fingerprint {
         let line = self.first_line();
+        let expected = self.expected_behavior.map(normalise);
+        let fields = [
+            Some(self.class.code()),
+            Some(self.file),
+            Some(self.enclosing_symbol),
+            Some(line.as_str()),
+            expected.as_deref(),
+        ];
         let mut hasher = Sha256::new();
-        for field in [self.class.code(), self.file, self.enclosing_symbol, &line] {
+        for field in fields.into_iter().flatten() {
             // `usize` is at most 64 bits on every target Rust supports, so this never saturates.
             let len = u64::try_from(field.len()).unwrap_or(u64::MAX);
             hasher.update(len.to_be_bytes());
@@ -56,21 +70,31 @@ impl Anchor<'_> {
     }
 
     /// Whether this anchor fuzzily matches `other` (03 §3): same file, same enclosing symbol,
-    /// same class, and normalised first lines of evidence at least 0.8 similar.
+    /// same class, both with a line of content, whole normalised evidence at least 0.8 similar,
+    /// and, for omissions, normalised `expected_behavior` at least 0.8 similar too. Evidence
+    /// without content (blank, or only elisions) matches nothing, so it can never be suppressed.
     pub(crate) fn resembles(&self, other: &Anchor<'_>) -> bool {
+        let expected_alike = match (self.expected_behavior, other.expected_behavior) {
+            (None, None) => true,
+            (Some(mine), Some(theirs)) => similarity::similar(&normalise(mine), &normalise(theirs)),
+            (Some(_), None) | (None, Some(_)) => false,
+        };
         self.class == other.class
             && self.file == other.file
             && self.enclosing_symbol == other.enclosing_symbol
-            && similarity::similar(&self.first_line(), &other.first_line())
+            && !self.first_line().is_empty()
+            && !other.first_line().is_empty()
+            && similarity::similar(&normalise(self.evidence), &normalise(other.evidence))
+            && expected_alike
     }
 
-    /// The first line of evidence that is not blank once normalised, normalised; empty if
-    /// there is none.
+    /// The first line of evidence with content once normalised (neither blank nor only
+    /// wildcards), normalised; empty if there is none.
     fn first_line(&self) -> String {
         self.evidence
             .lines()
             .map(normalise)
-            .find(|line| !line.is_empty())
+            .find(|line| has_content(line))
             .unwrap_or_default()
     }
 }
@@ -168,7 +192,82 @@ mod tests {
             file: "crates/x/src/lib.rs",
             enclosing_symbol: "parse",
             evidence,
+            expected_behavior: None,
         }
+    }
+
+    /// An omission in `parse`, anchored on its signature, expecting `expected_behavior`.
+    fn omission_in_parse(expected_behavior: &str) -> Anchor<'_> {
+        Anchor {
+            class: Class::Tests,
+            file: "crates/x/src/lib.rs",
+            enclosing_symbol: "parse",
+            evidence: "pub fn parse(input: &str) -> Result<Request, ParseError>",
+            expected_behavior: Some(expected_behavior),
+        }
+    }
+
+    // Golden value from Python's hashlib: an omission adds its normalised `expected_behavior`
+    // as a fifth length-prefixed field before the index.
+    #[test]
+    fn hashes_an_omission_s_expected_behavior_as_a_fifth_field() {
+        let anchor = omission_in_parse("an empty input is  rejected with ParseError::Empty");
+
+        assert_eq!(anchor.fingerprint(0).to_string(), "4fd05899e34998cf");
+    }
+
+    #[test]
+    fn two_omissions_in_one_function_with_different_expectations_differ() {
+        let empty = omission_in_parse("an empty input is rejected with ParseError::Empty");
+        let long = omission_in_parse("an input over 1 MiB is rejected before parsing");
+
+        assert_ne!(empty.fingerprint(0), long.fingerprint(0));
+        assert!(!empty.resembles(&long));
+    }
+
+    #[test]
+    fn skips_blank_and_elision_only_lines_to_the_first_line_with_content() {
+        let elided = unwrap_in_parse("...\n  \u{2026}  ... \n\n let x = y.unwrap();");
+
+        assert_eq!(
+            elided.fingerprint(0),
+            unwrap_in_parse("let x = y.unwrap();").fingerprint(0)
+        );
+    }
+
+    #[test]
+    fn different_lines_behind_the_same_elision_differ() {
+        let first = unwrap_in_parse("...\nlet x = y.unwrap();");
+        let second = unwrap_in_parse("...\ndrop(guard);");
+
+        assert_ne!(first.fingerprint(0), second.fingerprint(0));
+    }
+
+    #[test]
+    fn a_comment_only_first_line_is_content() {
+        let commented = unwrap_in_parse("// SAFETY: checked above\nlet x = y.unwrap();");
+
+        assert_eq!(
+            commented.fingerprint(0),
+            unwrap_in_parse("// SAFETY: checked above").fingerprint(0)
+        );
+    }
+
+    #[test]
+    fn evidence_without_content_resembles_nothing() {
+        for (left, right) in [("...", "..."), ("", ""), (" \n\u{2026}", "...")] {
+            assert!(
+                !unwrap_in_parse(left).resembles(&unwrap_in_parse(right)),
+                "{left:?} vs {right:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resembles_over_the_whole_evidence_not_only_the_first_line() {
+        let dismissed = unwrap_in_parse("let x = y.unwrap();\nfoo_bar_baz_qux_quux();");
+
+        assert!(!unwrap_in_parse("let x = y.unwrap();\na();").resembles(&dismissed));
     }
 
     // Golden values from Python's hashlib over the same length-prefixed fields: any change to
@@ -221,7 +320,7 @@ mod tests {
 
     #[test]
     fn resembles_a_reworded_quote_of_the_same_line() {
-        let dismissed = unwrap_in_parse("let x = y.unwrap(); // ok\nmore();");
+        let dismissed = unwrap_in_parse("let x = y.unwrap(); // ok");
 
         let reworded = unwrap_in_parse("let  x = y.unwrap()");
 
