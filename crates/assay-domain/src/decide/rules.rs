@@ -8,7 +8,7 @@ use crate::decide::inputs::{
     LlmStage, OwnerApproval, ReviewedFinding, WeighIn,
 };
 use crate::decide::waive::Waivers;
-use crate::decision::Reason;
+use crate::decision::{DegradedRole, Reason};
 use crate::event::VerifierVerdict;
 use crate::findings::GateConclusion;
 use crate::reason::ReasonCode;
@@ -52,6 +52,7 @@ pub(super) fn evaluate(
     rubric: &Rubric,
     inputs: &DecisionInputs,
     waivers: &Waivers<'_>,
+    degraded: &[DegradedRole],
 ) -> Vec<Firing> {
     let mut firings = Vec::new();
     firings.extend(gates(inputs, waivers));
@@ -59,7 +60,7 @@ pub(super) fn evaluate(
     firings.extend(weigh_in(inputs.weigh_in));
     firings.extend(blockers(inputs));
     firings.extend(majors(rubric, inputs));
-    firings.extend(llm(rubric, inputs));
+    firings.extend(llm(rubric, inputs, degraded));
     firings
 }
 
@@ -199,9 +200,8 @@ fn majors(rubric: &Rubric, inputs: &DecisionInputs) -> Option<Firing> {
     })
 }
 
-/// Rule 8: a deferred LLM stage (8a) or degraded required roles (8b), each a warning
-/// otherwise (8c).
-fn llm(rubric: &Rubric, inputs: &DecisionInputs) -> Vec<Firing> {
+/// Rule 8: a deferred LLM stage (8a) or `degraded` roles (8b), each a warning otherwise (8c).
+fn llm(rubric: &Rubric, inputs: &DecisionInputs, degraded: &[DegradedRole]) -> Vec<Firing> {
     let pr = &inputs.pr;
     let policy = &inputs.policy;
     let blocks_on_infra = policy.on_infra_failure == InfraPolicy::Block
@@ -230,7 +230,7 @@ fn llm(rubric: &Rubric, inputs: &DecisionInputs) -> Vec<Firing> {
             )
         });
     }
-    firings.extend(inputs.degraded.iter().map(|role| {
+    firings.extend(degraded.iter().map(|role| {
         let detail = format!("{}: {}", role.role, role.reason);
         if blocks_on_infra {
             firing(Effect::LlmFail, ReasonCode::RequiredRoleDegraded, detail)

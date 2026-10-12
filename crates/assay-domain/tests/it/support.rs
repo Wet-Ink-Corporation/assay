@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use assay_domain::{
     Authorship, DecisionInputs, Fingerprint, GateConclusion, GateFinding, GateOutcome, GateReport,
     InfraPolicy, LlmPolicy, LlmStage, OwnerApproval, Policy, PrClass, PullRequest, Readiness,
-    Reason, ReasonCode, ReviewedFinding, Rubric, Severity, StepAttribution, Tier, VerifierVerdict,
-    WeighIn,
+    Reason, ReasonCode, RequiredRole, ReviewedFinding, Rubric, Severity, StepAttribution,
+    SupportOutcome, Tier, VerifierVerdict, WeighIn,
 };
 use assay_domain::{
     BaselineChange, ChangeSet, FileChange, Glob, GlobError, Lines, PackageDiff, RepoGlobs,
@@ -96,7 +96,8 @@ pub(crate) fn invalid_fixtures(contract: &str) -> io::Result<BTreeMap<String, Ve
 }
 
 /// Inputs that pass every rule: a `lite` PR into a protected `main`, one required gate that
-/// passed, a completed LLM stage, no findings and no commands.
+/// passed, a completed LLM stage in which every specialist role, the coordinator and the
+/// verifier completed (so a test may change the tier or classes), no findings and no commands.
 pub(crate) fn clean_inputs() -> DecisionInputs {
     DecisionInputs {
         decision_key: "dec-42-1".to_owned(),
@@ -123,10 +124,23 @@ pub(crate) fn clean_inputs() -> DecisionInputs {
         llm: LlmStage::Completed,
         findings: Vec::new(),
         dispositions: Vec::new(),
+        completed_roles: RequiredRole::ALL.into_iter().collect(),
+        coordinator: SupportOutcome::Completed,
+        verifier: SupportOutcome::Completed,
         degraded: Vec::new(),
         waivers: Vec::new(),
         override_record: None,
     }
+}
+
+/// Clean inputs made a `full` PR of class trust path that the owner approved, with every
+/// required role completed.
+pub(crate) fn full_trust_path() -> DecisionInputs {
+    let mut inputs = clean_inputs();
+    inputs.pr.tier = Tier::Full;
+    inputs.pr.classes = vec![PrClass::TrustPath];
+    inputs.pr.owner_approval = OwnerApproval::Approved;
+    inputs
 }
 
 /// A required gate that ran and concluded `conclusion` with `findings`, whose adapter did not

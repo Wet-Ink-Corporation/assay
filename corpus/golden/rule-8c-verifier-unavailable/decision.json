@@ -1,0 +1,29 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-8c-verifier-unavailable",
+  "evidence_key": "run-rule-8c-verifier-unavailable",
+  "conclusion": "success",
+  "reasons": [
+    {
+      "code": "llm-degraded",
+      "detail": "verifier: unavailable"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [
+    {
+      "role": "verifier",
+      "reason": "unavailable"
+    }
+  ],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:02ac0fd1c4c4ff3e8fced4de69939f6b12a45dc965f8c38aeee19157b15342fc"
+}

@@ -32,9 +32,9 @@ pub use aeu::Aeu;
 pub use content_hash::ContentHash;
 pub use decide::decide;
 pub use decide::inputs::{
-    Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
-    LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
-    Readiness, ReviewedFinding, StepAttribution, Waiver, WeighIn,
+    Authorship, CallFailure, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport,
+    InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy,
+    PullRequest, Readiness, ReviewedFinding, StepAttribution, SupportOutcome, Waiver, WeighIn,
 };
 pub use decision::{
     Conclusion, Counts, Decision, DecisionSchema, DegradedRole, FindingDisposition, Reason, Waived,
