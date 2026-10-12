@@ -13,18 +13,22 @@ adapter. Implements application ports; each tool's JSON shape is a DTO here, con
 
 ## Public surface
 Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`:
-- `ExecAdapter<S>` (`new`; implements `assay_app::GateRunner`), `ExecSettings`, `ExecLimits` (`DEFAULT`), `FINDINGS_OUT_VAR`, `FINDINGS_FILE`: the `exec` adapter (`src/exec.rs`).
-- `Supervisor` (implemented for `&mut S` too) and `ProcessSpec`: the bounded process runner the exec adapter is generic over. No production implementation lives here yet; see Decisions.
+- `ExecAdapter<S>` (`new`; implements `assay_app::GateRunner`), `ExecSettings` (`new`, refusing a relative checkout or output root with `ExecSettingsError`), `ExecLimits` (`DEFAULT`), `FINDINGS_OUT_VAR`, `FINDINGS_FILE`: the `exec` adapter (`src/exec.rs`).
+- `Supervisor` (implemented for `&mut S` too) and `ProcessSpec`: the bounded process runner the exec adapter is generic over. The production implementation is `assay_cli::ForgeSupervisor`, which delegates to `assay-forge`'s process-group supervisor (wi-603c63); this crate does not depend on forge.
 - `GateEnvironment` (`from_vars`, `vars`): the inherited-variable allowlist (`src/environment.rs`).
 
 ## Invariants
 - Gate tools run as external processes with timeouts and size-capped output (H-13).
-- A gate process sees only `PATH`, `HOME`, `CI` and `ASSAY_*` (exact, case-sensitive names) plus the adapter's `ASSAY_FINDINGS_OUT`, which always overrides an inherited one.
+- A gate process sees only `PATH`, `HOME`, `CI`, `ASSAY_BASE_SHA`, `ASSAY_HEAD_SHA` and `ASSAY_RUN_KEY` (exact, case-sensitive names, 03 §2; no other `ASSAY_*` variable) plus the adapter's `ASSAY_FINDINGS_OUT`, which always overrides an inherited one.
+- The checkout and the output root are absolute paths (`ExecSettings::new`), so neither depends on this process's working directory.
 - `exec` runs only in its own Z2b job: `gates-static`, another Z2b job or a non-`exec` plugin is refused before anything runs.
 - Each run writes into `<output_root>/<plugin>/`, created fresh; an existing directory is refused, so a stale document is never read. The document is read only when it is a regular file (never through a symlink) of at most `max_document_bytes`.
 
 ## Errors
-`ExecError<E>` (`NotExec`, `OutsideBuildJob`, `WrongJob`, `OutputDirectory`, `Supervisor(E)`, `ReadDocument`): the gate could not run, recorded by the use case as `gate-error:not-run`. A gate that ran and failed is a `GateRun`, never an error (ERR-10).
+`ExecError<E>` (`NotExec`, `OutsideBuildJob`, `WrongJob`, `OutputDirectory`, `Supervisor(E)`, `ReadDocument`): the gate could not run, recorded by the use case as `gate-error:not-run`. A gate that ran and failed is a `GateRun`, never an error (ERR-10). `ExecSettingsError` (`RelativeCheckout`, `RelativeOutputRoot`): the composition root passed a relative directory.
+
+## Known gaps
+- FIFO swap (`read_document`): the document's type check and its open are two calls. The supervisor has shown the gate's group gone first, so only a process that left the group (`setsid`) could swap a FIFO in between, which would block the open. Closing it needs `O_NOFOLLOW | O_NONBLOCK`, which std cannot name without `libc` (H-16; #152 F8).
 
 ## Test strategy
 Integration tests in `tests/it/` parse recorded tool outputs; missing contract surface is requested upstream, not reverse-engineered. The exec adapter is tested against a scripted `Supervisor` that plays the gate process (`tests/it/support.rs`). Run: `cargo test -p assay-gates`.
@@ -37,3 +41,5 @@ Integration tests in `tests/it/` parse recorded tool outputs; missing contract s
 |---|---|---|---|
 | 2026-10-11 | Crate created empty (Story #46); edges are added when first used. | ARC-12, CRF-05 | Story #46 |
 | 2026-10-11 | Adds the `assay-app` edge and `thiserror` with the `exec` adapter. The process-group supervisor in `assay-forge` is not reachable from here (forbidden edge, and `pub(crate)`), so the adapter is generic over `Supervisor`; where the real supervisor lives is an open crate-boundary decision. | ARC-02, H-13, H-16 | Story #62, owner to decide |
+| 2026-10-12 | Decided: forge's supervisor is made public and `assay-cli` implements `Supervisor` with it (`ForgeSupervisor`); no new edge from this crate. | ADR-07, H-16 | owner, Weigh-In wi-603c63 (decided A), #150 |
+| 2026-10-12 | #152 review follow-ups: only the three `ASSAY_*` variables 03 §2 names pass (F7), `ExecSettings` is built by a validating `new` with private fields (F2, an API change inside the workspace), `WrongJob` displays the job as `gates-lint`/`gates-test` (F10), and the FIFO gap is recorded above (F8). | H-13, API-03, H-16 | #152, #150 |

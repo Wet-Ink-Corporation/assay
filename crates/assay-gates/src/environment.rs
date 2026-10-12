@@ -2,17 +2,24 @@
 
 use std::ffi::{OsStr, OsString};
 
-/// Exact names passed through from the inherited environment.
-const ALLOWED: [&str; 3] = ["PATH", "HOME", "CI"];
+/// The names passed through from the inherited environment (03 §2). The assay variables are
+/// named one by one, not by prefix, so that no future `ASSAY_*` secret reaches PR-controlled
+/// code.
+const ALLOWED: [&str; 6] = [
+    "PATH",
+    "HOME",
+    "CI",
+    "ASSAY_BASE_SHA",
+    "ASSAY_HEAD_SHA",
+    "ASSAY_RUN_KEY",
+];
 
-/// Prefix of the assay variables passed through (`ASSAY_BASE_SHA`, `ASSAY_HEAD_SHA`,
-/// `ASSAY_RUN_KEY`).
-const ASSAY_PREFIX: &str = "ASSAY_";
-
-/// The inherited variables a gate process may see: `PATH`, `HOME`, `CI` and `ASSAY_*`.
+/// The inherited variables a gate process may see: `PATH`, `HOME`, `CI`, `ASSAY_BASE_SHA`,
+/// `ASSAY_HEAD_SHA` and `ASSAY_RUN_KEY`.
 ///
-/// Names match exactly and case-sensitively. Everything else, tokens included, is dropped.
-/// Capture it once at the composition root from `std::env::vars_os()`.
+/// Names match exactly and case-sensitively. Everything else, tokens and any other `ASSAY_*`
+/// variable included, is dropped. Capture it once at the composition root from
+/// `std::env::vars_os()`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GateEnvironment {
     vars: Vec<(OsString, OsString)>,
@@ -36,10 +43,5 @@ impl GateEnvironment {
 
 /// Whether a variable named `name` may reach a gate.
 fn allowed(name: &OsStr) -> bool {
-    name.to_str().is_some_and(|name| {
-        ALLOWED.contains(&name)
-            || name
-                .strip_prefix(ASSAY_PREFIX)
-                .is_some_and(|rest| !rest.is_empty())
-    })
+    name.to_str().is_some_and(|name| ALLOWED.contains(&name))
 }

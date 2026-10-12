@@ -9,3 +9,5 @@ mod fetch_by_digest;
 mod layering;
 mod layout;
 mod release_workflow;
+#[cfg(unix)] // process groups and Unix file modes
+mod supervisor;

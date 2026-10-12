@@ -9,7 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use assay_app::{ModelOutcome, ModelRunner};
+use assay_app::{ModelOutcome, ModelRunner, Prompt};
 use assay_domain::Aeu;
 use assay_runner::{
     ClaudeHeadless, EnvVarError, HeadlessEnv, HeadlessError, Workdir, WorkdirError,
@@ -17,21 +17,27 @@ use assay_runner::{
 use serde_json::Value;
 use tempfile::TempDir;
 
-use crate::support::{BUDGET, call, fixtures_dir, stream_path};
+use crate::support::{BUDGET, RecordingKill, call, fixtures_dir, stream_path};
 
 const TOKEN: &str = "sk-ant-oat01-test-token";
 
-/// A scratch directory with an empty working directory and a directory for the fake's records.
+/// A scratch directory with an empty working directory and a directory for the fake's records,
+/// and the group killer its runners use.
 struct Scene {
     root: TempDir,
+    killer: RecordingKill,
 }
 
 impl Scene {
     fn new() -> Result<Self, Box<dyn Error>> {
+        Self::with_killer(RecordingKill::default())
+    }
+
+    fn with_killer(killer: RecordingKill) -> Result<Self, Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         fs::create_dir(root.path().join("empty"))?;
         fs::create_dir(root.path().join("record"))?;
-        Ok(Self { root })
+        Ok(Self { root, killer })
     }
 
     fn workdir(&self) -> PathBuf {
@@ -43,7 +49,11 @@ impl Scene {
     }
 
     /// A runner whose fake `claude` prints the stream `name`, then hangs when `hang`.
-    fn runner(&self, name: &str, hang: bool) -> Result<ClaudeHeadless, Box<dyn Error>> {
+    fn runner(
+        &self,
+        name: &str,
+        hang: bool,
+    ) -> Result<ClaudeHeadless<&RecordingKill>, Box<dyn Error>> {
         let mut env = HeadlessEnv::new(TOKEN);
         env.pass("FAKE_RECORD", self.root.path().join("record"))?;
         env.pass("FAKE_STREAM", stream_path(name))?;
@@ -54,7 +64,13 @@ impl Scene {
             fixtures_dir().join("fake-claude"),
             Workdir::new(self.workdir())?,
             env,
+            &self.killer,
         ))
+    }
+
+    /// The pid of the fake as it recorded it, which is also its process group's id.
+    fn pid(&self) -> Result<u32, Box<dyn Error>> {
+        Ok(fs::read_to_string(self.record("pid"))?.trim().parse()?)
     }
 
     /// The arguments the fake was started with.
@@ -271,6 +287,88 @@ fn output_past_the_cap_is_malformed_and_charged_the_cap() -> Result<(), Box<dyn 
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
+fn a_timeout_kills_the_clis_whole_group_before_the_cli_is_reaped() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new()?;
+    let mut call = call()?;
+    call.timeout = Duration::from_millis(300);
+
+    scene.runner("partial", true)?.run(&call)?;
+
+    // The CLI leads its own group, so the group id is its pid, which cannot be reused while
+    // the CLI is unreaped.
+    assert_eq!(scene.killer.take_asked(), [(scene.pid()?, true)]);
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
+fn a_transcript_past_the_cap_kills_the_clis_whole_group() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new()?;
+    // The stand-in keeps running after it prints, so only the cap can stop it.
+    let runner = scene.runner("ok", true)?.with_max_output_bytes(64);
+
+    let result = runner.run(&call()?)?;
+
+    assert_eq!(
+        (result.outcome, scene.killer.take_asked()),
+        (ModelOutcome::Malformed, vec![(scene.pid()?, true)])
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
+fn a_cli_that_exits_has_whatever_it_left_in_its_group_killed() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new()?;
+
+    let result = scene.runner("ok", false)?.run(&call()?)?;
+
+    let asked: Vec<u32> = scene
+        .killer
+        .take_asked()
+        .into_iter()
+        .map(|(group, _)| group)
+        .collect();
+    assert_matches!(result.outcome, ModelOutcome::Ok(_));
+    assert_eq!(asked, [scene.pid()?]);
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
+fn a_group_that_cannot_be_killed_is_a_kill_error_that_may_have_run() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::with_killer(RecordingKill::failing())?;
+
+    let failed = scene.runner("ok", false)?.run(&call()?);
+
+    assert_matches!(&failed, Err(error @ HeadlessError::Kill(_)) if error.may_have_run());
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
+fn a_prompt_larger_than_one_argument_reaches_claude_whole() -> Result<(), Box<dyn Error>> {
+    // Linux caps one argument at 128 KiB (MAX_ARG_STRLEN), the reason for wi-9fe37e.
+    let scene = Scene::new()?;
+    let mut call = call()?;
+    let text: String = "Context pack line.\n"
+        .chars()
+        .cycle()
+        .take(256 * 1024)
+        .collect();
+    call.user_prompt = Prompt::new(text)?;
+
+    scene.runner("ok", false)?.run(&call)?;
+
+    assert!(
+        fs::read(scene.record("stdin"))? == call.user_prompt.as_str().as_bytes(),
+        "the 256 KiB prompt must reach stdin byte for byte"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_working_directory_that_is_no_longer_empty_stops_the_call() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new()?;
     let runner = scene.runner("ok", false)?;
@@ -323,6 +421,7 @@ fn a_program_that_cannot_start_is_a_spawn_error_that_never_ran() -> Result<(), B
         scene.root.path().join("absent-claude"),
         Workdir::new(scene.workdir())?,
         HeadlessEnv::new(TOKEN),
+        &scene.killer,
     );
 
     let failed = runner.run(&call()?);

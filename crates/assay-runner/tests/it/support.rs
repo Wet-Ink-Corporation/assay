@@ -1,13 +1,53 @@
 //! Fixtures and a model call to run them under.
 
+use std::cell::RefCell;
 use std::error::Error;
 use std::fs;
+use std::io;
 use std::num::NonZeroU8;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use assay_app::{ModelCall, Prompt};
 use assay_domain::Aeu;
+use assay_runner::GroupKill;
+
+/// A [`GroupKill`] that signals nothing: it records each group it is asked to kill, with
+/// whether the group's leader still held its pid (was not yet reaped) at that moment, and
+/// fails when told to.
+#[derive(Debug, Default)]
+pub(crate) struct RecordingKill {
+    fail: bool,
+    // Interior mutability: `GroupKill::kill_group` takes `&self`, as `ModelRunner::run` does.
+    asked: RefCell<Vec<(u32, bool)>>,
+}
+
+impl RecordingKill {
+    /// A killer whose every kill fails, as when the group outlives its grace.
+    pub(crate) fn failing() -> Self {
+        Self {
+            fail: true,
+            asked: RefCell::default(),
+        }
+    }
+
+    /// Each group asked for since the last call, with whether its leader was still unreaped.
+    pub(crate) fn take_asked(&self) -> Vec<(u32, bool)> {
+        self.asked.take()
+    }
+}
+
+impl GroupKill for RecordingKill {
+    fn kill_group(&self, group: u32) -> io::Result<()> {
+        let leader_unreaped = Path::new(&format!("/proc/{group}")).exists();
+        self.asked.borrow_mut().push((group, leader_unreaped));
+        if self.fail {
+            Err(io::Error::other("scripted: the group is still alive"))
+        } else {
+            Ok(())
+        }
+    }
+}
 
 /// The cap every test call runs under: 0.74 AEU, the lite tier's.
 pub(crate) const BUDGET: Aeu = Aeu::from_micros(740_000);

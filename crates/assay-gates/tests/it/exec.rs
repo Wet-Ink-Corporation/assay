@@ -2,17 +2,20 @@
 //! bounded by the plugin's timeout and the output caps (`docs/architecture/03-contracts.md` §1,
 //! §2).
 
+use std::assert_matches;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use assay_app::{
     BuildJob, Conclusion, ContractValidator, GateDocument, GateJob, GateOutcome, GateRun,
     GateRunner, Termination, run_gates,
 };
-use assay_gates::{ExecAdapter, ExecError, ExecLimits, ExecSettings, GateEnvironment};
+use assay_gates::{
+    ExecAdapter, ExecError, ExecLimits, ExecSettings, ExecSettingsError, GateEnvironment,
+};
 use tempfile::TempDir;
 
 use crate::support::{FakeSpawnError, FakeSupervisor, Leaves, config, document, plugin};
@@ -44,17 +47,17 @@ impl Dirs {
         })
     }
 
-    fn settings(&self, inherited: &[(&str, &str)]) -> ExecSettings {
-        ExecSettings {
-            checkout: self.checkout.clone(),
-            output_root: self.output_root.clone(),
-            environment: GateEnvironment::from_vars(
+    fn settings(&self, inherited: &[(&str, &str)]) -> Result<ExecSettings, ExecSettingsError> {
+        ExecSettings::new(
+            &self.checkout,
+            &self.output_root,
+            GateEnvironment::from_vars(
                 inherited
                     .iter()
                     .map(|(name, value)| (OsString::from(name), OsString::from(value))),
             ),
-            limits: LIMITS,
-        }
+            LIMITS,
+        )
     }
 
     fn findings_path(&self) -> PathBuf {
@@ -70,7 +73,7 @@ fn run_exec(
 ) -> Result<Result<GateRun, ExecError<FakeSpawnError>>, Box<dyn Error>> {
     let config = config()?;
     let custom = plugin(&config, "custom-lint")?;
-    let mut adapter = ExecAdapter::new(supervisor, dirs.settings(&[("PATH", "/bin")]));
+    let mut adapter = ExecAdapter::new(supervisor, dirs.settings(&[("PATH", "/bin")])?);
     Ok(adapter.run(&custom, job))
 }
 
@@ -88,7 +91,7 @@ fn passes_only_the_allowlist_and_the_findings_path_to_the_process() -> Result<()
             ("HOME", "/home/runner"),
             ("CI", "true"),
             ("ASSAY_RUN_KEY", "k"),
-        ]),
+        ])?,
     );
 
     adapter.run(&custom, LINT)?;
@@ -119,7 +122,7 @@ fn an_inherited_findings_path_cannot_redirect_the_document() -> Result<(), Box<d
     let mut supervisor = FakeSupervisor::new(Termination::Exited(0), Leaves::Nothing);
     let mut adapter = ExecAdapter::new(
         &mut supervisor,
-        dirs.settings(&[("ASSAY_FINDINGS_OUT", "/tmp/elsewhere.json")]),
+        dirs.settings(&[("ASSAY_FINDINGS_OUT", "/tmp/elsewhere.json")])?,
     );
 
     adapter.run(&custom, LINT)?;
@@ -277,7 +280,7 @@ fn refuses_a_plugin_with_another_adapter() -> Result<(), Box<dyn Error>> {
     let config = config()?;
     let temper = plugin(&config, "temper")?;
     let mut supervisor = FakeSupervisor::new(Termination::Exited(0), Leaves::Nothing);
-    let mut adapter = ExecAdapter::new(&mut supervisor, dirs.settings(&[]));
+    let mut adapter = ExecAdapter::new(&mut supervisor, dirs.settings(&[])?);
 
     let result = adapter.run(&temper, LINT);
 
@@ -314,7 +317,7 @@ fn a_supervisor_failure_is_an_exec_error() -> Result<(), Box<dyn Error>> {
     let config = config()?;
     let custom = plugin(&config, "custom-lint")?;
     let mut supervisor = FakeSupervisor::new(Termination::Exited(0), Leaves::CannotStart);
-    let mut adapter = ExecAdapter::new(&mut supervisor, dirs.settings(&[]));
+    let mut adapter = ExecAdapter::new(&mut supervisor, dirs.settings(&[])?);
 
     let result = adapter.run(&custom, LINT);
 
@@ -329,6 +332,49 @@ fn a_supervisor_failure_is_an_exec_error() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn settings_refuse_a_relative_checkout() {
+    let settings = ExecSettings::new(
+        "checkout",
+        "/runner/out",
+        GateEnvironment::default(),
+        LIMITS,
+    );
+
+    assert_matches!(
+        settings,
+        Err(ExecSettingsError::RelativeCheckout { path }) if path == Path::new("checkout")
+    );
+}
+
+#[test]
+fn settings_refuse_a_relative_output_root() {
+    let settings = ExecSettings::new(
+        "/runner/checkout",
+        "out",
+        GateEnvironment::default(),
+        LIMITS,
+    );
+
+    assert_matches!(
+        settings,
+        Err(ExecSettingsError::RelativeOutputRoot { path }) if path == Path::new("out")
+    );
+}
+
+#[test]
+fn a_wrong_job_is_named_as_its_gate_job() {
+    let error: ExecError<FakeSpawnError> = ExecError::WrongJob {
+        plugin: "custom-lint".to_owned(),
+        job: BuildJob::Test,
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "plugin `custom-lint` does not run in gates-test"
+    );
+}
+
+#[test]
 fn a_clean_exec_run_passes_through_the_gate_use_case() -> Result<(), Box<dyn Error>> {
     let dirs = Dirs::new()?;
     let config = config()?;
@@ -337,7 +383,7 @@ fn a_clean_exec_run_passes_through_the_gate_use_case() -> Result<(), Box<dyn Err
         Termination::Exited(0),
         Leaves::File(document("custom-lint", "pass")),
     );
-    let mut adapter = ExecAdapter::new(&mut supervisor, dirs.settings(&[]));
+    let mut adapter = ExecAdapter::new(&mut supervisor, dirs.settings(&[])?);
 
     let reports = run_gates(&config, LINT, &mut adapter, &validator);
 
