@@ -98,6 +98,18 @@ pub enum CanaryError {
     /// The sandbox could not be removed after the call.
     #[error("the canary sandbox could not be removed")]
     Cleanup(#[source] io::Error),
+    /// The canary failed, and its sandbox, which holds the planted files, could not be removed
+    /// either.
+    #[error("the canary failed, and its sandbox {path} could not be removed: {cleanup}")]
+    Abandoned {
+        /// The sandbox left behind.
+        path: PathBuf,
+        /// Why the canary failed.
+        #[source]
+        error: Box<CanaryError>,
+        /// Why the sandbox could not be removed.
+        cleanup: io::Error,
+    },
 }
 
 impl<K> ClaudeCanary<K> {
@@ -147,10 +159,30 @@ impl<K: GroupKill> CanaryProbe for ClaudeCanary<K> {
     /// [`CanaryError`]: before the call, a relative or unusable sandbox directory or a sandbox
     /// path that is not UTF-8; during it, a CLI that could not be started, supervised or
     /// killed; after it, markers that could not be inspected or a sandbox that could not be
-    /// removed.
+    /// removed, or [`CanaryError::Abandoned`] when it failed and the sandbox could not be
+    /// removed either.
     fn probe(&self, token: &CanaryToken) -> Result<CanaryRun, CanaryError> {
         let sandbox = self.sandbox()?;
-        let layout = Layout::of(sandbox.path())?;
+        let probed = self.probe_in(sandbox.path(), token);
+        // `close` consumes the sandbox; its path is kept for the report of a failed removal.
+        let path = sandbox.path().to_path_buf();
+        match (probed, sandbox.close()) {
+            (Ok(run), Ok(())) => Ok(run),
+            (Ok(_), Err(cleanup)) => Err(CanaryError::Cleanup(cleanup)),
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(cleanup)) => Err(CanaryError::Abandoned {
+                path,
+                error: Box::new(error),
+                cleanup,
+            }),
+        }
+    }
+}
+
+impl<K: GroupKill> ClaudeCanary<K> {
+    /// Plants the sandbox at `root`, runs one call in it and reports what it showed.
+    fn probe_in(&self, root: &Path, token: &CanaryToken) -> Result<CanaryRun, CanaryError> {
+        let layout = Layout::of(root)?;
         layout.plant(token).map_err(CanaryError::Sandbox)?;
         let invocation = Invocation {
             json_schema: SCHEMA,
@@ -167,15 +199,13 @@ impl<K: GroupKill> CanaryProbe for ClaudeCanary<K> {
         };
         let captured = supervise::run(command, PROMPT.as_bytes(), bounds, &self.killer)?;
         let loaded_mods = layout.loaded().map_err(CanaryError::Inspect)?;
-        let run = CanaryRun {
+        Ok(CanaryRun {
             init: read_session_init(&captured.transcript),
             outcome: stream::classify(&captured.transcript, captured.ending, BUDGET).outcome,
             transcript: captured.transcript,
             planted_mods: MODS.map(str::to_owned).to_vec(),
             loaded_mods,
-        };
-        sandbox.close().map_err(CanaryError::Cleanup)?;
-        Ok(run)
+        })
     }
 }
 

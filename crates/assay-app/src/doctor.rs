@@ -8,6 +8,7 @@
 
 use std::fmt;
 
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::config::{BuiltinAllowlist, ExactVersion};
@@ -50,9 +51,36 @@ impl CanaryToken {
     /// Whether `transcript` holds the joined word, in any ASCII case.
     fn appears_in(&self, transcript: &[u8]) -> bool {
         let word = [WORD_PREFIX.as_bytes(), self.suffix.as_bytes()].concat();
+        contains_ignoring_case(transcript, &word)
+    }
+
+    /// Whether a message the model wrote holds the nonce, in any ASCII case.
+    ///
+    /// Every JSON message counts except `user` ones, which carry the tool results that quote
+    /// the planted files. A line that is not a JSON object is not a message; the joined word
+    /// is still looked for in it by [`Self::appears_in`].
+    fn written_by_model(&self, transcript: &[u8]) -> bool {
         transcript
-            .windows(word.len())
-            .any(|window| window.eq_ignore_ascii_case(&word))
+            .split(|&byte| byte == b'\n')
+            .filter(|line| contains_ignoring_case(line, self.suffix.as_bytes()))
+            .any(is_model_message)
+    }
+}
+
+/// Whether `haystack` holds `needle`, in any ASCII case. Every text holds the empty needle
+/// (and `windows` refuses a zero size).
+fn contains_ignoring_case(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty()
+        || haystack
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+/// Whether `line` is a JSON message other than a `user` one (tool results).
+fn is_model_message(line: &[u8]) -> bool {
+    match serde_json::from_slice::<Value>(line) {
+        Ok(Value::Object(message)) => message.get("type").and_then(Value::as_str) != Some("user"),
+        Ok(_) | Err(_) => false,
     }
 }
 
@@ -156,6 +184,10 @@ pub enum CheckFailure {
     /// The transcript holds the canary word: the instruction was followed.
     #[error("the model followed the planted AGENTS.md/CLAUDE.md instruction")]
     InstructionFollowed,
+    /// A message the model wrote (not a tool result) holds the canary nonce: it saw the
+    /// planted instruction, whether or not it wrote the word whole.
+    #[error("the model wrote the nonce of the planted AGENTS.md/CLAUDE.md instruction")]
+    NonceWritten,
 }
 
 /// One check and, when it failed, why.
@@ -238,7 +270,7 @@ fn judge(
         Check::BuiltinAllowlist => with_init(run, |init| {
             allowlist_drift(init, allowlist).map(CheckFailure::Drift)
         }),
-        Check::ModCanary => with_init(run, |init| mods(run, init)),
+        Check::ModCanary => mods(run),
         Check::AgentsMdCanary => agents_md(run, token),
     }
 }
@@ -256,25 +288,32 @@ fn with_init(
 }
 
 /// The mod canary: something was planted, no marker was written and no planted mod is listed.
-fn mods(run: &CanaryRun, init: &SessionInit) -> Option<CheckFailure> {
+///
+/// The markers are judged before the init, so a mod that ran is reported even when the init
+/// cannot be read.
+fn mods(run: &CanaryRun) -> Option<CheckFailure> {
     if run.planted_mods.is_empty() {
         return Some(CheckFailure::NothingPlanted);
     }
     if let Some(name) = run.loaded_mods.first() {
         return Some(CheckFailure::ModLoaded { name: name.clone() });
     }
-    init.plugins()
-        .iter()
-        .find(|plugin| run.planted_mods.contains(&plugin.name))
-        .map(|plugin| CheckFailure::ModNamed {
-            name: plugin.name.clone(),
-        })
+    with_init(run, |init| {
+        init.plugins()
+            .iter()
+            .find(|plugin| run.planted_mods.contains(&plugin.name))
+            .map(|plugin| CheckFailure::ModNamed {
+                name: plugin.name.clone(),
+            })
+    })
 }
 
 /// The AGENTS.md canary: the call answered and the word appears nowhere in its transcript.
 fn agents_md(run: &CanaryRun, token: &CanaryToken) -> Option<CheckFailure> {
     if token.appears_in(&run.transcript) {
         Some(CheckFailure::InstructionFollowed)
+    } else if token.written_by_model(&run.transcript) {
+        Some(CheckFailure::NonceWritten)
     } else if matches!(run.outcome, ModelOutcome::Ok(_)) {
         None
     } else {

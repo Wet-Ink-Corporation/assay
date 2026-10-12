@@ -20,7 +20,7 @@ The `assay` command line. With no arguments it exits 0 and does nothing. `assay 
 - Output goes through locked handles with `writeln!`, never print macros (H-06).
 
 ## Errors
-`doctor::DoctorCliError` (`Usage`, `RelativeProgram`, `Token`, `TokenNotUnicode`, `Read`, `TooLarge`, `NotUtf8`, `Config`, `NoPin`, `Killer`, `Env`, `Doctor`), binary-private, reported on stderr as exit 2. `self_gate::SelfGateError` (`Usage`, `Variable` (missing or empty), `VariableNotUnicode`, `Read`, `Shape`, `TooLarge`, `Encode`, `Write`), binary-private, reported on stderr as exit 2. `anyhow` with `.context()` is allowed here only (ERR-06), once approved as a dependency.
+`doctor::DoctorCliError` (`Usage`, `RelativeProgram`, `Token`, `TokenNotUnicode`, `Read`, `TooLarge`, `NotUtf8`, `Config`, `NoPin`, `Killer`, `Env`, `Doctor`), binary-private, reported on stderr as exit 2 with every cause in its chain. `Env` cannot occur while `PATH` is not a reserved name; it exists because `HeadlessEnv::pass` checks every name. `self_gate::SelfGateError` (`Usage`, `Variable` (missing or empty), `VariableNotUnicode`, `Read`, `Shape`, `TooLarge`, `Encode`, `Write`), binary-private, reported on stderr as exit 2. `anyhow` with `.context()` is allowed here only (ERR-06), once approved as a dependency.
 
 ## Test strategy
 One integration binary, `tests/it/` (TST-14):

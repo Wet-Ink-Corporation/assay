@@ -192,6 +192,55 @@ fn a_second_init_is_refused() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// The init message's text with `prefix` inserted after its opening brace, so a key written
+/// there is repeated by the one the recording already has.
+fn init_text_with(prefix: &str) -> Result<String, Box<dyn Error>> {
+    let text = init_message()?.to_string();
+    let rest = text.strip_prefix('{').ok_or("init is not an object")?;
+    Ok(format!("{{{prefix}{rest}"))
+}
+
+#[test]
+fn an_init_that_repeats_a_top_level_key_is_refused() -> Result<(), Box<dyn Error>> {
+    // A lenient parser keeps the last `tools`, the clean one; another keeps the first.
+    let text = init_text_with(r#""tools":["Bash","Glob","Grep","Read"],"#)?;
+
+    let read = read_session_init(format!("{text}\n").as_bytes());
+
+    assert_eq!(read, Err(InitReadError::RepeatedKey));
+    Ok(())
+}
+
+#[test]
+fn an_init_whose_plugin_entry_repeats_a_key_is_refused() -> Result<(), Box<dyn Error>> {
+    let text = init_message()?.to_string().replacen(
+        r#"{"name":"cc-plugin-agents-md""#,
+        r#"{"name":"assay-canary-user","name":"cc-plugin-agents-md""#,
+        1,
+    );
+    assert!(
+        text.contains("assay-canary-user"),
+        "the entry was not edited"
+    );
+
+    let read = read_session_init(format!("{text}\n").as_bytes());
+
+    assert_eq!(read, Err(InitReadError::RepeatedKey));
+    Ok(())
+}
+
+#[test]
+fn a_second_init_that_repeats_a_key_is_still_a_second_init() -> Result<(), Box<dyn Error>> {
+    let mut bytes = transcript(&[&init_message()?]);
+    bytes.extend_from_slice(init_text_with(r#""tools":[],"#)?.as_bytes());
+    bytes.push(b'\n');
+
+    let read = read_session_init(&bytes);
+
+    assert_eq!(read, Err(InitReadError::Repeated));
+    Ok(())
+}
+
 #[test]
 fn an_unreadable_line_after_the_init_is_left_to_classification() -> Result<(), Box<dyn Error>> {
     let mut bytes = transcript(&[&init_message()?]);

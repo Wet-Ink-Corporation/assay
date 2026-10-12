@@ -64,6 +64,10 @@ pub(crate) enum DoctorCliError {
     /// No process-group killer is available on this host.
     Killer(KillerError),
     /// `PATH` could not be passed to the CLI.
+    ///
+    /// `HeadlessEnv::pass` checks every name it is given, so its `Result` must be handled.
+    /// `PATH` is a plain identifier that is not reserved, so this does not occur today; it
+    /// would after a change to the runner's reserved names, and is then reported, not lost.
     Env(EnvVarError),
     /// The canary could not be run, or no nonce could be drawn.
     Doctor(DoctorError<CanaryError, io::Error>),
@@ -87,21 +91,29 @@ impl fmt::Display for DoctorCliError {
                 path.display()
             ),
             Self::NotUtf8 { path } => write!(f, "{} is not UTF-8", path.display()),
-            Self::Config(source) => match std::error::Error::source(source) {
-                Some(cause) => write!(f, "{source}: {cause}"),
-                None => write!(f, "{source}"),
-            },
+            Self::Config(source) => write_chain(f, source),
             Self::NoPin => {
                 f.write_str("plugins.toml pins no claude_cli, so there is no CLI to check")
             }
-            Self::Killer(source) => write!(f, "no process-group killer: {source}"),
-            Self::Env(source) => write!(f, "{source}"),
-            Self::Doctor(source) => match std::error::Error::source(source) {
-                Some(cause) => write!(f, "{source}: {cause}"),
-                None => write!(f, "{source}"),
-            },
+            Self::Killer(source) => {
+                f.write_str("no process-group killer: ")?;
+                write_chain(f, source)
+            }
+            Self::Env(source) => write_chain(f, source),
+            Self::Doctor(source) => write_chain(f, source),
         }
     }
+}
+
+/// `error` and each of its causes, joined by `: `.
+fn write_chain(f: &mut fmt::Formatter<'_>, error: &dyn std::error::Error) -> fmt::Result {
+    write!(f, "{error}")?;
+    let mut cause = error.source();
+    while let Some(next) = cause {
+        write!(f, ": {next}")?;
+        cause = next.source();
+    }
+    Ok(())
 }
 
 impl std::error::Error for DoctorCliError {}

@@ -407,6 +407,39 @@ fn a_sandbox_that_cannot_be_removed_is_an_error() -> Result<(), Box<dyn Error>> 
 }
 
 #[test]
+fn a_failed_canary_whose_sandbox_cannot_be_removed_reports_both() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new("REPLACE_SANDBOX=1")?;
+
+    let probed = scene.canary().probe(&token()?);
+
+    let Err(CanaryError::Abandoned {
+        path,
+        error,
+        cleanup: _,
+    }) = probed
+    else {
+        return Err(format!("expected Abandoned, got {probed:?}").into());
+    };
+    assert_matches!(*error, CanaryError::Inspect(_));
+    assert_eq!(path, scene.sandbox()?);
+    Ok(())
+}
+
+#[test]
+fn a_canary_that_fails_after_planting_still_removes_its_sandbox() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new("BREAK_MARKERS=1")?;
+
+    let probed = scene.canary().probe(&token()?);
+
+    assert_matches!(probed, Err(CanaryError::Inspect(_)));
+    assert_eq!(
+        fs::read_dir(scene.root.path().join("sandboxes"))?.count(),
+        0
+    );
+    Ok(())
+}
+
+#[test]
 fn a_sandbox_that_cannot_be_made_is_an_error() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new("")?;
     let canary = scene.canary().in_dir(scene.root.path().join("absent"));

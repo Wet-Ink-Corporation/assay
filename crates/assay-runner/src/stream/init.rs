@@ -2,10 +2,13 @@
 //! [`SessionInit`] and judged there.
 //!
 //! It refuses rather than models (wi-b5affa): the init must be the first message, appear once,
-//! and carry every field the rule reads in the shape Claude Code 2.1.296 writes; a plugin entry
-//! must have exactly `name`, `path` and `source`. Fields the rule does not read are ignored.
+//! repeat no key in any object, and carry every field the rule reads in the shape Claude Code
+//! 2.1.296 writes; a plugin entry must have exactly `name`, `path` and `source`. Fields the rule
+//! does not read are ignored.
 
-use assay_app::{InitParts, InitPlugin, InitReadError, MAX_BUILTINS, SessionInit};
+use assay_app::{
+    InitParts, InitPlugin, InitReadError, MAX_BUILTINS, SessionInit, parse_json_strict,
+};
 use serde_json::{Map, Value};
 
 /// The keys of an `init.plugins` entry, all strings.
@@ -15,20 +18,27 @@ const PLUGIN_KEYS: [&str; 3] = ["name", "path", "source"];
 ///
 /// # Errors
 /// [`InitReadError::Missing`] when the first non-blank line is not a `system/init` message,
-/// [`InitReadError::Repeated`] when another follows, [`InitReadError::Field`] or
+/// [`InitReadError::Repeated`] when another follows, [`InitReadError::RepeatedKey`] when an
+/// object in it repeats a key, [`InitReadError::Field`] or
 /// [`InitReadError::Entry`] for a field or list entry of the wrong shape, and
 /// [`InitReadError::TooMany`] or [`InitReadError::Name`] for one out of bounds.
 pub fn read_session_init(transcript: &[u8]) -> Result<SessionInit, InitReadError> {
     let mut lines = transcript
         .split(|&byte| byte == b'\n')
         .filter(|line| !line.trim_ascii().is_empty());
-    let first = lines
-        .next()
-        .and_then(init_object)
-        .ok_or(InitReadError::Missing)?;
+    let first_line = lines.next().ok_or(InitReadError::Missing)?;
+    if init_object(first_line).is_none() {
+        return Err(InitReadError::Missing);
+    }
+    // Any reading of a later line that sees an init counts, a repeated key included.
     if lines.any(|line| init_object(line).is_some()) {
         return Err(InitReadError::Repeated);
     }
+    // The first line is an init to a lenient parser, so the strict one can refuse it only for
+    // a repeated key.
+    let Ok(Value::Object(first)) = parse_json_strict(first_line) else {
+        return Err(InitReadError::RepeatedKey);
+    };
     SessionInit::new(InitParts {
         cli_version: string_field(&first, "claude_code_version")?,
         tools: strings(&first, "tools")?,

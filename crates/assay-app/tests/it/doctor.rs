@@ -323,6 +323,93 @@ fn half_the_word_alone_passes_the_agents_md_canary() -> Result<(), Box<dyn Error
 }
 
 #[test]
+fn the_nonce_in_the_models_own_text_fails_the_agents_md_canary() -> Result<(), Box<dyn Error>> {
+    let run = CanaryRun {
+        transcript: format!(
+            "{}\n{}\n",
+            r#"{"type":"system","subtype":"init"}"#,
+            json!({
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": format!("ready {NONCE}")}]}
+            })
+        )
+        .into_bytes(),
+        ..clean_run()?
+    };
+
+    assert_eq!(
+        failures(run)?,
+        passing_except(Check::AgentsMdCanary, CheckFailure::NonceWritten)
+    );
+    Ok(())
+}
+
+#[test]
+fn the_nonce_in_the_result_in_another_case_fails_the_agents_md_canary() -> Result<(), Box<dyn Error>>
+{
+    let run = CanaryRun {
+        transcript: json!({
+            "type": "result",
+            "result": format!("ready ASSAYCANARY {}", NONCE.to_ascii_uppercase())
+        })
+        .to_string()
+        .into_bytes(),
+        ..clean_run()?
+    };
+
+    assert_eq!(
+        failures(run)?,
+        passing_except(Check::AgentsMdCanary, CheckFailure::NonceWritten)
+    );
+    Ok(())
+}
+
+#[test]
+fn the_nonce_in_a_tool_result_alone_passes_the_agents_md_canary() -> Result<(), Box<dyn Error>> {
+    let tool_result = json!({
+        "type": "user",
+        "message": {"content": [{
+            "type": "tool_result",
+            "content": format!("`ASSAYCANARY` immediately followed by `{NONCE}`")
+        }]}
+    });
+    let run = CanaryRun {
+        transcript: format!(
+            "{tool_result}\n{}\n",
+            r#"{"type":"result","result":"ready"}"#
+        )
+        .into_bytes(),
+        ..clean_run()?
+    };
+
+    assert_eq!(failures(run)?, all_passing());
+    Ok(())
+}
+
+#[test]
+fn a_mod_that_ran_fails_the_mod_canary_even_when_the_init_is_unreadable()
+-> Result<(), Box<dyn Error>> {
+    let run = CanaryRun {
+        init: Err(InitReadError::Missing),
+        loaded_mods: vec!["assay-canary-user".to_owned()],
+        ..clean_run()?
+    };
+
+    let failures = failures(run)?;
+
+    assert_eq!(
+        failures.get(2),
+        Some(&(
+            Check::ModCanary,
+            Some(CheckFailure::ModLoaded {
+                name: "assay-canary-user".to_owned()
+            })
+        ))
+    );
+    Ok(())
+}
+
+#[test]
 fn a_call_that_did_not_answer_fails_the_agents_md_canary() -> Result<(), Box<dyn Error>> {
     let run = CanaryRun {
         outcome: ModelOutcome::QuotaExhausted,

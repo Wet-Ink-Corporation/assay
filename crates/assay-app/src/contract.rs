@@ -28,6 +28,20 @@ const SUPPORTED_VERSION: u32 = 1;
 /// is never refused here for its size.
 pub const MAX_DOCUMENT_BYTES: usize = 8 << 20;
 
+/// Parses `document` as one JSON value and refuses any object that repeats a key.
+///
+/// This is [`ContractValidator::read`]'s parse, for JSON read across a trust boundary that has
+/// no schema here (a stream-json `system/init`, #121).
+///
+/// It does not bound the input: the caller reads it through its own limit.
+///
+/// # Errors
+/// The `serde_json` error for text that is not one JSON value or that repeats a key in an
+/// object; the message names no key.
+pub fn parse_json_strict(document: &[u8]) -> Result<Value, serde_json::Error> {
+    strict::from_slice(document)
+}
+
 /// A versioned contract assay reads across a trust boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Contract {

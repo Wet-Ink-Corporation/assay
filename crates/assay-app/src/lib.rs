@@ -36,7 +36,7 @@ pub use config::{
 };
 pub use contract::{
     Contract, ContractSchemaError, ContractValidator, MAX_DOCUMENT_BYTES, ReadContractError,
-    SchemaCompileError, SchemaViolation,
+    SchemaCompileError, SchemaViolation, parse_json_strict,
 };
 pub use decide::{
     AdmitJob, ArtifactDocument, AuthenticatedRun, Authentication, CurrentPullRequest, DecideError,

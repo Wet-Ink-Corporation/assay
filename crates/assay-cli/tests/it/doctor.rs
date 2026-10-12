@@ -324,3 +324,21 @@ fn a_cli_that_cannot_start_is_an_error() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn an_error_names_every_cause_down_to_the_os() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new("")?;
+
+    let outcome = doctor(
+        &[&scene.path("plugins.toml"), &scene.path("bin/absent")],
+        Some("t"),
+    )?;
+
+    // doctor's error, the runner's spawn error, then the OS's.
+    assert_eq!(
+        outcome.stderr,
+        "assay: the canary could not be run: the claude CLI could not be started: \
+         No such file or directory (os error 2)\n"
+    );
+    Ok(())
+}

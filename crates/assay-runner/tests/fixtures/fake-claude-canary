@@ -8,8 +8,22 @@
 #   FOLLOW_AGENTS=1     follow the planted AGENTS.md: print the canary word it asks for
 #   BREAK_MARKERS=1     replace the marker directory with a file, so markers cannot be inspected
 #   REMOVE_SANDBOX=1    delete the whole canary sandbox before exiting
+#   REPLACE_SANDBOX=1   replace the whole canary sandbox with a file, so neither the markers
+#                       can be inspected nor the sandbox removed
+# It deletes only paths inside a canary sandbox (`*/assay-canary-*/`), and stops at the first
+# failing command.
+set -eu
 dir=${0%/*}
 . "$dir/knobs"
+
+# The canary sandbox holding `$HOME`, or exit 3 if `$HOME` is not a sandbox's `home`.
+sandbox() {
+  case "$HOME" in
+    */assay-canary-*/home) printf '%s\n' "${HOME%/*}" ;;
+    *) echo "fake-claude-canary: HOME $HOME is not in a canary sandbox" >&2; exit 3 ;;
+  esac
+}
+
 add_dir=
 prev=
 for arg in "$@"; do
@@ -36,9 +50,16 @@ if [ "${FOLLOW_AGENTS:-}" = 1 ]; then
   printf '{"type":"assistant","message":{"content":[{"type":"text","text":"ready %s"}]}}\n' "$word"
 fi
 if [ "${BREAK_MARKERS:-}" = 1 ]; then
-  markers=$(/bin/sed -n '1s|/[^/]*$||p' "$dir/markers")
-  /bin/rm -rf "$markers" && : > "$markers"
+  root=$(sandbox)
+  /bin/rm -rf "$root/markers"
+  : > "$root/markers"
 fi
 if [ "${REMOVE_SANDBOX:-}" = 1 ]; then
-  /bin/rm -rf "${HOME%/*}"
+  root=$(sandbox)
+  /bin/rm -rf "$root"
+fi
+if [ "${REPLACE_SANDBOX:-}" = 1 ]; then
+  root=$(sandbox)
+  /bin/rm -rf "$root"
+  : > "$root"
 fi

@@ -73,6 +73,10 @@ pub enum InitReadError {
     /// A second `system/init` message follows the first.
     #[error("the transcript holds more than one system/init message")]
     Repeated,
+    /// An object in the `system/init` message repeats a key, so which value counts depends on
+    /// the parser (RFC 8259 §4).
+    #[error("the system/init message repeats a key")]
+    RepeatedKey,
     /// A field the rule reads is absent or not of the expected type.
     #[error("system/init field `{field}` is absent or malformed")]
     Field {
@@ -184,12 +188,16 @@ impl SessionInit {
     }
 
     /// The names of `kind`, as listed.
-    fn names(&self, kind: BuiltinKind) -> Vec<&str> {
-        match kind {
-            BuiltinKind::Plugin => self.parts.plugins.iter().map(|p| p.name.as_str()).collect(),
-            BuiltinKind::Skill => self.parts.skills.iter().map(String::as_str).collect(),
-            BuiltinKind::Agent => self.parts.agents.iter().map(String::as_str).collect(),
-        }
+    fn names(&self, kind: BuiltinKind) -> impl Iterator<Item = &str> + '_ {
+        let (plugins, others): (&[InitPlugin], &[String]) = match kind {
+            BuiltinKind::Plugin => (&self.parts.plugins, &[]),
+            BuiltinKind::Skill => (&[], &self.parts.skills),
+            BuiltinKind::Agent => (&[], &self.parts.agents),
+        };
+        plugins
+            .iter()
+            .map(|plugin| plugin.name.as_str())
+            .chain(others.iter().map(String::as_str))
     }
 }
 
@@ -312,9 +320,9 @@ fn is_builtin(plugin: &InitPlugin) -> bool {
 }
 
 /// Fails on the first of `names` that repeats an earlier one or is not allowlisted.
-fn listed(
+fn listed<'a>(
     kind: BuiltinKind,
-    names: Vec<&str>,
+    names: impl Iterator<Item = &'a str>,
     allowlist: &BuiltinAllowlist,
 ) -> Result<(), InitUnclean> {
     let mut seen = BTreeSet::new();
@@ -351,7 +359,7 @@ pub struct AllowlistDrift {
 pub fn allowlist_drift(init: &SessionInit, allowlist: &BuiltinAllowlist) -> Option<AllowlistDrift> {
     let mut drift = AllowlistDrift::default();
     for kind in BuiltinKind::ALL {
-        let observed: BTreeSet<&str> = init.names(kind).into_iter().collect();
+        let observed: BTreeSet<&str> = init.names(kind).collect();
         let pinned: BTreeSet<&str> = allowlist.names(kind).collect();
         *side(&mut drift.unlisted, kind) = observed
             .difference(&pinned)
