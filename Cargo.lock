@@ -80,8 +80,12 @@ name = "assay-gates"
 version = "0.1.0"
 dependencies = [
  "assay-app",
+ "assay-domain",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

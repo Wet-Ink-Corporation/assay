@@ -45,6 +45,21 @@ pub(crate) fn fixture_with_removals(
     head_files: &[(&str, &[u8])],
     removed: &[&str],
 ) -> Result<Fixture, Box<dyn Error>> {
+    fixture_with_head(|work| {
+        for (path, contents) in head_files {
+            write(work, path, contents)?;
+        }
+        for path in removed {
+            fs::remove_file(work.join(path))?;
+        }
+        Ok(())
+    })
+}
+
+/// Like [`fixture`], with the head commit made by `edit` in the scratch worktree.
+pub(crate) fn fixture_with_head(
+    edit: impl FnOnce(&Path) -> Result<(), Box<dyn Error>>,
+) -> Result<Fixture, Box<dyn Error>> {
     let scratch = tempfile::tempdir()?;
     let work = scratch.path().join("work");
     plain_git(scratch.path(), &["init", "--quiet", "work"])?;
@@ -53,12 +68,7 @@ pub(crate) fn fixture_with_removals(
     write(&work, "src/lib.rs", b"pub fn one() -> u8 {\n    1\n}\n")?;
     write(&work, "legacy/kept.rs", b"pub fn kept() {}\n")?;
     let base = commit(&work, "base")?;
-    for (path, contents) in head_files {
-        write(&work, path, contents)?;
-    }
-    for path in removed {
-        fs::remove_file(work.join(path))?;
-    }
+    edit(&work)?;
     let head = commit(&work, "head")?;
 
     let git_dir = scratch.path().join("objects.git");
@@ -82,7 +92,7 @@ pub(crate) fn fixture_with_removals(
     })
 }
 
-fn write(work: &Path, path: &str, contents: &[u8]) -> Result<(), Box<dyn Error>> {
+pub(crate) fn write(work: &Path, path: &str, contents: &[u8]) -> Result<(), Box<dyn Error>> {
     let path = work.join(path);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

@@ -12,6 +12,7 @@ use super::attributes::{
 use super::command::{GitEnvironment, GitOperation, git};
 use super::numstat::{self, DiffOutcome, FileChange};
 use super::sha::{CommitSha, HttpsRemote};
+use super::tree::{self, TreeFile};
 use super::{GitError, Malformed};
 use crate::process::{self, Captured, Limits, ProcessError};
 
@@ -201,6 +202,37 @@ impl ObjectRepo {
             }
         })?;
         attributes::judge(found, allowlist)
+    }
+
+    /// Reads the files at or under `path` in `commit`'s tree, in git's path order: one file
+    /// when `path` names a file, every file below it when it names a directory, none when
+    /// nothing is there. `path` is literal (ls-tree matches whole path components and expands
+    /// no wildcard), so `.claude/temper` never matches `.claude/temper.json`.
+    ///
+    /// Each regular or executable file is read with its own `git cat-file blob`, bounded like
+    /// every other git process; a symlink or a submodule is reported, never read or followed.
+    ///
+    /// # Errors
+    /// [`GitError`] when `ls-tree` or a blob read cannot run, fails, or prints output this layer
+    /// cannot read (an unknown mode, a non-UTF-8 path), and when a blob is larger than the
+    /// output cap.
+    pub fn read_tree(&self, commit: &CommitSha, path: &str) -> Result<Vec<TreeFile>, GitError> {
+        let args = [commit.as_str(), "--", path];
+        let captured = self.run(self.call(GitOperation::ListTree, &args))?;
+        let listed =
+            tree::parse(&captured.stdout).map_err(|Malformed(detail)| GitError::Malformed {
+                operation: GitOperation::ListTree,
+                detail,
+            })?;
+        listed
+            .into_iter()
+            .map(|entry| {
+                entry.read(|object| {
+                    self.run(self.call(GitOperation::ReadBlob, &[object]))
+                        .map(|captured| captured.stdout)
+                })
+            })
+            .collect()
     }
 
     /// The hardened command for `operation` with `args` appended.

@@ -48,6 +48,7 @@ mod glob;
 mod numstat;
 mod repository;
 mod sha;
+mod tree;
 
 use crate::process::ProcessError;
 pub use attributes::{
@@ -58,6 +59,7 @@ pub use glob::GlobError;
 pub use numstat::{DiffOutcome, FileChange, LineCount};
 pub use repository::{GitLimits, ObjectRepo};
 pub use sha::{CommitSha, HttpsRemote, ParseRemoteError, ParseShaError};
+pub use tree::{TreeContent, TreeFile};
 
 /// Why a git operation produced no result.
 #[derive(Debug, thiserror::Error)]
