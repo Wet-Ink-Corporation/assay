@@ -2,10 +2,11 @@
 
 use serde::Deserialize;
 
+use super::builtins::BuiltinAllowlist;
 use super::pin::Sha256Digest;
 
-/// Repository-wide settings from the `[assay]` table. Every field is individually valid; none
-/// constrains another.
+/// Repository-wide settings from the `[assay]` table. Every field is individually valid; the
+/// only constraint between them is that `claude_cli_builtins` needs `claude_cli`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssaySettings {
     /// The assay OCI artifact, by digest.
@@ -14,6 +15,9 @@ pub struct AssaySettings {
     pub warm_target: Option<Sha256Digest>,
     /// The exact Claude Code CLI version to install.
     pub claude_cli: Option<ExactVersion>,
+    /// The built-ins of that CLI a clean session may load (03 §8); empty when the file names
+    /// none, and given only together with `claude_cli`.
+    pub claude_cli_builtins: BuiltinAllowlist,
     /// How the model is reached.
     pub runner: Option<RunnerKind>,
     /// Bases a verdict is published for; any other base is `failure (base-not-protected)`.

@@ -13,11 +13,18 @@ mod golden;
 mod model_runner;
 mod plan;
 mod prompt_bundle;
+mod session_init;
 mod tiering;
 
+pub use session_init::{
+    AllowlistDrift, InitParts, InitPlugin, InitReadError, InitUnclean, SessionInit,
+    allowlist_drift, check_init,
+};
+
 pub use config::{
-    Adapter, Argv, AssaySettings, CommitId, ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion,
-    GateName, GlobsConfigError, InfraFailurePolicy, MAX_TIMEOUT_SECS, ParseCommitIdError,
+    Adapter, Argv, AssaySettings, BuiltinAllowlist, BuiltinKind, BuiltinsError, CommitId,
+    ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion, GateName, GlobsConfigError,
+    InfraFailurePolicy, MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS, MAX_TIMEOUT_SECS, ParseCommitIdError,
     ParseDigestError, ParsePinError, Pin, Plugin, PluginsConfig, PrClass, Promotion, RunnerKind,
     Sha256Digest, Step, TomlError, parse_globs,
 };
