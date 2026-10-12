@@ -6,14 +6,15 @@
 //! enums by their wire code. Each `Canonical` impl destructures its type exhaustively, so a new
 //! field does not compile until it is part of the digest.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use sha2::{Digest, Sha256};
 
 use crate::decide::inputs::{
-    Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
-    LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
-    Readiness, ReviewedFinding, StepAttribution, Waiver, WeighIn,
+    Authorship, CallFailure, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport,
+    InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy,
+    PullRequest, Readiness, ReviewedFinding, StepAttribution, SupportOutcome, Waiver, WeighIn,
 };
 use crate::decision::{DegradedRole, FindingDisposition, Reason};
 use crate::disposition::Disposition;
@@ -24,6 +25,7 @@ use crate::reason::ReasonCode;
 use crate::rubric::Rubric;
 use crate::severity::Severity;
 use crate::tier::{PrClass, Tier};
+use crate::tiering::RequiredRole;
 
 /// Separates this encoding from any other use of SHA-256 over similar bytes.
 const INPUTS_DOMAIN: &str = "assay.decide-inputs/1";
@@ -144,6 +146,17 @@ impl<T: Canonical> Canonical for Vec<T> {
     }
 }
 
+/// A set encodes like a list of its items in their order, so order and repetition in the
+/// serialised inputs cannot change the digest.
+impl<T: Canonical> Canonical for BTreeSet<T> {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.length(self.len());
+        for item in self {
+            item.encode(encoder);
+        }
+    }
+}
+
 /// Closed vocabularies encode as their wire code.
 macro_rules! canonical_by_code {
     ($($name:ty),+ $(,)?) => {
@@ -159,6 +172,7 @@ macro_rules! canonical_by_code {
 
 canonical_by_code!(
     Authorship,
+    CallFailure,
     Deferral,
     Disposition,
     GateConclusion,
@@ -169,6 +183,7 @@ canonical_by_code!(
     OwnerApproval,
     PrClass,
     Readiness,
+    RequiredRole,
     Severity,
     Tier,
     VerifierVerdict,
@@ -197,6 +212,9 @@ canonical_struct!(DecisionInputs {
     llm,
     findings,
     dispositions,
+    completed_roles,
+    coordinator,
+    verifier,
     degraded,
     waivers,
     override_record,
@@ -266,6 +284,19 @@ impl Canonical for StepAttribution {
             Self::Known(steps) => {
                 "known".encode(encoder);
                 steps.encode(encoder);
+            }
+        }
+    }
+}
+
+impl Canonical for SupportOutcome {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::NotNeeded => "not-needed".encode(encoder),
+            Self::Completed => "completed".encode(encoder),
+            Self::Failed { reason } => {
+                "failed".encode(encoder);
+                reason.encode(encoder);
             }
         }
     }

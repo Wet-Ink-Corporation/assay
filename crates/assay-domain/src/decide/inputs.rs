@@ -5,6 +5,8 @@
 //! findings, the recomputed plan, the GitHub state snapshot and base policy. They are plain data:
 //! validation, fingerprinting, eligibility and command-record checks happen before `decide`.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::decision::{DegradedRole, FindingDisposition};
@@ -14,6 +16,7 @@ use crate::fingerprint::Fingerprint;
 use crate::reason::ReasonCode;
 use crate::severity::Severity;
 use crate::tier::{PrClass, Tier};
+use crate::tiering::RequiredRole;
 use crate::vocabulary::closed_enum;
 
 /// Everything one decision depends on besides the rubric.
@@ -38,7 +41,18 @@ pub struct DecisionInputs {
     pub findings: Vec<ReviewedFinding>,
     /// Dispositions recorded upstream (validation, coordinator, verifier).
     pub dispositions: Vec<FindingDisposition>,
-    /// Required roles that ran degraded (rule 8b, 8c).
+    /// Specialist roles that returned structured output, on every shard (04 §3). When the stage
+    /// completed, a role the PR's tier and classes require that is not here, or is also in
+    /// `degraded`, degrades the stage (rules 8b, 8c). A set, so order and repetition in the
+    /// serialised inputs never change the decision or its digest.
+    pub completed_roles: BTreeSet<RequiredRole>,
+    /// How the coordinator ran. On a `full` PR with reviewer findings it must have completed.
+    pub coordinator: SupportOutcome,
+    /// How the blind verifier ran; `NotNeeded` only when there was no candidate. On `full` or
+    /// `lite`, a blocker or major is a candidate (04 §3), so it must not be `NotNeeded` then.
+    pub verifier: SupportOutcome,
+    /// Roles reported degraded, each with its reason: own cap, turns, timeout, or malformed
+    /// output after a retry (rules 8b, 8c). A role degraded on any shard is degraded.
     pub degraded: Vec<DegradedRole>,
     /// Valid waiver command records for this head.
     pub waivers: Vec<Waiver>,
@@ -90,7 +104,8 @@ pub struct PullRequest {
     pub base_ref: String,
     /// Open PRs on `head_sha` into this protected base, this one included (rule 2a).
     pub open_prs_on_head: u32,
-    /// The recomputed tier (rule 3).
+    /// The recomputed tier (rule 3), after Z4 accepts `admit`'s full-to-lite budget degrade
+    /// (R3-27). With `classes` it names the roles rule 8 requires (04 §3).
     pub tier: Tier,
     /// The recomputed classes (rules 4, 8).
     pub classes: Vec<PrClass>,
@@ -273,6 +288,41 @@ impl LlmStage {
     }
 }
 
+/// How a support call of the LLM stage, the coordinator or the verifier, ran (04 §3).
+///
+/// A `Failed` call always degrades the stage (rules 8b, 8c): on a PR of a blocking class or
+/// policy it is `required-role-degraded`, which waiting cannot heal, never a deferral.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum SupportOutcome {
+    /// No call was due: no candidate for the verifier, no coordinator on `lite` or `micro`.
+    NotNeeded,
+    /// The call returned structured output.
+    Completed,
+    /// The call failed or was unavailable.
+    Failed {
+        /// Why.
+        reason: CallFailure,
+    },
+}
+
+closed_enum! {
+    /// Why a call of the LLM stage produced nothing: the degraded outcomes of 04 §5 rule 8b and
+    /// the model runner port (03 §7), plus no model to call.
+    pub enum CallFailure {
+        /// It exhausted its own budget cap (`BudgetExhausted`).
+        Cap => "cap",
+        /// It exhausted its turns (`TurnsExhausted`).
+        Turns => "turns",
+        /// It timed out.
+        Timeout => "timeout",
+        /// Its output was malformed after the one retry.
+        Malformed => "malformed",
+        /// No model could be called (quota or authentication lost mid-stage).
+        Unavailable => "unavailable",
+    }
+}
+
 closed_enum! {
     /// Why the LLM stage did not run without being deferred.
     pub enum NotRunReason {
@@ -290,7 +340,9 @@ closed_enum! {
     pub enum Deferral {
         /// The day's budget is spent.
         BudgetDeferred => "budget-deferred",
-        /// The LLM is unavailable: preflight, verifier or coordinator failure.
+        /// The LLM is unavailable before the stage could run (preflight failure, an unreadable
+        /// ledger). A coordinator or verifier that fails once the stage runs is a
+        /// [`SupportOutcome::Failed`] instead.
         InfraLlmUnavailable => "infra-llm-unavailable",
         /// No semaphore slot was free.
         SlotBusy => "slot-busy",

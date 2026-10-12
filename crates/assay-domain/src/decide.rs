@@ -3,6 +3,7 @@
 
 pub(crate) mod digest;
 pub(crate) mod inputs;
+mod roles;
 mod rules;
 mod waive;
 
@@ -25,16 +26,21 @@ use waive::Waivers;
 /// every rule that fires, in that order, and are kept when an override turns the conclusion
 /// `neutral`. A waiver removes one human-decision gate finding the rubric lists from rule 1; an
 /// override is void unless the reasons hash to the digest it quotes, and scope `llm` only
-/// neutralises a decision whose every failing or pending reason comes from rule 8.
+/// neutralises a decision whose every failing or pending reason comes from rule 8. A required
+/// role of the PR's tier and classes that did not complete, a coordinator or verifier that
+/// failed or was due but did not run, and every role reported degraded are listed once each in
+/// `degraded` and fire rule 8b or 8c.
 ///
 /// Pure and total: the same rubric and inputs give the same decision, whose `inputs_digest`
-/// identifies both. The decision is a new document: the keys, fingerprints, dispositions and
-/// degraded roles it repeats from the borrowed inputs are copied into it.
+/// identifies both. The decision is a new document that owns its data: the keys, fingerprints
+/// and dispositions it repeats from the borrowed inputs are copied into it, and its degraded
+/// roles are derived from them.
 #[must_use]
 pub fn decide(rubric: &Rubric, inputs: &DecisionInputs) -> Decision {
     let waivers = Waivers::resolve(rubric, inputs);
     let waived = waivers.waived();
-    let firings = rules::evaluate(rubric, inputs, &waivers);
+    let degraded = roles::degraded_roles(inputs);
+    let firings = rules::evaluate(rubric, inputs, &waivers, &degraded);
 
     let mut conclusion = conclusion_of(&firings);
     let overridden = overriding_scope(inputs, conclusion, &firings);
@@ -59,8 +65,6 @@ pub fn decide(rubric: &Rubric, inputs: &DecisionInputs) -> Decision {
         .collect();
     dispositions.sort_unstable();
     dispositions.dedup();
-    let mut degraded = inputs.degraded.clone();
-    degraded.sort_unstable();
 
     Decision {
         schema: DecisionSchema::V1,

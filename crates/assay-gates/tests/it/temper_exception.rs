@@ -102,6 +102,29 @@ fn a_wrapped_single_lint_expect_is_read_from_the_source() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn a_nested_expect_is_not_admitted_and_fails_quickly() -> Result<(), Box<dyn Error>> {
+    // `#[expect(` holds two open brackets: 127 levels stay within the lexer's 256.
+    let levels = 127;
+    let nested = format!(
+        "#[expect(clippy::too_many_lines, {}{}{} reason = \"r\")]",
+        "#[expect(".repeat(levels - 1),
+        "a, ".repeat(50_000),
+        ")]".repeat(levels - 1)
+    );
+    let mut pr = pr_with(&nested)?;
+    pr.set(Revision::Base, EXCEPTIONS, ADMITS_PROCESS);
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![unapproved(PROCESS, 42)]),
+        "an `expect` holding an attribute is never admitted, and no level's list is kept"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_multi_lint_expect_is_not_admitted_by_its_first_lint() -> Result<(), Box<dyn Error>> {
     let mut pr = pr_with(
         "#[expect(clippy::too_many_lines, clippy::unwrap_used, reason = \"one state machine\")]",

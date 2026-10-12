@@ -12,19 +12,20 @@ use std::path::Path;
 use super::attributes::{self, Expect};
 use super::layout::{Declared, Index, exactly_rs, skipped};
 use super::references::{self, Reference};
+use super::statics::BlobCount;
 use super::tokens::{Lexed, Source, Unlexable};
 use crate::revision::{EntryKind, TreeEntry};
 
 /// Whether `path` names Rust source: its extension is `rs` in any case, so a `.RS` file the
 /// scan's walk would pass over is still read here.
-fn is_rust(path: &str) -> bool {
+pub(super) fn is_rust(path: &str) -> bool {
     Path::new(path)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
 }
 
 /// Whether `path` names a Cargo manifest, which decides the crate roots `layout.rs` reads.
-fn is_manifest(path: &str) -> bool {
+pub(super) fn is_manifest(path: &str) -> bool {
     path.rsplit('/').next() == Some("Cargo.toml")
 }
 
@@ -110,10 +111,11 @@ impl<'h> Analysis<'h> {
     }
 }
 
-/// Whether the checks read `entry`'s bytes.
+/// Whether the checks read `entry`'s bytes: Rust sources and symlinks (step 2), and Cargo
+/// manifests (step 4).
 pub(super) fn needs_bytes(entry: &TreeEntry) -> bool {
     match entry.kind {
-        EntryKind::File => is_rust(&entry.path),
+        EntryKind::File => is_rust(&entry.path) || is_manifest(&entry.path),
         EntryKind::Symlink => true,
         EntryKind::Submodule => false,
     }
@@ -121,11 +123,18 @@ pub(super) fn needs_bytes(entry: &TreeEntry) -> bool {
 
 impl HeadTree {
     /// The tree from its `entries` and `blobs`, the bytes of the entries [`needs_bytes`]
-    /// selects, in order. A blob that is missing leaves its entry unread, which
-    /// [`Self::analyse`] reports.
-    pub(super) fn new(entries: Vec<TreeEntry>, blobs: Vec<Vec<u8>>) -> Self {
+    /// selects, in order; an error unless there is exactly one blob for each, so no manifest
+    /// or Rust file is silently left unread.
+    pub(super) fn new(entries: Vec<TreeEntry>, blobs: Vec<Vec<u8>>) -> Result<Self, BlobCount> {
+        let asked = entries.iter().filter(|entry| needs_bytes(entry)).count();
+        if asked != blobs.len() {
+            return Err(BlobCount {
+                asked,
+                read: blobs.len(),
+            });
+        }
         let mut blobs = blobs.into_iter();
-        Self(
+        Ok(Self(
             entries
                 .into_iter()
                 .map(|entry| {
@@ -137,12 +146,19 @@ impl HeadTree {
                     (entry, bytes)
                 })
                 .collect(),
-        )
+        ))
     }
 
     /// Every entry.
     pub(super) fn entries(&self) -> impl Iterator<Item = &TreeEntry> {
         self.0.iter().map(|(entry, _)| entry)
+    }
+
+    /// Every entry, with its bytes when they were read.
+    pub(super) fn files(&self) -> impl Iterator<Item = (&TreeEntry, Option<&[u8]>)> {
+        self.0
+            .iter()
+            .map(|(entry, bytes)| (entry, bytes.as_deref()))
     }
 
     /// The blind spots, the `expect` attributes and the plain `allow`s, by path and line.
@@ -307,4 +323,26 @@ fn read_source<'h>(
 fn line_text(text: &str, line: NonZeroU64) -> Option<String> {
     let index = usize::try_from(line.get()).ok()?.checked_sub(1)?;
     text.lines().nth(index).map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_blob_is_an_error_not_an_unread_file() {
+        let entry = |path: &str| TreeEntry {
+            path: path.to_owned(),
+            kind: EntryKind::File,
+            object: path.to_owned(),
+            size: None,
+        };
+        let entries = vec![entry("Cargo.toml"), entry("src/lib.rs"), entry("README.md")];
+
+        assert_eq!(
+            HeadTree::new(entries, vec![b"[package]".to_vec()]),
+            Err(BlobCount { asked: 2, read: 1 }),
+            "the manifest and the Rust file need bytes; the readme does not"
+        );
+    }
 }

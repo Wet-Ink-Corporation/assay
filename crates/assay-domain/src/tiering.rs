@@ -97,7 +97,9 @@ closed_enum! {
 }
 
 closed_enum! {
-    /// A reviewer role a tier requires (04 §3 "Required roles").
+    /// A reviewer role a tier requires (04 §3 "Required roles"). Ordered as declared, the order
+    /// of the roster, so a set of roles digests and serialises in one order.
+    #[derive(PartialOrd, Ord)]
     pub enum RequiredRole {
         /// Logic and edge cases (`full`).
         Bugs => "bugs",
@@ -246,8 +248,9 @@ fn first_row(held: &[TierReason]) -> (Tier, Vec<TierReason>) {
 }
 
 /// 04 §3: full = bugs, security, design (+ meta for a trust path or exec surface); lite =
-/// combined; micro = combined-micro; no LLM for trivial or needs-split.
-fn required_roles(tier: Tier, trust_class: bool) -> Vec<RequiredRole> {
+/// combined; micro = combined-micro; no LLM for trivial or needs-split. `decide` rule 8 reads the
+/// same table.
+pub(crate) fn required_roles(tier: Tier, trust_class: bool) -> Vec<RequiredRole> {
     match tier {
         Tier::NeedsSplit | Tier::Trivial => Vec::new(),
         Tier::Full => {
@@ -326,11 +329,12 @@ fn exec_surface(lists: &Lists<'_>, changes: &ChangeSet) -> Vec<String> {
 /// Whether there is at least one file and every file is a regular file whose every side is
 /// allowlisted docs that no compile-time include names (compared ignoring ASCII case).
 fn docs_only(lists: &Lists<'_>, changes: &ChangeSet) -> bool {
+    // A target that is not canonical is one the scan could not place: it may name any file.
     let included = |path: &str| {
         changes
             .include_targets
             .iter()
-            .any(|target| target.eq_ignore_ascii_case(path))
+            .any(|target| !change::is_canonical(target) || target.eq_ignore_ascii_case(path))
     };
     !changes.files.is_empty()
         && changes.files.iter().all(|file| {

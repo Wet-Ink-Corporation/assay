@@ -20,6 +20,10 @@
 //! outside a literal or comment is an error the caller fails on, as is a literal or comment
 //! that never ends and a leading frontmatter block. Literal and comment boundaries are found by
 //! ASCII rules only. Any other ASCII character is punctuation.
+//!
+//! Each opening bracket records how many tokens its group holds, found in one pass once the
+//! file is lexed, so every reader finds a group's end in constant time; a bracket opened inside
+//! [`MAX_DEPTH`] others is an error at its line (H-13).
 
 use std::borrow::Cow;
 use std::num::NonZeroU64;
@@ -43,7 +47,23 @@ pub(super) enum Token<'a> {
 pub(super) struct Lexed<'a> {
     pub(super) token: Token<'a>,
     pub(super) line: NonZeroU64,
+    /// For an opening bracket, the number of tokens between it and its matching close (to the
+    /// end of the file when it never closes); 0 for any other token.
+    inside: usize,
 }
+
+impl Lexed<'_> {
+    /// For an opening bracket, the number of tokens between it and its matching close, or to
+    /// the end of the file when it never closes; 0 for any other token. Brackets match by
+    /// nesting alone, whatever their kind, and a close with nothing open is skipped.
+    pub(super) const fn inside(&self) -> usize {
+        self.inside
+    }
+}
+
+/// The deepest bracket nesting a file may have. The source is PR-controlled; a file nested
+/// deeper is refused rather than read (H-13).
+const MAX_DEPTH: usize = 256;
 
 /// Where this lexer stops reading a file, at the line it happens on: a literal or block
 /// comment that never ends, a character outside ASCII in code, or a leading frontmatter block.
@@ -89,7 +109,47 @@ impl<'a> Source<'a> {
         while let Some(next) = lexer.first() {
             lexer.step(next)?;
         }
-        Ok(lexer.out)
+        let mut out = lexer.out;
+        match_brackets(&mut out)?;
+        Ok(out)
+    }
+}
+
+/// Records on each opening bracket the number of tokens its group holds, in one pass with a
+/// stack of the open brackets, so a group's end is found in constant time by every reader.
+/// A bracket opened past [`MAX_DEPTH`] others is refused at its line.
+fn match_brackets(tokens: &mut [Lexed<'_>]) -> Result<(), Unlexable> {
+    let mut open: Vec<usize> = Vec::with_capacity(MAX_DEPTH);
+    for index in 0..tokens.len() {
+        let Some(lexed) = tokens.get(index) else {
+            break;
+        };
+        match lexed.token {
+            Token::Punct('(' | '[' | '{') => {
+                if open.len() >= MAX_DEPTH {
+                    return Err(Unlexable(lexed.line));
+                }
+                open.push(index);
+            }
+            Token::Punct(')' | ']' | '}') => {
+                if let Some(start) = open.pop() {
+                    set_inside(tokens, start, index);
+                }
+            }
+            Token::Ident { .. } | Token::Lifetime(_) | Token::Punct(_) | Token::Literal(_) => {}
+        }
+    }
+    let end = tokens.len();
+    for start in open {
+        set_inside(tokens, start, end);
+    }
+    Ok(())
+}
+
+/// Records that the group opened at `start` ends at `end` (its close, or the end of the file).
+fn set_inside(tokens: &mut [Lexed<'_>], start: usize, end: usize) {
+    if let Some(opener) = tokens.get_mut(start) {
+        opener.inside = end.saturating_sub(start).saturating_sub(1);
     }
 }
 
@@ -185,7 +245,11 @@ impl<'a> Lexer<'a> {
     }
 
     fn push(&mut self, token: Token<'a>, line: NonZeroU64) {
-        self.out.push(Lexed { token, line });
+        self.out.push(Lexed {
+            token,
+            line,
+            inside: 0,
+        });
     }
 
     /// Eats a literal suffix and records the literal that started at `start` on `line`; `None`
@@ -674,6 +738,46 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn an_opening_bracket_knows_how_many_tokens_its_group_holds() {
+        let source = Source::new("] f(a, [b]) { c ( d");
+        let lexed = source.tokens().expect("terminated");
+
+        let inside: Vec<(String, usize)> = lexed
+            .iter()
+            .filter(|lexed| matches!(lexed.token, Token::Punct('(' | '[' | '{')))
+            .map(|lexed| (format!("{:?}", lexed.token), lexed.inside()))
+            .collect();
+        assert_eq!(
+            inside,
+            [
+                ("Punct('(')".to_owned(), 5),
+                ("Punct('[')".to_owned(), 1),
+                ("Punct('{')".to_owned(), 3),
+                ("Punct('(')".to_owned(), 1),
+            ],
+            "a stray close is skipped; an unclosed group runs to the end of the file"
+        );
+    }
+
+    #[test]
+    fn brackets_nested_past_the_cap_are_an_error_at_the_opener_past_it() {
+        let deep = format!("a\n{}{}", "(".repeat(MAX_DEPTH), ")".repeat(MAX_DEPTH));
+        let deeper = format!("a\n{}\n{}", "[".repeat(MAX_DEPTH), "{");
+
+        assert_eq!(
+            (
+                Source::new(&deep).tokens().map(|lexed| lexed.len()),
+                Source::new(&deeper).tokens(),
+            ),
+            (
+                Ok(MAX_DEPTH.saturating_mul(2).saturating_add(1)),
+                Err(Unlexable(NonZeroU64::MIN.saturating_add(2))),
+            ),
+            "the cap itself is read; one more open bracket is refused at its line"
+        );
     }
 
     #[test]

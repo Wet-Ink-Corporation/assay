@@ -1,0 +1,29 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-8b-coordinator-failed-exec-surface",
+  "evidence_key": "run-rule-8b-coordinator-failed-exec-surface",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "required-role-degraded",
+      "detail": "coordinator: timeout"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [
+    {
+      "role": "coordinator",
+      "reason": "timeout"
+    }
+  ],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:ed32af7f065c282e099bddcea0f87a5ff3c2cec8503ae66d59920c89d3fd8d9b"
+}

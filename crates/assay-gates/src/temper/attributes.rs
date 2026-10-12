@@ -18,7 +18,8 @@ pub(super) const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes
 
 /// The lines of attributes the scan does not read, once each:
 /// - a `cfg_attr(..)` whose arguments name `allow`, `expect` or `path` anywhere (raw or not),
-///   or a macro fragment `$x`, which could be any of them;
+///   or a macro fragment `$x`, which could be any of them, and a `cfg_attr` inside another's
+///   arguments;
 /// - a `#[path ..]` or `#![path ..]`, which can compile a file the scan never walks;
 /// - an `allow`, `expect`, `warn`, `deny`, `forbid` or `cfg_attr` attribute whose name is not
 ///   followed by `(`;
@@ -32,34 +33,99 @@ pub(super) const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes
 /// - `include`, `include_str` or `include_bytes` not called with `!` (`use std::include as
 ///   inc;`), which renames a macro `references.rs` judges.
 pub(super) fn unread(tokens: &[Lexed<'_>]) -> Vec<NonZeroU64> {
-    let mut lines = Vec::new();
+    let mut lines: Vec<NonZeroU64> = unread_why(tokens)
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect();
+    lines.dedup();
+    lines
+}
+
+/// Why [`unread`] reports a token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Unread {
+    /// A `cfg_attr` naming `path` or a macro fragment, which can make it a `#[path]`.
+    CfgAttrPath,
+    /// A `cfg_attr` naming `allow` or `expect` only.
+    CfgAttrLint,
+    /// A `cfg_attr` inside another `cfg_attr`'s arguments, refused unread so that no
+    /// argument list is read once per level (H-13).
+    NestedCfgAttr,
+    /// An include macro not called with `!`.
+    RenamedInclude,
+    /// `#[path ..]` or `#![path ..]`.
+    Path,
+    /// A lint or `cfg_attr` attribute whose name is not followed by `(`.
+    Listless,
+    /// An attribute named by a raw identifier.
+    Raw,
+    /// A `#` that does not start an attribute, or an attribute a fragment names.
+    Fragment,
+    /// A fragment or repetition that can assemble an attribute or name a macro.
+    Assembled,
+}
+
+/// Every token [`unread`] reports, at its line, with why, in order.
+pub(super) fn unread_why(tokens: &[Lexed<'_>]) -> Vec<(NonZeroU64, Unread)> {
+    let mut found = Vec::new();
     let mut rest = tokens;
+    // How many tokens of the outermost `cfg_attr`'s arguments being read are still ahead.
+    let mut cfg_attr_left = 0_usize;
     while let [first, tail @ ..] = rest {
-        let hidden = match (first.token, tail) {
+        let inside_cfg_attr = cfg_attr_left > 0;
+        cfg_attr_left = cfg_attr_left.saturating_sub(1);
+        let why = match (first.token, tail) {
             (
                 Token::Ident {
                     name: "cfg_attr", ..
                 },
                 [open, inner @ ..],
             ) if open.token == Token::Punct('(') => {
-                group(inner).iter().any(|lexed| hides(lexed.token))
+                if inside_cfg_attr {
+                    Some(Unread::NestedCfgAttr)
+                } else {
+                    // The `(`, the arguments and the `)`.
+                    cfg_attr_left = open.inside().saturating_add(2);
+                    cfg_attr(group(open, inner))
+                }
             }
-            (Token::Ident { name, .. }, _) if INCLUDES.contains(&name) => !opens(tail, '!'),
+            (Token::Ident { name, .. }, _) if INCLUDES.contains(&name) => {
+                (!opens(tail, '!')).then_some(Unread::RenamedInclude)
+            }
             (Token::Punct('#'), _) => match attribute(tail) {
-                Some(Attribute::Fragment) | None => true,
-                Some(Attribute::Named { name, raw, rest }) => {
-                    raw || name == "path" || (LISTED.contains(&name) && !opens(rest, '('))
+                Some(Attribute::Fragment) | None => Some(Unread::Fragment),
+                Some(Attribute::Named { raw: true, .. }) => Some(Unread::Raw),
+                Some(Attribute::Named { name: "path", .. }) => Some(Unread::Path),
+                Some(Attribute::Named { name, rest, .. }) => {
+                    (LISTED.contains(&name) && !opens(rest, '(')).then_some(Unread::Listless)
                 }
             },
-            (Token::Punct('$'), _) => assembles(tail),
-            _ => false,
+            (Token::Punct('$'), _) => assembles(tail).then_some(Unread::Assembled),
+            _ => None,
         };
-        if hidden && lines.last() != Some(&first.line) {
-            lines.push(first.line);
+        if let Some(why) = why {
+            found.push((first.line, why));
         }
         rest = tail;
     }
-    lines
+    found
+}
+
+/// Why a `cfg_attr` with these arguments is unread, if it is.
+fn cfg_attr(arguments: &[Lexed<'_>]) -> Option<Unread> {
+    let names_path = arguments.iter().any(|lexed| match lexed.token {
+        Token::Ident { name, .. } => name == "path",
+        Token::Punct(punct) => punct == '$',
+        Token::Lifetime(_) | Token::Literal(_) => false,
+    });
+    if names_path {
+        Some(Unread::CfgAttrPath)
+    } else {
+        arguments
+            .iter()
+            .any(|lexed| hides(lexed.token))
+            .then_some(Unread::CfgAttrLint)
+    }
 }
 
 /// Whether `tokens` starts with the punctuation `punct`.
@@ -78,7 +144,7 @@ fn assembles(after_dollar: &[Lexed<'_>]) -> bool {
             Token::Ident { name: "crate", .. } => return false,
             Token::Ident { .. } => rest,
             Token::Punct('(') => {
-                let body = group(rest);
+                let body = group(fragment, rest);
                 if !open_ended(body) {
                     return false;
                 }
@@ -167,7 +233,7 @@ fn listed<'t, 'a>(
                 raw: false,
                 rest: [open, inner @ ..],
             }) if named == name && open.token == Token::Punct('(') => {
-                Some((first.line, group(inner)))
+                Some((first.line, group(open, inner)))
             }
             _ => None,
         }
@@ -210,25 +276,29 @@ fn attribute<'t, 'a>(after_hash: &'t [Lexed<'a>]) -> Option<Attribute<'t, 'a>> {
 
 /// The tokens inside a group whose opening bracket has been consumed, up to its matching
 /// close; all of `inner` when it never closes.
-pub(super) fn group<'t, 'a>(inner: &'t [Lexed<'a>]) -> &'t [Lexed<'a>] {
-    let mut depth = 0_usize;
-    for (index, lexed) in inner.iter().enumerate() {
-        match lexed.token {
-            Token::Punct('(' | '[' | '{') => depth = depth.saturating_add(1),
-            Token::Punct(')' | ']' | '}') => {
-                if depth == 0 {
-                    return inner.get(..index).unwrap_or(inner);
-                }
-                depth = depth.saturating_sub(1);
-            }
-            _ => {}
-        }
-    }
-    inner
+///
+/// `open` is the opening bracket and `inner` the tokens right after it, as the lexer gave them;
+/// the group's length was recorded on `open` when the file was lexed, so this takes constant
+/// time (H-13).
+pub(super) fn group<'t, 'a>(open: &Lexed<'_>, inner: &'t [Lexed<'a>]) -> &'t [Lexed<'a>] {
+    inner.get(..open.inside()).unwrap_or(inner)
 }
 
-/// The lint arguments of an `expect`'s argument list.
+/// Most tokens an `expect`'s argument list may hold to be read lint by lint (H-13): an
+/// admitted `expect` names one lint and a reason.
+const MAX_EXPECT_TOKENS: usize = 256;
+
+/// The lint arguments of an `expect`'s argument list. A list past [`MAX_EXPECT_TOKENS`] or
+/// holding a `#` (an attribute inside, whose own `expect` is read on its own) is one `None`,
+/// never admitted, so no nested list is copied at every level.
 fn lints(arguments: &[Lexed<'_>]) -> Expect {
+    if arguments.len() > MAX_EXPECT_TOKENS
+        || arguments
+            .iter()
+            .any(|lexed| lexed.token == Token::Punct('#'))
+    {
+        return vec![None];
+    }
     let mut lints = Vec::new();
     let mut depth = 0_usize;
     let mut current: Vec<Token<'_>> = Vec::new();
@@ -402,6 +472,42 @@ mod tests {
             .map(|text| unread_in(text).len()),
             [1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
             "`$h` can be `#` and `$a` can be `[allow(..)]`"
+        );
+    }
+
+    #[test]
+    fn an_expect_holding_a_hash_or_past_the_cap_names_no_lint() {
+        let long = format!("#[expect(a{})]", ", a".repeat(MAX_EXPECT_TOKENS / 2));
+        let fits = format!("#[expect(a{})]", ", a".repeat(MAX_EXPECT_TOKENS / 2 - 1));
+        let lints_of = |text: &str| {
+            let source = Source::new(text);
+            let lexed = source.tokens().expect("terminated");
+            expects(&lexed)
+                .into_iter()
+                .map(|(_, lints)| lints.len())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            (
+                lints_of("#[expect(a, #[expect(b)])]"),
+                lints_of(&long),
+                lints_of(&fits),
+            ),
+            (vec![1, 1], vec![1], vec![MAX_EXPECT_TOKENS / 2]),
+            "an argument list holding `#` or more than the cap's tokens is one `None`"
+        );
+    }
+
+    #[test]
+    fn a_cfg_attr_inside_another_is_reported_without_reading_its_arguments() {
+        let source = Source::new("#[cfg_attr(a, cfg_attr(b, derive(X)))]\n#[cfg_attr(c, d)]");
+        let lexed = source.tokens().expect("terminated");
+
+        assert_eq!(
+            unread_why(&lexed),
+            [(line(1), Unread::NestedCfgAttr)],
+            "only the inner one is reported; a later `cfg_attr` is read as usual"
         );
     }
 

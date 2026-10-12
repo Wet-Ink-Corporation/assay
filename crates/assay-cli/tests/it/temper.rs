@@ -80,7 +80,12 @@ impl Pr {
         let scratch = tempfile::tempdir()?;
         let work = scratch.path().join("work");
         plain_git(scratch.path(), &["init", "--quiet", "work"])?;
-        write(&work, "Cargo.toml", "[package]\nname = \"fixture\"\n")?;
+        // Every package inherits the workspace lints (03 §2.1 step 4d).
+        write(
+            &work,
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\n\n[lints]\nworkspace = true\n",
+        )?;
         write(&work, "src/lib.rs", LIB)?;
         write(&work, BASELINE, &baseline(2))?;
         write(&work, CONFIG, TEMPER_JSON)?;

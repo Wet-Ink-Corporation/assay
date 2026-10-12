@@ -113,7 +113,7 @@ pub(crate) fn hit(
 }
 
 /// A fake object id: deterministic within the test process, equal for equal bytes.
-fn object_id(bytes: &[u8]) -> String {
+pub(crate) fn object_id(bytes: &[u8]) -> String {
     let mut hasher = DefaultHasher::new();
     bytes.hash(&mut hasher);
     format!("{:040x}", u128::from(hasher.finish()))

@@ -55,6 +55,13 @@
   },
   "findings": [],
   "dispositions": [],
+  "completed_roles": [],
+  "coordinator": {
+    "status": "not-needed"
+  },
+  "verifier": {
+    "status": "not-needed"
+  },
   "degraded": [],
   "waivers": [],
   "override_record": null
