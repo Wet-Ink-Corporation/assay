@@ -177,3 +177,16 @@ assay/
 ```
 
 For assay's own repo the trust paths additionally include **all of `crates/**`** (forge decides who counts as an owner and what an approval snapshot contains; runner holds the headless profile; app holds the use cases; domain holds rubric, fingerprint and decide logic; gates hold the adapters), `rubric/**`, `plugin/**`, `schemas/**`, `workflows/**`, the release workflow, `.assay/**` and `deny.toml`; and a deterministic **`assay-self` gate** replays `decide` over the golden corpus and fails on any byte difference unless an owner-approved snapshot update is in the PR (`05` T16).
+
+*As built (#76).* The trust paths are base `.assay/globs.toml`'s `trust` list: the paths above, plus `corpus/golden/**`. The gate replays at head, so a rubric or `decide` change that moves a verdict fails it (rule 1) unless the same PR rewrites the affected `decision.json`s; "owner-approved" is then rule 4's, because the rewritten snapshot is itself a trust path whatever caused it (a dependency bump that changes serialisation included). The gate is an `exec` plugin (03 §1, §2), declared in assay's own `.assay/plugins.toml` as
+
+```toml
+[[plugin]]
+name = "assay-self"
+adapter = "exec"
+exec = ["cargo", "run", "--locked", "--quiet", "--package", "assay-cli", "--bin", "assay", "--", "self-gate", "corpus/golden", "rubric/v1.toml"]
+job = "test"
+required = true
+```
+
+`assay self-gate <corpus-dir> <rubric-file>` reads both from the head checkout (at most 4,096 entries, 1 MiB per file, 64 MiB in all; symlinks are never followed) and writes one `assay.findings/1` document named `assay-self` to `ASSAY_FINDINGS_OUT`, with `ASSAY_RUN_KEY` as its `run_key`: exit 0 and `pass` when every case decides to exactly its recorded bytes, exit 1 and `fail` with one `blocker` per problem otherwise (`golden-mismatch` at the first differing line, `golden-inputs-invalid`, `golden-case-incomplete`, `golden-unexpected-entry` for anything but `README.md` and case directories holding exactly `inputs.json` and `decision.json`, `golden-corpus-empty`, `golden-rubric-invalid`), and exit 2 with no document when a variable is missing or the tree cannot be read within its caps. `.assay/plugins.toml` itself lands with the first released assay digest, which its `[assay] digest` must name; until then `plan` refuses the repository (`Missing`), as it did before.

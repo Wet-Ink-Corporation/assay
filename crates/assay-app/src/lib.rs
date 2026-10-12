@@ -10,6 +10,7 @@ mod config;
 mod contract;
 mod decide;
 mod gate;
+mod golden;
 mod model_runner;
 mod plan;
 mod prompt_bundle;
@@ -37,6 +38,7 @@ pub use gate::{
     BuildJob, Conclusion, GateDocument, GateError, GateJob, GateOutcome, GateReport, GateRun,
     GateRunner, Termination, account_for_required, run_gates,
 };
+pub use golden::{CorpusEntry, CorpusEntryKind, GoldenReplay, SELF_GATE, replay_golden};
 pub use model_runner::{
     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
     PromptError, RateLimitObserved, RetryError, Structured, run_with_retry,
