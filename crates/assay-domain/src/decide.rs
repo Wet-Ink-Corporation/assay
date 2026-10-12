@@ -27,8 +27,9 @@ use waive::Waivers;
 /// `neutral`. A waiver removes one human-decision gate finding the rubric lists from rule 1; an
 /// override is void unless the reasons hash to the digest it quotes, and scope `llm` only
 /// neutralises a decision whose every failing or pending reason comes from rule 8. A required
-/// role of the PR's tier and classes that did not complete, a failed coordinator or verifier,
-/// and every role reported degraded are listed in `degraded` and fire rule 8b or 8c.
+/// role of the PR's tier and classes that did not complete, a coordinator or verifier that
+/// failed or was due but did not run, and every role reported degraded are listed once each in
+/// `degraded` and fire rule 8b or 8c.
 ///
 /// Pure and total: the same rubric and inputs give the same decision, whose `inputs_digest`
 /// identifies both. The decision is a new document: the keys, fingerprints, dispositions and

@@ -85,8 +85,9 @@ pub struct Waived {
 pub struct DegradedRole {
     /// The role: a specialist (`bugs`, `combined`), `coordinator` or `verifier`.
     pub role: String,
-    /// Why: its own cap, turns, timeout, malformed output after a retry, `unavailable`, or
-    /// `missing` for a required role that never reported.
+    /// Why: `cap`, `turns`, `timeout`, `malformed` (after a retry), `unavailable`, or `missing`
+    /// for a call that was due but never reported. A role degraded for several reasons lists
+    /// them all, distinct and sorted, joined with `", "` (`cap, timeout`).
     pub reason: String,
 }
 
@@ -113,7 +114,8 @@ pub struct Decision {
     pub dispositions: Vec<FindingDisposition>,
     /// Gate findings removed by owner waivers.
     pub waived: Vec<Waived>,
-    /// Every degraded role of the LLM stage, sorted, once each; the check summary lists them.
+    /// Every degraded role of the LLM stage, sorted by role, once each with all its reasons; the
+    /// check summary lists them.
     pub degraded: Vec<DegradedRole>,
     /// The rubric version that made the decision.
     pub rubric_version: String,

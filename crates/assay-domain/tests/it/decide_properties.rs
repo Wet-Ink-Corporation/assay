@@ -6,11 +6,11 @@
 use std::collections::BTreeSet;
 
 use assay_domain::{
-    Authorship, Conclusion, Counts, DecisionInputs, Deferral, DegradedRole, Disposition,
-    FindingDisposition, Fingerprint, GateConclusion, GateFinding, GateOutcome, GateReport,
-    InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy,
-    PrClass, PullRequest, Readiness, RequiredRole, ReviewedFinding, Rubric, Severity,
-    StepAttribution, SupportOutcome, Tier, VerifierVerdict, Waiver, WeighIn, decide,
+    Authorship, CallFailure, Conclusion, Counts, DecisionInputs, Deferral, DegradedRole,
+    Disposition, FindingDisposition, Fingerprint, GateConclusion, GateFinding, GateOutcome,
+    GateReport, InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope,
+    OwnerApproval, Policy, PrClass, PullRequest, Readiness, RequiredRole, ReviewedFinding, Rubric,
+    Severity, StepAttribution, SupportOutcome, Tier, VerifierVerdict, Waiver, WeighIn, decide,
 };
 use proptest::collection::vec;
 use proptest::option;
@@ -183,16 +183,15 @@ fn support_outcome() -> impl Strategy<Value = SupportOutcome> {
     prop_oneof![
         Just(SupportOutcome::NotNeeded),
         Just(SupportOutcome::Completed),
-        Just(SupportOutcome::Failed {
-            reason: "timeout".to_owned(),
-        }),
+        select(CallFailure::ALL.to_vec()).prop_map(|reason| SupportOutcome::Failed { reason }),
     ]
 }
 
 /// The specialist roles that completed, and how the coordinator and the verifier ran.
-fn role_runs() -> impl Strategy<Value = (Vec<RequiredRole>, SupportOutcome, SupportOutcome)> {
+fn role_runs() -> impl Strategy<Value = (BTreeSet<RequiredRole>, SupportOutcome, SupportOutcome)> {
     (
-        proptest::sample::subsequence(RequiredRole::ALL.to_vec(), 0..=RequiredRole::ALL.len()),
+        proptest::sample::subsequence(RequiredRole::ALL.to_vec(), 0..=RequiredRole::ALL.len())
+            .prop_map(BTreeSet::from_iter),
         support_outcome(),
         support_outcome(),
     )
@@ -374,7 +373,7 @@ fn completed_without_roles_inputs() -> impl Strategy<Value = DecisionInputs> {
         .prop_map(|(mut inputs, tier)| {
             inputs.pr.tier = tier;
             inputs.llm = LlmStage::Completed;
-            inputs.completed_roles = Vec::new();
+            inputs.completed_roles = BTreeSet::new();
             inputs
         })
 }

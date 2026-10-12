@@ -6,14 +6,15 @@
 //! enums by their wire code. Each `Canonical` impl destructures its type exhaustively, so a new
 //! field does not compile until it is part of the digest.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use sha2::{Digest, Sha256};
 
 use crate::decide::inputs::{
-    Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
-    LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
-    Readiness, ReviewedFinding, StepAttribution, SupportOutcome, Waiver, WeighIn,
+    Authorship, CallFailure, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport,
+    InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy,
+    PullRequest, Readiness, ReviewedFinding, StepAttribution, SupportOutcome, Waiver, WeighIn,
 };
 use crate::decision::{DegradedRole, FindingDisposition, Reason};
 use crate::disposition::Disposition;
@@ -145,6 +146,17 @@ impl<T: Canonical> Canonical for Vec<T> {
     }
 }
 
+/// A set encodes like a list of its items in their order, so order and repetition in the
+/// serialised inputs cannot change the digest.
+impl<T: Canonical> Canonical for BTreeSet<T> {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.length(self.len());
+        for item in self {
+            item.encode(encoder);
+        }
+    }
+}
+
 /// Closed vocabularies encode as their wire code.
 macro_rules! canonical_by_code {
     ($($name:ty),+ $(,)?) => {
@@ -160,6 +172,7 @@ macro_rules! canonical_by_code {
 
 canonical_by_code!(
     Authorship,
+    CallFailure,
     Deferral,
     Disposition,
     GateConclusion,

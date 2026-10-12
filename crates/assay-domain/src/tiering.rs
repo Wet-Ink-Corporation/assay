@@ -97,7 +97,9 @@ closed_enum! {
 }
 
 closed_enum! {
-    /// A reviewer role a tier requires (04 §3 "Required roles").
+    /// A reviewer role a tier requires (04 §3 "Required roles"). Ordered as declared, the order
+    /// of the roster, so a set of roles digests and serialises in one order.
+    #[derive(PartialOrd, Ord)]
     pub enum RequiredRole {
         /// Logic and edge cases (`full`).
         Bugs => "bugs",

@@ -124,13 +124,23 @@ pub(crate) fn clean_inputs() -> DecisionInputs {
         llm: LlmStage::Completed,
         findings: Vec::new(),
         dispositions: Vec::new(),
-        completed_roles: RequiredRole::ALL.to_vec(),
+        completed_roles: RequiredRole::ALL.into_iter().collect(),
         coordinator: SupportOutcome::Completed,
         verifier: SupportOutcome::Completed,
         degraded: Vec::new(),
         waivers: Vec::new(),
         override_record: None,
     }
+}
+
+/// Clean inputs made a `full` PR of class trust path that the owner approved, with every
+/// required role completed.
+pub(crate) fn full_trust_path() -> DecisionInputs {
+    let mut inputs = clean_inputs();
+    inputs.pr.tier = Tier::Full;
+    inputs.pr.classes = vec![PrClass::TrustPath];
+    inputs.pr.owner_approval = OwnerApproval::Approved;
+    inputs
 }
 
 /// A required gate that ran and concluded `conclusion` with `findings`, whose adapter did not
