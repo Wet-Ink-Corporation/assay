@@ -13,6 +13,9 @@ use crate::temper_support::{Pr, Seen, hit};
 const FAILED: GateOutcome = GateOutcome::Concluded(Conclusion::Fail);
 const PASSED: GateOutcome = GateOutcome::Concluded(Conclusion::Pass);
 
+/// A package manifest, inheriting the workspace lints as step 4d requires of every package.
+const PACKAGE: &str = "[package]\nname = \"x\"\n\n[lints]\nworkspace = true\n";
+
 fn blind(file: &str, line: u64) -> Seen {
     (
         "blind-spot".to_owned(),
@@ -143,6 +146,50 @@ fn rust_that_does_not_lex_fails_at_the_open_literal() -> Result<(), Box<dyn Erro
 }
 
 #[test]
+fn brackets_nested_past_the_cap_fail_quickly() -> Result<(), Box<dyn Error>> {
+    let depth = 30_000;
+    let nested = format!(
+        "fn f() {{}}\nx!({}{});\n",
+        "cfg_attr(".repeat(depth),
+        ")".repeat(depth)
+    );
+    let mut pr = Pr::new()?;
+    pr.set(Revision::Head, "src/lib.rs", &nested);
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![blind("src/lib.rs", 2)]),
+        "past 256 open brackets the file is not read, so no group is walked again and again"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cfg_attr_nested_in_another_fails_quickly() -> Result<(), Box<dyn Error>> {
+    // `#[` and 255 `cfg_attr(`: 256 open brackets, the deepest the lexer reads.
+    let levels = 255;
+    let nested = format!(
+        "fn f() {{}}\n#[{}{}{}]\nfn g() {{}}\n",
+        "cfg_attr(unix, ".repeat(levels),
+        "x, ".repeat(500_000),
+        ")".repeat(levels)
+    );
+    let mut pr = Pr::new()?;
+    pr.set(Revision::Head, "src/lib.rs", &nested);
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![blind("src/lib.rs", 2)]),
+        "a nested `cfg_attr` is refused, not read again at every level"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_symlink_to_a_directory_fails() -> Result<(), Box<dyn Error>> {
     let mut pr = Pr::new()?;
     pr.set(Revision::Head, "elsewhere/hidden.rs", "pub fn f() {}\n");
@@ -213,7 +260,7 @@ fn attributes_the_scan_does_not_read_fail_at_their_line() -> Result<(), Box<dyn 
         let source = format!("// one\n{attribute}\nmod m;\n");
         pr.set(Revision::Head, "src/lib.rs", &source);
         pr.set(Revision::Head, "src/m.rs", "fn f() {}\n");
-        pr.set(Revision::Head, "Cargo.toml", "[package]\nname = \"x\"\n");
+        pr.set(Revision::Head, "Cargo.toml", PACKAGE);
 
         let outcome = pr.outcome()?;
 
@@ -617,7 +664,7 @@ fn an_include_the_scan_cannot_pin_to_a_file_fails() -> Result<(), Box<dyn Error>
 
 #[test]
 fn a_module_without_its_file_in_the_tree_fails() -> Result<(), Box<dyn Error>> {
-    const MANIFEST: (&str, &str) = ("Cargo.toml", "[package]\nname = \"x\"\n");
+    const MANIFEST: (&str, &str) = ("Cargo.toml", PACKAGE);
     let cases: [&[(&str, &str)]; 8] = [
         &[("src/lib.rs", "// one\nmod generated;\n"), MANIFEST],
         &[
@@ -695,7 +742,7 @@ fn a_module_with_its_file_in_the_tree_passes() -> Result<(), Box<dyn Error>> {
         ("tests/it/support.rs", "fn s() {}\n"),
         ("tests/smoke.rs", "mod common;\n"),
         ("tests/common/mod.rs", "fn c() {}\n"),
-        ("Cargo.toml", "[package]\nname = \"x\"\n"),
+        ("Cargo.toml", PACKAGE),
     ])?;
 
     assert_eq!(outcome, (PASSED, Vec::new()), "rustc's module paths");
@@ -709,7 +756,7 @@ fn a_root_also_declared_a_module_passes_with_both_files() -> Result<(), Box<dyn 
         ("src/main.rs", "mod lib;\n"),
         ("src/x.rs", "fn x() {}\n"),
         ("src/lib/x.rs", "fn x() {}\n"),
-        ("Cargo.toml", "[package]\nname = \"x\"\n"),
+        ("Cargo.toml", PACKAGE),
     ])?;
 
     assert_eq!(

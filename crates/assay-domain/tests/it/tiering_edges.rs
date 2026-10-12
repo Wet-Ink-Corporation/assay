@@ -137,10 +137,11 @@ fn root_build_sources_hold_top_level_files_and_mod_files_only() {
 }
 
 #[test]
-fn nested_root_module_reached_by_build_script_awaits_issue_64() {
+fn build_sources_alone_do_not_hold_a_nested_root_module() {
     // The root `build.rs` can reach `codegen/other.rs` through `mod codegen;` and `src/` through
-    // `include!` or `#[path]`. `BuildSources` does not hold them; #64's syn scan adds that
-    // closure to `ChangeSet.exec_roots` (Weigh-In default wi-a29f26). This pins the gap.
+    // `include!` or `#[path]`. `BuildSources` holds neither by path; the Z2s scan's closure
+    // (`assay_gates::compile_time_reach`, #64) adds them to `ChangeSet.exec_roots`, pinned by
+    // `a_root_build_script_module_reaches_its_nested_files` in assay-gates' `tests/it/reach.rs`.
     let roots = [ExecRoot::BuildSources {
         crate_dir: String::new(),
     }];
@@ -151,10 +152,11 @@ fn nested_root_module_reached_by_build_script_awaits_issue_64() {
 }
 
 #[test]
-fn build_script_include_of_src_awaits_issue_64() {
+fn build_sources_alone_do_not_hold_a_build_script_include_of_src() {
     // `crates/x/build.rs` doing `include!("src/cli.rs")` runs `src/cli.rs` at build time, but
-    // `BuildSources` leaves `src/` out; #64's syn scan adds the `include!` closure to
-    // `ChangeSet.exec_roots` (Weigh-In default wi-a29f26). This pins the gap.
+    // `BuildSources` leaves `src/` out by path; the Z2s scan's closure
+    // (`assay_gates::compile_time_reach`, #64) adds it to `ChangeSet.exec_roots`, pinned by
+    // `a_build_script_include_of_src_is_an_exec_root` in assay-gates' `tests/it/reach.rs`.
     let roots = [ExecRoot::BuildSources {
         crate_dir: "crates/x".to_owned(),
     }];
@@ -210,6 +212,20 @@ fn include_target_matches_regardless_of_ascii_case() {
     let tiering = tier(&RepoGlobs::default(), &set);
 
     assert_eq!(tiering.tier, Tier::Micro);
+}
+
+#[test]
+fn include_target_that_is_not_canonical_holds_every_docs_path() {
+    // The Z2s scan reports an include it cannot place (a computed path, one outside the
+    // repository) as `""`: it could name any file, so no docs change is trivial (#64).
+    for target in ["", "../README.md", "docs/./a.md"] {
+        let mut set = changes(vec![file("docs/guide.md", 1, 1)]);
+        set.include_targets = vec![target.to_owned()];
+
+        let tiering = tier(&RepoGlobs::default(), &set);
+
+        assert_eq!(tiering.tier, Tier::Micro, "{target:?}");
+    }
 }
 
 #[test]

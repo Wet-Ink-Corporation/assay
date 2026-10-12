@@ -160,13 +160,23 @@ pub(super) struct Declared(HashSet<String>);
 impl Declared {
     /// Records `mod name;` in the file at `from`.
     pub(super) fn add(&mut self, from: &str, name: &str) {
-        let (directory, file) = from.rsplit_once('/').unwrap_or(("", from));
-        let stem = file.strip_suffix(".rs").unwrap_or(file);
-        for base in [join(directory, name), join(&join(directory, stem), name)] {
-            self.0.insert(format!("{base}/mod.rs"));
-            self.0.insert(format!("{base}.rs"));
-        }
+        self.0.extend(module_files(from, name));
     }
+}
+
+/// Every file `mod name;` in the file at `from` can name, whichever way that file is read:
+/// `name.rs` and `name/mod.rs`, beside it and in the directory named after it.
+pub(super) fn module_files(from: &str, name: &str) -> [String; 4] {
+    let (directory, file) = from.rsplit_once('/').unwrap_or(("", from));
+    let stem = file.strip_suffix(".rs").unwrap_or(file);
+    let beside = join(directory, name);
+    let nested = join(&join(directory, stem), name);
+    [
+        format!("{beside}.rs"),
+        format!("{beside}/mod.rs"),
+        format!("{nested}.rs"),
+        format!("{nested}/mod.rs"),
+    ]
 }
 
 /// `directory/name`, or `name` at the root.
