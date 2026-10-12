@@ -17,11 +17,18 @@ use crate::config::CommitId;
 use crate::plan::{EntryKind, PullRequestObjects, TreeEntry};
 use crate::validation::enclosing_functions;
 
-/// The most distinct files read for gate evidence in one run (H-13).
-pub(super) const MAX_EVIDENCE_FILES: usize = 1_000;
+/// The most distinct files read for gate evidence in one run (H-13); findings citing any other
+/// file stay unverified.
+pub const MAX_EVIDENCE_FILES: usize = 1_000;
 
-/// The most bytes read for gate evidence in one run, charged by listed size before the read.
-pub(super) const MAX_EVIDENCE_BYTES: u64 = 64 << 20;
+/// The most bytes read for gate evidence in one run, charged by listed size before the read;
+/// reads stop at the first cited file that does not fit.
+pub const MAX_EVIDENCE_BYTES: u64 = 64 << 20;
+
+/// The longest function name a cited file may declare: a file declaring a longer one is not
+/// indexed, and its findings stay unverified, so no per-line or per-finding cost grows with a
+/// name (H-13).
+pub const MAX_SYMBOL_BYTES: usize = 256;
 
 /// The most characters evidence may hold (`findings-1.schema.json`).
 const MAX_EVIDENCE_CHARS: usize = 400;
@@ -137,41 +144,58 @@ fn side_texts<'p, O: PullRequestObjects, S, A>(
         .collect())
 }
 
-/// One cited file, indexed once: its lines, the function each belongs to, and how many earlier
-/// lines of that function normalise alike.
+/// One cited file, indexed once: its lines, each line's normalised content, the function each
+/// belongs to, and how many earlier lines of that function normalise alike. A finding then
+/// costs its own quote and one comparison, never its line again (H-13).
 struct Indexed<'t> {
     lines: Vec<&'t str>,
+    contents: Vec<Option<String>>,
     functions: Vec<&'t str>,
     occurrences: Vec<u32>,
 }
 
 impl<'t> Indexed<'t> {
-    fn of(text: &'t str) -> Self {
-        let lines: Vec<&str> = text.lines().collect();
+    /// The index of `text`; `None` when it declares a function name longer than
+    /// [`MAX_SYMBOL_BYTES`], whose findings then stay unverified.
+    fn of(text: &'t str) -> Option<Self> {
         let functions = enclosing_functions(text);
-        let mut seen: HashMap<(&str, String), u32> = HashMap::new();
-        let occurrences = lines
+        if functions
             .iter()
-            .zip(&functions)
-            .map(|(line, function)| {
-                let count = seen.entry((*function, normalise(line))).or_insert(0);
-                let earlier = *count;
-                *count = count.saturating_add(1);
-                earlier
-            })
-            .collect();
-        Self {
+            .any(|function| function.len() > MAX_SYMBOL_BYTES)
+        {
+            return None;
+        }
+        let lines: Vec<&str> = text.lines().collect();
+        let contents: Vec<Option<String>> = lines.iter().map(|line| content(line)).collect();
+        let occurrences = {
+            let mut seen: HashMap<(&str, &str), u32> = HashMap::new();
+            contents
+                .iter()
+                .zip(&functions)
+                .map(|(content, function)| {
+                    // Lines without content count together; no finding is verified on one.
+                    let key = (*function, content.as_deref().unwrap_or(""));
+                    let count = seen.entry(key).or_insert(0);
+                    let earlier = *count;
+                    *count = count.saturating_add(1);
+                    earlier
+                })
+                .collect()
+        };
+        Some(Self {
             lines,
+            contents,
             functions,
             occurrences,
-        }
+        })
     }
 }
 
 /// Anchors gate findings against the texts, indexing each file once.
 pub(super) struct Anchors<'t> {
     texts: &'t Texts,
-    indexed: HashMap<(Side, &'t str), Indexed<'t>>,
+    /// Each cited file's index, or `None` for a file that cannot be indexed.
+    indexed: HashMap<(Side, &'t str), Option<Indexed<'t>>>,
 }
 
 impl<'t> Anchors<'t> {
@@ -219,11 +243,13 @@ impl<'t> Anchors<'t> {
         let indexed = self
             .indexed
             .entry((side, path.as_str()))
-            .or_insert_with(|| Indexed::of(text));
+            .or_insert_with(|| Indexed::of(text))
+            .as_ref()?;
         let index = usize::try_from(finding.line.get().checked_sub(1)?).ok()?;
         let line = *indexed.lines.get(index)?;
+        // The schema bounds the quote, so normalising it is bounded too.
         let quoted = finding.evidence.lines().find_map(content)?;
-        if content(line)? != quoted {
+        if indexed.contents.get(index)?.as_ref()? != &quoted {
             return None;
         }
         Some((

@@ -14,7 +14,7 @@ use super::evidence::{Anchors, Cited, read_texts};
 use super::fetch::{Artifact, Fetch};
 use super::ports::RunArtifacts;
 use super::recompute::AuthenticPlan;
-use super::refusal::{OutputsProblem, Refusal};
+use super::refusal::{OutputsProblem, PlanMismatch, Refusal};
 use super::request::{DecideRequest, GateJobOutputs, JobResult, Reported, UpstreamJob};
 use super::{Halt, Reader};
 use crate::config::{Plugin, Sha256Digest};
@@ -92,8 +92,16 @@ pub(super) fn gates<O: PullRequestObjects, S, A: RunArtifacts>(
                     documented(&reported, plugin, reader)?
                 }
                 (Some(Reported::Error(error)), _) => State::Settled(errored(&error.detail())),
-                (Some(Reported::Concluded { .. }), None) | (None, _) => {
-                    State::Settled(unreported(outputs.result))
+                (Some(Reported::Concluded { .. }), None) => {
+                    return Err(PlanMismatch::ArtifactNames.into());
+                }
+                (None, _) => {
+                    let Some(outcome) = unreported(outputs.result) else {
+                        let problem = OutputsProblem::MissingPlugin;
+                        let job = upstream_job(job);
+                        return Err(Refusal::Outputs { job, problem }.into());
+                    };
+                    State::Settled(outcome)
                 }
             };
             pending.push(Pending { plugin, state });
@@ -173,11 +181,13 @@ fn reports_by_plugin<'o>(
 }
 
 /// A gate its job did not report: skipped when the job was, an error when the job failed
-/// before reporting it, and skipped when the job succeeded without it.
-fn unreported(result: JobResult) -> GateOutcome {
+/// before reporting it, and `None` when the job succeeded without it, whose outputs are then
+/// refused (a cancelled job never gets here: it stops `authenticate` first).
+fn unreported(result: JobResult) -> Option<GateOutcome> {
     match result {
-        JobResult::Failure => errored("job-failed"),
-        JobResult::Success | JobResult::Skipped | JobResult::Cancelled => GateOutcome::Skipped,
+        JobResult::Failure => Some(errored("job-failed")),
+        JobResult::Skipped | JobResult::Cancelled => Some(GateOutcome::Skipped),
+        JobResult::Success => None,
     }
 }
 

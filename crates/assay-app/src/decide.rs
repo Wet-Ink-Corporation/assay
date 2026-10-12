@@ -29,6 +29,7 @@ use assay_domain::{
 };
 use thiserror::Error;
 
+pub use self::evidence::{MAX_EVIDENCE_BYTES, MAX_EVIDENCE_FILES, MAX_SYMBOL_BYTES};
 pub use self::fetch::MAX_FETCHED_BYTES;
 use self::fetch::{Artifact, Fetch, Fetcher};
 pub use self::ports::{CurrentPullRequest, Fetched, PullOnHead, PullRequestState, RunArtifacts};
@@ -446,6 +447,9 @@ fn review_documents<O, S, A: RunArtifacts>(
         job: UpstreamJob::Review,
         problem,
     };
+    if request.review.result == JobResult::Skipped && !documents.is_empty() {
+        return Err(refuse(OutputsProblem::SkippedJobReported).into());
+    }
     if documents.len() > MAX_REVIEW_DOCUMENTS {
         return Err(refuse(OutputsProblem::TooManyDocuments).into());
     }

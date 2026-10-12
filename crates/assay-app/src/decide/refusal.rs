@@ -86,7 +86,9 @@ pub enum OutputsProblem {
     UnknownPlugin,
     /// Two reports name one plugin.
     DuplicatePlugin,
-    /// A skipped job reported a gate.
+    /// A job that succeeded did not report a plugin base config schedules in it.
+    MissingPlugin,
+    /// A skipped job reported a gate or a document.
     SkippedJobReported,
     /// More documents than `decide` reads.
     TooManyDocuments,
@@ -101,6 +103,7 @@ impl OutputsProblem {
         match self {
             Self::UnknownPlugin => "unknown-plugin",
             Self::DuplicatePlugin => "duplicate-plugin",
+            Self::MissingPlugin => "missing-plugin",
             Self::SkippedJobReported => "skipped-job-reported",
             Self::TooManyDocuments => "too-many-documents",
             Self::FileName => "file-name",

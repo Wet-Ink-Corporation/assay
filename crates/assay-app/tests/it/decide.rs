@@ -17,32 +17,9 @@ use assay_domain::{
 };
 use serde_json::json;
 
-use crate::decide_fakes::{Scenario, gate_document, gate_finding};
+use crate::decide_fakes::{Scenario, authenticated, gate_document, gate_finding, refusal};
 use crate::plan_fakes::{FakePr, HEAD, run_uid};
 use crate::support::rubric_v1;
-
-type Outcome = Result<
-    Authentication,
-    DecideError<
-        crate::plan_fakes::FakeError,
-        crate::plan_fakes::FakeError,
-        crate::plan_fakes::FakeError,
-    >,
->;
-
-fn authenticated(outcome: Outcome) -> Result<AuthenticatedRun, Box<dyn Error>> {
-    match outcome? {
-        Authentication::Authenticated(run) => Ok(*run),
-        other => Err(format!("expected an authenticated run, got {other:?}").into()),
-    }
-}
-
-fn refusal(outcome: Outcome) -> Result<Refusal, Box<dyn Error>> {
-    match outcome? {
-        Authentication::Refused(refusal) => Ok(refusal),
-        other => Err(format!("expected a refusal, got {other:?}").into()),
-    }
-}
 
 /// A ready PR by someone other than an agent, not approved, never requeued.
 const SNAPSHOT: Snapshot = Snapshot {
@@ -504,16 +481,22 @@ fn a_degrade_of_a_run_that_is_not_full_is_a_plan_mismatch() -> Result<(), Box<dy
 }
 
 #[test]
-fn a_degrade_from_an_admit_that_did_not_succeed_is_not_accepted() -> Result<(), Box<dyn Error>> {
+fn a_degrade_from_an_admit_that_did_not_succeed_is_a_plan_mismatch() -> Result<(), Box<dyn Error>> {
     let mut scenario = Scenario::of(pr_with_lines(400))?;
     scenario.request.admit = assay_app::AdmitJob {
         result: JobResult::Failure,
         degrade: TierDegrade::FullToLite,
     };
 
-    let run = authenticated(scenario.authenticate()?)?;
+    let refused = refusal(scenario.authenticate()?)?;
 
-    assert_eq!(run.tier(), Tier::Full);
+    assert_matches!(
+        refused,
+        Refusal::PlanMismatch(PlanMismatch::Degrade {
+            tier: Tier::Full,
+            ref classes,
+        }) if classes.is_empty()
+    );
     Ok(())
 }
 

@@ -28,9 +28,10 @@ pub use contract::{
 pub use decide::{
     AdmitJob, ArtifactDocument, AuthenticatedRun, Authentication, CurrentPullRequest, DecideError,
     DecideFailure, DecidePorts, DecideRequest, Fetched, GateJobOutputs, JobResult,
-    MAX_FETCHED_BYTES, MAX_REVIEW_DOCUMENTS, Moved, OutputsProblem, PlanJob, PlanMismatch,
-    PlanRefusal, PullOnHead, PullRequestState, Refusal, Reported, ReportedGate, ReviewJob,
-    RunArtifacts, Snapshot, StateStep, TierDegrade, Unreadable, UpstreamJob, authenticate,
+    MAX_EVIDENCE_BYTES, MAX_EVIDENCE_FILES, MAX_FETCHED_BYTES, MAX_REVIEW_DOCUMENTS,
+    MAX_SYMBOL_BYTES, Moved, OutputsProblem, PlanJob, PlanMismatch, PlanRefusal, PullOnHead,
+    PullRequestState, Refusal, Reported, ReportedGate, ReviewJob, RunArtifacts, Snapshot,
+    StateStep, TierDegrade, Unreadable, UpstreamJob, authenticate,
 };
 pub use gate::{
     BuildJob, Conclusion, GateDocument, GateError, GateJob, GateOutcome, GateReport, GateRun,

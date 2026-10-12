@@ -1,15 +1,17 @@
 //! In-memory fakes of the `decide` ports (TST-09) and a scenario builder: a PR planned by the
 //! real `plan`, its artifacts uploaded with the digests their jobs would publish.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    AdmitJob, ArtifactJob, Authentication, CommitId, Conclusion, ContractValidator,
-    CurrentPullRequest, DecideError, DecidePorts, DecideRequest, Fetched, GateJobOutputs,
-    JobResult, PlanJob, PlanRequest, PullOnHead, PullRequestState, Reported, ReportedGate,
-    ReviewJob, RunArtifacts, Sha256Digest, TierDegrade, authenticate, plan,
+    AdmitJob, ArtifactDocument, ArtifactJob, AuthenticatedRun, Authentication, CommitId,
+    Conclusion, ContractValidator, CurrentPullRequest, DecideError, DecidePorts, DecideRequest,
+    Fetched, GateJobOutputs, JobResult, PlanJob, PlanRequest, PullOnHead, PullRequestState,
+    Refusal, Reported, ReportedGate, ReviewJob, RunArtifacts, Sha256Digest, TierDegrade,
+    authenticate, plan,
 };
 use assay_domain::RunUid;
 use serde_json::{Value, json};
@@ -22,6 +24,10 @@ pub(crate) struct FakeArtifacts {
     files: BTreeMap<(String, String), Vec<u8>>,
     /// Every fetch fails.
     pub(crate) failing: bool,
+    /// Fetches return the whole file whatever the limit, as a careless adapter would.
+    pub(crate) ignore_limit: bool,
+    /// Every fetch, in order: the limit asked for and the bytes returned, if any.
+    pub(crate) fetches: RefCell<Vec<(usize, Option<usize>)>>,
 }
 
 impl FakeArtifacts {
@@ -42,13 +48,17 @@ impl RunArtifacts for FakeArtifacts {
         if self.failing {
             return Err(FakeError);
         }
-        Ok(
-            match self.files.get(&(artifact.to_owned(), file.to_owned())) {
-                None => Fetched::Missing,
-                Some(bytes) if bytes.len() > limit => Fetched::TooLarge,
-                Some(bytes) => Fetched::Found(bytes.clone()),
-            },
-        )
+        let fetched = match self.files.get(&(artifact.to_owned(), file.to_owned())) {
+            None => Fetched::Missing,
+            Some(bytes) if bytes.len() > limit && !self.ignore_limit => Fetched::TooLarge,
+            Some(bytes) => Fetched::Found(bytes.clone()),
+        };
+        let returned = match &fetched {
+            Fetched::Found(bytes) => Some(bytes.len()),
+            Fetched::Missing | Fetched::TooLarge => None,
+        };
+        self.fetches.borrow_mut().push((limit, returned));
+        Ok(fetched)
     }
 }
 
@@ -157,6 +167,22 @@ fn unmoved() -> Result<FakeState, Box<dyn Error>> {
 /// What `authenticate` returns over the fakes.
 pub(crate) type Outcome = Result<Authentication, DecideError<FakeError, FakeError, FakeError>>;
 
+/// The authenticated run of `outcome`, or why there is none.
+pub(crate) fn authenticated(outcome: Outcome) -> Result<AuthenticatedRun, Box<dyn Error>> {
+    match outcome? {
+        Authentication::Authenticated(run) => Ok(*run),
+        other => Err(format!("expected an authenticated run, got {other:?}").into()),
+    }
+}
+
+/// The refusal of `outcome`, or what it was instead.
+pub(crate) fn refusal(outcome: Outcome) -> Result<Refusal, Box<dyn Error>> {
+    match outcome? {
+        Authentication::Refused(refusal) => Ok(refusal),
+        other => Err(format!("expected a refusal, got {other:?}").into()),
+    }
+}
+
 /// PR 42 planned by `plan`, every artifact uploaded with its digest in its job's outputs: each
 /// scheduled gate passes, and GitHub still shows the PR at the planned head and base.
 #[derive(Debug, Clone)]
@@ -256,6 +282,22 @@ impl Scenario {
                 document: digest,
             },
         });
+        Ok(())
+    }
+
+    /// Uploads `bytes` as `file` of the review artifact and publishes their digest, as an
+    /// honest `review` job would.
+    pub(crate) fn publish_review(
+        &mut self,
+        file: &str,
+        bytes: Vec<u8>,
+    ) -> Result<(), Box<dyn Error>> {
+        self.request.review.documents.push(ArtifactDocument {
+            file: file.to_owned(),
+            digest: Sha256Digest::of(&bytes),
+        });
+        let artifact = self.artifact(ArtifactJob::Review)?;
+        self.artifacts.put(&artifact, file, bytes);
         Ok(())
     }
 

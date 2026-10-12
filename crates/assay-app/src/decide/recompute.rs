@@ -122,7 +122,8 @@ fn artifact_names(document: &Value, plan_artifact: &str) -> Option<BTreeMap<Arti
 /// plan's, or that only one of them has.
 fn first_difference(expected: &Value, actual: &Value) -> Option<String> {
     let (Some(expected), Some(actual)) = (expected.as_object(), actual.as_object()) else {
-        return Some(String::new());
+        // Not two objects: the whole document differs.
+        return Some("document".to_owned());
     };
     let keys: BTreeSet<&String> = expected.keys().chain(actual.keys()).collect();
     keys.into_iter()
@@ -132,22 +133,23 @@ fn first_difference(expected: &Value, actual: &Value) -> Option<String> {
 }
 
 /// The tier the LLM stage ran at: `admit`'s full-to-lite degrade is accepted only from a
-/// successful `admit`, on a recomputed `full` with no class (04 §2.4, R3-27).
+/// successful `admit`, on a recomputed `full` with no class (04 §2.4, R3-27); any other degrade
+/// is a mismatch.
 fn degraded_tier(request: &DecideRequest, recomputed: &Recomputed) -> Result<Tier, PlanMismatch> {
     let tiering = &recomputed.tiering;
-    let admitted = request.admit.result == JobResult::Success;
     match request.admit.degrade {
-        TierDegrade::FullToLite if admitted => {
-            if tiering.tier == Tier::Full && tiering.classes.is_empty() {
-                Ok(Tier::Lite)
-            } else {
-                Err(PlanMismatch::Degrade {
-                    tier: tiering.tier,
-                    // The refusal reports the classes it saw.
-                    classes: tiering.classes.clone(),
-                })
-            }
+        TierDegrade::None => Ok(tiering.tier),
+        TierDegrade::FullToLite
+            if request.admit.result == JobResult::Success
+                && tiering.tier == Tier::Full
+                && tiering.classes.is_empty() =>
+        {
+            Ok(Tier::Lite)
         }
-        TierDegrade::FullToLite | TierDegrade::None => Ok(tiering.tier),
+        TierDegrade::FullToLite => Err(PlanMismatch::Degrade {
+            tier: tiering.tier,
+            // The refusal reports the classes it saw.
+            classes: tiering.classes.clone(),
+        }),
     }
 }
