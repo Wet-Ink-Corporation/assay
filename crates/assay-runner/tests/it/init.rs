@@ -38,11 +38,12 @@ fn init_message() -> Result<Value, Box<dyn Error>> {
 
 /// A transcript of `lines`, one JSON message each.
 fn transcript(lines: &[&Value]) -> Vec<u8> {
-    lines
-        .iter()
-        .map(|line| format!("{line}\n"))
-        .collect::<String>()
-        .into_bytes()
+    let mut bytes = Vec::new();
+    for line in lines {
+        bytes.extend_from_slice(line.to_string().as_bytes());
+        bytes.push(b'\n');
+    }
+    bytes
 }
 
 /// The init message with `field` replaced by `value`.
