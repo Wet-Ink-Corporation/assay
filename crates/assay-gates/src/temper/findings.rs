@@ -223,6 +223,15 @@ pub(super) fn blind(spots: &[&Blind<'_>]) -> Vec<Finding> {
         .collect()
 }
 
+/// The body of a [`Why::Attribute`] finding.
+const ATTRIBUTE_BODY: &str = "A `cfg_attr` carrying `allow`, `expect`, `path` or a macro \
+    fragment, a `#[path]` attribute, a lint attribute without its `(..)` list, an attribute \
+    named by `r#`, a `#` that does not start an attribute, a macro fragment that can assemble \
+    one or name a macro, a `macro_rules!` defined inside brackets or another macro, or a \
+    renamed `include`: the scan sees neither the suppression nor the file it compiles. Write \
+    the attribute plainly, define macros at the top level of a file, and keep modules at their \
+    default paths.";
+
 /// A blind spot's title and the body that explains it.
 const fn wording(why: Why) -> (&'static str, &'static str) {
     match why {
@@ -240,9 +249,10 @@ const fn wording(why: Why) -> (&'static str, &'static str) {
         Why::Symlink => (
             "symlink the temper scan cannot follow safely",
             "This symlink is a Rust file, which rustc and the scan need not read as the \
-                     same module, or it does not resolve, inside the tree and through real \
-                     directories only, to a regular file. The scan does not walk symlinked \
-                     directories, but rustc follows them. Commit the file itself.",
+                     same module, or a `Cargo.toml`, which decides the crate roots, or it does \
+                     not resolve, inside the tree and through real directories only, to a \
+                     regular file. The scan does not walk symlinked directories, but rustc \
+                     follows them. Commit the file itself.",
         ),
         Why::Extension => (
             "Rust source the temper scan does not match",
@@ -250,15 +260,7 @@ const fn wording(why: Why) -> (&'static str, &'static str) {
                      skips it, yet a `#[path]` or a Cargo target path could compile it. Name \
                      it `.rs`.",
         ),
-        Why::Attribute => (
-            "attribute the temper scan does not read",
-            "A `cfg_attr` carrying `allow`, `expect`, `path` or a macro fragment, a \
-                     `#[path]` attribute, a lint attribute without its `(..)` list, an \
-                     attribute named by `r#`, a `#` that does not start an attribute, a macro \
-                     fragment that can assemble one or name a macro, or a renamed `include`: \
-                     the scan sees neither the suppression nor the file it compiles. Write \
-                     the attribute plainly, and keep modules at their default paths.",
-        ),
+        Why::Attribute => ("attribute the temper scan does not read", ATTRIBUTE_BODY),
         Why::Reference => (
             "file the temper scan cannot pin down",
             "An `include!`, whose text rustc reads in a context the scan does not model, \

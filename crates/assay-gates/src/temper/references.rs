@@ -4,8 +4,9 @@
 //! after the scan ran.
 //!
 //! Where the reference cannot be modelled exactly it is refused rather than modelled
-//! (Weigh-In default wi-b5affa): every `include!`, and every `mod name;` that is not at the top
-//! level of the file.
+//! (Weigh-In default wi-b5affa): every `include!`, every `mod name;` that is not at the top
+//! level of the file, and every `macro_rules` that is not, whose transcriber can be built from
+//! another macro's fragments.
 
 use std::num::NonZeroU64;
 
@@ -23,6 +24,10 @@ pub(super) enum Reference<'a> {
     /// module, a block or a macro call's arguments) or in a `macro_rules!` body (rustc resolves
     /// it from the caller's file), and `mod $name;`.
     Unresolvable,
+    /// A `macro_rules` (raw or not) inside any bracket or another `macro_rules!` body: an
+    /// outer macro can bind a fragment of it to `$`, so its transcriber can assemble an
+    /// attribute or a reference from call-site tokens this scan cannot see.
+    NestedMacro,
 }
 
 /// Every file reference in `tokens`, with the line it starts on, in order.
@@ -52,7 +57,7 @@ pub(super) fn references<'a>(tokens: &[Lexed<'a>]) -> Vec<(NonZeroU64, Reference
                 if let Some(length) = macro_body_length(tail) {
                     macro_left = macro_left.max(length);
                 }
-                None
+                (depth > 0 || in_macro).then_some(Reference::NestedMacro)
             }
             Token::Ident { name, .. } if INCLUDES.contains(&name) => included(name, tail),
             Token::Ident { name: "mod", .. } => module(tail, depth > 0 || in_macro),
@@ -169,6 +174,18 @@ mod tests {
             in_text("include_str!(\"a.json\"); include_bytes!(\"b.bin\"); x!(include);"),
             Vec::<String>::new(),
             "they embed bytes, and the scan reads every `.rs` file anyway"
+        );
+    }
+
+    #[test]
+    fn a_macro_definition_is_read_only_at_the_top_level() {
+        assert_eq!(
+            in_text(
+                "macro_rules! a { () => { macro_rules! b {} }; } fn f() { macro_rules! c {} } \
+                 m!(r#macro_rules! d {}); [macro_rules] macro_rules! e { () => {}; }"
+            ),
+            ["NestedMacro", "NestedMacro", "NestedMacro", "NestedMacro"],
+            "inside another body or any bracket, an outer macro can supply its `$`"
         );
     }
 

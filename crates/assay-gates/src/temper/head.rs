@@ -23,6 +23,11 @@ fn is_rust(path: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
 }
 
+/// Whether `path` names a Cargo manifest, which decides the crate roots `layout.rs` reads.
+fn is_manifest(path: &str) -> bool {
+    path.rsplit('/').next() == Some("Cargo.toml")
+}
+
 /// The head commit's entries, each with its bytes when the checks read it: `.rs` files and
 /// symlinks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +40,7 @@ pub(super) enum Why {
     SkippedDirectory,
     /// A submodule: its files are not in this tree.
     Submodule,
-    /// A symlinked Rust file, or a symlink that does not resolve, inside the tree and through
+    /// A symlinked Rust file or `Cargo.toml`, or a symlink that does not resolve, inside the tree and through
     /// real directories only, to a regular file.
     Symlink,
     /// A Rust file whose extension is not exactly `.rs` (`lib.RS`), which the scan's walk
@@ -158,7 +163,8 @@ impl HeadTree {
                     Some(Why::Extension)
                 }
                 // rustc and the scan need not agree on which file a module is.
-                (EntryKind::Symlink, _) if rust => Some(Why::Symlink),
+                // Nor on which files are crate roots.
+                (EntryKind::Symlink, _) if rust || is_manifest(path) => Some(Why::Symlink),
                 (EntryKind::Symlink, Some(target)) if index.link_resolves(path, target) => None,
                 (EntryKind::Symlink, _) => Some(Why::Symlink),
                 (EntryKind::File, Some(source)) if rust => {
@@ -271,11 +277,11 @@ fn read_source<'h>(
         .chain(
             references
                 .iter()
-                .filter(|(_, reference)| match *reference {
-                    Reference::Module(name) => !index.module_found(path, name, declared),
-                    Reference::Unresolvable => true,
-                })
-                .map(|&(line, _)| (line, Why::Reference)),
+                .filter_map(|&(line, reference)| match reference {
+                    Reference::Module(name) if index.module_found(path, name, declared) => None,
+                    Reference::Module(_) | Reference::Unresolvable => Some((line, Why::Reference)),
+                    Reference::NestedMacro => Some((line, Why::Attribute)),
+                }),
         )
         .collect();
     lines.sort_by_key(|(line, _)| *line);

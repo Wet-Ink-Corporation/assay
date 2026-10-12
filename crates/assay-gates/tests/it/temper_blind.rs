@@ -841,6 +841,58 @@ fn an_attribute_assembled_by_a_macro_fails() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn a_macro_definition_below_the_top_level_fails() -> Result<(), Box<dyn Error>> {
+    // Both compile under -D warnings: the inner transcriber's `$d h [allow(..)]` becomes
+    // `#[allow(dead_code)]` once `$d` is bound to `$` and `h` to the call's `#`.
+    let through_an_argument = "macro_rules! outer {\n    ($d:tt) => {\n        \
+         macro_rules! inner {\n            ($d h:tt [$d ($d r:tt)*]) => \
+         { $d h [allow(dead_code)] fn hidden() {} };\n        }\n    };\n}\n\
+         outer!($);\ninner!(#[doc = \"x\"]);\n";
+    let through_a_call = "macro_rules! inner {\n    ($d:tt q) => {\n        \
+         macro_rules! z {\n            ($d h:tt $d t:tt) => \
+         { $d h [allow(dead_code)] fn hidden() {} };\n        }\n    };\n}\n\
+         macro_rules! outer {\n    () => { inner!($q); };\n}\nouter!();\nz! { /// x\n}\n";
+    let in_a_block = "// one\nfn f() {\n    macro_rules! m { () => {}; }\n}\n";
+    let raw = "// one\nm!(r#macro_rules! n { () => {}; });\n";
+    let sources = [
+        (through_an_argument, 3),
+        (through_a_call, 3),
+        (in_a_block, 3),
+        (raw, 2),
+    ];
+
+    let seen = owned_outcomes(&sources)?;
+
+    assert_eq!(
+        seen,
+        each_blind_at(&sources),
+        "a nested definition's `$` can come from a fragment, so its transcriber is not read \
+         (wi-b5affa)"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_symlinked_manifest_fails() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(
+        Revision::Head,
+        "manifests/x.toml",
+        "[package]\nname = \"x\"\n",
+    );
+    pr.link(Revision::Head, "Cargo.toml", "manifests/x.toml");
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![blind("Cargo.toml", 1)]),
+        "which files are crate roots must not depend on a link (wi-b5affa)"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_macro_forwarding_whole_attributes_passes() -> Result<(), Box<dyn Error>> {
     let mut pr = Pr::new()?;
     pr.set(

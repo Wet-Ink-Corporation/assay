@@ -28,7 +28,19 @@ enum Expected {
 }
 
 /// The forms reviews named, each with what the checks must do with it.
-const CASES: [(&str, Expected); 35] = [
+const CASES: [(&str, Expected); 37] = [
+    (
+        "macro_rules! outer { ($d:tt) => { macro_rules! inner { ($d h:tt [$d ($d r:tt)*]) => \
+         { $d h [allow(dead_code)] fn hidden() {} }; } }; } outer!($); \
+         inner!(#[doc = \"x\"]);",
+        Expected::Blind,
+    ),
+    (
+        "macro_rules! inner { ($d:tt q) => { macro_rules! z { ($d h:tt $d t:tt) => \
+         { $d h [allow(dead_code)] fn hidden() {} }; } }; } \
+         macro_rules! outer { () => { inner!($q); }; } outer!(); z! { /// x\n}",
+        Expected::Blind,
+    ),
     (
         "macro_rules! m { ($h:tt, $a:tt) => { $h $a fn f() {} }; } m!(#, [deny(dead_code)]);",
         Expected::Blind,
@@ -211,17 +223,19 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Every file of the workspace's crates, outside `target`, in path order.
+/// Every file and symlink of the workspace's crates, outside `target`, in path order. A
+/// symlinked directory is listed as the symlink, not followed, as git lists it.
 fn workspace_files() -> Result<Vec<PathBuf>, Failure> {
     let mut found = Vec::new();
     let mut pending = vec![workspace_root().join("crates")];
     while let Some(directory) = pending.pop() {
         for entry in fs::read_dir(&directory)? {
-            let path = entry?.path();
-            if path.is_dir() && !path.ends_with("target") {
-                pending.push(path);
-            } else {
+            let entry = entry?;
+            let path = entry.path();
+            if !entry.file_type()?.is_dir() {
                 found.push(path);
+            } else if !path.ends_with("target") {
+                pending.push(path);
             }
         }
     }
