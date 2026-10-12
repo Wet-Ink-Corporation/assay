@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-2-base-not-protected",
+  "evidence_key": "run-rule-2-base-not-protected",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "base-not-protected",
+      "detail": "release"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:996fd9c25998b33e860cc2bc983b64c0ddae2d22833a6c8f01fc76e710d513f6"
+}

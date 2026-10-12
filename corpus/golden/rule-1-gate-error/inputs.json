@@ -1,0 +1,56 @@
+{
+  "decision_key": "dec-rule-1-gate-error",
+  "evidence_key": "run-rule-1-gate-error",
+  "policy": {
+    "protected_bases": [
+      "main"
+    ],
+    "llm_blockers": "advisory",
+    "llm_majors": "advisory",
+    "on_infra_failure": "warn",
+    "block_on_infra_for": [
+      "trust-path",
+      "exec-surface"
+    ]
+  },
+  "pr": {
+    "base_ref": "main",
+    "open_prs_on_head": 1,
+    "tier": "lite",
+    "classes": [],
+    "owner_approval": "not-approved",
+    "authorship": "other",
+    "readiness": "ready",
+    "requeues": 0
+  },
+  "gates": [
+    {
+      "name": "temper",
+      "required": true,
+      "outcome": {
+        "status": "error",
+        "detail": "gitattributes"
+      },
+      "findings": []
+    },
+    {
+      "name": "custom-lint",
+      "required": false,
+      "outcome": {
+        "status": "ran",
+        "conclusion": "fail",
+        "steps": "unknown"
+      },
+      "findings": []
+    }
+  ],
+  "weigh_in": "not-required",
+  "llm": {
+    "status": "completed"
+  },
+  "findings": [],
+  "dispositions": [],
+  "degraded": [],
+  "waivers": [],
+  "override_record": null
+}

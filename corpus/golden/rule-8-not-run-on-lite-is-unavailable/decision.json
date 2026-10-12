@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-8-not-run-on-lite-is-unavailable",
+  "evidence_key": "run-rule-8-not-run-on-lite-is-unavailable",
+  "conclusion": "success",
+  "reasons": [
+    {
+      "code": "llm-degraded",
+      "detail": "infra-llm-unavailable"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:9400e9ba1fe6bda3a4bc3e16be15b48a3e69cf685bfddfd0ed598e3a1548efd8"
+}

@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-4-trust-path-unapproved",
+  "evidence_key": "run-rule-4-trust-path-unapproved",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "trust-path-unapproved",
+      "detail": "trust-path"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:60629047b12afa25087231e4f7a7b6ddd45841163fce15b82fa0ee4685d36854"
+}

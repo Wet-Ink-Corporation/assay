@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use assay_domain::{
-    Class, Confidence, Disposition, EventKind, FeedbackSignal, FindingKind, GateConclusion,
-    IntroducedBy, RateLimitStatus, ReasonCode, Severity, Side, SourceKind, VerifierVerdict,
-    VoidReason,
+    Class, Conclusion, Confidence, DecisionSchema, Disposition, EventKind, FeedbackSignal,
+    FindingKind, GateConclusion, IntroducedBy, PrClass, RateLimitStatus, ReasonCode, Severity,
+    Side, SourceKind, VerifierVerdict, VoidReason,
 };
 
 use crate::support::{enum_at, schema, spec_line, spec_names, wire_codes};
@@ -146,6 +146,39 @@ fn event_kinds_are_exactly_the_spec_list() -> Result<(), Box<dyn Error>> {
     let domain = wire_codes(EventKind::ALL)?;
 
     assert_eq!(domain, spec);
+    Ok(())
+}
+
+#[test]
+fn conclusions_are_exactly_the_decision_schema_enum() -> Result<(), Box<dyn Error>> {
+    let schema = enum_at(&schema("decision-1")?, "/properties/conclusion/enum")?;
+
+    let domain = wire_codes(Conclusion::ALL)?;
+
+    assert_eq!(domain, schema);
+    Ok(())
+}
+
+#[test]
+fn the_decision_schema_tag_is_the_schema_const() -> Result<(), Box<dyn Error>> {
+    let schema = schema("decision-1")?;
+    let constant = schema
+        .pointer("/properties/schema/const")
+        .ok_or("no schema const")?;
+
+    let domain = serde_json::to_value(DecisionSchema::V1)?;
+
+    assert_eq!(&domain, constant);
+    Ok(())
+}
+
+#[test]
+fn pr_classes_are_exactly_the_run_schema_enum() -> Result<(), Box<dyn Error>> {
+    let schema = enum_at(&schema("run-1")?, "/properties/classes/items/enum")?;
+
+    let domain = wire_codes(PrClass::ALL)?;
+
+    assert_eq!(domain, schema);
     Ok(())
 }
 

@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-2a-ambiguous-head",
+  "evidence_key": "run-rule-2a-ambiguous-head",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "ambiguous-head",
+      "detail": "2 open PRs on this head"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:a063cf3bb8fbcc3e273ce85abb3540ea3ab51c17815cd130cfc1580696c58e89"
+}

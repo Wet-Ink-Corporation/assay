@@ -1,0 +1,48 @@
+{
+  "decision_key": "dec-rule-3-needs-split",
+  "evidence_key": "run-rule-3-needs-split",
+  "policy": {
+    "protected_bases": [
+      "main"
+    ],
+    "llm_blockers": "advisory",
+    "llm_majors": "advisory",
+    "on_infra_failure": "warn",
+    "block_on_infra_for": [
+      "trust-path",
+      "exec-surface"
+    ]
+  },
+  "pr": {
+    "base_ref": "main",
+    "open_prs_on_head": 1,
+    "tier": "needs-split",
+    "classes": [],
+    "owner_approval": "not-approved",
+    "authorship": "other",
+    "readiness": "ready",
+    "requeues": 0
+  },
+  "gates": [
+    {
+      "name": "temper",
+      "required": true,
+      "outcome": {
+        "status": "ran",
+        "conclusion": "pass",
+        "steps": "unknown"
+      },
+      "findings": []
+    }
+  ],
+  "weigh_in": "not-required",
+  "llm": {
+    "status": "not-run",
+    "reason": "no-llm-tier"
+  },
+  "findings": [],
+  "dispositions": [],
+  "degraded": [],
+  "waivers": [],
+  "override_record": null
+}

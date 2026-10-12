@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-override-llm-on-gate-failure-is-ignored",
+  "evidence_key": "run-override-llm-on-gate-failure-is-ignored",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "gate-failed",
+      "detail": "temper"
+    }
+  ],
+  "counts": {
+    "blocker": 1,
+    "major": 1,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:2f8b483e31d69604fa1c1ba90d78d36851be0a6933df4b10834d442c33c571c4"
+}

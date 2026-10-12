@@ -61,10 +61,12 @@ serde = { version = "1.0.219", default-features = false, features = ["std", "der
 # `.assay/plugins.toml` (Story #62): parsed in-process into DTOs in assay-app, then validated.
 toml = { version = "1.1.0", default-features = false, features = ["std", "parse", "serde"] }
 
-# Finding fingerprints in assay-domain (#49, 02 §2, 03 §3). No `alloc`/`oid`: one-shot digests only.
+# Finding fingerprints (#49, 03 §3) and the decision's inputs and reasons digests (#51) in
+# assay-domain (02 §2). No `alloc`/`oid`: one-shot digests only.
 sha2 = { version = "0.11.0", default-features = false }
 
-# Property tests (TST-06), dev-dependency only: fingerprint stability in assay-domain (#49).
+# Property tests (TST-06), dev-dependency only: fingerprint stability (#49) and decide (#51) in
+# assay-domain. (`toml`, above, also reads rubric/v1.toml in tests.)
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]

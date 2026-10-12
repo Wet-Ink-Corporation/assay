@@ -1,0 +1,25 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-6-blocker-verified",
+  "evidence_key": "run-rule-6-blocker-verified",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "blocker-verified",
+      "detail": "verified blocker",
+      "fp": "00000000000000b1"
+    }
+  ],
+  "counts": {
+    "blocker": 2,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:15bc235272fe191cc2f646ebed7d1ccd5e26bc4835c5613289d6c8bf152446c2"
+}

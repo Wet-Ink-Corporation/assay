@@ -1,0 +1,50 @@
+{
+  "decision_key": "dec-rule-8a-requeues-exhausted",
+  "evidence_key": "run-rule-8a-requeues-exhausted",
+  "policy": {
+    "protected_bases": [
+      "main"
+    ],
+    "llm_blockers": "advisory",
+    "llm_majors": "advisory",
+    "on_infra_failure": "warn",
+    "block_on_infra_for": [
+      "trust-path",
+      "exec-surface"
+    ]
+  },
+  "pr": {
+    "base_ref": "main",
+    "open_prs_on_head": 1,
+    "tier": "full",
+    "classes": [
+      "trust-path"
+    ],
+    "owner_approval": "approved",
+    "authorship": "other",
+    "readiness": "ready",
+    "requeues": 3
+  },
+  "gates": [
+    {
+      "name": "temper",
+      "required": true,
+      "outcome": {
+        "status": "ran",
+        "conclusion": "pass",
+        "steps": "unknown"
+      },
+      "findings": []
+    }
+  ],
+  "weigh_in": "not-required",
+  "llm": {
+    "status": "deferred",
+    "reason": "infra-llm-unavailable"
+  },
+  "findings": [],
+  "dispositions": [],
+  "degraded": [],
+  "waivers": [],
+  "override_record": null
+}
