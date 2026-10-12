@@ -13,7 +13,7 @@ application. Orchestrates domain decisions and effects through ports. No concret
 
 ## Public surface
 Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`:
-- `Contract`, `ContractValidator` (`new`, `read`), `SchemaViolation`: validate-on-read for the versioned contracts, against the schemas in `schemas/` embedded with `include_str!` (`src/contract.rs`). `read`'s callers cap the input size first and act only on the returned `Value` (duplicate keys keep the last value).
+- `Contract`, `ContractValidator` (`new`, `read`), `SchemaViolation` (`instance_path`, `keyword`, `message`), `MAX_DOCUMENT_BYTES`: validate-on-read for the versioned contracts, against the schemas in `schemas/` embedded with `include_str!` (`src/contract.rs`). `read` refuses a document over `MAX_DOCUMENT_BYTES` unparsed and any object that repeats a key (`src/contract/strict.rs`); its callers still read untrusted input through a byte limit and act only on the returned `Value`.
 - `PluginsConfig` (`FromStr`; `assay`, `binary_globs`, `plugins`), `AssaySettings` and its enums, `Plugin`, `Adapter` (`Temper`, `WeighIn`, `Exec`), `Step`, `Argv`, `GateName`, `Pin`, `CommitId`, `Sha256Digest`, `ExactVersion`, `DEFAULT_TIMEOUT_SECS`, `MAX_TIMEOUT_SECS`: base `.assay/plugins.toml`, parsed in-process (`src/config.rs`).
 - The `GateRunner` port (`run(&mut self, &Plugin, GateJob) -> Result<GateRun, Self::Error>`), `GateRun`, `Termination`, `GateDocument`, `GateJob`, `BuildJob`, and the use-case functions `run_gates` and `account_for_required`, which produce `GateReport`s with a `GateOutcome` (`Concluded(Conclusion)` or `Error(GateError)`) (`src/gate.rs`).
 - The `ModelRunner` port (03 §7, `src/model_runner.rs`): `run(&self, &ModelCall) -> Result<ModelResult, Self::Error>`, with `ModelCall`, `Prompt` (`InvalidPrompt`, `PromptError`), `ModelResult` (outcome, cost in `Aeu`, rate limits), `ModelOutcome` (`Ok(Structured)`, `BudgetExhausted`, `TurnsExhausted`, `Timeout`, `QuotaExhausted`, `Malformed`), `RateLimitObserved` (whose status is the domain's `RateLimitStatus`); and the retry policy `run_with_retry` (`ModelAttempts`, `RetryError`).
@@ -21,7 +21,7 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
 
 ## Invariants
 - Ports speak domain types; no adapter type crosses a port signature (ARC-03).
-- A contract document is accepted only at a supported version and only if it satisfies that version's schema; unknown fields, unknown versions and over-length text are rejected, never repaired (03 preamble).
+- A contract document is accepted only at a supported version and only if it satisfies that version's schema; unknown fields, unknown versions, over-length text, documents over `MAX_DOCUMENT_BYTES` and repeated object keys are rejected, never repaired (03 preamble).
 - plugins.toml accepts no unknown key (there is no `applies_when`); pins and digests are immutable identities (`git:<40 hex>`, `oci:sha256:<64 hex>`), and a tag is `ParsePinError::Tag`; `exec` gates and declared steps name a Z2b job (`lint`, `test`), so nothing PR-controlled can be scheduled into `gates-static`; every timeout is 1 to 21,600 s.
 - A gate run counts only as exit 0 (the document's conclusion) or exit 1 (fail) with a schema-valid gate document whose `source.name` is the plugin; anything else is `GateOutcome::Error`, displayed `gate-error:<detail>` (03 §2). `run_gates` has no filter, and `account_for_required` makes a required gate without a report `gate-error:skipped`.
 - A model call is retried only when its first attempt is `Malformed`, and only once; every attempt's cost is reported, including a malformed first attempt whose retry failed (`RetryError::Retry`).
@@ -29,7 +29,7 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
 - Validation errors never quote the rejected value (it is untrusted text), nor an object key the schema does not name: such keys are reported as `*`, and unexpected properties are counted, not listed (`src/contract/violation.rs`).
 
 ## Errors
-- `ReadContractError` (`Malformed`, `MissingSchema`, `UnknownSchema`, `UnknownVersion`, `Invalid`): every variant maps to disposition `schema` through `disposition()`.
+- `ReadContractError` (`TooLarge`, `Malformed` (including a repeated key), `MissingSchema`, `UnknownSchema`, `UnknownVersion`, `Invalid`): every variant maps to disposition `schema` through `disposition()`.
 - `ContractSchemaError`: an embedded schema does not compile, a defect in the build. Its cause is the opaque `SchemaCompileError`, so `jsonschema`'s error type is not part of this crate's API.
 - `ConfigError` (`Syntax` with the opaque `TomlError`, `Digest`, `Version`, `Pin` with `ParsePinError::{Tag, UnknownScheme}`, `Name`, `DuplicateName`, `UnknownAdapter`, `MissingKey`, `UnexpectedKey`, `Job`, `Command`, `Timeout`): plugins.toml was refused. The file is from the protected base, so messages may quote it.
 - `GateError` is an outcome, not a failure of the use case: a `GateRunner` error becomes `GateError::NotRun`, with the runner's message kept in `GateReport::cause`.

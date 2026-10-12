@@ -7,6 +7,7 @@
 //! satisfies that version's schema: unknown fields, unknown versions and over-length text are all
 //! rejected, never repaired.
 
+mod strict;
 mod violation;
 
 use std::collections::BTreeSet;
@@ -20,6 +21,12 @@ use thiserror::Error;
 /// The only version of each contract this build reads. A second version adds a schema and an
 /// upcast, never an edit of version 1 (OUT-03).
 const SUPPORTED_VERSION: u32 = 1;
+
+/// The longest contract document [`ContractValidator::read`] parses, in bytes (8 MiB).
+///
+/// It equals the default cap on an exec gate's document, so a gate document read under that cap
+/// is never refused here for its size.
+pub const MAX_DOCUMENT_BYTES: usize = 8 << 20;
 
 /// A versioned contract assay reads across a trust boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -104,18 +111,19 @@ impl ContractValidator {
     /// Parses `document` and accepts it only as a valid `expected` contract at a supported
     /// version, returning the parsed JSON.
     ///
-    /// Callers own two obligations this function cannot discharge:
-    /// - **Cap the input first.** `document` is parsed whole; read untrusted input through a
-    ///   byte limit before calling.
-    /// - **Use only the returned [`Value`].** A JSON object with a duplicate key parses with its
-    ///   last value; another parser may keep the first. Never re-parse `document`, or the
-    ///   validated reading and the one acted on can differ.
+    /// A document over [`MAX_DOCUMENT_BYTES`] is refused unparsed, but it is already in memory:
+    /// read untrusted input through a byte limit no larger than that before calling. An object
+    /// that repeats a key is refused, because parsers disagree on which value it means; act only
+    /// on the returned [`Value`], never on a second parse of `document`.
     ///
     /// # Errors
     ///
     /// Returns [`ReadContractError`], whose every variant is disposition `schema`
     /// ([`ReadContractError::disposition`]):
-    /// - [`Malformed`](ReadContractError::Malformed) when `document` is not JSON;
+    /// - [`TooLarge`](ReadContractError::TooLarge) when `document` is longer than
+    ///   [`MAX_DOCUMENT_BYTES`];
+    /// - [`Malformed`](ReadContractError::Malformed) when `document` is not JSON, or an object
+    ///   in it repeats a key;
     /// - [`MissingSchema`](ReadContractError::MissingSchema) when it has no string `schema` field;
     /// - [`UnknownSchema`](ReadContractError::UnknownSchema) when that field is not
     ///   `<expected name>/<number>`;
@@ -141,8 +149,14 @@ impl ContractValidator {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn read(&self, expected: Contract, document: &[u8]) -> Result<Value, ReadContractError> {
-        let value: Value =
-            serde_json::from_slice(document).map_err(|source| ReadContractError::Malformed {
+        if document.len() > MAX_DOCUMENT_BYTES {
+            return Err(ReadContractError::TooLarge {
+                contract: expected,
+                size: document.len(),
+            });
+        }
+        let value =
+            strict::from_slice(document).map_err(|source| ReadContractError::Malformed {
                 contract: expected,
                 source,
             })?;
@@ -208,7 +222,16 @@ fn check_version(expected: Contract, document: &Value) -> Result<(), ReadContrac
 /// Why a document was not accepted as a contract. Every variant is disposition `schema`.
 #[derive(Debug, Error)]
 pub enum ReadContractError {
-    /// The document is not JSON.
+    /// The document is longer than [`MAX_DOCUMENT_BYTES`]; it was not parsed.
+    #[error("{contract} document is {size} bytes, over the {MAX_DOCUMENT_BYTES}-byte cap")]
+    TooLarge {
+        /// The contract the caller expected.
+        contract: Contract,
+        /// The document's length in bytes.
+        size: usize,
+    },
+    /// The document is not JSON, or one of its objects repeats a key. The parser's message
+    /// never names the key.
     #[error("{contract} document is not JSON")]
     Malformed {
         /// The contract the caller expected.
@@ -224,7 +247,7 @@ pub enum ReadContractError {
         contract: Contract,
     },
     /// The `schema` field names another contract or is not `<name>/<number>`.
-    #[error("document is not a {expected} document")]
+    #[error("document's `schema` field is not `{expected}/<version>`")]
     UnknownSchema {
         /// The contract the caller expected.
         expected: Contract,
@@ -253,7 +276,8 @@ impl ReadContractError {
     #[must_use]
     pub const fn disposition(&self) -> Disposition {
         match self {
-            Self::Malformed { .. }
+            Self::TooLarge { .. }
+            | Self::Malformed { .. }
             | Self::MissingSchema { .. }
             | Self::UnknownSchema { .. }
             | Self::UnknownVersion { .. }
@@ -266,15 +290,33 @@ impl ReadContractError {
 /// not its object keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaViolation {
+    instance_path: String,
+    keyword: String,
+    message: String,
+}
+
+impl SchemaViolation {
     /// JSON Pointer to the offending value (`/findings/0/evidence`); empty for the root. An
     /// object key the contract's schema does not name, such as a key of `artifact_names`, is
     /// shown as `*`.
-    pub instance_path: String,
-    /// The schema keyword that rejected it (`maxLength`, `additionalProperties`, `required`).
-    pub keyword: String,
+    #[must_use]
+    pub fn instance_path(&self) -> &str {
+        &self.instance_path
+    }
+
+    /// The schema keyword that rejected the value (`maxLength`, `additionalProperties`,
+    /// `required`).
+    #[must_use]
+    pub fn keyword(&self) -> &str {
+        &self.keyword
+    }
+
     /// A human-readable description that quotes only the schema; for `additionalProperties` it
     /// counts the unexpected properties without naming them.
-    pub message: String,
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 /// An embedded schema failed to compile: a defect in this build.
