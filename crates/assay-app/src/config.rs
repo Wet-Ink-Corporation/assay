@@ -1,0 +1,405 @@
+//! Base configuration: `.assay/plugins.toml`, read from `base_sha`
+//! (`docs/architecture/03-contracts.md` §1).
+//!
+//! The text is parsed in-process into a DTO that rejects unknown keys (so there is no
+//! `applies_when`: required gates always run), then validated into the types below. Pins and
+//! digests accept immutable identities only; a tag is [`ParsePinError::Tag`].
+
+mod assay;
+mod dto;
+mod error;
+mod name;
+mod pin;
+
+use std::collections::BTreeSet;
+use std::str::FromStr;
+use std::time::Duration;
+
+pub use self::assay::{
+    AssaySettings, ExactVersion, InfraFailurePolicy, PrClass, Promotion, RunnerKind,
+};
+use self::dto::{AssayDto, FileDto, PluginDto, StepDto};
+pub use self::error::{ConfigError, TomlError};
+pub use self::name::GateName;
+pub use self::pin::{CommitId, ParseDigestError, ParsePinError, Pin, Sha256Digest};
+use crate::gate::BuildJob;
+
+/// A gate's timeout when `timeout_s` is omitted, in seconds.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 1_200;
+
+/// The longest accepted `timeout_s`: six hours, the most a GitHub-hosted job can run.
+pub const MAX_TIMEOUT_SECS: u64 = 21_600;
+
+/// The validated contents of `.assay/plugins.toml`. Parse it with [`str::parse`].
+///
+/// # Examples
+///
+/// ```
+/// use assay_app::{Adapter, PluginsConfig};
+///
+/// let config: PluginsConfig = r#"
+/// [assay]
+/// digest = "sha256:dc7c1d8e3ccab68cfdb828ce40a446c3913f7172f899ffe3f439839cfd917a8b"
+///
+/// [[plugin]]
+/// name = "custom-lint"
+/// adapter = "exec"
+/// exec = ["./scripts/lint.sh", "--json"]
+/// job = "lint"
+/// required = false
+/// "#
+/// .parse()?;
+///
+/// let [plugin] = config.plugins() else {
+///     return Err("one plugin expected".into());
+/// };
+/// assert!(matches!(plugin.adapter(), Adapter::Exec { .. }));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginsConfig {
+    assay: AssaySettings,
+    binary_globs: Vec<String>,
+    plugins: Vec<Plugin>,
+}
+
+impl PluginsConfig {
+    /// The `[assay]` table.
+    #[must_use]
+    pub const fn assay(&self) -> &AssaySettings {
+        &self.assay
+    }
+
+    /// `[gates] binary_globs`: paths whose git attributes may be set (`03 §2.1`); empty when
+    /// the file names none.
+    #[must_use]
+    pub fn binary_globs(&self) -> &[String] {
+        &self.binary_globs
+    }
+
+    /// The `[[plugin]]` entries, in file order, with distinct names.
+    #[must_use]
+    pub fn plugins(&self) -> &[Plugin] {
+        &self.plugins
+    }
+}
+
+impl FromStr for PluginsConfig {
+    type Err = ConfigError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let file: FileDto = toml::from_str(text).map_err(|e| ConfigError::Syntax(TomlError(e)))?;
+        let plugins = file
+            .plugins
+            .into_iter()
+            .map(Plugin::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(name) = first_duplicate(plugins.iter().map(Plugin::name)) {
+            return Err(ConfigError::DuplicateName { name });
+        }
+        Ok(Self {
+            assay: AssaySettings::try_from(file.assay)?,
+            binary_globs: file.gates.binary_globs,
+            plugins,
+        })
+    }
+}
+
+/// The first name that occurs twice, as text.
+fn first_duplicate<'a>(names: impl IntoIterator<Item = &'a GateName>) -> Option<String> {
+    let mut seen = BTreeSet::new();
+    names
+        .into_iter()
+        .find(|name| !seen.insert(*name))
+        .map(|name| name.as_str().to_owned())
+}
+
+/// One `[[plugin]]` entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plugin {
+    name: GateName,
+    adapter: Adapter,
+    required: bool,
+    timeout: Duration,
+}
+
+impl Plugin {
+    /// The plugin's name, unique in the file.
+    #[must_use]
+    pub const fn name(&self) -> &GateName {
+        &self.name
+    }
+
+    /// The adapter that runs it, with that adapter's settings.
+    #[must_use]
+    pub const fn adapter(&self) -> &Adapter {
+        &self.adapter
+    }
+
+    /// Whether the gate is required. A required gate always runs; one that does not report is
+    /// `gate-error:skipped`, never a pass.
+    #[must_use]
+    pub const fn required(&self) -> bool {
+        self.required
+    }
+
+    /// The wall-clock limit of the adapter's own run ([`DEFAULT_TIMEOUT_SECS`] when omitted).
+    #[must_use]
+    pub const fn timeout(&self) -> Duration {
+        self.timeout
+    }
+}
+
+/// Which adapter runs a plugin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Adapter {
+    /// `builtin:temper`, with its declared base steps.
+    Temper {
+        /// The temper release to run.
+        pin: Pin,
+        /// `[[plugin.step]]` entries, in file order, with distinct names.
+        steps: Vec<Step>,
+    },
+    /// `builtin:weigh-in`.
+    WeighIn {
+        /// The Weigh-In release to run.
+        pin: Pin,
+    },
+    /// `exec`: a PR-controlled command, run only in a Z2b job.
+    Exec {
+        /// The program and its arguments.
+        command: Argv,
+        /// The Z2b job it runs in.
+        job: BuildJob,
+    },
+}
+
+/// One `[[plugin.step]]`: a declared base step run in its Z2b job under its own timeout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Step {
+    name: GateName,
+    job: BuildJob,
+    command: Argv,
+    timeout: Duration,
+}
+
+impl Step {
+    /// The step's name, unique within its plugin.
+    #[must_use]
+    pub const fn name(&self) -> &GateName {
+        &self.name
+    }
+
+    /// The Z2b job it runs in.
+    #[must_use]
+    pub const fn job(&self) -> BuildJob {
+        self.job
+    }
+
+    /// The program and its arguments.
+    #[must_use]
+    pub const fn command(&self) -> &Argv {
+        &self.command
+    }
+
+    /// Its wall-clock limit.
+    #[must_use]
+    pub const fn timeout(&self) -> Duration {
+        self.timeout
+    }
+}
+
+/// A command line: a non-empty program and its arguments, none empty or holding a NUL byte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Argv {
+    program: String,
+    args: Vec<String>,
+}
+
+impl Argv {
+    fn new(argv: Vec<String>) -> Option<Self> {
+        let valid = argv
+            .iter()
+            .all(|arg| !arg.is_empty() && !arg.contains('\0'));
+        let mut argv = argv.into_iter();
+        let program = argv.next()?;
+        valid.then(|| Self {
+            program,
+            args: argv.collect(),
+        })
+    }
+
+    /// The program to run.
+    #[must_use]
+    pub fn program(&self) -> &str {
+        &self.program
+    }
+
+    /// The arguments after the program.
+    #[must_use]
+    pub fn args(&self) -> &[String] {
+        &self.args
+    }
+
+    /// The program, then each argument.
+    pub fn iter(&self) -> impl Iterator<Item = &str> + '_ {
+        std::iter::once(self.program.as_str()).chain(self.args.iter().map(String::as_str))
+    }
+}
+
+impl TryFrom<AssayDto> for AssaySettings {
+    type Error = ConfigError;
+
+    fn try_from(dto: AssayDto) -> Result<Self, Self::Error> {
+        let digest = |field, text: &str| {
+            text.parse()
+                .map_err(|source| ConfigError::Digest { field, source })
+        };
+        Ok(Self {
+            digest: digest("assay.digest", &dto.digest)?,
+            warm_target: dto
+                .warm_target
+                .as_deref()
+                .map(|text| digest("assay.warm_target", text))
+                .transpose()?,
+            claude_cli: dto
+                .claude_cli
+                .map(|text| {
+                    ExactVersion::new(text).map_err(|version| ConfigError::Version { version })
+                })
+                .transpose()?,
+            runner: dto.runner,
+            protected_bases: dto.protected_bases,
+            llm_blockers: dto.llm_blockers,
+            llm_majors: dto.llm_majors,
+            on_infra_failure: dto.on_infra_failure,
+            block_on_infra_for: dto.block_on_infra_for,
+            ledger_repo: dto.ledger_repo,
+        })
+    }
+}
+
+impl TryFrom<PluginDto> for Plugin {
+    type Error = ConfigError;
+
+    fn try_from(dto: PluginDto) -> Result<Self, Self::Error> {
+        let name = GateName::new(dto.name).map_err(|name| ConfigError::Name { name })?;
+        let gate = name.as_str();
+        let timeout = timeout(gate, dto.timeout_s.unwrap_or(DEFAULT_TIMEOUT_SECS))?;
+        let adapter = match dto.adapter.as_str() {
+            "builtin:temper" => {
+                refuse(gate, "exec", dto.exec.is_some())?;
+                refuse(gate, "job", dto.job.is_some())?;
+                let steps = dto
+                    .steps
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|step| Step::from_dto(gate, step))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if let Some(step) = first_duplicate(steps.iter().map(Step::name)) {
+                    return Err(ConfigError::DuplicateName {
+                        name: format!("{gate}.{step}"),
+                    });
+                }
+                Adapter::Temper {
+                    pin: pin(gate, dto.pin)?,
+                    steps,
+                }
+            }
+            "builtin:weigh-in" => {
+                refuse(gate, "exec", dto.exec.is_some())?;
+                refuse(gate, "job", dto.job.is_some())?;
+                refuse(gate, "step", dto.steps.is_some())?;
+                Adapter::WeighIn {
+                    pin: pin(gate, dto.pin)?,
+                }
+            }
+            "exec" => {
+                refuse(gate, "pin", dto.pin.is_some())?;
+                refuse(gate, "step", dto.steps.is_some())?;
+                let argv = dto.exec.ok_or_else(|| missing(gate, "exec"))?;
+                let job = dto.job.ok_or_else(|| missing(gate, "job"))?;
+                Adapter::Exec {
+                    command: argv_of(gate, argv)?,
+                    job: job_of(gate, job)?,
+                }
+            }
+            _ => {
+                return Err(ConfigError::UnknownAdapter {
+                    gate: gate.to_owned(),
+                    adapter: dto.adapter,
+                });
+            }
+        };
+        Ok(Self {
+            name,
+            adapter,
+            required: dto.required,
+            timeout,
+        })
+    }
+}
+
+impl Step {
+    fn from_dto(plugin: &str, dto: StepDto) -> Result<Self, ConfigError> {
+        let name = GateName::new(dto.name).map_err(|name| ConfigError::Name { name })?;
+        let gate = format!("{plugin}.{name}");
+        Ok(Self {
+            job: job_of(&gate, dto.job)?,
+            command: argv_of(&gate, dto.cmd)?,
+            timeout: timeout(&gate, dto.timeout_s)?,
+            name,
+        })
+    }
+}
+
+fn pin(gate: &str, pin: Option<String>) -> Result<Pin, ConfigError> {
+    pin.ok_or_else(|| missing(gate, "pin"))?
+        .parse()
+        .map_err(|source| ConfigError::Pin {
+            plugin: gate.to_owned(),
+            source,
+        })
+}
+
+fn timeout(gate: &str, seconds: u64) -> Result<Duration, ConfigError> {
+    if (1..=MAX_TIMEOUT_SECS).contains(&seconds) {
+        Ok(Duration::from_secs(seconds))
+    } else {
+        Err(ConfigError::Timeout {
+            gate: gate.to_owned(),
+            seconds,
+        })
+    }
+}
+
+fn argv_of(gate: &str, argv: Vec<String>) -> Result<Argv, ConfigError> {
+    Argv::new(argv).ok_or_else(|| ConfigError::Command {
+        gate: gate.to_owned(),
+    })
+}
+
+fn job_of(gate: &str, job: String) -> Result<BuildJob, ConfigError> {
+    BuildJob::from_config(&job).ok_or_else(|| ConfigError::Job {
+        gate: gate.to_owned(),
+        job,
+    })
+}
+
+fn refuse(gate: &str, key: &'static str, present: bool) -> Result<(), ConfigError> {
+    if present {
+        Err(ConfigError::UnexpectedKey {
+            gate: gate.to_owned(),
+            key,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn missing(gate: &str, key: &'static str) -> ConfigError {
+    ConfigError::MissingKey {
+        gate: gate.to_owned(),
+        key,
+    }
+}
