@@ -7,70 +7,44 @@ use assay_domain::normalise;
 const WILDCARD: char = '\u{2026}';
 
 /// The most lines one match may span, so a wildcard cannot stretch across a whole file.
-pub(super) const MAX_SPAN_LINES: u64 = 50;
+const MAX_SPAN_LINES: u64 = 50;
 
-/// The lines (1-based, ascending, distinct) on which `evidence` starts in `text`.
-///
-/// Both sides are normalised with the shared normaliser, `text` line by line and joined with
-/// single spaces, so a span quoted across lines matches as it would in one string. The pieces of
-/// the evidence between wildcards must occur in order, the first starting on the match line, and
-/// the whole match must end within [`MAX_SPAN_LINES`] lines of it. Evidence without content (only
-/// blanks and wildcards) matches nowhere.
-///
-/// Linear in the file for any evidence: each later piece is matched at its first occurrence
-/// after the previous piece, and since starts only move forward so do those occurrences, so each
-/// is searched for once and reused while it still lies ahead.
-pub(super) fn find(text: &str, evidence: &str) -> Vec<u64> {
-    let normalised = normalise(evidence);
-    let pieces: Vec<&str> = normalised
-        .split(WILDCARD)
-        .filter(|piece| !piece.is_empty())
-        .collect();
-    let Some((first, rest)) = pieces.split_first() else {
-        return Vec::new();
-    };
-    let joined = Joined::of(text);
-    let mut lines: Vec<u64> = Vec::new();
-    let mut found: Vec<Option<usize>> = vec![None; rest.len()];
-    let mut from = 0;
-    while let Some(start) = joined.find(first, from) {
-        let mut end = Some(start.saturating_add(first.len()));
-        for (piece, last) in rest.iter().zip(found.iter_mut()) {
-            end = end.and_then(|needed| {
-                let at = match *last {
-                    Some(at) if at >= needed => at,
-                    _ => joined.find(piece, needed)?,
-                };
-                *last = Some(at);
-                Some(at.saturating_add(piece.len()))
-            });
-        }
-        // Later starts search a suffix of this one's, so none of them can complete either.
-        let Some(end) = end else {
-            break;
-        };
-        let (first_line, last_line) =
-            (joined.line_at(start), joined.line_at(end.saturating_sub(1)));
-        if last_line.saturating_sub(first_line) < MAX_SPAN_LINES
-            && lines.last() != Some(&first_line)
-        {
-            lines.push(first_line);
-        }
-        from = start.saturating_add(first.chars().next().map_or(1, char::len_utf8));
-    }
-    lines
+/// The fewest non-whitespace characters normalised evidence must have, summed over the pieces
+/// between wildcards, to locate anything reliably (Weigh-In default wi-b7959c).
+const MIN_CONTENT_CHARS: usize = 12;
+
+/// Where one occurrence of evidence lies: the line it starts on and the line it ends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Match {
+    /// The 1-based line the match starts on.
+    pub(super) line: u64,
+    /// The 1-based line the match ends on, at least `line`.
+    pub(super) last: u64,
 }
 
-/// The match nearest `cited`; of two equally near, the earlier line. `None` if there is none.
-pub(super) fn nearest(matches: &[u64], cited: u64) -> Option<u64> {
+/// Whether `evidence`, normalised, has at least [`MIN_CONTENT_CHARS`] non-whitespace
+/// characters outside its wildcards.
+pub(super) fn has_enough_content(evidence: &str) -> bool {
+    normalise(evidence)
+        .chars()
+        .filter(|&c| c != WILDCARD && !c.is_whitespace())
+        .count()
+        >= MIN_CONTENT_CHARS
+}
+
+/// The match nearest `cited` by start line; of two equally near, the earlier. `None` if there
+/// is none.
+pub(super) fn nearest(matches: &[Match], cited: u64) -> Option<Match> {
     matches
         .iter()
         .copied()
-        .min_by_key(|&line| (line.abs_diff(cited), line))
+        .min_by_key(|found| (found.line.abs_diff(cited), found.line))
 }
 
-/// A file's lines, each normalised, joined with single spaces; blank ones are left out.
-struct Joined {
+/// A file's lines, each normalised, joined with single spaces; blank ones are left out. Built
+/// once per file and validation run, then searched for every finding that cites the file.
+#[derive(Debug)]
+pub(super) struct Joined {
     /// The joined text.
     text: String,
     /// Where each kept line starts in `text`, ascending, with its 1-based line number.
@@ -78,7 +52,8 @@ struct Joined {
 }
 
 impl Joined {
-    fn of(text: &str) -> Self {
+    /// Normalises and joins the lines of `text`.
+    pub(super) fn of(text: &str) -> Self {
         let mut joined = String::with_capacity(text.len());
         let mut starts = Vec::new();
         for (index, line) in text.lines().enumerate() {
@@ -98,8 +73,62 @@ impl Joined {
         }
     }
 
+    /// Every occurrence of `evidence`, one per start line, ascending.
+    ///
+    /// The evidence is normalised with the shared normaliser, so a span quoted across lines
+    /// matches as it would in one string. Its pieces between wildcards must occur in order, the
+    /// first starting on the match line, and the match must end within [`MAX_SPAN_LINES`] lines
+    /// of it. Evidence without content matches nowhere.
+    ///
+    /// Cost: the first piece is searched from each candidate start, so at worst the joined text
+    /// times that piece's length (evidence is capped at 400 characters); each later piece is
+    /// matched at its first occurrence after the previous one, and since starts only move forward
+    /// so do those occurrences, so each later piece is searched forward once in total.
+    pub(super) fn find(&self, evidence: &str) -> Vec<Match> {
+        let normalised = normalise(evidence);
+        let pieces: Vec<&str> = normalised
+            .split(WILDCARD)
+            .filter(|piece| !piece.is_empty())
+            .collect();
+        let Some((first, rest)) = pieces.split_first() else {
+            return Vec::new();
+        };
+        let mut matches: Vec<Match> = Vec::new();
+        let mut found: Vec<Option<usize>> = vec![None; rest.len()];
+        let mut from = 0;
+        while let Some(start) = self.find_piece(first, from) {
+            let mut end = Some(start.saturating_add(first.len()));
+            for (piece, last) in rest.iter().zip(found.iter_mut()) {
+                end = end.and_then(|needed| {
+                    let at = match *last {
+                        Some(at) if at >= needed => at,
+                        _ => self.find_piece(piece, needed)?,
+                    };
+                    *last = Some(at);
+                    Some(at.saturating_add(piece.len()))
+                });
+            }
+            // Later starts search a suffix of this one's, so none of them can complete either.
+            let Some(end) = end else {
+                break;
+            };
+            let found = Match {
+                line: self.line_at(start),
+                last: self.line_at(end.saturating_sub(1)),
+            };
+            let new_line = matches
+                .last()
+                .is_none_or(|previous| previous.line != found.line);
+            if found.last.saturating_sub(found.line) < MAX_SPAN_LINES && new_line {
+                matches.push(found);
+            }
+            from = start.saturating_add(first.chars().next().map_or(1, char::len_utf8));
+        }
+        matches
+    }
+
     /// The first byte offset at or after `from` where `piece` occurs.
-    fn find(&self, piece: &str, from: usize) -> Option<usize> {
+    fn find_piece(&self, piece: &str, from: usize) -> Option<usize> {
         let at = self.text.get(from..)?.find(piece)?;
         Some(from.saturating_add(at))
     }
@@ -124,7 +153,7 @@ pub(super) fn line_number(index: usize) -> u64 {
 mod tests {
     use proptest::prelude::*;
 
-    use super::{find, nearest};
+    use super::{Joined, Match, has_enough_content, nearest};
 
     const FILE: &str = "\
 fn a() {
@@ -138,6 +167,23 @@ fn b() {
     );
 }
 ";
+
+    /// The lines `evidence` starts on in `text`.
+    fn find(text: &str, evidence: &str) -> Vec<u64> {
+        Joined::of(text)
+            .find(evidence)
+            .iter()
+            .map(|found| found.line)
+            .collect()
+    }
+
+    /// Single-line matches on `lines`.
+    fn on(lines: &[u64]) -> Vec<Match> {
+        lines
+            .iter()
+            .map(|&line| Match { line, last: line })
+            .collect()
+    }
 
     #[test]
     fn finds_every_line_a_span_starts_on_ignoring_trailing_comments() {
@@ -155,8 +201,11 @@ fn b() {
     }
 
     #[test]
-    fn matches_across_an_elision() {
-        assert_eq!(find(FILE, "fn b() { ... foo("), [5]);
+    fn records_the_line_an_elided_match_ends_on() {
+        assert_eq!(
+            Joined::of(FILE).find("fn b() { ... foo("),
+            [Match { line: 5, last: 7 }]
+        );
     }
 
     #[test]
@@ -184,41 +233,60 @@ fn b() {
     }
 
     #[test]
+    fn counts_twelve_characters_of_content_across_pieces_and_not_whitespace() {
+        let counted = [
+            "let x = y.unwrap();",
+            "abcdef ... ghijkl",
+            "abcdef ... ghijk",
+            "  a b c d e f g h i j k  ",
+            "... // a comment that normalises away",
+        ]
+        .map(has_enough_content);
+
+        assert_eq!(counted, [true, true, false, false, false]);
+    }
+
+    #[test]
     fn keeps_a_cited_line_that_matches() {
-        assert_eq!(nearest(&[2, 6], 6), Some(6));
+        assert_eq!(nearest(&on(&[2, 6]), 6).map(|m| m.line), Some(6));
     }
 
     #[test]
     fn moves_to_the_nearest_match() {
-        assert_eq!(nearest(&[2, 6, 30], 9), Some(6));
+        assert_eq!(nearest(&on(&[2, 6, 30]), 9).map(|m| m.line), Some(6));
     }
 
     #[test]
     fn breaks_a_tie_towards_the_earlier_line() {
-        assert_eq!(nearest(&[2, 6], 4), Some(2));
+        assert_eq!(nearest(&on(&[2, 6]), 4).map(|m| m.line), Some(2));
     }
 
     proptest! {
         #[test]
         fn relocation_lands_on_a_matching_line_nearest_the_cited_one(
-            lines in prop::collection::vec(prop::sample::select(vec!["a();", "b();", "", "c(a);"]), 0..40),
+            lines in prop::collection::vec(
+                prop::sample::select(vec!["a();", "b();", "", "c(a);"]),
+                0..40,
+            ),
             cited in 1_u64..50,
         ) {
             let text = lines.join("\n");
-            let matches = find(&text, "a();");
+            let matches = Joined::of(&text).find("a();");
 
             let relocated = nearest(&matches, cited);
 
             match relocated {
                 None => prop_assert!(matches.is_empty(), "a match exists"),
-                Some(line) => {
-                    let index = usize::try_from(line - 1).expect("lines fit usize");
+                Some(found) => {
+                    let index = usize::try_from(found.line - 1).expect("lines fit usize");
                     prop_assert!(
                         text.lines().nth(index).is_some_and(|l| l.contains("a();")),
-                        "line {line} does not hold the evidence"
+                        "line {} does not hold the evidence", found.line
                     );
                     prop_assert!(
-                        matches.iter().all(|m| m.abs_diff(cited) >= line.abs_diff(cited)),
+                        matches
+                            .iter()
+                            .all(|m| m.line.abs_diff(cited) >= found.line.abs_diff(cited)),
                         "a nearer match exists"
                     );
                 }

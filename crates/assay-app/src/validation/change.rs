@@ -95,10 +95,21 @@ pub struct LineSpan {
 
 impl LineSpan {
     /// Whether `line` is one of these lines.
-    fn contains(self, line: u64) -> bool {
+    pub(super) fn contains(self, line: u64) -> bool {
         line.checked_sub(self.start)
             .is_some_and(|offset| offset < self.count)
     }
+}
+
+/// The text a cited file's line numbers refer to, and where in the change it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Text<'c> {
+    /// The side it was read from.
+    pub(super) side: Side,
+    /// Its key in that side's files.
+    pub(super) path: &'c str,
+    /// Its contents.
+    pub(super) content: &'c str,
 }
 
 /// A cited file, located in the change.
@@ -107,7 +118,7 @@ pub(super) struct Located<'c> {
     /// Its path at head after rename resolution; its base path if it was deleted.
     pub(super) file_at_head: String,
     /// The text its line numbers refer to, if the caller supplied it.
-    pub(super) text: Option<&'c str>,
+    pub(super) text: Option<Text<'c>>,
     /// The side its line numbers refer to: base for `LEFT` and for a deleted file.
     pub(super) side: Side,
     /// Its diff, if it changed.
@@ -115,14 +126,16 @@ pub(super) struct Located<'c> {
 }
 
 impl Located<'_> {
-    /// Whether `line` is inside one of the file's hunks on its side.
-    pub(super) fn in_diff(&self, line: u64) -> bool {
-        self.diff.is_some_and(|diff| {
-            diff.hunks.iter().any(|hunk| match self.side {
-                Side::Right => hunk.head.contains(line),
-                Side::Left => hunk.base.contains(line),
+    /// The hunk span holding `line` on the file's side, if any.
+    pub(super) fn hunk_of(&self, line: u64) -> Option<LineSpan> {
+        self.diff?
+            .hunks
+            .iter()
+            .map(|hunk| match self.side {
+                Side::Right => hunk.head,
+                Side::Left => hunk.base,
             })
-        })
+            .find(|span| span.contains(line))
     }
 }
 
@@ -143,13 +156,17 @@ impl Change {
             (diff.paths.head(), diff.paths.base())
         });
         let side = if head.is_none() { Side::Left } else { side };
-        let text = match side {
-            Side::Right => head.and_then(|path| self.head_files.get(path)),
-            Side::Left => base.and_then(|path| self.base_files.get(path)),
+        let entry = match side {
+            Side::Right => head.and_then(|path| self.head_files.get_key_value(path)),
+            Side::Left => base.and_then(|path| self.base_files.get_key_value(path)),
         };
         Located {
             file_at_head: head.or(base).unwrap_or(file).to_owned(),
-            text: text.map(String::as_str),
+            text: entry.map(|(path, content)| Text {
+                side,
+                path,
+                content,
+            }),
             side,
             diff,
         }
@@ -159,6 +176,11 @@ impl Change {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether `line` is in one of `located`'s hunks.
+    fn in_diff(located: &Located<'_>, line: u64) -> bool {
+        located.hunk_of(line).is_some()
+    }
 
     fn renamed() -> Change {
         Change {
@@ -202,7 +224,14 @@ mod tests {
 
         assert_eq!(
             (located.file_at_head.as_str(), located.text),
-            ("new.rs", Some("head"))
+            (
+                "new.rs",
+                Some(Text {
+                    side: Side::Right,
+                    path: "new.rs",
+                    content: "head"
+                })
+            )
         );
     }
 
@@ -214,7 +243,14 @@ mod tests {
 
         assert_eq!(
             (located.file_at_head.as_str(), located.text),
-            ("new.rs", Some("base"))
+            (
+                "new.rs",
+                Some(Text {
+                    side: Side::Left,
+                    path: "old.rs",
+                    content: "base"
+                })
+            )
         );
     }
 
@@ -229,10 +265,10 @@ mod tests {
 
         assert_eq!(
             [
-                right.in_diff(11),
-                right.in_diff(4),
-                left.in_diff(4),
-                left.in_diff(11)
+                in_diff(&right, 11),
+                in_diff(&right, 4),
+                in_diff(&left, 4),
+                in_diff(&left, 11)
             ],
             [true, false, true, false]
         );
@@ -259,10 +295,10 @@ mod tests {
         assert_eq!(
             (
                 located.file_at_head.as_str(),
-                located.text,
-                located.in_diff(1)
+                located.text.map(|text| (text.side, text.content)),
+                in_diff(&located, 1)
             ),
-            ("gone.rs", Some("base"), true)
+            ("gone.rs", Some((Side::Left, "base")), true)
         );
     }
 
@@ -275,6 +311,27 @@ mod tests {
 
         let located = change.locate("same.rs", Side::Right);
 
-        assert_eq!((located.text, located.in_diff(1)), (Some("text"), false));
+        assert_eq!(
+            (located.text.map(|text| text.content), in_diff(&located, 1)),
+            (Some("text"), false)
+        );
+    }
+
+    #[test]
+    fn finds_the_hunk_span_holding_a_line() {
+        let change = renamed();
+
+        let located = change.locate("new.rs", Side::Right);
+
+        assert_eq!(
+            (located.hunk_of(12), located.hunk_of(13)),
+            (
+                Some(LineSpan {
+                    start: 10,
+                    count: 3
+                }),
+                None
+            )
+        );
     }
 }

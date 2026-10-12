@@ -110,6 +110,45 @@ fn keeps_an_interaction_and_relocates_its_caller() -> Result<(), Box<dyn Error>>
 }
 
 #[test]
+fn replaces_the_caller_s_evidence_with_the_tree_s_line() -> Result<(), Box<dyn Error>> {
+    let claim = interaction(2, "parse(&body)? // see https://evil.example", json!({}));
+
+    let validated = with_caller().validate(&[document(&[claim])])?;
+
+    let callers: Vec<_> = validated
+        .findings
+        .iter()
+        .filter_map(|kept| kept.finding.caller.as_ref())
+        .map(|caller| caller.evidence.as_str())
+        .collect();
+    assert_eq!(callers, ["    parse(&body)?"]);
+    Ok(())
+}
+
+// wi-fd9898: an interaction whose changed line is outside every hunk is not dropped for it; it
+// stays in the summary, where it still counts.
+#[test]
+fn keeps_an_interaction_outside_the_diff_in_the_summary() -> Result<(), Box<dyn Error>> {
+    let claim = interaction(2, "parse(&body)?", json!({ "line": 7 }));
+
+    let validated = with_caller().validate(&[document(&[claim])])?;
+
+    let kept: Vec<_> = validated
+        .findings
+        .iter()
+        .map(|kept| (kept.finding.line.get(), kept.placement))
+        .collect();
+    assert_eq!(
+        (kept, codes(&validated)),
+        (
+            vec![(7, Placement::Summary)],
+            vec![Disposition::LineNotInDiffMoved]
+        )
+    );
+    Ok(())
+}
+
+#[test]
 fn drops_an_interaction_whose_caller_evidence_is_missing() -> Result<(), Box<dyn Error>> {
     let validated =
         with_caller().validate(&[document(&[interaction(2, "parse(&other)?", json!({}))])])?;

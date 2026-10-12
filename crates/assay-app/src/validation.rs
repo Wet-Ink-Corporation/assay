@@ -5,8 +5,10 @@
 //! input Z3 lacks is the gate findings, so without them both runs give equal results. Every
 //! transition is a [`Transition`] carrying a disposition code (QA-12).
 
+mod anchor;
 mod change;
 mod evidence;
+mod index;
 mod screen;
 mod steps;
 mod symbol;
@@ -21,6 +23,7 @@ use assay_domain::{
 pub use change::{Change, DiffPaths, FileDiff, Hunk, LineSpan};
 
 use crate::contract::{Contract, ContractValidator};
+use crate::prompt_bundle::Role;
 
 /// How many injection suspects in one run raise a visible warning (04 §4 step 5).
 const INJECTION_WARNING_AT: usize = 2;
@@ -180,9 +183,11 @@ impl Validated {
 
 /// Validates reviewer findings `documents` (raw `assay.findings/1` bytes) against `inputs`.
 ///
-/// Applies 04 §4 steps 1 to 6 in order: schema, evidence location, placement, trigger,
-/// injection screen and suppression. Pure and total: every input ends kept or with a disposition. A document that fails its
-/// schema, or is not a reviewer's, is one `schema` transition. Nothing here quotes model text.
+/// Applies 04 §4 steps 1 to 6 in order: schema, evidence location, placement, severity caps,
+/// injection screen and suppression. Pure and total: every input ends kept or with a
+/// disposition. A document that fails its schema, is not a reviewer's or names a role outside
+/// the roster is one `schema` transition. Each file is indexed once per call, however many
+/// findings cite it. Nothing here quotes model text: evidence is replaced by the tree's lines.
 ///
 /// # Examples
 ///
@@ -201,7 +206,7 @@ impl Validated {
 /// }
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let lib = "fn f() {\n    g();\n}\n";
+/// let lib = "fn f() {\n    record_event(id);\n}\n";
 /// let change = Change {
 ///     head_files: BTreeMap::from([("src/lib.rs".to_owned(), lib.to_owned())]),
 ///     ..Change::default()
@@ -214,9 +219,10 @@ impl Validated {
 ///     gate_findings: &[],
 /// };
 /// let document = br#"{"schema": "assay.findings/1",
-///     "source": {"kind": "reviewer", "name": "claude", "version": "v", "role": "combined", "run_key": "r"},
+///     "source": {"kind": "reviewer", "name": "claude", "version": "v", "role": "combined",
+///                "run_key": "r"},
 ///     "findings": [{"class": "logic", "kind": "defect", "severity": "minor", "file": "src/lib.rs",
-///                   "line": 9, "evidence": "g();", "title": "t", "body": "b"}]}"#;
+///                   "line": 9, "evidence": "record_event(id);", "title": "t", "body": "b"}]}"#;
 ///
 /// let validated = validate(&ContractValidator::new()?, &inputs, &[document]);
 ///
@@ -232,28 +238,27 @@ pub fn validate(
     inputs: &Inputs<'_>,
     documents: &[&[u8]],
 ) -> Validated {
-    let mut validated = Validated {
-        findings: Vec::new(),
-        transitions: Vec::new(),
-    };
+    let mut run = steps::Run::new(inputs);
     for (document, bytes) in documents.iter().enumerate() {
         match read(validator, bytes) {
-            Ok(findings) => {
+            Ok((ceiling, findings)) => {
                 for (index, finding) in findings.into_iter().enumerate() {
-                    let at = FindingRef::Finding { document, index };
-                    steps::check(inputs, at, finding, &mut validated);
+                    run.check(FindingRef::Finding { document, index }, finding, ceiling);
                 }
             }
-            Err(code) => validated
-                .transitions
-                .push(Transition::of(FindingRef::Document { document }, code)),
+            Err(code) => run.reject(FindingRef::Document { document }, code),
         }
     }
-    validated
+    run.finish()
 }
 
-/// Step 1: the findings of a schema-valid reviewer document, or the `schema` disposition.
-fn read(validator: &ContractValidator, bytes: &[u8]) -> Result<Vec<Finding>, Disposition> {
+/// Step 1: the findings of a schema-valid reviewer document, with the severity ceiling of the
+/// role that wrote them, or the `schema` disposition. A role outside the roster is refused:
+/// every reviewer role has a ceiling, and an unknown one cannot be held to it.
+fn read(
+    validator: &ContractValidator,
+    bytes: &[u8],
+) -> Result<(Severity, Vec<Finding>), Disposition> {
     let value = validator
         .read(Contract::Findings, bytes)
         .map_err(|error| error.disposition())?;
@@ -263,8 +268,14 @@ fn read(validator: &ContractValidator, bytes: &[u8]) -> Result<Vec<Finding>, Dis
         Ok(document) => document,
         Err(_) => return Err(Disposition::Schema),
     };
-    match document.source.kind {
-        SourceKind::Reviewer => Ok(document.findings),
-        SourceKind::Gate => Err(Disposition::Schema),
+    if document.source.kind != SourceKind::Reviewer {
+        return Err(Disposition::Schema);
     }
+    let role = document
+        .source
+        .role
+        .as_deref()
+        .and_then(|code| Role::ALL.into_iter().find(|role| role.code() == code))
+        .ok_or(Disposition::Schema)?;
+    Ok((role.severity_ceiling(), document.findings))
 }

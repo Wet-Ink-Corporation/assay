@@ -90,15 +90,20 @@ pub(crate) fn finding_with(changes: Value) -> Value {
     finding
 }
 
-/// A reviewer document holding `findings`.
+/// A `combined` reviewer document holding `findings`.
 pub(crate) fn document(findings: &[Value]) -> Vec<u8> {
+    document_by("combined", findings)
+}
+
+/// A reviewer document from `role` holding `findings`.
+pub(crate) fn document_by(role: &str, findings: &[Value]) -> Vec<u8> {
     json!({
         "schema": "assay.findings/1",
         "source": {
             "kind": "reviewer",
             "name": "claude",
             "version": "git:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "role": "combined",
+            "role": role,
             "run_key": "run-42-1",
         },
         "findings": findings,

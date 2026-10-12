@@ -6,7 +6,7 @@ use assay_app::{FindingRef, Placement, Transition};
 use assay_domain::{Disposition, EventPayload};
 use serde_json::json;
 
-use super::fixture::{Run, document, finding, finding_with, validate_one};
+use super::fixture::{Run, document, document_by, finding, finding_with, validate_one};
 
 #[test]
 fn keeps_a_valid_finding_inline_with_no_transition() -> Result<(), Box<dyn Error>> {
@@ -95,6 +95,55 @@ fn emits_one_finding_disposed_event_per_transition() -> Result<(), Box<dyn Error
             from: None,
             to: None
         }]
+    );
+    Ok(())
+}
+
+/// The dispositions of one finding with `changes` applied.
+fn codes_with(changes: serde_json::Value) -> Result<Vec<Disposition>, Box<dyn Error>> {
+    let validated = validate_one(&[finding_with(changes)])?;
+    Ok(validated.transitions.iter().map(|t| t.code).collect())
+}
+
+// wi-641e1a: the schema leaves `rule` and `group_hint` unbounded; validation caps them.
+#[test]
+fn rejects_a_rule_over_128_bytes_and_keeps_one_at_the_cap() -> Result<(), Box<dyn Error>> {
+    let (over, at) = (
+        codes_with(json!({ "rule": "R".repeat(129) }))?,
+        codes_with(json!({ "rule": "R".repeat(128) }))?,
+    );
+
+    assert_eq!((over, at), (vec![Disposition::Schema], vec![]));
+    Ok(())
+}
+
+#[test]
+fn rejects_a_group_hint_over_100_characters() -> Result<(), Box<dyn Error>> {
+    let (over, at) = (
+        codes_with(json!({ "group_hint": "\u{e9}".repeat(101) }))?,
+        codes_with(json!({ "group_hint": "\u{e9}".repeat(100) }))?,
+    );
+
+    assert_eq!((over, at), (vec![Disposition::Schema], vec![]));
+    Ok(())
+}
+
+// A role outside the roster has no severity ceiling to hold its findings to.
+#[test]
+fn disposes_of_a_document_from_a_role_outside_the_roster_as_schema() -> Result<(), Box<dyn Error>> {
+    let validated = Run::default().validate(&[document_by("bugs", &[finding()])])?;
+
+    assert_eq!(
+        (validated.transitions, validated.findings.len()),
+        (
+            vec![Transition {
+                at: FindingRef::Document { document: 0 },
+                code: Disposition::Schema,
+                from: None,
+                to: None
+            }],
+            0
+        )
     );
     Ok(())
 }

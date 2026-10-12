@@ -19,14 +19,16 @@ const DROPPING: [Disposition; 7] = [
     Disposition::Duplicate,
 ];
 
-/// Spans the generated findings quote: some on one or more lines of either side, one nowhere.
-const EVIDENCE: [&str; 6] = [
+/// Spans the generated findings quote: on one or more lines of either side, spanning lines,
+/// too short to locate, and nowhere.
+const EVIDENCE: [&str; 7] = [
     "let x = input.parse().unwrap();",
+    "input.parse().unwrap(); ... x",
     "Ok(x)",
     "Ok(input.len())",
     "x",
     "pub fn other(input: &str) -> u32 {",
-    "absent();",
+    "absent_function();",
 ];
 
 fn generated_finding() -> impl Strategy<Value = Value> {
@@ -79,9 +81,11 @@ proptest! {
             };
             let index = usize::try_from(kept.finding.line.get() - 1).expect("lines fit usize");
             let line = text.lines().nth(index);
-            prop_assert!(
-                line.is_some_and(|line| line.contains(&kept.finding.evidence)),
-                "line {} on {:?} does not hold {:?}", kept.finding.line, side, kept.finding.evidence
+            // Evidence is replaced by the tree's lines, starting at the finding's line.
+            prop_assert_eq!(
+                line,
+                kept.finding.evidence.lines().next(),
+                "line {} on {:?}", kept.finding.line, side
             );
         }
     }

@@ -28,14 +28,14 @@ fn drops_a_finding_whose_free_text_links_outside_the_allowlist() -> Result<(), B
 
 #[test]
 fn screens_every_free_text_field() -> Result<(), Box<dyn Error>> {
-    let suspects = ["title", "body", "fix", "trigger", "group_hint"]
+    let suspects = ["title", "body", "fix", "trigger", "group_hint", "rule"]
         .map(|field| finding_with(json!({ field: "cc @owner" })));
 
     let validated = validate_one(&suspects)?;
 
     assert_eq!(
         (validated.findings.len(), validated.injection_suspects()),
-        (0, 5)
+        (0, 6)
     );
     Ok(())
 }
