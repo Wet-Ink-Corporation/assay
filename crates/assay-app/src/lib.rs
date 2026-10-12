@@ -8,6 +8,7 @@
 
 mod config;
 mod contract;
+mod doctor;
 mod gate;
 mod golden;
 mod model_runner;
@@ -16,6 +17,10 @@ mod prompt_bundle;
 mod session_init;
 mod tiering;
 
+pub use doctor::{
+    CanaryProbe, CanaryRun, CanaryToken, Check, CheckFailure, CheckResult, DoctorError,
+    DoctorReport, doctor,
+};
 pub use session_init::{
     AllowlistDrift, InitParts, InitPlugin, InitReadError, InitUnclean, SessionInit,
     allowlist_drift, check_init,

@@ -3,6 +3,7 @@
 mod builtins;
 mod config;
 mod contract;
+mod doctor;
 mod domain_model;
 mod exec_roots;
 mod gate;

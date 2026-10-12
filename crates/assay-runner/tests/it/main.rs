@@ -2,6 +2,7 @@
 //! `claude`: `Replay` reads recorded streams, and `ClaudeHeadless` runs a stand-in script.
 
 mod headless;
+mod init;
 mod replay;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod support;

@@ -49,7 +49,7 @@ fn toml_list(names: &[&str]) -> String {
 }
 
 /// The base config pinning 2.1.296 with its built-ins as observed on 2026-10-12.
-fn pinned() -> Result<(ExactVersion, BuiltinAllowlist), Box<dyn Error>> {
+pub(crate) fn pinned() -> Result<(ExactVersion, BuiltinAllowlist), Box<dyn Error>> {
     let text = format!(
         "[assay]\ndigest = \"sha256:{HEX64}\"\nclaude_cli = \"2.1.296\"\n\
          claude_cli_builtins = {{ plugins = {}, skills = {}, agents = {} }}\n",
@@ -63,7 +63,7 @@ fn pinned() -> Result<(ExactVersion, BuiltinAllowlist), Box<dyn Error>> {
     Ok((version, assay.claude_cli_builtins.clone()))
 }
 
-fn builtin(name: &str) -> InitPlugin {
+pub(crate) fn builtin(name: &str) -> InitPlugin {
     InitPlugin {
         name: name.to_owned(),
         path: "builtin".to_owned(),
@@ -72,7 +72,7 @@ fn builtin(name: &str) -> InitPlugin {
 }
 
 /// The parts of the 2.1.296 `system/init` captured under the 03 §8 profile.
-fn observed() -> InitParts {
+pub(crate) fn observed() -> InitParts {
     InitParts {
         cli_version: "2.1.296".to_owned(),
         tools: strings(&["Glob", "Grep", "Read"]),

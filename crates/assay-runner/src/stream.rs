@@ -5,7 +5,10 @@
 //! usage-limit refusal) and the final `result`, which alone carries `total_cost_usd` and the
 //! structured output. Every other message is skipped, so new message kinds do not break a call.
 
+mod init;
 mod message;
+
+pub use init::read_session_init;
 
 use assay_app::{ModelOutcome, ModelResult, RateLimitObserved, Structured};
 use assay_domain::{Aeu, RateLimitStatus};

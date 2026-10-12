@@ -14,3 +14,4 @@ pub use headless::{
     ClaudeHeadless, EnvVarError, GroupKill, HeadlessEnv, HeadlessError, Workdir, WorkdirError,
 };
 pub use replay::{Recording, Replay, ReplayError};
+pub use stream::read_session_init;
