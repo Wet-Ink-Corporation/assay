@@ -48,8 +48,8 @@ pub struct Tiering {
     /// Matched trust paths, both sides of renames, and `<manifest> (<key>)` for manifest trust
     /// keys; sorted, without duplicates.
     pub trust_paths_changed: Vec<String>,
-    /// Build scripts, and `<package> (<cause>)` for exec-surface packages; sorted, without
-    /// duplicates.
+    /// Build scripts and changed files under an exec root (both sides of renames), and
+    /// `<package> (<cause>)` for exec-surface packages; sorted, without duplicates.
     pub exec_surface_changed: Vec<String>,
     /// What the model sees.
     pub filtered: FilteredStats,
