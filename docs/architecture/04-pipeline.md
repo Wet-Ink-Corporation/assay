@@ -24,7 +24,7 @@ Every job holding a secret or a write token runs only on `github.run_attempt == 
 
 ## 2. Plan and tiering (deterministic, S1; recomputed by Z4)
 
-Inputs: the file list from `git diff --name-status base_sha...head_sha` on fetched objects (asserted equal to the REST list when that list is not truncated; the REST list caps at 3,000 files), the parsed manifests at both SHAs, and base `.assay/`. No model.
+Inputs: the file list from `git diff --raw base_sha...head_sha` (the name-status with both sides' modes, for symlinks and gitlinks) and `--numstat --text` on fetched objects (asserted equal to the REST list when that list is not truncated; the REST list caps at 3,000 files), the parsed manifests at both SHAs, and base `.assay/`. No model. The lists are compared as the set of paths either names, both sides of every rename, so rename detection may differ between git and GitHub. A complete REST list (fewer than 3,000 files, as many as the PR's `changed_files`) must name exactly git's paths; a truncated one (3,000 listed, more changed) only paths git lists. Any other REST list, a repeated path, a diff past its cap, or a base `.assay/` that lacks `plugins.toml`, holds a symlink or submodule, or does not parse fails `plan` (wi-b5affa: refused, not modelled). Until the Z2s include scan (#64) reports its targets, every changed path counts as one, so no change is `trivial`.
 
 ### 2.1 Filtering
 

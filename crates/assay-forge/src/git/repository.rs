@@ -9,6 +9,7 @@ use std::time::Duration;
 use super::attributes::{
     self, AttributeAllowlist, AttributeError, AttributeReport, POLICED_ATTRIBUTES,
 };
+use super::changes::{self, ChangeListing};
 use super::command::{GitEnvironment, GitOperation, git};
 use super::numstat::{self, DiffOutcome, FileChange};
 use super::sha::{CommitSha, HttpsRemote};
@@ -144,21 +145,61 @@ impl ObjectRepo {
             head.as_str(),
             "--",
         ];
+        let Some(captured) = self.capped_diff(&args, cap)? else {
+            return Ok(DiffOutcome::NeedsSplit);
+        };
+        numstat::parse(&captured.stdout)
+            .map(DiffOutcome::Measured)
+            .map_err(|Malformed(detail)| GitError::Malformed {
+                operation: GitOperation::Diff,
+                detail,
+            })
+    }
+
+    /// The PR's changed files for `plan`: `git diff --raw` (the name-status with both sides'
+    /// modes) and `--numstat --text`, each with rename detection over `base...head`, so the
+    /// list runs from the merge base as GitHub's does, never against commits the base gained
+    /// after the fork. Each of the two diffs runs within the wall-clock `cap`.
+    ///
+    /// # Errors
+    /// [`GitError`] when a diff cannot run or fails (including when the commits share no
+    /// merge base), or when the two diffs print output this layer cannot read or that
+    /// disagrees on any file. Running past `cap` is not an error:
+    /// it is [`ChangeListing::NeedsSplit`].
+    pub fn changed_files(
+        &self,
+        base: &CommitSha,
+        head: &CommitSha,
+        cap: Duration,
+    ) -> Result<ChangeListing, GitError> {
+        let range = format!("{base}...{head}");
+        let raw = ["--raw", "-z", "--no-abbrev", "-M", &range, "--"];
+        let Some(raw) = self.capped_diff(&raw, cap)? else {
+            return Ok(ChangeListing::NeedsSplit);
+        };
+        let numstat = ["--numstat", "-z", "--text", "-M", &range, "--"];
+        let Some(numstat) = self.capped_diff(&numstat, cap)? else {
+            return Ok(ChangeListing::NeedsSplit);
+        };
+        changes::parse(&raw.stdout, &numstat.stdout)
+            .map(ChangeListing::Listed)
+            .map_err(|Malformed(detail)| GitError::Malformed {
+                operation: GitOperation::Diff,
+                detail,
+            })
+    }
+
+    /// Runs `git diff` with `args` within `cap`; `None` when it ran past it.
+    fn capped_diff(&self, args: &[&str], cap: Duration) -> Result<Option<Captured>, GitError> {
         match self.run(Call {
             timeout: cap,
-            ..self.call(GitOperation::Diff, &args)
+            ..self.call(GitOperation::Diff, args)
         }) {
             Err(GitError::Process {
                 source: ProcessError::TimedOut,
                 ..
-            }) => Ok(DiffOutcome::NeedsSplit),
-            Err(error) => Err(error),
-            Ok(captured) => numstat::parse(&captured.stdout)
-                .map(DiffOutcome::Measured)
-                .map_err(|Malformed(detail)| GitError::Malformed {
-                    operation: GitOperation::Diff,
-                    detail,
-                }),
+            }) => Ok(None),
+            ran => ran.map(Some),
         }
     }
 

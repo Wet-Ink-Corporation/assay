@@ -10,6 +10,7 @@ mod fetch_by_digest;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod layering;
 mod layout;
+mod plan;
 mod release_workflow;
 #[cfg(unix)] // process groups and Unix file modes
 mod supervisor;
