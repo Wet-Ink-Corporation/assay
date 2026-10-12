@@ -1,5 +1,6 @@
 //! Integration tests for `assay-domain`, compiled as one binary (TST-14).
 
+mod content_hash;
 mod decide;
 mod decide_commands;
 mod decide_llm;

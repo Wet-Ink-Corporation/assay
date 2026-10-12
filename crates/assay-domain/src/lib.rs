@@ -11,6 +11,7 @@
 mod vocabulary;
 
 mod aeu;
+mod content_hash;
 mod decide;
 mod decision;
 mod dismissal;
@@ -27,6 +28,7 @@ mod severity;
 mod tier;
 
 pub use aeu::Aeu;
+pub use content_hash::ContentHash;
 pub use decide::decide;
 pub use decide::inputs::{
     Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
