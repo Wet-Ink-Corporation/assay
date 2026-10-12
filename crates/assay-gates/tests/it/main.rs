@@ -1,5 +1,6 @@
 //! Integration tests for `assay-gates`, compiled as one binary (TST-14).
 
+mod cargo;
 mod environment;
 mod exec;
 mod reach;

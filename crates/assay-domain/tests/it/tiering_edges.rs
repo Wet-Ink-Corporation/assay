@@ -181,16 +181,6 @@ fn non_canonical_root_holds_every_path() {
 }
 
 #[test]
-fn path_build_dependency_edited_in_place_awaits_issue_65() {
-    // A path crate reachable as a build-dependency, or as a dependency of a proc-macro, runs at
-    // build time. Its directory is an exec root that #65 adds from the package-set diff; until
-    // then, with no root for it, an edit there is not exec surface. This pins that gap.
-    let classes = exec_classes(&[], &["crates/codegen-helpers/src/lib.rs"]);
-
-    assert_eq!(classes, vec![Vec::<PrClass>::new()]);
-}
-
-#[test]
 fn non_canonical_paths_are_trust_paths() {
     let paths = [
         "./.github/x",
