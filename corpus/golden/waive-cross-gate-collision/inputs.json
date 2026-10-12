@@ -1,0 +1,73 @@
+{
+  "decision_key": "dec-waive-cross-gate-collision",
+  "evidence_key": "run-waive-cross-gate-collision",
+  "policy": {
+    "protected_bases": [
+      "main"
+    ],
+    "llm_blockers": "advisory",
+    "llm_majors": "advisory",
+    "on_infra_failure": "warn",
+    "block_on_infra_for": [
+      "trust-path",
+      "exec-surface"
+    ]
+  },
+  "pr": {
+    "base_ref": "main",
+    "open_prs_on_head": 1,
+    "tier": "lite",
+    "classes": [],
+    "owner_approval": "not-approved",
+    "authorship": "other",
+    "requeues": 0
+  },
+  "gates": [
+    {
+      "name": "temper",
+      "required": true,
+      "outcome": {
+        "status": "ran",
+        "conclusion": "fail",
+        "failed_steps": []
+      },
+      "findings": [
+        {
+          "fp": "00000000000000c1",
+          "rule": "exception",
+          "severity": "major"
+        }
+      ]
+    },
+    {
+      "name": "custom-lint",
+      "required": true,
+      "outcome": {
+        "status": "ran",
+        "conclusion": "fail",
+        "failed_steps": []
+      },
+      "findings": [
+        {
+          "fp": "00000000000000c1",
+          "rule": "raised",
+          "severity": "major"
+        }
+      ]
+    }
+  ],
+  "weigh_in": "not-required",
+  "llm": {
+    "status": "completed"
+  },
+  "findings": [],
+  "dispositions": [],
+  "degraded": [],
+  "waivers": [
+    {
+      "fp": "00000000000000c1",
+      "by": "owner"
+    }
+  ],
+  "override_record": null
+}

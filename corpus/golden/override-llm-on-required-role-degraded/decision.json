@@ -1,0 +1,33 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-override-llm-on-required-role-degraded",
+  "evidence_key": "run-override-llm-on-required-role-degraded",
+  "conclusion": "neutral",
+  "reasons": [
+    {
+      "code": "required-role-degraded",
+      "detail": "bugs: cap"
+    },
+    {
+      "code": "override",
+      "detail": "llm"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [
+    {
+      "role": "bugs",
+      "reason": "cap"
+    }
+  ],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:1383b66e72d212ab10e56cddea27e5b025c380647028c476a1203aee87626e12"
+}

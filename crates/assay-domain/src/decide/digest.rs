@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::decide::inputs::{
     Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
-    LlmPolicy, LlmStage, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
+    LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
     ReviewedFinding, Waiver, WeighIn,
 };
 use crate::decision::{DegradedRole, FindingDisposition, Reason};
@@ -155,6 +155,7 @@ canonical_by_code!(
     GateConclusion,
     InfraPolicy,
     LlmPolicy,
+    NotRunReason,
     OverrideScope,
     OwnerApproval,
     PrClass,
@@ -233,9 +234,13 @@ canonical_struct!(Override {
 impl Canonical for GateOutcome {
     fn encode(&self, encoder: &mut Encoder) {
         match self {
-            Self::Ran { conclusion } => {
+            Self::Ran {
+                conclusion,
+                failed_steps,
+            } => {
                 "ran".encode(encoder);
                 conclusion.encode(encoder);
+                failed_steps.encode(encoder);
             }
             Self::Error { detail } => {
                 "error".encode(encoder);
@@ -249,7 +254,10 @@ impl Canonical for GateOutcome {
 impl Canonical for LlmStage {
     fn encode(&self, encoder: &mut Encoder) {
         match self {
-            Self::NotRun => "not-run".encode(encoder),
+            Self::NotRun { reason } => {
+                "not-run".encode(encoder);
+                reason.encode(encoder);
+            }
             Self::Completed => "completed".encode(encoder),
             Self::Deferred { reason } => {
                 "deferred".encode(encoder);

@@ -4,8 +4,8 @@
 use std::error::Error;
 
 use assay_domain::{
-    Conclusion, Decision, DecisionInputs, GateConclusion, GateOutcome, LlmStage, OwnerApproval,
-    PrClass, ReasonCode, Tier, WeighIn, decide,
+    Conclusion, Decision, DecisionInputs, GateConclusion, GateOutcome, LlmStage, NotRunReason,
+    OwnerApproval, PrClass, ReasonCode, Tier, WeighIn, decide,
 };
 
 use crate::support::{clean_inputs, gate, reason, rubric_v1};
@@ -129,7 +129,9 @@ fn two_open_prs_on_the_head_fail_ambiguous_head() -> Result<(), Box<dyn Error>> 
 fn a_needs_split_tier_fails_needs_split() -> Result<(), Box<dyn Error>> {
     let mut inputs = clean_inputs();
     inputs.pr.tier = Tier::NeedsSplit;
-    inputs.llm = LlmStage::NotRun;
+    inputs.llm = LlmStage::NotRun {
+        reason: NotRunReason::NoLlmTier,
+    };
 
     let decision = decided(&inputs)?;
 

@@ -28,14 +28,16 @@
       "required": true,
       "outcome": {
         "status": "ran",
-        "conclusion": "pass"
+        "conclusion": "pass",
+        "failed_steps": []
       },
       "findings": []
     }
   ],
   "weigh_in": "not-required",
   "llm": {
-    "status": "not-run"
+    "status": "not-run",
+    "reason": "no-llm-tier"
   },
   "findings": [],
   "dispositions": [],

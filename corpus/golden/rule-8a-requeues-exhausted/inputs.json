@@ -30,7 +30,8 @@
       "required": true,
       "outcome": {
         "status": "ran",
-        "conclusion": "pass"
+        "conclusion": "pass",
+        "failed_steps": []
       },
       "findings": []
     }

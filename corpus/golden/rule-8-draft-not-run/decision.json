@@ -1,0 +1,19 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-8-draft-not-run",
+  "evidence_key": "run-rule-8-draft-not-run",
+  "conclusion": "success",
+  "reasons": [],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:bc3be5313b53ee0923695527b7f95944b9c25831dbc982197477e094424f875f"
+}

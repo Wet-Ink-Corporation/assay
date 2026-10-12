@@ -133,7 +133,10 @@ pub(crate) fn gate(
     GateReport {
         name: name.to_owned(),
         required: true,
-        outcome: GateOutcome::Ran { conclusion },
+        outcome: GateOutcome::Ran {
+            conclusion,
+            failed_steps: Vec::new(),
+        },
         findings,
     }
 }

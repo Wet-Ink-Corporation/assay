@@ -1,0 +1,34 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-waive-failed-step-stays-failed",
+  "evidence_key": "run-waive-failed-step-stays-failed",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "gate-failed",
+      "detail": "temper"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [
+    {
+      "fp": "00000000000000a1",
+      "code": "waived-by-owner"
+    }
+  ],
+  "waived": [
+    {
+      "fp": "00000000000000a1",
+      "by": "owner"
+    }
+  ],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:0ea71b0cf4c0e0adc2d8eae96720b8285b4e6749081f99ab313c654dfdb227f1"
+}

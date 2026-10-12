@@ -7,7 +7,8 @@ use crate::decide::inputs::{
     Authorship, DecisionInputs, Deferral, GateOutcome, GateReport, InfraPolicy, LlmPolicy,
     LlmStage, OwnerApproval, ReviewedFinding, WeighIn,
 };
-use crate::decision::{Reason, Waived};
+use crate::decide::waive::Waivers;
+use crate::decision::Reason;
 use crate::event::VerifierVerdict;
 use crate::findings::GateConclusion;
 use crate::reason::ReasonCode;
@@ -50,10 +51,10 @@ fn firing(effect: Effect, code: ReasonCode, detail: impl Into<String>) -> Firing
 pub(super) fn evaluate(
     rubric: &Rubric,
     inputs: &DecisionInputs,
-    waived_fps: &BTreeSet<&str>,
+    waivers: &Waivers<'_>,
 ) -> Vec<Firing> {
     let mut firings = Vec::new();
-    firings.extend(gates(inputs, waived_fps));
+    firings.extend(gates(inputs, waivers));
     firings.extend(pull_request(inputs));
     firings.extend(weigh_in(inputs.weigh_in));
     firings.extend(blockers(inputs));
@@ -62,37 +63,10 @@ pub(super) fn evaluate(
     firings
 }
 
-/// The waivers that apply: each names a finding of a gate whose rule the rubric lists as a
-/// human-decision finding. Waivers naming anything else are not applied.
-pub(super) fn waived(rubric: &Rubric, inputs: &DecisionInputs) -> Vec<Waived> {
-    let mut waived: Vec<Waived> = inputs
-        .waivers
-        .iter()
-        .filter(|waiver| {
-            inputs.gates.iter().any(|gate| {
-                gate.findings.iter().any(|finding| {
-                    finding.fp == waiver.fp
-                        && finding
-                            .rule
-                            .as_deref()
-                            .is_some_and(|rule| rubric.is_waivable(&gate.name, rule))
-                })
-            })
-        })
-        .map(|waiver| Waived {
-            fp: waiver.fp.clone(),
-            by: waiver.by.clone(),
-        })
-        .collect();
-    waived.sort_unstable();
-    waived.dedup_by(|a, b| a.fp == b.fp);
-    waived
-}
-
 /// Rule 1: a required gate failed, errored or was skipped, minus waived findings.
 fn gates<'a>(
     inputs: &'a DecisionInputs,
-    waived_fps: &'a BTreeSet<&str>,
+    waivers: &'a Waivers<'_>,
 ) -> impl Iterator<Item = Firing> + 'a {
     inputs
         .gates
@@ -101,7 +75,8 @@ fn gates<'a>(
         .filter_map(|gate| match &gate.outcome {
             GateOutcome::Ran {
                 conclusion: GateConclusion::Fail,
-            } if !fully_waived(gate, waived_fps) => {
+                failed_steps,
+            } if !failed_steps.is_empty() || !fully_waived(gate, waivers) => {
                 Some(firing(Effect::Fail, ReasonCode::GateFailed, &*gate.name))
             }
             GateOutcome::Ran { .. } => None,
@@ -118,12 +93,12 @@ fn gates<'a>(
 
 /// A failed gate whose every finding was waived no longer fails; one with no findings cannot be
 /// waived.
-fn fully_waived(gate: &GateReport, waived_fps: &BTreeSet<&str>) -> bool {
+fn fully_waived(gate: &GateReport, waivers: &Waivers<'_>) -> bool {
     !gate.findings.is_empty()
         && gate
             .findings
             .iter()
-            .all(|finding| waived_fps.contains(finding.fp.as_str()))
+            .all(|finding| waivers.covers(gate, finding))
 }
 
 /// Rules 2, 2a, 3 and 4: the base, the head, the tier and owner approval.
@@ -239,7 +214,7 @@ fn llm(rubric: &Rubric, inputs: &DecisionInputs) -> Vec<Firing> {
             .iter()
             .any(|class| policy.block_on_infra_for.contains(class));
     let mut firings = Vec::new();
-    if let LlmStage::Deferred { reason } = inputs.llm {
+    if let LlmStage::Deferred { reason } = inputs.llm.effective(pr.tier) {
         let holds =
             blocks_on_infra || (reason == Deferral::SlotBusy && pr.authorship == Authorship::Agent);
         let max = rubric.max_requeues();

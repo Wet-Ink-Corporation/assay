@@ -4,6 +4,7 @@
 pub(crate) mod digest;
 pub(crate) mod inputs;
 mod rules;
+mod waive;
 
 use std::collections::BTreeSet;
 
@@ -14,6 +15,7 @@ use crate::rubric::Rubric;
 use crate::severity::Severity;
 use inputs::{DecisionInputs, LlmPolicy, OverrideScope};
 use rules::{Effect, Firing};
+use waive::Waivers;
 
 /// Decides one PR head: rubric v1 rules 1 to 9, waive and override of 04 §5.
 ///
@@ -29,9 +31,9 @@ use rules::{Effect, Firing};
 /// degraded roles it repeats from the borrowed inputs are copied into it.
 #[must_use]
 pub fn decide(rubric: &Rubric, inputs: &DecisionInputs) -> Decision {
-    let waived = rules::waived(rubric, inputs);
-    let waived_fps: BTreeSet<&str> = waived.iter().map(|w| w.fp.as_str()).collect();
-    let firings = rules::evaluate(rubric, inputs, &waived_fps);
+    let waivers = Waivers::resolve(rubric, inputs);
+    let waived = waivers.waived();
+    let firings = rules::evaluate(rubric, inputs, &waivers);
 
     let mut conclusion = conclusion_of(&firings);
     let overridden = overriding_scope(inputs, conclusion, &firings);
@@ -65,7 +67,7 @@ pub fn decide(rubric: &Rubric, inputs: &DecisionInputs) -> Decision {
         evidence_key: inputs.evidence_key.clone(),
         conclusion,
         reasons,
-        counts: counts(inputs, &waived_fps),
+        counts: counts(inputs, &waivers),
         advisory_blockers: advisory_blockers(inputs),
         dispositions,
         waived,
@@ -108,14 +110,14 @@ fn overriding_scope(
 }
 
 /// Reviewer findings plus gate findings not waived, by severity.
-fn counts(inputs: &DecisionInputs, waived_fps: &BTreeSet<&str>) -> Counts {
+fn counts(inputs: &DecisionInputs, waivers: &Waivers<'_>) -> Counts {
     let reviewer = inputs.findings.iter().map(|f| f.severity);
     let gates = inputs
         .gates
         .iter()
-        .flat_map(|gate| &gate.findings)
-        .filter(|f| !waived_fps.contains(f.fp.as_str()))
-        .map(|f| f.severity);
+        .flat_map(|gate| gate.findings.iter().map(move |f| (gate, f)))
+        .filter(|&(gate, f)| !waivers.covers(gate, f))
+        .map(|(_, f)| f.severity);
     reviewer
         .chain(gates)
         .fold(Counts::default(), |mut counts, severity| {

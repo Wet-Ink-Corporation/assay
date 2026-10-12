@@ -37,7 +37,8 @@
       "required": false,
       "outcome": {
         "status": "ran",
-        "conclusion": "fail"
+        "conclusion": "fail",
+        "failed_steps": []
       },
       "findings": []
     }

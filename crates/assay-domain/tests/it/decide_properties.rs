@@ -4,8 +4,8 @@
 use assay_domain::{
     Authorship, Conclusion, DecisionInputs, Deferral, DegradedRole, Disposition,
     FindingDisposition, GateConclusion, GateFinding, GateOutcome, GateReport, InfraPolicy,
-    LlmPolicy, LlmStage, Override, OverrideScope, OwnerApproval, Policy, PrClass, PullRequest,
-    ReviewedFinding, Severity, Tier, VerifierVerdict, Waiver, WeighIn, decide,
+    LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy, PrClass,
+    PullRequest, ReviewedFinding, Severity, Tier, VerifierVerdict, Waiver, WeighIn, decide,
 };
 use proptest::collection::vec;
 use proptest::option;
@@ -20,7 +20,14 @@ fn fp() -> impl Strategy<Value = String> {
 
 fn gate_report() -> impl Strategy<Value = GateReport> {
     let outcome = prop_oneof![
-        select(GateConclusion::ALL.to_vec()).prop_map(|conclusion| GateOutcome::Ran { conclusion }),
+        (
+            select(GateConclusion::ALL.to_vec()),
+            select(vec![Vec::new(), vec!["fmt".to_owned()]]),
+        )
+            .prop_map(|(conclusion, failed_steps)| GateOutcome::Ran {
+                conclusion,
+                failed_steps,
+            }),
         "[a-z]{1,8}".prop_map(|detail| GateOutcome::Error { detail }),
         Just(GateOutcome::Skipped),
     ];
@@ -119,7 +126,7 @@ fn pull_request() -> impl Strategy<Value = PullRequest> {
 
 fn llm_stage() -> impl Strategy<Value = LlmStage> {
     prop_oneof![
-        Just(LlmStage::NotRun),
+        select(NotRunReason::ALL.to_vec()).prop_map(|reason| LlmStage::NotRun { reason }),
         Just(LlmStage::Completed),
         select(Deferral::ALL.to_vec()).prop_map(|reason| LlmStage::Deferred { reason }),
     ]
@@ -209,7 +216,7 @@ proptest! {
 
         prop_assert!(
             decision.conclusion != Conclusion::Pending
-                || matches!(inputs.llm, LlmStage::Deferred { .. }),
+                || matches!(inputs.llm.effective(inputs.pr.tier), LlmStage::Deferred { .. }),
             "{:?} from {:?}", decision.reasons, inputs.llm
         );
     }

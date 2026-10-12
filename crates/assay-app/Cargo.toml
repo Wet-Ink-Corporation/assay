@@ -14,3 +14,7 @@ assay-domain = { workspace = true }
 jsonschema = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+# Reading rubric/v1.toml to check what `decide` writes against the decision schema (pre-approved).
+[dev-dependencies]
+toml = { workspace = true }

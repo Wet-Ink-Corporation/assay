@@ -4,9 +4,9 @@
 use std::error::Error;
 
 use assay_domain::{
-    Conclusion, Counts, Decision, DecisionInputs, Deferral, Disposition, FindingDisposition,
-    GateConclusion, LlmStage, Override, OverrideScope, OwnerApproval, PrClass, ReasonCode,
-    Severity, Tier, Waived, Waiver, decide,
+    Conclusion, Counts, Decision, DecisionInputs, Deferral, DegradedRole, Disposition,
+    FindingDisposition, GateConclusion, InfraPolicy, LlmStage, Override, OverrideScope,
+    OwnerApproval, PrClass, ReasonCode, Severity, Tier, Waived, Waiver, decide,
 };
 
 use crate::support::{clean_inputs, confirmed, gate, gate_finding, reason, rubric_v1};
@@ -20,6 +20,13 @@ const BUDGET_DEFERRED_DIGEST: &str =
 /// `printf 'gate-failed\nneeds-split\n' | sha256sum`
 const GATE_FAILED_NEEDS_SPLIT_DIGEST: &str =
     "sha256:f9838b74a72d134a2d6270babd99be12097ea49c033b6ab2e780ef72f630024f";
+
+/// `printf 'required-role-degraded\n' | sha256sum`
+const REQUIRED_ROLE_DEGRADED_DIGEST: &str =
+    "sha256:aa332cda0bc178fd07e089e308e9526626762da10c53c4cf1e6c89bca1282473";
+/// `printf 'infra-llm-unavailable\n' | sha256sum`
+const INFRA_LLM_UNAVAILABLE_DIGEST: &str =
+    "sha256:2179015d990775098f5b42c58d32f51aeeb8d0a5de890b12e19c8d32b840f457";
 
 fn decided(inputs: &DecisionInputs) -> Result<Decision, Box<dyn Error>> {
     Ok(decide(&rubric_v1()?, inputs))
@@ -182,6 +189,72 @@ fn an_override_is_void_once_a_reason_is_added() -> Result<(), Box<dyn Error>> {
         "{:?}",
         decision.reasons
     );
+    Ok(())
+}
+
+#[test]
+fn an_llm_override_neutralises_a_degraded_required_role() -> Result<(), Box<dyn Error>> {
+    let mut inputs = clean_inputs();
+    inputs.policy.on_infra_failure = InfraPolicy::Block;
+    inputs.degraded = vec![DegradedRole {
+        role: "bugs".to_owned(),
+        reason: "cap".to_owned(),
+    }];
+    inputs.override_record = Some(override_record(
+        OverrideScope::Llm,
+        REQUIRED_ROLE_DEGRADED_DIGEST,
+    ));
+
+    let decision = decided(&inputs)?;
+
+    assert_eq!(decision.conclusion, Conclusion::Neutral);
+    assert_eq!(
+        decision.reasons,
+        [
+            reason(ReasonCode::RequiredRoleDegraded, "bugs: cap"),
+            reason(ReasonCode::Override, "llm"),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn an_llm_override_neutralises_a_deferral_that_ran_out_of_requeues() -> Result<(), Box<dyn Error>> {
+    let mut inputs = clean_inputs();
+    inputs.policy.on_infra_failure = InfraPolicy::Block;
+    inputs.pr.requeues = 3;
+    inputs.llm = LlmStage::Deferred {
+        reason: Deferral::InfraLlmUnavailable,
+    };
+    inputs.override_record = Some(override_record(
+        OverrideScope::Llm,
+        INFRA_LLM_UNAVAILABLE_DIGEST,
+    ));
+
+    let decision = decided(&inputs)?;
+
+    assert_eq!(decision.conclusion, Conclusion::Neutral);
+    assert_eq!(
+        decision.reasons.iter().map(|r| r.code).collect::<Vec<_>>(),
+        [ReasonCode::InfraLlmUnavailable, ReasonCode::Override]
+    );
+    Ok(())
+}
+
+/// The override names reasons the PR no longer has (wi-8aabfb): it is void, and the remaining
+/// reasons decide.
+#[test]
+fn an_override_is_void_once_a_quoted_reason_disappears() -> Result<(), Box<dyn Error>> {
+    let mut inputs = temper_failed(true);
+    inputs.override_record = Some(override_record(
+        OverrideScope::All,
+        GATE_FAILED_NEEDS_SPLIT_DIGEST,
+    ));
+
+    let decision = decided(&inputs)?;
+
+    assert_eq!(decision.conclusion, Conclusion::Failure);
+    assert_eq!(decision.reasons, [reason(ReasonCode::GateFailed, "temper")]);
     Ok(())
 }
 

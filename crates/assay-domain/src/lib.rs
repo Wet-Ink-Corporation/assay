@@ -27,7 +27,7 @@ pub use aeu::Aeu;
 pub use decide::decide;
 pub use decide::inputs::{
     Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
-    LlmPolicy, LlmStage, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
+    LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
     ReviewedFinding, Waiver, WeighIn,
 };
 pub use decision::{

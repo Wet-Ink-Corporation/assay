@@ -122,6 +122,12 @@ closed_enum! {
 }
 
 /// One gate of the plan and what it reported.
+///
+/// A failed gate is cleared by waivers only when every cause of its failure is a finding, and
+/// every finding is a waived human-decision finding. A failure with no finding behind it (a
+/// declared step such as `fmt`, `deny` or `tests` that failed) is listed in
+/// [`GateOutcome::Ran`]'s `failed_steps`, which the adapter must fill (03 §2.1), and such a gate
+/// is never cleared.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GateReport {
@@ -143,6 +149,9 @@ pub enum GateOutcome {
     Ran {
         /// The gate's conclusion.
         conclusion: GateConclusion,
+        /// Steps that failed without a finding to show for it (`fmt`, `deny`, `tests`); a gate
+        /// with any is never cleared by waivers. Required, so an adapter cannot omit it.
+        failed_steps: Vec<String>,
     },
     /// Bad exit, signal, timeout, or a missing or invalid document.
     Error {
@@ -186,8 +195,13 @@ closed_enum! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum LlmStage {
-    /// The tier has no LLM stage, or the PR is a draft.
-    NotRun,
+    /// The stage did not run. Only a tier without one (`trivial`, `needs-split`) or a draft
+    /// excuses that; on any other PR `decide` treats it as
+    /// `Deferred { reason: InfraLlmUnavailable }`.
+    NotRun {
+        /// Why it did not run.
+        reason: NotRunReason,
+    },
     /// The stage completed; required roles may still have degraded.
     Completed,
     /// The stage did not run, for the given reason.
@@ -195,6 +209,35 @@ pub enum LlmStage {
         /// Why.
         reason: Deferral,
     },
+}
+
+impl LlmStage {
+    /// The stage as rule 8 reads it: a stage that did not run on a non-draft PR whose tier has
+    /// one (`full`, `lite`, `micro`) is an unavailable LLM, so nothing downgrades silently.
+    #[must_use]
+    pub const fn effective(self, tier: Tier) -> Self {
+        match (self, tier) {
+            (
+                Self::NotRun {
+                    reason: NotRunReason::NoLlmTier,
+                },
+                Tier::Full | Tier::Lite | Tier::Micro,
+            ) => Self::Deferred {
+                reason: Deferral::InfraLlmUnavailable,
+            },
+            (stage, _) => stage,
+        }
+    }
+}
+
+closed_enum! {
+    /// Why the LLM stage did not run without being deferred.
+    pub enum NotRunReason {
+        /// The plan says the tier has no LLM stage (`trivial`, `needs-split`).
+        NoLlmTier => "no-llm-tier",
+        /// The PR is a draft: gates only until `ready_for_review` (04 §2.4).
+        Draft => "draft",
+    }
 }
 
 closed_enum! {

@@ -39,6 +39,7 @@ dependencies = [
  "jsonschema",
  "serde_json",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

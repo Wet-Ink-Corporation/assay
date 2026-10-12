@@ -7,13 +7,13 @@ use std::num::NonZeroU64;
 
 use assay_app::{Contract, ContractValidator};
 use assay_domain::{
-    Decision, Disposition, Event, EventKind, EventPayload, EventSchema, FeedbackSignal,
-    FindingsDocument, GateConclusion, GateRun, Preflight, RateLimitStatus, RunUid, Severity,
-    SpecialistRun, VerifierVerdict, VoidReason,
+    Decision, DecisionInputs, Disposition, Event, EventKind, EventPayload, EventSchema,
+    FeedbackSignal, FindingsDocument, GateConclusion, GateRun, Preflight, RateLimitStatus, RunUid,
+    Severity, SpecialistRun, VerifierVerdict, VoidReason, decide,
 };
 use serde_json::Value;
 
-use crate::support::{Validity, fixtures, golden_decisions};
+use crate::support::{Validity, fixtures, golden_decisions, golden_inputs, rubric_v1};
 
 fn id(n: u64) -> Result<NonZeroU64, Box<dyn Error>> {
     Ok(NonZeroU64::new(n).ok_or("ids are positive")?)
@@ -264,6 +264,31 @@ fn every_decision_fixture_rewritten_by_the_domain_is_schema_valid() -> Result<()
     rewritten_fixtures_validate(Contract::Decision, |bytes| {
         serde_json::to_vec(&serde_json::from_slice::<Decision>(bytes)?)
     })
+}
+
+/// What `decide` writes for every golden input passes `decision-1.schema.json`, whatever was
+/// recorded. Until #49's `Fingerprint` type lands, the fingerprints are only as well-formed as
+/// the inputs; `by` is never empty because `decide` does not apply a waiver without an actor.
+#[test]
+fn every_decision_decide_writes_for_a_golden_input_is_schema_valid() -> Result<(), Box<dyn Error>> {
+    let validator = ContractValidator::new()?;
+    let rubric = rubric_v1()?;
+    let inputs = golden_inputs()?;
+    assert!(!inputs.is_empty(), "corpus/golden/ holds no cases");
+
+    for (name, bytes) in &inputs {
+        let inputs: DecisionInputs =
+            serde_json::from_slice(bytes).map_err(|e| format!("{name}: {e}"))?;
+        let written = serde_json::to_vec(&decide(&rubric, &inputs))?;
+
+        let read = validator.read(Contract::Decision, &written);
+
+        assert!(
+            matches!(read, Ok(Value::Object(_))),
+            "{name}: decide wrote a rejected decision: {read:?}"
+        );
+    }
+    Ok(())
 }
 
 /// The golden decisions are `decide`'s exact output (the domain's tests byte-compare them), so
