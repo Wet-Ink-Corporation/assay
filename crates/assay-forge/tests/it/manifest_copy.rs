@@ -65,6 +65,54 @@ fn each_accepted_symlink_is_reported_with_its_resolved_target() -> Result<(), Bo
 
 #[test]
 #[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_neutralised_symlink_is_reported_but_never_written() -> Result<(), Box<dyn Error>> {
+    // #65 review round 4 F1: `crates/x/.cargo/x.rs` lies in `crates/x`'s build sources, so
+    // where it leads must reach the app's confinement check even though it is never copied.
+    let fixture = fixture_with_head(|work| {
+        write(work, "shared/x.rs", b"pub fn x() {}\n")?;
+        fs::create_dir_all(work.join("crates/x/.cargo"))?;
+        symlink("../../../shared/x.rs", work.join("crates/x/.cargo/x.rs"))?;
+        Ok(())
+    })?;
+    let scratch = tempfile::tempdir()?;
+
+    let copy = fixture.repo.manifest_copy(
+        &fixture.head,
+        &scratch.path().join("copy"),
+        TreeLimits::default(),
+    )?;
+
+    assert_eq!(
+        (
+            copy.symlinks(),
+            fs::symlink_metadata(copy.root().join("crates/x/.cargo")).is_err()
+        ),
+        (
+            &[CopiedSymlink {
+                path: "crates/x/.cargo/x.rs".to_owned(),
+                target: "shared/x.rs".to_owned(),
+            }][..],
+            true
+        ),
+        "reported with its target, and nothing under `.cargo` written"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_neutralised_symlink_leaving_the_tree_is_refused() -> Result<(), Box<dyn Error>> {
+    let result = copy_with_link("rust-toolchain.toml", b"/etc/passwd")?;
+
+    assert!(
+        matches!(&result, Err(CopyError::Symlink { path }) if path == "rust-toolchain.toml"),
+        "got {result:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
 fn a_symlink_to_a_directory_is_refused() -> Result<(), Box<dyn Error>> {
     // #65 review F2: as an empty file it would hide a directory cargo's glob `members` (or a
     // path dependency) sees in the real tree.

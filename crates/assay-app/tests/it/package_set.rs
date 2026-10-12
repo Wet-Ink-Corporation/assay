@@ -780,6 +780,38 @@ fn symlink_under_a_declared_root_leaving_it_is_everything() -> Result<(), Metada
 }
 
 #[test]
+fn symlink_at_base_only_leaving_a_root_is_everything() -> Result<(), MetadataError> {
+    // #65 review round 4 F2: base's tree is as much the build's as head's.
+    let base = linked(
+        &build_time_helpers(),
+        &[("crates/helpers/src/lib.rs", "crates/shared/x.rs")],
+    )?;
+    let head = set(&build_time_helpers())?;
+
+    let surface = exec_surface(Some(&base), Some(&head), &[]);
+
+    assert_eq!(surface.exec_roots, vec![ExecRoot::Everything]);
+    Ok(())
+}
+
+#[test]
+fn neutralised_symlink_in_build_sources_leaving_them_is_everything() -> Result<(), MetadataError> {
+    // #65 review round 4 F1: forge never writes `crates/x/.cargo/x.rs`, but reports it.
+    let declared = [ExecRoot::BuildSources {
+        crate_dir: "crates/x".to_owned(),
+    }];
+    let set = linked(
+        &[Pkg::member("x", "crates/x").with_build_script()],
+        &[("crates/x/.cargo/x.rs", "shared/x.rs")],
+    )?;
+
+    let surface = exec_surface(Some(&set), Some(&set), &declared);
+
+    assert_eq!(surface.exec_roots, vec![ExecRoot::Everything]);
+    Ok(())
+}
+
+#[test]
 fn declared_roots_are_kept_with_the_build_time_crates() -> Result<(), MetadataError> {
     let declared = [ExecRoot::BuildSources {
         crate_dir: "crates/x".to_owned(),

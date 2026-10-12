@@ -470,6 +470,48 @@ fn a_symlink_leading_out_of_a_build_time_crate_is_everything() -> Result<(), Box
 
 #[test]
 #[cfg_attr(miri, ignore = "runs git and cargo; Miri cannot spawn processes")]
+fn a_cargo_directory_symlink_leading_out_of_a_build_time_crate_is_everything()
+-> Result<(), Box<dyn Error>> {
+    // #65 review round 4 F1: the copy never writes `crates/helpers/.cargo/x.rs`, but the
+    // build-time root holds it, so where it leads still counts.
+    let root = workspace("");
+    let member = building_with("../helpers");
+    let files = [
+        ("Cargo.toml", root.as_str()),
+        ("crates/x/Cargo.toml", member.as_str()),
+        ("crates/x/src/lib.rs", ""),
+        ("crates/x/build.rs", "fn main() {}\n"),
+        ("crates/helpers/Cargo.toml", HELPERS),
+        ("crates/helpers/src/lib.rs", ""),
+        ("shared/x.rs", ""),
+    ];
+    let pr = pr(
+        &[],
+        &Side {
+            files: &files,
+            links: &[("crates/helpers/.cargo/x.rs", "../../../shared/x.rs")],
+            ..Side::default()
+        },
+        &Side {
+            files: &[("shared/x.rs", "pub fn edited() {}\n")],
+            ..Side::default()
+        },
+    )?;
+
+    let surface = detect(&pr)?;
+
+    assert_eq!(
+        surface,
+        ExecSurface {
+            packages: PackageDiff::Computed(Vec::new()),
+            exec_roots: vec![ExecRoot::Everything],
+        }
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git and cargo; Miri cannot spawn processes")]
 fn a_library_path_outside_a_build_time_crate_is_everything() -> Result<(), Box<dyn Error>> {
     // #65 review round 3 F2: `[lib] path = "../shared/lib.rs"` on a build-dependency. Real
     // cargo reports `src_path` unnormalised (`<copy>/helpers/../shared/lib.rs`), and a path

@@ -43,9 +43,10 @@ pub struct CopiedSymlink {
 }
 
 impl ManifestCopy {
-    /// Every symlink the copy accepted (cargo configuration, toolchain files and attributes
-    /// are never copied, so theirs are not here), in git's order. A build-time root that
-    /// holds one but not its target must be widened by the caller (wi-b5affa).
+    /// Every symlink of the tree, in git's order, each accepted by the same rules: the
+    /// copy's empty files, and the cargo configuration, toolchain files and attributes it
+    /// never writes (#65 review round 4 F1). A build-time root that holds one but not its
+    /// target must be widened by the caller (wi-b5affa).
     #[must_use]
     pub fn symlinks(&self) -> &[CopiedSymlink] {
         &self.symlinks
@@ -150,7 +151,9 @@ impl ObjectRepo {
     /// A tree the copy cannot mirror for cargo's discovery is refused rather than copied with
     /// something missing: a submodule, and a symlink whose target leaves the tree, is the root
     /// or another directory, or passes through another symlink (any of them could hide a
-    /// member that cargo's glob `members` finds in the real tree).
+    /// member that cargo's glob `members` finds in the real tree). Symlinks that are never
+    /// written (under `.cargo`, toolchain files, attributes) are resolved and refused the
+    /// same way, and reported in [`ManifestCopy::symlinks`] with the rest.
     ///
     /// # Errors
     /// [`CopyError::Inspect`] or [`CopyError::DirectoryNotEmpty`] for `into`,
@@ -176,7 +179,7 @@ impl ObjectRepo {
         let read: Vec<(&TreeEntry, Role)> = roles
             .iter()
             .copied()
-            .filter(|(_, role)| matches!(role, Role::Manifest | Role::Link))
+            .filter(|(_, role)| matches!(role, Role::Manifest | Role::Link | Role::HiddenLink))
             .collect();
         let blobs: Vec<BlobRef<'_>> = read
             .iter()
@@ -186,7 +189,7 @@ impl ObjectRepo {
         let tree = link::Tree::new(&entries);
         let mut symlinks = Vec::new();
         for ((entry, role), target) in read.iter().zip(&contents) {
-            if *role != Role::Link {
+            if *role == Role::Manifest {
                 continue;
             }
             let Some(target) = tree.resolve(&entry.path, target) else {
@@ -230,7 +233,8 @@ impl ObjectRepo {
 /// What the copy holds for a tree entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Role {
-    /// Nothing: cargo configuration, a toolchain file or git attributes.
+    /// Nothing: cargo configuration, a toolchain file or git attributes that is not a
+    /// symlink.
     Skipped,
     /// The blob's content: a `Cargo.toml` or `Cargo.lock` that is a file.
     Manifest,
@@ -239,6 +243,9 @@ enum Role {
     /// An empty regular file, once its target (the blob) is shown to be no directory and
     /// inside the tree: a symlink.
     Link,
+    /// Nothing, but resolved and reported like [`Role::Link`]: a symlink that is cargo
+    /// configuration, a toolchain file or git attributes.
+    HiddenLink,
 }
 
 /// What the copy holds for `entry`; a non-canonical path or a submodule is refused.
@@ -256,10 +263,13 @@ fn role(entry: &TreeEntry) -> Result<Role, CopyError> {
                 path: entry.path.clone(),
             });
         }
+        // Every symlink is resolved and reported, neutralised or not (#65 review round 4 F1):
+        // one under `.cargo` can still lie in an exec root.
+        EntryKind::Symlink if is_neutralised(&entry.path) => Role::HiddenLink,
+        EntryKind::Symlink => Role::Link,
         _ if is_neutralised(&entry.path) => Role::Skipped,
         EntryKind::File | EntryKind::Executable if is_manifest(&entry.path) => Role::Manifest,
         EntryKind::File | EntryKind::Executable => Role::Placeholder,
-        EntryKind::Symlink => Role::Link,
     })
 }
 
