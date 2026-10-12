@@ -55,14 +55,16 @@ tempfile = { version = "3.0.0", default-features = false }
 jsonschema = { version = "0.58.6", default-features = false }
 serde_json = { version = "1.0.140", default-features = false, features = ["std"] }
 
-# Derives on the versioned contract types in assay-domain (Story #48, 02 §2).
+# Derives on the versioned contract types in assay-domain (Story #48, 02 §2), and the
+# `.assay/plugins.toml` DTOs in assay-app (Story #62).
 serde = { version = "1.0.219", default-features = false, features = ["std", "derive"] }
+# `.assay/plugins.toml` (Story #62): parsed in-process into DTOs in assay-app, then validated.
+toml = { version = "1.1.0", default-features = false, features = ["std", "parse", "serde"] }
 
 # The decision's inputs and reasons digests in assay-domain (Story #51, 02 §2; fingerprints #49).
 sha2 = { version = "0.11.0", default-features = false }
 
-# Test-only (Story #51): reading rubric/v1.toml in the domain's tests, and property tests.
-toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
+# Test-only (Story #51): property tests. (`toml`, above, also reads rubric/v1.toml in tests.)
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]

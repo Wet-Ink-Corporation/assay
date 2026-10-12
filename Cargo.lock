@@ -37,6 +37,7 @@ version = "0.1.0"
 dependencies = [
  "assay-domain",
  "jsonschema",
+ "serde",
  "serde_json",
  "thiserror",
  "toml",
@@ -72,6 +73,11 @@ dependencies = [
 [[package]]
 name = "assay-gates"
 version = "0.1.0"
+dependencies = [
+ "assay-app",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "assay-runner"
