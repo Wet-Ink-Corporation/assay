@@ -18,6 +18,7 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
 - `Marker` (`Marker::of`, `Finding::marker`): the display mapping of 03 §3, blocker 🔴, major 🟡, minor and nit 🟡 (nit), pre-existing 🟣.
 - `FindingsDocument`, `Source`, `Stats`, `Finding`, `Caller`: `assay.findings/1` (03 §3).
 - `Event`, `EventPayload` (with `GateRun`, `Preflight`, `SpecialistRun`) and `RunUid`: `assay.event/1` (03 §6).
+- `Aeu`: an amount of API-equivalent dollars held exactly in micro-AEU (`from_micros`, `micros`, `saturating_add`), displayed as a plain decimal (`0.74`), the form `--max-budget-usd` reads.
 
 ## Invariants
 - No I/O: every function is a pure function of its arguments.
@@ -40,3 +41,4 @@ Unit tests beside the code. `tests/it/` (dev-dependency `serde_json`) pins every
 | 2026-10-11 | Crate created empty (Story #46); dependencies are added when first used. | ARC-12, CRF-05 | Story #46 |
 | 2026-10-11 | `Disposition` added (Story #47) so schema rejections in `assay-app` map to a domain value; no dependency needed. | API-02 | Story #47 |
 | 2026-10-11 | Findings model, vocabularies and event envelope (Story #48) add `serde` (derive) and dev-dependency `serde_json`, both pre-approved. 03 v1.2 wins over the issue: the envelope carries `run_uid` and there are 23 reason codes. Kinds whose `data` 03 lists no fields for are empty struct variants that reject any field (no `serde_json::Value` here), stricter than the schema's open object; they gain fields with the story that defines them. AEU amounts are `f64`, so events are `PartialEq` only. | OUT-02, API-04, ARC-02 | Story #48 |
+| 2026-10-11 | `Aeu` added (#82) as integer micro-AEU rather than a float or a decimal crate (none is allowed here), so caps and costs compare and sum exactly. | API-02, H-11 | #82 |

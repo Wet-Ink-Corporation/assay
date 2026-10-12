@@ -9,6 +9,7 @@
 mod config;
 mod contract;
 mod gate;
+mod model_runner;
 
 pub use config::{
     Adapter, Argv, AssaySettings, CommitId, ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion,
@@ -22,4 +23,8 @@ pub use contract::{
 pub use gate::{
     BuildJob, Conclusion, GateDocument, GateError, GateJob, GateOutcome, GateReport, GateRun,
     GateRunner, Termination, account_for_required, run_gates,
+};
+pub use model_runner::{
+    InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
+    PromptError, RateLimitObserved, RetryError, Structured, run_with_retry,
 };

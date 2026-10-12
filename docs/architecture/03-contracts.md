@@ -173,7 +173,7 @@ pub enum ModelOutcome { Ok(Structured), BudgetExhausted, TurnsExhausted, Timeout
 cwd = an empty directory (the same absolute path for every call)
 env: CLAUDE_CODE_OAUTH_TOKEN; ANTHROPIC_API_KEY / AUTH_TOKEN / cloud vars UNSET and asserted;
      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 (moot with no process-spawning tool; kept as belt and braces)
-claude -p "<context pack, then role instruction>" \
+claude -p < <prompt file: context pack, then role instruction> \   # prompt on stdin, never argv (wi-9fe37e)
   --output-format stream-json --verbose \        # --verbose is required with stream-json under -p; result carries structured_output + total_cost_usd
   --json-schema <schema> \
   --append-system-prompt-file <base-sourced bundle> \
@@ -189,6 +189,7 @@ claude -p "<context pack, then role instruction>" \
 `permissions.blockReadsOutsideWorkingDirectories` is **nested under `permissions`** and requires CLI ≥ 2.1.257 (v1 wrongly put it at the top level, where it is ignored). Under `dontAsk`, reads outside the working directories need no allow rule and are denied by default, so the deny rules and this key are defence in depth; Read-deny coverage of Grep/Glob is best-effort.
 
 Rules:
+- **The prompt travels on stdin**, not as an argument (wi-9fe37e): Linux caps one argument at 128 KiB (`MAX_ARG_STRLEN`), which a context pack can exceed, and stdin cannot be mistaken for an option. The runner writes the prompt to an anonymous temporary file before the CLI starts and opens it as the child's stdin (no pipe, so no writer can block). `assay doctor` (#84) verifies that the pinned CLI reads its `-p` prompt from stdin with this flag set.
 - **No `Bash`** in Z3. The built-in read-only Bash set (`cat`, `ls`, `grep` …) bypasses `--allowedTools`; `Bash(rg:*)` allows `rg --pre <cmd>` (arbitrary execution) and `git show --output=<path>` writes files (both reproduced by reviewers). `--tools` removes the tool; allowlists do not. `--restricted` removes command-running tools independently. Diff and base-file contents the reviewers need are put in the context pack; Grep/Glob replace `rg`.
 - `--bare` is never used (it ignores the OAuth token). `--safe-mode` also disables `--plugin-dir`, so prompts travel as files. `assay doctor` checks that `--restricted` and `--safe-mode` can be combined on the pinned CLI; if not, `--restricted` with `--settings` is used alone.
 - The `stream-json` `system/init` message is inspected: any MCP server, plugin, skill or agent ⇒ preflight failure `init-unclean`. **`init` carries no hooks field**, so hooks are excluded structurally (`--restricted` loads only managed settings and `--settings`; `disableAllHooks`) and proven absent by the **hook canary**: a base-sourced canary hook is planted at user, project and in-tree scope in a throwaway checkout, `--include-hook-events` is passed, and the canary fails the doctor if any hook event appears or the marker file is written. A flag that is accepted but ineffective is therefore caught by observation, not by trusting the flag.

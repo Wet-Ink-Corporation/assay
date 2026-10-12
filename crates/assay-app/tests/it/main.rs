@@ -4,6 +4,7 @@ mod config;
 mod contract;
 mod domain_model;
 mod gate;
+mod model_runner;
 mod redaction;
 mod spec;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns

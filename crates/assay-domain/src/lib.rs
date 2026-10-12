@@ -10,6 +10,7 @@
 
 mod vocabulary;
 
+mod aeu;
 mod disposition;
 mod event;
 mod finding;
@@ -18,6 +19,7 @@ mod reason;
 mod run_uid;
 mod severity;
 
+pub use aeu::Aeu;
 pub use disposition::Disposition;
 pub use event::{
     Event, EventKind, EventPayload, EventSchema, FeedbackSignal, GateRun, Preflight,
