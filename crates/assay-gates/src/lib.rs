@@ -5,12 +5,20 @@
 //! It drives temper and weigh-in as external tools and never links their code (P8). The
 //! [`ExecAdapter`] runs `exec` gates in Z2b jobs through a [`Supervisor`] with the
 //! [`GateEnvironment`] allowlist.
+//!
+//! [`PinnedCargo`] runs the pinned base cargo on a sanitised manifest-only copy in
+//! `gates-static`, through a [`CaptureSupervisor`], for exec-surface detection (#65).
 
 mod capture;
+mod cargo;
 mod environment;
 mod exec;
 
 pub use capture::{CaptureSupervisor, CapturedRun};
+pub use cargo::{
+    CargoEnvironment, CargoError, CargoLimits, CargoSettings, CargoSettingsError, CargoStep,
+    PinnedCargo, PinnedToolchain,
+};
 pub use environment::GateEnvironment;
 pub use exec::{
     ExecAdapter, ExecError, ExecLimits, ExecSettings, ExecSettingsError, FINDINGS_FILE,
