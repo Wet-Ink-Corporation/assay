@@ -51,6 +51,19 @@ fn an_omission_s_anchor_carries_its_expected_behavior() -> Result<(), Box<dyn Er
 }
 
 #[test]
+fn an_omission_without_expected_behavior_anchors_on_an_empty_one() -> Result<(), Box<dyn Error>> {
+    let unvalidated = Finding {
+        expected_behavior: None,
+        ..reviewer_omission()?
+    };
+
+    let anchor = unvalidated.anchor("crates/x/src/lib.rs", "parse");
+
+    assert_eq!(anchor.expected_behavior, Some(""));
+    Ok(())
+}
+
+#[test]
 fn a_defect_s_anchor_ignores_any_expected_behavior() -> Result<(), Box<dyn Error>> {
     let defect = Finding {
         expected_behavior: Some("no panic".to_owned()),
@@ -106,13 +119,13 @@ fn two_differently_worded_findings_on_the_same_defect_and_class_collide()
         ..first.clone()
     };
 
-    let fingerprints = [&first, &second].map(|finding| {
+    let [first, second] = [&first, &second].map(|finding| {
         finding
             .anchor("crates/x/src/lib.rs", "parse")
             .fingerprint(0)
     });
 
-    assert_eq!(fingerprints[0], fingerprints[1]);
+    assert_eq!(Some(first.ok_or("the defect has content")?), second);
     Ok(())
 }
 
@@ -172,6 +185,8 @@ proptest! {
     }
 
     // Line breaks may surround the line but not split it: only the first line counts (03 §3).
+    // Words like `...` can leave no content; both sides then have no fingerprint, which is
+    // stable too.
     #[test]
     fn fingerprint_is_stable_under_whitespace_and_quote_style_changes(
         words in vec("[A-Za-z0-9_(){};=,.:]{1,6}", 1..8),

@@ -31,30 +31,47 @@ pub struct Anchor<'a> {
     /// The finding's evidence, verbatim. The fingerprint uses its first line with content,
     /// normalised; the fuzzy match uses all of it, normalised.
     pub evidence: &'a str,
-    /// For an omission, what should happen instead; `None` for a defect.
+    /// For an omission, what should happen instead (empty if the finding gave none); `None`
+    /// for a defect.
     pub expected_behavior: Option<&'a str>,
+}
+
+/// What an anchor expects beyond its evidence, normalised and known to have content.
+enum Expectation {
+    /// A defect expects nothing more.
+    Defect,
+    /// An omission's normalised `expected_behavior`.
+    Omission(String),
 }
 
 impl Anchor<'_> {
     /// The fingerprint of this anchor's `occurrence_index`-th occurrence, counting from 0, of
-    /// its normalised first line of evidence within the file and symbol (03 §3).
+    /// its first line of evidence within the file and symbol (03 §3); `None` when the anchor
+    /// has no content.
     ///
-    /// The digest is over class code, file, enclosing symbol, the first line of evidence with
-    /// content (normalised, neither blank nor only wildcards) and, for an omission, its
-    /// normalised `expected_behavior`, each prefixed with its byte length as a big-endian `u64`
-    /// so no boundary can move, then the index as a big-endian `u32`; the fingerprint is the
-    /// digest's first 8 bytes. A defect has no fifth field, so its fingerprint is what it was
-    /// before omissions gained one.
+    /// The digest is SHA-256 over class code, file, enclosing symbol, the first line of
+    /// evidence with content (normalised; content is anything but blanks and wildcards) and,
+    /// for an omission only, its normalised `expected_behavior`, each prefixed with its byte
+    /// length as a big-endian `u64` so no boundary can move, then the index as a big-endian
+    /// `u32`. The fingerprint is the digest's first 8 bytes.
+    ///
+    /// Fails closed: evidence with no line of content, or an omission whose
+    /// `expected_behavior` has none, has no fingerprint, so nothing can be waived or dismissed
+    /// against it. Callers dispose of such a finding as `evidence-missing`.
     #[must_use]
-    pub fn fingerprint(&self, occurrence_index: u32) -> Fingerprint {
-        let line = self.first_line();
-        let expected = self.expected_behavior.map(normalise);
+    pub fn fingerprint(&self, occurrence_index: u32) -> Option<Fingerprint> {
+        let line = self.first_line()?;
+        let expectation = self.expectation()?;
+        let expected = match &expectation {
+            Expectation::Defect => None,
+            Expectation::Omission(text) => Some(text.as_str()),
+        };
         let fields = [
             Some(self.class.code()),
             Some(self.file),
             Some(self.enclosing_symbol),
             Some(line.as_str()),
-            expected.as_deref(),
+            expected,
         ];
         let mut hasher = Sha256::new();
         for field in fields.into_iter().flatten() {
@@ -66,41 +83,61 @@ impl Anchor<'_> {
         hasher.update(occurrence_index.to_be_bytes());
         let digest: [u8; 32] = hasher.finalize().into();
         let [b0, b1, b2, b3, b4, b5, b6, b7, ..] = digest;
-        Fingerprint(u64::from_be_bytes([b0, b1, b2, b3, b4, b5, b6, b7]))
+        Some(Fingerprint(u64::from_be_bytes([
+            b0, b1, b2, b3, b4, b5, b6, b7,
+        ])))
     }
 
-    /// Whether this anchor fuzzily matches `other` (03 §3): same file, same enclosing symbol,
-    /// same class, both with a line of content, whole normalised evidence at least 0.8 similar,
-    /// and, for omissions, normalised `expected_behavior` at least 0.8 similar too. Evidence
-    /// without content (blank, or only elisions) matches nothing, so it can never be suppressed.
+    /// Whether this anchor fuzzily matches `other` (03 §3): same class, file and enclosing
+    /// symbol; both evidences with content and their whole normalised texts at least 0.8
+    /// similar; and both defects, or both omissions whose normalised `expected_behavior` has
+    /// content and is at least 0.8 similar. Anything without content matches nothing, so it is
+    /// never suppressed. Checks run cheapest first.
     pub(crate) fn resembles(&self, other: &Anchor<'_>) -> bool {
-        let expected_alike = match (self.expected_behavior, other.expected_behavior) {
-            (None, None) => true,
-            (Some(mine), Some(theirs)) => similarity::similar(&normalise(mine), &normalise(theirs)),
-            (Some(_), None) | (None, Some(_)) => false,
-        };
-        self.class == other.class
-            && self.file == other.file
-            && self.enclosing_symbol == other.enclosing_symbol
-            && !self.first_line().is_empty()
-            && !other.first_line().is_empty()
-            && similarity::similar(&normalise(self.evidence), &normalise(other.evidence))
-            && expected_alike
+        if self.class != other.class
+            || self.file != other.file
+            || self.enclosing_symbol != other.enclosing_symbol
+        {
+            return false;
+        }
+        let (mine, theirs) = (normalise(self.evidence), normalise(other.evidence));
+        if !has_content(&mine) || !has_content(&theirs) || !similarity::similar(&mine, &theirs) {
+            return false;
+        }
+        match (self.expectation(), other.expectation()) {
+            (Some(Expectation::Defect), Some(Expectation::Defect)) => true,
+            (Some(Expectation::Omission(mine)), Some(Expectation::Omission(theirs))) => {
+                similarity::similar(&mine, &theirs)
+            }
+            _ => false,
+        }
     }
 
-    /// The first line of evidence with content once normalised (neither blank nor only
-    /// wildcards), normalised; empty if there is none.
-    fn first_line(&self) -> String {
+    /// The first line of evidence with content, normalised; `None` if there is none.
+    fn first_line(&self) -> Option<String> {
         self.evidence
             .lines()
             .map(normalise)
             .find(|line| has_content(line))
-            .unwrap_or_default()
+    }
+
+    /// What this anchor expects beyond its evidence; `None` for an omission whose
+    /// `expected_behavior` has no content.
+    fn expectation(&self) -> Option<Expectation> {
+        match self.expected_behavior {
+            None => Some(Expectation::Defect),
+            Some(text) => {
+                let normalised = normalise(text);
+                has_content(&normalised).then_some(Expectation::Omission(normalised))
+            }
+        }
     }
 }
 
-/// A finding's fingerprint: the first 8 bytes of a SHA-256 over its class, file, enclosing
-/// symbol, normalised first line of evidence and occurrence index (03 §3).
+/// A finding's fingerprint (03 §3), computed by [`Anchor::fingerprint`].
+///
+/// The first 8 bytes of a SHA-256 over its class, file, enclosing symbol, first line of evidence
+/// with content, an omission's `expected_behavior`, and occurrence index.
 ///
 /// Its wire and display form is 16 lowercase hex digits (`b49103a10654ff46`). Only Z4's value
 /// is authoritative; Z3 computes the same function to apply suppressions early.
@@ -196,6 +233,24 @@ mod tests {
         }
     }
 
+    /// The fingerprint of the first occurrence of an anchor that has content.
+    fn fp(anchor: &Anchor<'_>) -> Fingerprint {
+        anchor.fingerprint(0).expect("the anchor has content")
+    }
+
+    #[test]
+    fn content_less_evidence_or_expectation_has_no_fingerprint() {
+        let anchors = [
+            unwrap_in_parse("..."),
+            unwrap_in_parse(" \n\u{2026} ...\n"),
+            unwrap_in_parse(""),
+            omission_in_parse("..."),
+            omission_in_parse(" "),
+        ];
+
+        assert_eq!(anchors.map(|anchor| anchor.fingerprint(0)), [None; 5]);
+    }
+
     /// An omission in `parse`, anchored on its signature, expecting `expected_behavior`.
     fn omission_in_parse(expected_behavior: &str) -> Anchor<'_> {
         Anchor {
@@ -213,7 +268,7 @@ mod tests {
     fn hashes_an_omission_s_expected_behavior_as_a_fifth_field() {
         let anchor = omission_in_parse("an empty input is  rejected with ParseError::Empty");
 
-        assert_eq!(anchor.fingerprint(0).to_string(), "4fd05899e34998cf");
+        assert_eq!(fp(&anchor).to_string(), "4fd05899e34998cf");
     }
 
     #[test]
@@ -221,18 +276,25 @@ mod tests {
         let empty = omission_in_parse("an empty input is rejected with ParseError::Empty");
         let long = omission_in_parse("an input over 1 MiB is rejected before parsing");
 
-        assert_ne!(empty.fingerprint(0), long.fingerprint(0));
+        assert_ne!(fp(&empty), fp(&long));
         assert!(!empty.resembles(&long));
+    }
+
+    #[test]
+    fn omissions_whose_expectation_has_no_content_resemble_nothing() {
+        for (left, right) in [("...", "\u{2026}"), (" \n\t", ""), ("...", "...")] {
+            assert!(
+                !omission_in_parse(left).resembles(&omission_in_parse(right)),
+                "{left:?} vs {right:?}"
+            );
+        }
     }
 
     #[test]
     fn skips_blank_and_elision_only_lines_to_the_first_line_with_content() {
         let elided = unwrap_in_parse("...\n  \u{2026}  ... \n\n let x = y.unwrap();");
 
-        assert_eq!(
-            elided.fingerprint(0),
-            unwrap_in_parse("let x = y.unwrap();").fingerprint(0)
-        );
+        assert_eq!(fp(&elided), fp(&unwrap_in_parse("let x = y.unwrap();")));
     }
 
     #[test]
@@ -240,7 +302,7 @@ mod tests {
         let first = unwrap_in_parse("...\nlet x = y.unwrap();");
         let second = unwrap_in_parse("...\ndrop(guard);");
 
-        assert_ne!(first.fingerprint(0), second.fingerprint(0));
+        assert_ne!(fp(&first), fp(&second));
     }
 
     #[test]
@@ -248,8 +310,8 @@ mod tests {
         let commented = unwrap_in_parse("// SAFETY: checked above\nlet x = y.unwrap();");
 
         assert_eq!(
-            commented.fingerprint(0),
-            unwrap_in_parse("// SAFETY: checked above").fingerprint(0)
+            fp(&commented),
+            fp(&unwrap_in_parse("// SAFETY: checked above"))
         );
     }
 
@@ -279,8 +341,14 @@ mod tests {
         let fingerprints = (anchor.fingerprint(0), anchor.fingerprint(1));
 
         assert_eq!(
-            (fingerprints.0.to_string(), fingerprints.1.to_string()),
-            ("b49103a10654ff46".to_owned(), "2fb44b0e6d1fa041".to_owned())
+            (
+                fingerprints.0.map(|fp| fp.to_string()),
+                fingerprints.1.map(|fp| fp.to_string())
+            ),
+            (
+                Some("b49103a10654ff46".to_owned()),
+                Some("2fb44b0e6d1fa041".to_owned())
+            )
         );
     }
 
@@ -288,10 +356,7 @@ mod tests {
     fn hashes_only_the_first_non_blank_line_of_evidence_normalised() {
         let multi_line = unwrap_in_parse("\n  \n let  x = y.unwrap(); // why\n    .map(f);");
 
-        assert_eq!(
-            multi_line.fingerprint(0),
-            unwrap_in_parse("let x = y.unwrap();").fingerprint(0)
-        );
+        assert_eq!(fp(&multi_line), fp(&unwrap_in_parse("let x = y.unwrap();")));
     }
 
     #[test]
@@ -314,7 +379,7 @@ mod tests {
         ];
 
         for variant in variants {
-            assert_ne!(variant.fingerprint(0), base.fingerprint(0), "{variant:?}");
+            assert_ne!(fp(&variant), fp(&base), "{variant:?}");
         }
     }
 
@@ -370,10 +435,7 @@ mod tests {
             ..unwrap_in_parse("x")
         };
 
-        assert_ne!(
-            split_one_way.fingerprint(0),
-            split_another_way.fingerprint(0)
-        );
+        assert_ne!(fp(&split_one_way), fp(&split_another_way));
     }
 
     #[test]
