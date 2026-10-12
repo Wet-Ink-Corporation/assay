@@ -3,15 +3,17 @@
 //!
 //! The pinned copy is a directory in temper's vendored layout (`temper.mjs`, `lib/**`,
 //! `VERSION`), prepared from the base's pin by the job. The PR's copy drifts when a file
-//! differs in bytes, is missing, is extra, or is not a regular file. A PR with no vendored copy
-//! has nothing to drift.
+//! differs in bytes, is missing, is extra, or is not a regular file. Bytes are compared by git
+//! blob id, so no blob of the PR's copy is read. A PR with no vendored copy has nothing to
+//! drift.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::revision::{FileContent, TreeFile};
+use crate::revision::{EntryKind, TreeEntry};
 
 /// The vendored copy's directory in a repository.
 pub(super) const DIR: &str = ".claude/temper";
@@ -76,43 +78,53 @@ impl Drift {
     }
 }
 
-/// Every drifted path of the PR's copy (`head`, the files under [`DIR`]), as a repository path
-/// in path order. No files at all means no vendored copy, which is not drift.
-pub(super) fn drift(pinned: &Pinned, head: Vec<TreeFile>) -> BTreeMap<String, Drift> {
+/// The pinned copy as git blob ids: each file's path relative to its root and its id.
+pub(super) type PinnedIds = BTreeMap<String, String>;
+
+/// Every drifted path of the PR's copy, as a repository path in path order. `head` is any
+/// listing of the head tree; only [`DIR`] and the entries under it are compared. No entries
+/// there means no vendored copy, which is not drift.
+pub(super) fn drift<'h>(
+    pinned: &PinnedIds,
+    head: impl IntoIterator<Item = &'h TreeEntry>,
+) -> BTreeMap<Cow<'h, str>, Drift> {
     let mut drifted = BTreeMap::new();
-    if head.is_empty() {
-        return drifted;
-    }
+    let mut vendored = false;
     let mut unseen: BTreeSet<&str> = pinned.keys().map(String::as_str).collect();
-    for file in head {
-        let relative = file
-            .path
-            .strip_prefix(DIR)
-            .and_then(|rest| rest.strip_prefix('/'));
-        let state = match (relative, &file.content) {
-            (Some(relative), FileContent::Bytes(bytes)) => {
+    for entry in head {
+        let Some(rest) = entry.path.strip_prefix(DIR) else {
+            continue;
+        };
+        let state = match (rest.strip_prefix('/'), entry.kind) {
+            (Some(relative), EntryKind::File) => {
                 unseen.remove(relative);
                 match pinned.get(relative) {
-                    Some(pin) if pin == bytes => None,
+                    Some(id) if *id == entry.object => None,
                     Some(_) => Some(Drift::Changed),
                     None => Some(Drift::Extra),
                 }
             }
-            (Some(relative), FileContent::NotRegular) => {
+            (Some(relative), EntryKind::Symlink | EntryKind::Submodule) => {
                 unseen.remove(relative);
                 Some(Drift::NotRegular)
             }
-            // `.claude/temper` itself is a file or a link, not a directory.
-            (None, _) => Some(Drift::NotRegular),
+            // `.claude/temper` itself is a file, a link or a submodule, not a directory.
+            (None, _) if rest.is_empty() => Some(Drift::NotRegular),
+            // A sibling such as `.claude/temper.json`.
+            (None, _) => continue,
         };
+        vendored = true;
         if let Some(state) = state {
-            drifted.insert(file.path, state);
+            drifted.insert(Cow::Borrowed(entry.path.as_str()), state);
         }
+    }
+    if !vendored {
+        return drifted;
     }
     drifted.extend(
         unseen
             .into_iter()
-            .map(|relative| (format!("{DIR}/{relative}"), Drift::Missing)),
+            .map(|relative| (Cow::Owned(format!("{DIR}/{relative}")), Drift::Missing)),
     );
     drifted
 }

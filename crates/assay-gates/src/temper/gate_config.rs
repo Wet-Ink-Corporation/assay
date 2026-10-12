@@ -39,8 +39,8 @@ impl TemperConfig {
 }
 
 /// Every compared key whose value differs between `base` and `head` (present on one side only
-/// included), in [`KEYS`] order, unless `allowlist` admits the head value. A removed key is
-/// never admitted.
+/// included), in [`KEYS`] order, unless `allowlist` admits exactly this base value changing to
+/// exactly this head value. A removed key is never admitted.
 pub(super) fn drifted(
     base: &TemperConfig,
     head: &TemperConfig,
@@ -49,7 +49,8 @@ pub(super) fn drifted(
     KEYS.into_iter()
         .filter(|key| {
             let (before, after) = (base.0.get(*key), head.0.get(*key));
-            before != after && after.is_none_or(|value| !allowlist.admits_config(key, value))
+            before != after
+                && after.is_none_or(|value| !allowlist.admits_config(key, before, value))
         })
         .collect()
 }

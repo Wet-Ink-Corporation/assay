@@ -17,9 +17,9 @@ use std::process::Command;
 
 use assay_app::{Conclusion, ContractValidator, GateJob, GateOutcome, PluginsConfig, run_gates};
 use assay_cli::{ForgeRevisions, ForgeSupervisor};
-use assay_forge::git::{CommitSha, GitEnvironment, GitLimits, ObjectRepo};
+use assay_forge::git::{CommitSha, GitEnvironment, GitLimits, ObjectRepo, TreeLimits};
 use assay_forge::process::GroupKiller;
-use assay_gates::{GateEnvironment, TemperAdapter, TemperSettings};
+use assay_gates::{GateEnvironment, TemperAdapter, TemperPaths, TemperSettings};
 use tempfile::TempDir;
 
 const BASELINE: &str = ".claude/temper-baseline.json";
@@ -68,6 +68,15 @@ struct Pr {
 
 impl Pr {
     fn new(head: &[(&str, &str)], scan: &str) -> Result<Self, Box<dyn Error>> {
+        Self::on_base(&[], head, scan)
+    }
+
+    /// As [`Pr::new`], with `base` also written in the base commit.
+    fn on_base(
+        base: &[(&str, &str)],
+        head: &[(&str, &str)],
+        scan: &str,
+    ) -> Result<Self, Box<dyn Error>> {
         let scratch = tempfile::tempdir()?;
         let work = scratch.path().join("work");
         plain_git(scratch.path(), &["init", "--quiet", "work"])?;
@@ -75,6 +84,9 @@ impl Pr {
         write(&work, "src/lib.rs", LIB)?;
         write(&work, BASELINE, &baseline(2))?;
         write(&work, CONFIG, TEMPER_JSON)?;
+        for (path, text) in base {
+            write(&work, path, text)?;
+        }
         for (path, text) in TEMPER {
             write(&work, &format!(".claude/temper/{path}"), text)?;
             write(&scratch.path().join("pinned"), path, text)?;
@@ -107,17 +119,21 @@ impl Pr {
 
     /// Runs `gates-static` through the gate use case: the outcome and each finding's rule.
     fn outcome(&self) -> Result<(GateOutcome, Vec<String>), Box<dyn Error>> {
-        let bin = self.scratch.path().join("bin");
-        let path = env::join_paths([bin.as_path(), Path::new("/usr/bin"), Path::new("/bin")])?;
-        let environment = GateEnvironment::from_vars([(OsString::from("PATH"), path)]);
-        let settings = TemperSettings::new(
-            self.scratch.path().join("pinned"),
-            &self.work,
-            &environment,
-            "run-63",
-        )?;
+        let environment =
+            GateEnvironment::from_vars([(OsString::from("PATH"), OsString::from("/usr/bin:/bin"))]);
+        let paths = TemperPaths {
+            node: self.scratch.path().join("bin/node"),
+            pinned: self.scratch.path().join("pinned"),
+            head_tree: self.work.clone(),
+        };
+        let settings = TemperSettings::new(paths, &environment, "run-63")?;
         let mut supervisor = ForgeSupervisor::new(GroupKiller::system()?);
-        let revisions = ForgeRevisions::new(&self.repo, self.base.clone(), self.head.clone());
+        let revisions = ForgeRevisions::new(
+            &self.repo,
+            self.base.clone(),
+            self.head.clone(),
+            TreeLimits::default(),
+        );
         let mut adapter = TemperAdapter::new(&mut supervisor, revisions, settings);
         let reports = run_gates(
             &plugins()?,
@@ -178,9 +194,7 @@ fn a_pr_that_only_lowers_the_baseline_passes() -> Result<(), Box<dyn Error>> {
     ignore = "runs git and a stand-in node; Miri cannot spawn processes"
 )]
 fn a_pr_with_an_unallowlisted_expect_fails() -> Result<(), Box<dyn Error>> {
-    let scan = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/temper-scan-expect.json"),
-    )?;
+    let scan = fixture("temper-scan-expect.json")?;
     let pr = Pr::new(&[("src/lib.rs", LIB_WITH_EXPECT)], &scan)?;
 
     let outcome = pr.outcome()?;
@@ -189,6 +203,64 @@ fn a_pr_with_an_unallowlisted_expect_fails() -> Result<(), Box<dyn Error>> {
         outcome,
         (FAILED, vec!["exception".to_owned()]),
         "base has no .assay/exceptions.toml naming it; the soft hit is not this gate's"
+    );
+    Ok(())
+}
+
+/// Base `.assay/exceptions.toml` admitting `clippy::too_many_lines` in `src/lib.rs`.
+const ADMITS_LIB: (&str, &str) = (
+    ".assay/exceptions.toml",
+    "[[exception]]\npath = \"src/lib.rs\"\nlint = \"clippy::too_many_lines\"\n\
+     reason = \"one state machine\"\n",
+);
+
+fn fixture(name: &str) -> Result<String, Box<dyn Error>> {
+    Ok(fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name),
+    )?)
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "runs git and a stand-in node; Miri cannot spawn processes"
+)]
+fn a_pr_with_an_allowlisted_expect_passes() -> Result<(), Box<dyn Error>> {
+    let scan = fixture("temper-scan-expect.json")?;
+    let pr = Pr::on_base(&[ADMITS_LIB], &[("src/lib.rs", LIB_WITH_EXPECT)], &scan)?;
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (PASSED, Vec::new()),
+        "base admits this file and lint"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "runs git and a stand-in node; Miri cannot spawn processes"
+)]
+fn a_pr_with_a_two_lint_expect_fails_though_its_first_lint_is_allowlisted()
+-> Result<(), Box<dyn Error>> {
+    let scan = fixture("temper-scan-expect-two-lints.json")?;
+    let lib = LIB_WITH_EXPECT.replace(
+        "clippy::too_many_lines,",
+        "clippy::too_many_lines, clippy::unwrap_used,",
+    );
+    let pr = Pr::on_base(&[ADMITS_LIB], &[("src/lib.rs", &lib)], &scan)?;
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec!["exception".to_owned()]),
+        "temper names only the first lint; `unwrap_used` would ride along"
     );
     Ok(())
 }

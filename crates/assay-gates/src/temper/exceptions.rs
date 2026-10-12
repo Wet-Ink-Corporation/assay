@@ -7,11 +7,14 @@
 //! lint = "clippy::too_many_lines"
 //! reason = "why the lint does not apply"
 //!
-//! [[gate_config]]               # one `.claude/temper.json` key, admitted at exactly this value
+//! [[gate_config]]               # one `.claude/temper.json` key, from exactly `base` to `head`
 //! key = "gate"
-//! value = '{"allFeatures": true, "doc": true, "scan": true, "stepTimeoutSec": 1200}'
+//! base = '{"allFeatures": true, "doc": true, "scan": true, "stepTimeoutSec": 900}'
+//! head = '{"allFeatures": true, "doc": true, "scan": true, "stepTimeoutSec": 1200}'
 //! reason = "why the gate changes"
 //! ```
+//!
+//! A `gate_config` entry without `base` admits adding the key; none admits removing one.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -42,8 +45,19 @@ struct ExceptionDto {
 #[serde(deny_unknown_fields)]
 struct GateConfigDto {
     key: String,
-    value: String,
+    #[serde(default)]
+    base: Option<String>,
+    head: String,
     reason: String,
+}
+
+/// One admitted gate-config change: the key, its base value (`None`: absent at base) and its
+/// head value.
+#[derive(Debug, Clone, PartialEq)]
+struct ConfigChange {
+    key: String,
+    base: Option<Value>,
+    head: Value,
 }
 
 /// What base admits. An absent file admits nothing, which can only make the gate fail.
@@ -51,14 +65,13 @@ struct GateConfigDto {
 pub(super) struct Allowlist {
     /// (file, lint) pairs.
     exceptions: Vec<(String, String)>,
-    /// (key, exact head value) pairs.
-    gate_config: Vec<(String, Value)>,
+    gate_config: Vec<ConfigChange>,
 }
 
 impl Allowlist {
     /// Parses the file. Unknown tables or keys, an empty `reason`, a `key` the gate-config diff
-    /// does not compare and a `value` that is not JSON are refused: base is trusted, so the
-    /// detail may quote it.
+    /// does not compare and a `base` or `head` that is not JSON are refused: base is trusted,
+    /// so the detail may quote it.
     pub(super) fn parse(text: &str) -> Result<Self, String> {
         let dto: FileDto = toml::from_str(text).map_err(|error| error.to_string())?;
         let exceptions = dto
@@ -72,19 +85,7 @@ impl Allowlist {
         let gate_config = dto
             .gate_config
             .into_iter()
-            .map(|entry| {
-                reasoned(&entry.reason, "gate_config")?;
-                if !KEYS.contains(&entry.key.as_str()) {
-                    return Err(format!(
-                        "gate_config key `{}` is not one the gate-config diff compares",
-                        entry.key
-                    ));
-                }
-                let value = serde_json::from_str(&entry.value).map_err(|error| {
-                    format!("gate_config `{}` value is not JSON: {error}", entry.key)
-                })?;
-                Ok((entry.key, value))
-            })
+            .map(ConfigChange::try_from)
             .collect::<Result<_, String>>()?;
         Ok(Self {
             exceptions,
@@ -99,11 +100,41 @@ impl Allowlist {
             .any(|(path, admitted)| path == file && admitted == lint)
     }
 
-    /// Whether base admits `key` changing to exactly `head`.
-    pub(super) fn admits_config(&self, key: &str, head: &Value) -> bool {
+    /// Whether base admits `key` changing from exactly `base` (`None`: absent) to exactly
+    /// `head`.
+    pub(super) fn admits_config(&self, key: &str, base: Option<&Value>, head: &Value) -> bool {
         self.gate_config
             .iter()
-            .any(|(admitted, value)| admitted == key && value == head)
+            .any(|change| change.key == key && change.base.as_ref() == base && change.head == *head)
+    }
+}
+
+impl TryFrom<GateConfigDto> for ConfigChange {
+    type Error = String;
+
+    fn try_from(entry: GateConfigDto) -> Result<Self, String> {
+        reasoned(&entry.reason, "gate_config")?;
+        if !KEYS.contains(&entry.key.as_str()) {
+            return Err(format!(
+                "gate_config key `{}` is not one the gate-config diff compares",
+                entry.key
+            ));
+        }
+        let json = |side: &str, text: &str| {
+            serde_json::from_str(text)
+                .map_err(|error| format!("gate_config `{}` {side} is not JSON: {error}", entry.key))
+        };
+        let base = entry
+            .base
+            .as_deref()
+            .map(|text| json("base", text))
+            .transpose()?;
+        let head = json("head", &entry.head)?;
+        Ok(Self {
+            key: entry.key,
+            base,
+            head,
+        })
     }
 }
 

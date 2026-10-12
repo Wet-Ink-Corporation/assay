@@ -1,43 +1,26 @@
-//! Reading files of a commit's tree as data: `ObjectRepo::read_tree` (03 §2.1 steps 1-3 read
-//! `.claude/temper-baseline.json`, `.claude/temper.json` and `.assay/exceptions.toml` this way).
+//! Reading a commit's tree as data: `ObjectRepo::list_tree`, `read_blobs` and `hash_blob`
+//! (03 §2.1: the temper adapter's Z2s checks read base and head this way), each bounded by
+//! `TreeLimits`.
 
 use std::error::Error;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
-use assay_forge::git::{TreeContent, TreeFile};
+use assay_forge::git::{EntryKind, GitError, TreeEntry, TreeLimits};
 
 use crate::support::{fixture, fixture_with_head, write};
 
-/// Each file as its path and content, for whole-value comparisons.
-fn entries(files: &[TreeFile]) -> Vec<(&str, &TreeContent)> {
-    files
+const GENEROUS: TreeLimits = TreeLimits {
+    max_entries: 1000,
+    max_total_bytes: 1 << 20,
+};
+
+/// Each entry as its path and kind, for whole-value comparisons.
+fn kinds(entries: &[TreeEntry]) -> Vec<(&str, EntryKind)> {
+    entries
         .iter()
-        .map(|file| (file.path(), file.content()))
+        .map(|entry| (entry.path.as_str(), entry.kind))
         .collect()
-}
-
-fn bytes(text: &str) -> TreeContent {
-    TreeContent::File(text.as_bytes().to_vec())
-}
-
-#[test]
-#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
-fn reads_the_bytes_of_one_file_at_each_commit() -> Result<(), Box<dyn Error>> {
-    let fixture = fixture(&[("src/lib.rs", b"pub fn two() -> u8 {\n    2\n}\n")])?;
-
-    let base = fixture.repo.read_tree(&fixture.base, "src/lib.rs")?;
-    let head = fixture.repo.read_tree(&fixture.head, "src/lib.rs")?;
-
-    assert_eq!(
-        (entries(&base), entries(&head)),
-        (
-            vec![("src/lib.rs", &bytes("pub fn one() -> u8 {\n    1\n}\n"))],
-            vec![("src/lib.rs", &bytes("pub fn two() -> u8 {\n    2\n}\n"))],
-        ),
-        "each commit's own blob is read"
-    );
-    Ok(())
 }
 
 #[test]
@@ -50,29 +33,51 @@ fn lists_every_file_under_a_directory_and_nothing_beside_it() -> Result<(), Box<
         (".claude/temper.json", b"{}\n"),
     ])?;
 
-    let files = fixture.repo.read_tree(&fixture.head, ".claude/temper")?;
+    let entries = fixture
+        .repo
+        .list_tree(&fixture.head, Some(".claude/temper"), GENEROUS)?;
 
     assert_eq!(
-        entries(&files),
-        vec![
-            (".claude/temper/lib/scan.mjs", &bytes("scan\n")),
-            (".claude/temper/temper.mjs", &bytes("main\n")),
+        kinds(&entries),
+        [
+            (".claude/temper/lib/scan.mjs", EntryKind::File),
+            (".claude/temper/temper.mjs", EntryKind::File),
         ],
-        "a directory is read recursively, and a sibling sharing its prefix is not under it"
+        "a directory is listed recursively, and a sibling sharing its prefix is not under it"
     );
     Ok(())
 }
 
 #[test]
 #[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
-fn an_absent_path_has_no_files() -> Result<(), Box<dyn Error>> {
+fn lists_the_whole_tree_without_a_path() -> Result<(), Box<dyn Error>> {
+    let fixture = fixture(&[])?;
+
+    let entries = fixture.repo.list_tree(&fixture.base, None, GENEROUS)?;
+
+    assert_eq!(
+        kinds(&entries),
+        [
+            ("Cargo.toml", EntryKind::File),
+            ("README.md", EntryKind::File),
+            ("legacy/kept.rs", EntryKind::File),
+            ("src/lib.rs", EntryKind::File),
+        ],
+        "every file of the commit"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn an_absent_path_has_no_entries() -> Result<(), Box<dyn Error>> {
     let fixture = fixture(&[(".claude/temper.json", b"{}\n")])?;
 
-    let files = fixture
+    let entries = fixture
         .repo
-        .read_tree(&fixture.base, ".claude/temper.json")?;
+        .list_tree(&fixture.base, Some(".claude/temper.json"), GENEROUS)?;
 
-    assert_eq!(entries(&files), Vec::new(), "the file exists only at head");
+    assert_eq!(kinds(&entries), [], "the file exists only at head");
     Ok(())
 }
 
@@ -89,18 +94,105 @@ fn symlinks_and_executables_are_told_apart_from_plain_files() -> Result<(), Box<
         Ok(())
     })?;
 
-    let files = fixture.repo.read_tree(&fixture.head, "tools")?;
+    let entries = fixture
+        .repo
+        .list_tree(&fixture.head, Some("tools"), GENEROUS)?;
 
     assert_eq!(
-        entries(&files),
-        vec![
-            ("tools/readme", &TreeContent::Symlink),
-            (
-                "tools/run.sh",
-                &TreeContent::Executable(b"#!/bin/sh\n".to_vec())
-            ),
+        kinds(&entries),
+        [
+            ("tools/readme", EntryKind::Symlink),
+            ("tools/run.sh", EntryKind::Executable),
         ],
-        "a symlink is never read through, and an executable keeps its mode"
+        "each mode is reported, and a symlink is never followed"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_listing_over_the_entry_limit_fails_closed() -> Result<(), Box<dyn Error>> {
+    let fixture = fixture(&[])?;
+    let limits = TreeLimits {
+        max_entries: 3,
+        ..GENEROUS
+    };
+
+    let result = fixture.repo.list_tree(&fixture.base, None, limits);
+
+    assert!(
+        matches!(result, Err(GitError::TooManyEntries { max: 3, found: 4 })),
+        "four files against a limit of three, got {result:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn reads_the_bytes_of_listed_blobs_in_one_go() -> Result<(), Box<dyn Error>> {
+    let fixture = fixture(&[("src/lib.rs", b"pub fn two() -> u8 {\n    2\n}\n")])?;
+    let base = fixture
+        .repo
+        .list_tree(&fixture.base, Some("src"), GENEROUS)?;
+    let head = fixture
+        .repo
+        .list_tree(&fixture.head, Some("src"), GENEROUS)?;
+    let entries: Vec<&TreeEntry> = base.iter().chain(&head).collect();
+
+    let blobs = fixture.repo.read_blobs(&entries, GENEROUS)?;
+
+    assert_eq!(
+        blobs,
+        [
+            b"pub fn one() -> u8 {\n    1\n}\n".to_vec(),
+            b"pub fn two() -> u8 {\n    2\n}\n".to_vec(),
+        ],
+        "each listed blob, in the order asked"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn blobs_over_the_byte_limit_are_refused_before_any_read() -> Result<(), Box<dyn Error>> {
+    let fixture = fixture(&[])?;
+    let entries = fixture.repo.list_tree(&fixture.base, None, GENEROUS)?;
+    let all: Vec<&TreeEntry> = entries.iter().collect();
+    let total: u64 = entries.iter().filter_map(|entry| entry.size).sum();
+    let limits = TreeLimits {
+        max_total_bytes: total - 1,
+        ..GENEROUS
+    };
+
+    let result = fixture.repo.read_blobs(&all, limits);
+
+    assert!(
+        matches!(
+            result,
+            Err(GitError::TooManyBytes { max, found }) if max == total - 1 && found == total
+        ),
+        "the listed sizes decide, got {result:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn hashes_bytes_to_the_object_id_git_lists_for_them() -> Result<(), Box<dyn Error>> {
+    let fixture = fixture(&[])?;
+    let listed = fixture
+        .repo
+        .list_tree(&fixture.base, Some("README.md"), GENEROUS)?;
+
+    let id = fixture.repo.hash_blob(b"# fixture\n")?;
+
+    assert_eq!(
+        listed
+            .iter()
+            .map(|entry| entry.object.as_str())
+            .collect::<Vec<_>>(),
+        [id.as_str()],
+        "the same bytes have the same blob id, without reading the blob"
     );
     Ok(())
 }

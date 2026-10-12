@@ -2,10 +2,12 @@
 //! and a pinned temper copy on disk.
 
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use assay_app::{
@@ -13,8 +15,8 @@ use assay_app::{
 };
 use assay_domain::{FindingsDocument, Severity};
 use assay_gates::{
-    CaptureSupervisor, CapturedRun, FileContent, GateEnvironment, ProcessSpec, Revision,
-    RevisionFiles, TemperAdapter, TemperError, TemperSettings, TreeFile,
+    CaptureSupervisor, CapturedRun, EntryKind, GateEnvironment, ProcessSpec, Revision,
+    RevisionFiles, TemperAdapter, TemperError, TemperPaths, TemperSettings, TreeEntry,
 };
 use tempfile::TempDir;
 
@@ -23,6 +25,7 @@ use crate::support::{SeenSpec, config, plugin};
 pub(crate) const BASELINE: &str = ".claude/temper-baseline.json";
 pub(crate) const CONFIG: &str = ".claude/temper.json";
 pub(crate) const EXCEPTIONS: &str = ".assay/exceptions.toml";
+pub(crate) const NODE: &str = "/opt/node/bin/node";
 
 /// `.claude/temper.json` as this repository has it.
 pub(crate) const TEMPER_JSON: &str = r#"{
@@ -52,13 +55,14 @@ pub(crate) const PINNED: [(&str, &str); 3] = [
     ("temper.mjs", "#!/usr/bin/env node\n"),
 ];
 
-/// A baseline whose totals are `counts`, as `(crate, lint, count)`, laid out the way temper
-/// writes it.
-pub(crate) fn baseline(counts: &[(&str, &str, u64)]) -> String {
+/// A baseline with `counts` as `(crate, lint, count)` and `crates` as `(name, dir)`, laid out
+/// the way temper writes it.
+pub(crate) fn baseline_with(counts: &[(&str, &str, u64)], crates: &[(&str, &str)]) -> String {
     let mut totals: BTreeMap<&str, BTreeMap<&str, u64>> = BTreeMap::new();
     for (krate, lint, count) in counts {
         totals.entry(krate).or_default().insert(lint, *count);
     }
+    let crates: BTreeMap<&str, &str> = crates.iter().copied().collect();
     let document = serde_json::json!({
         "temper_baseline": 1,
         "created": "2026-10-01T00:00:00.000Z",
@@ -66,22 +70,34 @@ pub(crate) fn baseline(counts: &[(&str, &str, u64)]) -> String {
         "commit": "0123456789abcdef0123456789abcdef01234567",
         "toolchain": "1.98.1",
         "host": "x86_64-unknown-linux-gnu",
-        "crates": { "assay-forge": "crates/assay-forge", "assay-gates": "crates/assay-gates" },
+        "crates": crates,
         "totals": totals,
     });
     format!("{document:#}\n")
 }
 
+/// The crates every fixture baseline names.
+pub(crate) const CRATES: [(&str, &str); 2] = [
+    ("assay-forge", "crates/assay-forge"),
+    ("assay-gates", "crates/assay-gates"),
+];
+
+/// A baseline whose totals are `counts`, with [`CRATES`].
+pub(crate) fn baseline(counts: &[(&str, &str, u64)]) -> String {
+    baseline_with(counts, &CRATES)
+}
+
 /// One `temper scan --all --json` hit, shaped like temper 1.3.0's `scanSource` output with
-/// the `file` the CLI adds.
+/// the `file` the CLI adds, at `(file, line)`; `key` is `expect-attr` for the attribute's own
+/// hit.
 pub(crate) fn hit(
-    file: &str,
-    line: u64,
+    key: &str,
+    (file, line): (&str, u64),
     severity: &str,
     exception: Option<&str>,
 ) -> serde_json::Value {
     let mut hit = serde_json::json!({
-        "key": "expect-attr",
+        "key": key,
         "id": "H-05",
         "severity": severity,
         "line": line,
@@ -96,40 +112,77 @@ pub(crate) fn hit(
     hit
 }
 
+/// A fake object id: deterministic within the test process, equal for equal bytes.
+fn object_id(bytes: &[u8]) -> String {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    format!("{:040x}", u128::from(hasher.finish()))
+}
+
 /// The PR's base and head files, in memory.
 #[derive(Debug, Default)]
 pub(crate) struct FakeRevisions {
-    files: BTreeMap<(Revision, String), FileContent>,
+    files: BTreeMap<(Revision, String), (EntryKind, Vec<u8>)>,
+    /// When set, listing this path fails.
+    pub(crate) failing: Option<String>,
 }
 
-/// The fake cannot fail; its error type exists only to satisfy the port.
+/// Why the fake would not answer.
 #[derive(Debug)]
-pub(crate) struct NeverFails;
+pub(crate) struct FakeError;
 
-impl fmt::Display for NeverFails {
+impl fmt::Display for FakeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("unreachable")
+        f.write_str("scripted read failure")
     }
 }
 
-impl Error for NeverFails {}
+impl Error for FakeError {}
 
 impl RevisionFiles for FakeRevisions {
-    type Error = NeverFails;
+    type Error = FakeError;
 
-    fn files(&self, revision: Revision, path: &str) -> Result<Vec<TreeFile>, NeverFails> {
-        let below = format!("{path}/");
+    fn list(&self, revision: Revision, path: Option<&str>) -> Result<Vec<TreeEntry>, FakeError> {
+        if path.is_some() && self.failing.as_deref() == path {
+            return Err(FakeError);
+        }
+        let within = |name: &str| match path {
+            None => true,
+            Some(path) => {
+                name == path
+                    || name
+                        .strip_prefix(path)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            }
+        };
         Ok(self
             .files
             .iter()
-            .filter(|((side, name), _)| {
-                *side == revision && (name == path || name.starts_with(&below))
-            })
-            .map(|((_, name), content)| TreeFile {
+            .filter(|((side, name), _)| *side == revision && within(name))
+            .map(|((_, name), (kind, bytes))| TreeEntry {
                 path: name.clone(),
-                content: content.clone(),
+                kind: *kind,
+                object: object_id(bytes),
+                size: u64::try_from(bytes.len()).ok(),
             })
             .collect())
+    }
+
+    fn read(&self, entries: &[&TreeEntry]) -> Result<Vec<Vec<u8>>, FakeError> {
+        entries
+            .iter()
+            .map(|entry| {
+                self.files
+                    .values()
+                    .find(|(_, bytes)| object_id(bytes) == entry.object)
+                    .map(|(_, bytes)| bytes.clone())
+                    .ok_or(FakeError)
+            })
+            .collect()
+    }
+
+    fn blob_id(&self, bytes: &[u8]) -> Result<String, FakeError> {
+        Ok(object_id(bytes))
     }
 }
 
@@ -143,9 +196,9 @@ pub(crate) struct FakeScan {
 }
 
 impl CaptureSupervisor for FakeScan {
-    type Error = NeverFails;
+    type Error = FakeError;
 
-    fn capture(&mut self, spec: &ProcessSpec<'_>) -> Result<CapturedRun, NeverFails> {
+    fn capture(&mut self, spec: &ProcessSpec<'_>) -> Result<CapturedRun, FakeError> {
         self.seen.push(SeenSpec {
             program: spec.program.to_path_buf(),
             args: spec.args.to_vec(),
@@ -160,6 +213,9 @@ impl CaptureSupervisor for FakeScan {
         })
     }
 }
+
+/// The adapter's result with the fakes.
+pub(crate) type Ran = Result<GateRun, TemperError<FakeError, FakeError>>;
 
 /// One PR for the temper adapter: identical base and head with a baseline and a temper.json,
 /// no exceptions file, a clean scan, and a pinned temper copy on disk.
@@ -200,9 +256,24 @@ impl Pr {
         Ok(pr)
     }
 
-    /// Sets `path` to `text` on `revision`.
+    /// Sets `path` to the regular file `text` on `revision`.
     pub(crate) fn set(&mut self, revision: Revision, path: &str, text: &str) {
-        let content = FileContent::Bytes(text.as_bytes().to_vec());
+        self.entry(revision, path, (EntryKind::File, text));
+    }
+
+    /// Sets `path` on `revision` to a symlink to `target`.
+    pub(crate) fn link(&mut self, revision: Revision, path: &str, target: &str) {
+        self.entry(revision, path, (EntryKind::Symlink, target));
+    }
+
+    /// Sets `path` on `revision` to a submodule.
+    pub(crate) fn submodule(&mut self, revision: Revision, path: &str) {
+        self.entry(revision, path, (EntryKind::Submodule, ""));
+    }
+
+    /// Sets `path` on `revision` to an entry of a kind whose blob is the text.
+    fn entry(&mut self, revision: Revision, path: &str, (kind, text): (EntryKind, &str)) {
+        let content = (kind, text.as_bytes().to_vec());
         self.revisions
             .files
             .insert((revision, path.to_owned()), content);
@@ -214,13 +285,6 @@ impl Pr {
         self.set(Revision::Head, path, text);
     }
 
-    /// Makes `path` on `revision` something other than a regular file (a symlink).
-    pub(crate) fn special(&mut self, revision: Revision, path: &str) {
-        self.revisions
-            .files
-            .insert((revision, path.to_owned()), FileContent::NotRegular);
-    }
-
     pub(crate) fn remove(&mut self, revision: Revision, path: &str) {
         self.revisions.files.remove(&(revision, path.to_owned()));
     }
@@ -230,24 +294,24 @@ impl Pr {
         self.scan.stdout = format!("{:#}\n", serde_json::Value::from(hits.to_vec())).into_bytes();
     }
 
+    pub(crate) fn paths(&self) -> TemperPaths {
+        TemperPaths {
+            node: PathBuf::from(NODE),
+            pinned: self.pinned.clone(),
+            head_tree: self.head_tree.clone(),
+        }
+    }
+
     pub(crate) fn settings(&self) -> Result<TemperSettings, Box<dyn Error>> {
         let environment = GateEnvironment::from_vars([
             (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
             (OsString::from("GITHUB_TOKEN"), OsString::from("secret")),
         ]);
-        Ok(TemperSettings::new(
-            &self.pinned,
-            &self.head_tree,
-            &environment,
-            "run-1",
-        )?)
+        Ok(TemperSettings::new(self.paths(), &environment, "run-1")?)
     }
 
     /// Runs the temper plugin in `job`.
-    pub(crate) fn run(
-        &mut self,
-        job: GateJob,
-    ) -> Result<Result<GateRun, TemperError<NeverFails, NeverFails>>, Box<dyn Error>> {
+    pub(crate) fn run(&mut self, job: GateJob) -> Result<Ran, Box<dyn Error>> {
         let config = config()?;
         let temper = plugin(&config, "temper")?;
         let settings = self.settings()?;
@@ -258,18 +322,10 @@ impl Pr {
     /// Runs `gates-static` through the gate use case, and returns its outcome with the rule,
     /// file, line and severity of each finding in the validated document.
     pub(crate) fn outcome(&mut self) -> Result<(GateOutcome, Vec<Seen>), Box<dyn Error>> {
-        let config = config()?;
-        let settings = self.settings()?;
-        let mut adapter = TemperAdapter::new(&mut self.scan, &self.revisions, settings);
-        let validator = ContractValidator::new()?;
-        let reports = run_gates(&config, GateJob::Static, &mut adapter, &validator);
-        let [report] = reports.as_slice() else {
-            return Err(format!("expected one report, got {reports:?}").into());
-        };
-        let seen = match &report.document {
-            None => Vec::new(),
-            Some(document) => {
-                let document: FindingsDocument = serde_json::from_value(document.clone())?;
+        let document = self.document()?;
+        let seen = document
+            .1
+            .map(|document| {
                 document
                     .findings
                     .into_iter()
@@ -278,9 +334,29 @@ impl Pr {
                         (rule, finding.file, finding.line.get(), finding.severity)
                     })
                     .collect()
-            }
+            })
+            .unwrap_or_default();
+        Ok((document.0, seen))
+    }
+
+    /// Runs `gates-static` through the gate use case: the outcome and the validated document.
+    pub(crate) fn document(
+        &mut self,
+    ) -> Result<(GateOutcome, Option<FindingsDocument>), Box<dyn Error>> {
+        let config = config()?;
+        let settings = self.settings()?;
+        let mut adapter = TemperAdapter::new(&mut self.scan, &self.revisions, settings);
+        let validator = ContractValidator::new()?;
+        let reports = run_gates(&config, GateJob::Static, &mut adapter, &validator);
+        let [report] = reports.as_slice() else {
+            return Err(format!("expected one report, got {reports:?}").into());
         };
-        Ok((report.outcome, seen))
+        let document = report
+            .document
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()?;
+        Ok((report.outcome, document))
     }
 }
 

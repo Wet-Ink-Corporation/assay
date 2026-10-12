@@ -59,7 +59,7 @@ pub use glob::GlobError;
 pub use numstat::{DiffOutcome, FileChange, LineCount};
 pub use repository::{GitLimits, ObjectRepo};
 pub use sha::{CommitSha, HttpsRemote, ParseRemoteError, ParseShaError};
-pub use tree::{TreeContent, TreeFile};
+pub use tree::{EntryKind, TreeEntry, TreeLimits};
 
 /// Why a git operation produced no result.
 #[derive(Debug, thiserror::Error)]
@@ -107,6 +107,28 @@ pub enum GitError {
         /// Why it could not be read.
         #[source]
         source: io::Error,
+    },
+    /// A tree listing holds more entries than its limit allows; nothing was read.
+    #[error("the tree listing has {found} entries, over the limit of {max}")]
+    TooManyEntries {
+        /// The limit.
+        max: usize,
+        /// Entries listed.
+        found: usize,
+    },
+    /// The listed sizes of the blobs asked for add up past the limit; nothing was read.
+    #[error("the blobs asked for total {found} bytes, over the limit of {max}")]
+    TooManyBytes {
+        /// The limit.
+        max: u64,
+        /// The listed total (saturating).
+        found: u64,
+    },
+    /// A blob was asked for an entry that has none (a submodule).
+    #[error("{path} is a submodule, which has no blob")]
+    NotABlob {
+        /// The entry's path.
+        path: String,
     },
     /// A fetch succeeded but the repository holds no commit with the requested name.
     #[error("the fetch did not provide commit {commit}")]

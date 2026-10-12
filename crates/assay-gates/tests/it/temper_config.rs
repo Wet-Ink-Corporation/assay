@@ -128,47 +128,67 @@ fn a_key_temper_does_not_steer_with_may_change() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// An exceptions file admitting `gate` changing from `base` to `head` (JSON texts).
+fn admits_gate(base: &str, head: &str) -> String {
+    format!(
+        "[[gate_config]]\nkey = \"gate\"\nbase = '{base}'\nhead = '{head}'\n\
+         reason = \"the test job outgrew 15 minutes\"\n"
+    )
+}
+
+const GATE_900: &str = r#"{"allFeatures": true, "doc": true, "scan": true, "stepTimeoutSec": 900}"#;
+const GATE_1200: &str =
+    r#"{"allFeatures": true, "doc": true, "scan": true, "stepTimeoutSec": 1200}"#;
+const GATE_1800: &str =
+    r#"{"allFeatures": true, "doc": true, "scan": true, "stepTimeoutSec": 1800}"#;
+
 #[test]
-fn a_change_allowlisted_with_its_exact_head_value_passes() -> Result<(), Box<dyn Error>> {
+fn a_change_allowlisted_with_its_exact_base_and_head_values_passes() -> Result<(), Box<dyn Error>> {
     let mut pr = Pr::new()?;
     pr.set(Revision::Head, CONFIG, &longer_steps());
     pr.set(
         Revision::Base,
         EXCEPTIONS,
-        r#"
-[[gate_config]]
-key = "gate"
-value = '{"allFeatures": true, "doc": true, "scan": true, "stepTimeoutSec": 1800}'
-reason = "the test job outgrew 15 minutes"
-"#,
+        &admits_gate(GATE_900, GATE_1800),
     );
 
     let outcome = pr.outcome()?;
 
-    assert_eq!(outcome, (PASSED, Vec::new()), "the base admits this value");
+    assert_eq!(outcome, (PASSED, Vec::new()), "the base admits this change");
     Ok(())
 }
 
 #[test]
-fn an_allowlist_for_another_value_does_not_admit_the_change() -> Result<(), Box<dyn Error>> {
+fn an_allowlist_for_another_head_value_does_not_admit_the_change() -> Result<(), Box<dyn Error>> {
     let mut pr = Pr::new()?;
     pr.set(Revision::Head, CONFIG, &longer_steps());
     pr.set(
         Revision::Base,
         EXCEPTIONS,
-        r#"
-[[gate_config]]
-key = "gate"
-value = '{"allFeatures": true, "doc": true, "scan": true, "stepTimeoutSec": 1200}'
-reason = "admits 1200 s, not 1800 s"
-"#,
+        &admits_gate(GATE_900, GATE_1200),
+    );
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(outcome.0, FAILED, "the allowlist binds the head value");
+    Ok(())
+}
+
+#[test]
+fn an_allowlist_for_another_base_value_does_not_admit_the_change() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(Revision::Head, CONFIG, &longer_steps());
+    pr.set(
+        Revision::Base,
+        EXCEPTIONS,
+        &admits_gate(GATE_1200, GATE_1800),
     );
 
     let outcome = pr.outcome()?;
 
     assert_eq!(
         outcome.0, FAILED,
-        "the allowlist binds the value, not the key"
+        "the allowlist binds the value it changes from, so it cannot be replayed"
     );
     Ok(())
 }
@@ -179,7 +199,7 @@ fn an_allowlist_entry_for_an_uncompared_key_is_a_gate_error() -> Result<(), Box<
     pr.set(
         Revision::Base,
         EXCEPTIONS,
-        "[[gate_config]]\nkey = \"gates\"\nvalue = '{}'\nreason = \"typo\"\n",
+        "[[gate_config]]\nkey = \"gates\"\nbase = '{}'\nhead = '{}'\nreason = \"typo\"\n",
     );
 
     let result = pr.run(GateJob::Static)?;
@@ -251,7 +271,7 @@ fn a_missing_or_extra_vendored_file_is_drift() -> Result<(), Box<dyn Error>> {
         pr.set(Revision::Head, &format!(".claude/temper/{path}"), text);
     }
     pr.remove(Revision::Head, ".claude/temper/VERSION");
-    pr.special(Revision::Head, ".claude/temper/lib/zz.mjs");
+    pr.link(Revision::Head, ".claude/temper/lib/zz.mjs", "scan.mjs");
 
     let outcome = pr.outcome()?;
 

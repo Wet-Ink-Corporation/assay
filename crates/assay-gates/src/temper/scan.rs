@@ -12,6 +12,10 @@ use serde::Deserialize;
 
 use super::report::json_detail;
 
+/// The key of the hit temper reports for each `#[expect(..)]` attribute; its `exception` is
+/// the attribute's first lint only.
+const EXPECT_ATTR: &str = "expect-attr";
+
 /// A hit's level, as temper names it. Any other value fails the parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -24,6 +28,8 @@ enum Level {
 /// The fields of a hit the adapter reads; temper's other fields are ignored.
 #[derive(Debug, Deserialize)]
 struct HitDto {
+    #[serde(default)]
+    key: Option<String>,
     file: String,
     line: NonZeroU64,
     severity: Level,
@@ -38,6 +44,9 @@ struct HitDto {
 pub(super) struct Request {
     /// The file, relative to the scanned tree.
     pub(super) file: String,
+    /// Whether this is the `#[expect]` attribute's own hit (`expect-attr`), rather than a hit
+    /// an attribute covers.
+    pub(super) attribute: bool,
     /// The line of the attribute or the covered code.
     pub(super) line: NonZeroU64,
     /// The lint excepted; `None` when temper named none, which nothing can admit.
@@ -60,6 +69,7 @@ pub(super) fn requests(stdout: &[u8]) -> Result<Vec<Request>, String> {
         .map(|hit| Request {
             file: hit.file,
             line: hit.line,
+            attribute: hit.key.as_deref() == Some(EXPECT_ATTR),
             lint: hit.exception,
             text: hit.text,
         })

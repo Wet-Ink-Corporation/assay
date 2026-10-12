@@ -20,5 +20,5 @@ pub use exec::{
     ExecAdapter, ExecError, ExecLimits, ExecSettings, ExecSettingsError, FINDINGS_FILE,
     FINDINGS_OUT_VAR, ProcessSpec, Supervisor,
 };
-pub use revision::{FileContent, Revision, RevisionFiles, TreeFile};
-pub use temper::{TemperAdapter, TemperError, TemperSettings, TemperSettingsError};
+pub use revision::{EntryKind, Revision, RevisionFiles, TreeEntry};
+pub use temper::{TemperAdapter, TemperError, TemperPaths, TemperSettings, TemperSettingsError};

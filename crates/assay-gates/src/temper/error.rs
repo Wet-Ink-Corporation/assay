@@ -25,12 +25,12 @@ pub enum TemperError<S, R> {
         /// The job asked for.
         job: GateJob,
     },
-    /// A file of the PR could not be read.
+    /// A file or the tree of the PR could not be read.
     #[error("could not read {path} at {revision}")]
     Revision {
         /// The side read.
         revision: Revision,
-        /// The path read.
+        /// The path read; `.` for the whole tree.
         path: &'static str,
         /// The reader's error.
         #[source]
@@ -86,6 +86,9 @@ pub enum TemperError<S, R> {
         #[source]
         source: io::Error,
     },
+    /// The blob ids of the pinned copy, which its drift is compared by, could not be computed.
+    #[error("could not compute the blob ids of the pinned temper")]
+    BlobId(#[source] R),
     /// The findings document could not be serialised.
     #[error("could not write the findings document")]
     Document(#[source] serde_json::Error),
@@ -94,6 +97,17 @@ pub enum TemperError<S, R> {
 /// Why [`TemperSettings`](super::TemperSettings) were refused.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum TemperSettingsError {
+    /// The `node` binary is a relative path: it would be looked up on a `PATH` or resolved
+    /// from the head tree, which the PR controls.
+    #[error("node {} is not an absolute path", path.display())]
+    RelativeNode {
+        /// The refused path.
+        path: PathBuf,
+    },
+    /// The gate environment's `PATH` has an empty or relative entry, which the scan's own
+    /// child processes (git) would resolve from the head tree.
+    #[error("the gate environment's PATH has an empty or relative entry")]
+    RelativeSearchPath,
     /// The pinned temper directory is a relative path.
     #[error("the pinned temper {} is not an absolute path", path.display())]
     RelativePinned {

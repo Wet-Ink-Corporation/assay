@@ -110,7 +110,8 @@ pub(super) fn finding(rule: Rule, spot: Spot, title: &str, body: &str) -> Findin
 
 /// A PR-controlled name (a lint, a crate, a path) made safe to put in a title or inside a
 /// markdown code span: anything but ASCII letters, digits and `_:-./` becomes `?`, so no
-/// backtick, newline or markup gets through. Evidence is quoted verbatim instead.
+/// backtick, newline or markup gets through, and `://` becomes `?` so no URL renders as a link
+/// where the name is not in a code span. Evidence is quoted verbatim instead.
 pub(super) fn plain(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -120,7 +121,8 @@ pub(super) fn plain(name: &str) -> String {
                 '?'
             }
         })
-        .collect()
+        .collect::<String>()
+        .replace("://", "?")
 }
 
 /// `text` cut to its first `max` characters.
@@ -177,8 +179,17 @@ mod tests {
     fn a_name_cannot_break_out_of_a_code_span() {
         assert_eq!(
             plain("clippy::x`\n[link](http://e)"),
-            "clippy::x???link??http://e?",
+            "clippy::x???link??http?e?",
             "backticks, newlines and markup are replaced"
+        );
+    }
+
+    #[test]
+    fn a_name_cannot_render_as_a_link() {
+        assert_eq!(
+            plain("https://evil.example/x"),
+            "https?evil.example/x",
+            "GitHub autolinks `scheme://` outside code spans"
         );
     }
 
