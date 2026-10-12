@@ -21,6 +21,7 @@ use assay_domain::{
 };
 
 pub use change::{Change, DiffPaths, FileDiff, Hunk, LineSpan};
+pub(crate) use symbol::enclosing_functions;
 
 use crate::contract::{Contract, ContractValidator};
 use crate::prompt_bundle::Role;

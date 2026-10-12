@@ -2,6 +2,9 @@
 
 mod config;
 mod contract;
+mod decide;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod decide_fakes;
 mod domain_model;
 mod exec_roots;
 mod gate;

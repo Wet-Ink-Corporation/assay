@@ -47,12 +47,12 @@ pub enum BaseConfigError {
 
 /// What `plan` takes from base `.assay/`.
 #[derive(Debug)]
-pub(super) struct BaseConfig {
-    pub(super) plugins: PluginsConfig,
-    pub(super) globs: RepoGlobs,
+pub(crate) struct BaseConfig {
+    pub(crate) plugins: PluginsConfig,
+    pub(crate) globs: RepoGlobs,
     /// Every file under `.assay/`, path and bytes in path order: the evidence key's
     /// `config_hash` (02 §3), so any base config change makes evidence stale.
-    pub(super) hash: ContentHash,
+    pub(crate) hash: ContentHash,
 }
 
 /// Reads every file under `.assay/` at `base`, refusing any entry that is not a regular file,
