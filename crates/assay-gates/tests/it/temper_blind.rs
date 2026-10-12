@@ -4,11 +4,11 @@
 
 use std::error::Error;
 
-use assay_app::{Conclusion, GateOutcome};
+use assay_app::{Conclusion, GateOutcome, Termination};
 use assay_domain::Severity;
 use assay_gates::Revision;
 
-use crate::temper_support::{Pr, Seen};
+use crate::temper_support::{Pr, Seen, hit};
 
 const FAILED: GateOutcome = GateOutcome::Concluded(Conclusion::Fail);
 const PASSED: GateOutcome = GateOutcome::Concluded(Conclusion::Pass);
@@ -174,12 +174,28 @@ fn a_symlink_that_leaves_the_tree_fails() -> Result<(), Box<dyn Error>> {
 #[test]
 fn a_symlink_to_a_file_in_the_tree_passes() -> Result<(), Box<dyn Error>> {
     let mut pr = Pr::new()?;
+    pr.set(Revision::Head, "docs/guide.md", "# guide\n");
+    pr.link(Revision::Head, "README.md", "docs/guide.md");
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(outcome, (PASSED, Vec::new()), "the scan reads through it");
+    Ok(())
+}
+
+#[test]
+fn a_symlinked_rust_file_fails() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
     pr.set(Revision::Head, "src/lib.rs", "pub fn f() {}\n");
     pr.link(Revision::Head, "src/alias.rs", "lib.rs");
 
     let outcome = pr.outcome()?;
 
-    assert_eq!(outcome, (PASSED, Vec::new()), "the scan reads through it");
+    assert_eq!(
+        outcome,
+        (FAILED, vec![blind("src/alias.rs", 1)]),
+        "rustc and the scan need not agree on which file a module is (wi-b5affa)"
+    );
     Ok(())
 }
 
@@ -197,6 +213,7 @@ fn attributes_the_scan_does_not_read_fail_at_their_line() -> Result<(), Box<dyn 
         let source = format!("// one\n{attribute}\nmod m;\n");
         pr.set(Revision::Head, "src/lib.rs", &source);
         pr.set(Revision::Head, "src/m.rs", "fn f() {}\n");
+        pr.set(Revision::Head, "Cargo.toml", "[package]\nname = \"x\"\n");
 
         let outcome = pr.outcome()?;
 
@@ -247,9 +264,10 @@ fn outcomes<'s>(sources: &[&'s str]) -> Result<Vec<(&'s str, Outcome)>, Box<dyn 
 #[test]
 fn no_literal_lifetime_or_shebang_hides_an_attribute_from_the_lexer() -> Result<(), Box<dyn Error>>
 {
-    // Each line 1 ends where rustc's lexer ends it; a lexer that reads `r"` there as a raw
-    // string (no escapes) instead stays inside a string over line 2 and resynchronises on
-    // line 3, so the hidden `cfg_attr` would pass unseen.
+    // A lexer that reads `r"` on line 1 as a raw string (no escapes) stays inside a string
+    // over line 2 and resynchronises on line 3, so the hidden `cfg_attr` would pass unseen.
+    // temper's own masker is such a lexer, so each line 1 is refused where it starts: a name
+    // ending in `r` against a quote, or a shebang (wi-b5affa).
     let hidden = "\n#[cfg_attr(all(), allow(unused))]\nconst S: &str = \"\\\"\";\n";
     let sources: Vec<String> = [
         "m!('r\"\\\"\");",
@@ -269,7 +287,7 @@ fn no_literal_lifetime_or_shebang_hides_an_attribute_from_the_lexer() -> Result<
 
     let expected: Vec<_> = sources
         .iter()
-        .map(|source| (*source, (FAILED, vec![blind("src/lib.rs", 2)])))
+        .map(|source| (*source, (FAILED, vec![blind("src/lib.rs", 1)])))
         .collect();
     assert_eq!(seen, expected, "line 2's cfg_attr is code to rustc");
     Ok(())
@@ -356,7 +374,7 @@ fn a_byte_order_mark_or_frontmatter_hides_nothing() -> Result<(), Box<dyn Error>
     let frontmatter = format!("---\nx = \"\n---{HIDDEN}");
     let indented = format!("\n  ---\nx = \"\n---{HIDDEN}");
     let sources = [
-        (bom.as_str(), 2),
+        (bom.as_str(), 1),
         (crlf, 3),
         (frontmatter.as_str(), 1),
         (indented.as_str(), 2),
@@ -468,28 +486,41 @@ fn an_include_of_anything_but_named_rust_source_fails() -> Result<(), Box<dyn Er
 }
 
 #[test]
-fn an_include_of_named_rust_source_passes() -> Result<(), Box<dyn Error>> {
+fn an_include_fails_whatever_it_names() -> Result<(), Box<dyn Error>> {
     let mut pr = Pr::new()?;
     pr.set(
         Revision::Head,
         "src/lib.rs",
-        "include!(\"gen.rs\");\ninclude! { r#\"a/other.rs\"#, }\nmod a;\n",
+        "include!(\"gen.rs\");\n// two\ninclude! { r#\"gen.rs\"#, }\n",
     );
     pr.set(Revision::Head, "src/gen.rs", "fn g() {}\n");
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![blind("src/lib.rs", 1), blind("src/lib.rs", 3)]),
+        "the checks refuse rather than model rustc's path resolution (wi-b5affa)"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_data_include_of_a_literal_passes() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
     pr.set(
         Revision::Head,
-        "src/a.rs",
-        "mod b;\ninclude!(\"gen.rs\");\n",
+        "src/lib.rs",
+        "const S: &str = include_str!(\"schema.json\");\n\
+         const B: &[u8] = include_bytes!(\"logo.png\");\n",
     );
-    pr.set(Revision::Head, "src/a/other.rs", "fn o() {}\n");
-    pr.set(Revision::Head, "src/a/b.rs", "fn b() {}\n");
 
     let outcome = pr.outcome()?;
 
     assert_eq!(
         outcome,
         (PASSED, Vec::new()),
-        "each names a `.rs` file of the tree, from the including file's directory"
+        "data, never code (wi-855abd)"
     );
     Ok(())
 }
@@ -586,18 +617,48 @@ fn an_include_the_scan_cannot_pin_to_a_file_fails() -> Result<(), Box<dyn Error>
 
 #[test]
 fn a_module_without_its_file_in_the_tree_fails() -> Result<(), Box<dyn Error>> {
-    let cases: [&[(&str, &str)]; 4] = [
-        &[("src/lib.rs", "// one\nmod generated;\n")],
+    const MANIFEST: (&str, &str) = ("Cargo.toml", "[package]\nname = \"x\"\n");
+    let cases: [&[(&str, &str)]; 8] = [
+        &[("src/lib.rs", "// one\nmod generated;\n"), MANIFEST],
         &[
             ("src/a.rs", "// one\nmod b;\n"),
             ("src/b.rs", "fn b() {}\n"),
             ("src/a/c.rs", "fn c() {}\n"),
         ],
-        &[("src/lib.rs", "// one\nmod inner {\n    mod deep;\n}\n")],
-        &[(
-            "src/lib.rs",
-            "macro_rules! m {\n    ($n:ident) => { mod $n; };\n}\n",
-        )],
+        &[
+            ("src/lib.rs", "// one\nmod inner {\n    mod deep;\n}\n"),
+            MANIFEST,
+        ],
+        &[
+            (
+                "src/lib.rs",
+                "macro_rules! m {\n    ($n:ident) => { mod $n; };\n}\n",
+            ),
+            MANIFEST,
+        ],
+        &[
+            ("src/lib.rs", "// one\nm!(\n    mod hidden;\n);\n"),
+            MANIFEST,
+        ],
+        &[
+            (
+                "src/lib.rs",
+                "// one\nconst X: [u8; 0] = [\n    mod hidden;\n];\n",
+            ),
+            MANIFEST,
+        ],
+        // No manifest beside `src`, so `lib.rs` is not a crate root: `mod a;` is `src/lib/a.rs`.
+        &[
+            ("src/lib.rs", "// one\nmod a;\n"),
+            ("src/a.rs", "fn a() {}\n"),
+        ],
+        // `main.rs` declares `lib.rs` a module too, so `mod x;` there can be either file.
+        &[
+            ("src/lib.rs", "// one\nmod x;\n"),
+            ("src/main.rs", "mod lib;\n"),
+            ("src/x.rs", "fn x() {}\n"),
+            MANIFEST,
+        ],
     ];
 
     let seen: Vec<Outcome> = cases
@@ -605,7 +666,7 @@ fn a_module_without_its_file_in_the_tree_fails() -> Result<(), Box<dyn Error>> {
         .map(|files| outcome_of(files))
         .collect::<Result<_, _>>()?;
 
-    let expected: Vec<Outcome> = [2, 2, 3, 2]
+    let expected: Vec<Outcome> = [2, 2, 3, 2, 3, 3, 2, 2]
         .into_iter()
         .zip(&cases)
         .map(|(line, files)| (FAILED, vec![blind(files[0].0, line)]))
@@ -628,11 +689,100 @@ fn a_module_with_its_file_in_the_tree_passes() -> Result<(), Box<dyn Error>> {
         ("src/a/b.rs", "mod c;\n"),
         ("src/a/b/c/mod.rs", "fn c() {}\n"),
         ("src/m/mod.rs", "fn m() {}\n"),
+        ("src/bin/tool.rs", "mod helper;\n"),
+        ("src/bin/helper.rs", "fn h() {}\n"),
         ("tests/it/main.rs", "mod support;\n"),
         ("tests/it/support.rs", "fn s() {}\n"),
+        ("tests/smoke.rs", "mod common;\n"),
+        ("tests/common/mod.rs", "fn c() {}\n"),
+        ("Cargo.toml", "[package]\nname = \"x\"\n"),
     ])?;
 
     assert_eq!(outcome, (PASSED, Vec::new()), "rustc's module paths");
+    Ok(())
+}
+
+#[test]
+fn a_root_also_declared_a_module_passes_with_both_files() -> Result<(), Box<dyn Error>> {
+    let outcome = outcome_of(&[
+        ("src/lib.rs", "mod x;\n"),
+        ("src/main.rs", "mod lib;\n"),
+        ("src/x.rs", "fn x() {}\n"),
+        ("src/lib/x.rs", "fn x() {}\n"),
+        ("Cargo.toml", "[package]\nname = \"x\"\n"),
+    ])?;
+
+    assert_eq!(
+        outcome,
+        (PASSED, Vec::new()),
+        "either reading of `lib.rs` finds a scanned file"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_plain_allow_the_scan_did_not_report_fails() -> Result<(), Box<dyn Error>> {
+    let sources = [
+        ("// one\n#[allow(dead_code)]\nfn f() {}\n", 2),
+        ("// one\n#![allow(clippy::unwrap_used)]\n", 2),
+        ("// one\n# [\n    allow(x)\n]\nfn f() {}\n", 2),
+    ];
+
+    let seen = owned_outcomes(&sources)?;
+
+    assert_eq!(
+        seen,
+        each_blind_at(&sources),
+        "temper's masker missed it, so its baseline does not count it"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_plain_allow_the_scan_reported_is_left_to_the_baseline() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(
+        Revision::Head,
+        "src/lib.rs",
+        "// one\n#[allow(dead_code)]\nfn f() {}\n",
+    );
+    pr.scan.termination = Termination::Exited(1);
+    pr.scan_prints(&[hit("allow-attr", ("src/lib.rs", 2), "hard", None)]);
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (PASSED, Vec::new()),
+        "a hard hit is gates-lint's `baseline --check`"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_plain_allow_after_a_shebang_or_a_name_ending_in_r_fails_at_line_1()
+-> Result<(), Box<dyn Error>> {
+    let shebang = "#!/usr/bin/env run \"\n#![allow(clippy::unwrap_used, reason = \"x\")]\n";
+    let allow = "\n#[allow(clippy::unwrap_used)]\nfn f() {}\n";
+    let lifetime = format!("m!('r\"\\\"\");{allow}");
+    let suffix = format!("m!(\"x\"r\"\\\"\");{allow}");
+    let raw = format!("m!(r#r\"\\\"\");{allow}");
+    let sources = [
+        (shebang, 1),
+        (lifetime.as_str(), 1),
+        (suffix.as_str(), 1),
+        (raw.as_str(), 1),
+        ("m!('br#x);\n", 1),
+        ("m!(1r\"x\");\n", 1),
+    ];
+
+    let seen = owned_outcomes(&sources)?;
+
+    assert_eq!(
+        seen,
+        each_blind_at(&sources),
+        "temper's masker reads `r\"` there as a raw string"
+    );
     Ok(())
 }
 

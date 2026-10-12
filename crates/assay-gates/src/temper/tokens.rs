@@ -2,14 +2,18 @@
 //! lifetimes, punctuation and literals with their lines, with comments dropped.
 //!
 //! The source is PR-controlled, so the token boundaries follow `rustc_lexer` (rustc 1.98):
-//! whole lifetimes and labels (`'r#x` raw), literal prefixes (`b'`, `b"`, `br`, `c"`, `cr`,
-//! `r"`, `r#"`) and suffixes (`"x"r`, `'a'r`, `1u8`), rustc's number shape, raw identifiers
-//! (the word after `r#` is a plain identifier), and a leading byte order mark and shebang line.
-//! `corpus.rs` checks the boundaries against `proc-macro2`'s lexer.
+//! whole lifetimes and labels (`'r#x` raw), literal prefixes (`b'`, `b"`, `br`, `c"`, `r"`,
+//! `r#"`) and suffixes (`"x"r`, `'a'r`, `1u8`), rustc's number shape, raw identifiers (the word
+//! after `r#` is a plain identifier), and a leading byte order mark. `corpus.rs` checks the
+//! boundaries against `proc-macro2`'s lexer.
 //!
 //! Boundaries follow edition 2021 and later. The forms whose boundaries differ in an earlier
-//! edition, a `cr"` or `cr#` C string and a raw lifetime followed by a quote (`'r#a'`), are
-//! refused: a crate on edition 2018 would read the code after them differently.
+//! edition are refused, since a crate on edition 2018 would read the code after them
+//! differently: a `cr"` or `cr#` C string, a raw lifetime followed by a quote (`'r#a'`), and a
+//! literal suffix, lifetime or raw identifier ending in `r` that is followed at once by `#` or
+//! `"` (`'r"x"`, `"x"r"y"`, `r#r"z"`), where a `r`, `br` or `cr` prefix may start a literal.
+//! A shebang line is refused too: which lines `rustc_lexer::strip_shebang` drops is not
+//! modelled here, so the file is not read at all.
 //!
 //! Code must be ASCII. rustc reads identifiers, lifetimes and some whitespace by Unicode tables
 //! (`XID_Start`, `Pattern_White_Space`) this lexer does not carry, so any other character
@@ -66,11 +70,14 @@ impl<'a> Source<'a> {
         &self.0
     }
 
-    /// The tokens of the text, in order. A leading shebang line is skipped as
-    /// `rustc_lexer::strip_shebang` skips it; frontmatter (`---` first, past whitespace) is
-    /// refused, since rustc's lexer does not tokenise its contents.
+    /// The tokens of the text, in order. A shebang line (one `rustc_lexer::strip_shebang`
+    /// would drop) is refused at line 1, and frontmatter (`---` first, past whitespace) at its
+    /// line, since rustc's lexer does not tokenise either.
     pub(super) fn tokens(&self) -> Result<Vec<Lexed<'_>>, Unlexable> {
-        let body = strip_shebang(&self.0);
+        let body = &*self.0;
+        if has_shebang(body) {
+            return Err(Unlexable(NonZeroU64::MIN));
+        }
         let mut lexer = Lexer::new(body);
         let lead = body.trim_start_matches(is_pattern_white_space);
         if lead.starts_with("---") {
@@ -86,21 +93,15 @@ impl<'a> Source<'a> {
     }
 }
 
-/// `text` without its shebang line, as `rustc_lexer::strip_shebang` removes it: a first line
-/// starting `#!` whose next token, past whitespace and comments other than doc comments, is not
-/// `[`. The line break stays, so lines still count from the file's first.
-fn strip_shebang(text: &str) -> &str {
+/// Whether `text` starts with a line `rustc_lexer::strip_shebang` would drop: `#!` whose next
+/// token, past whitespace and comments other than doc comments, is not `[`.
+fn has_shebang(text: &str) -> bool {
     let Some(tail) = text.strip_prefix("#!") else {
-        return text;
+        return false;
     };
     let mut lexer = Lexer::new(tail);
     while lexer.skip_trivia().is_some() {}
-    if lexer.first() == Some('[') {
-        return text;
-    }
-    text.find('\n')
-        .and_then(|end| text.get(end..))
-        .unwrap_or("")
+    lexer.first() != Some('[')
 }
 
 /// rustc's whitespace: Unicode's `Pattern_White_Space`.
@@ -173,9 +174,9 @@ impl<'a> Lexer<'a> {
             '"' => self
                 .bump()
                 .and_then(|()| self.quoted('"'))
-                .map(|()| self.literal(start, line)),
+                .and_then(|()| self.literal(start, line)),
             '\'' => self.char_or_lifetime(),
-            next if next.is_ascii_digit() => self.number().map(|()| self.literal(start, line)),
+            next if next.is_ascii_digit() => self.number().and_then(|()| self.literal(start, line)),
             next if is_ident_start(next) => self.word(),
             next if is_pattern_white_space(next) => self.bump(),
             next => self.bump().map(|()| self.push(Token::Punct(next), line)),
@@ -187,12 +188,25 @@ impl<'a> Lexer<'a> {
         self.out.push(Lexed { token, line });
     }
 
-    /// Eats a literal suffix and records the literal that started at `start` on `line`.
-    fn literal(&mut self, start: &'a str, line: NonZeroU64) {
-        self.eat_identifier();
+    /// Eats a literal suffix and records the literal that started at `start` on `line`; `None`
+    /// when a suffix ending in `r` runs into a `#` or `"` (see [`Self::prefix_follows`]).
+    fn literal(&mut self, start: &'a str, line: NonZeroU64) -> Option<()> {
+        let suffix = self.eat_identifier();
+        if self.prefix_follows(suffix) {
+            return None;
+        }
         let consumed = start.len().saturating_sub(self.rest.len());
         let text = start.get(..consumed).unwrap_or(start);
         self.push(Token::Literal(text), line);
+        Some(())
+    }
+
+    /// Whether `name`, a literal suffix, lifetime or raw identifier just consumed, ends in `r`
+    /// and runs into a `#` or `"`: whether that `r`, `br` or `cr` starts a raw literal there
+    /// differs between editions and lexers (edition 2021 reserves such prefixes), and this
+    /// lexer does not know the edition, so the file is refused.
+    fn prefix_follows(&self, name: &str) -> bool {
+        name.ends_with('r') && matches!(self.first(), Some('#' | '"'))
     }
 
     fn first(&self) -> Option<char> {
@@ -312,8 +326,7 @@ impl<'a> Lexer<'a> {
                 .is_some_and(|c| is_ident_start(c) || c.is_ascii_digit());
         if !lifetime {
             self.single_quoted()?;
-            self.literal(start, line);
-            return Some(());
+            return self.literal(start, line);
         }
         let name_start = self.rest;
         let raw = self.first() == Some('r')
@@ -337,6 +350,9 @@ impl<'a> Lexer<'a> {
         }
         let length = name_start.len().saturating_sub(self.rest.len());
         let name = name_start.get(..length).unwrap_or(name_start);
+        if self.prefix_follows(name) {
+            return None;
+        }
         self.push(Token::Lifetime(name), line);
         Some(())
     }
@@ -393,14 +409,17 @@ impl<'a> Lexer<'a> {
         Some(())
     }
 
-    /// An identifier, a raw identifier, or the literal a `b`, `c`, `r`, `br` or `cr` prefix
-    /// starts, as `rustc_lexer`'s `advance_token` tells them apart.
+    /// An identifier, a raw identifier, or the literal a `b`, `c`, `r` or `br` prefix starts,
+    /// as `rustc_lexer`'s `advance_token` tells them apart; a `cr` prefix is refused.
     fn word(&mut self) -> Option<()> {
         let (start, line) = (self.rest, self.line);
         match (self.first(), self.nth(1), self.nth(2)) {
             (Some('r'), Some('#'), Some(third)) if is_ident_start(third) => {
                 self.skip(2)?;
                 let name = self.eat_while(is_ident_continue);
+                if self.prefix_follows(name) {
+                    return None;
+                }
                 self.push(Token::Ident { name, raw: true }, line);
                 Some(())
             }
@@ -411,14 +430,12 @@ impl<'a> Lexer<'a> {
             (Some('b'), Some('\''), _) => {
                 self.skip(2)?;
                 self.single_quoted()?;
-                self.literal(start, line);
-                Some(())
+                self.literal(start, line)
             }
             (Some('b' | 'c'), Some('"'), _) => {
                 self.skip(2)?;
                 self.quoted('"')?;
-                self.literal(start, line);
-                Some(())
+                self.literal(start, line)
             }
             // Before edition 2021, `cr` is an identifier and the string after it ends elsewhere.
             (Some('c'), Some('r'), Some('"' | '#')) => None,
@@ -445,8 +462,7 @@ impl<'a> Lexer<'a> {
         let close = format!("\"{}", "#".repeat(hashes));
         let end = self.rest.find(&close)?.checked_add(close.len())?;
         self.skip(end)?;
-        self.literal(start, line);
-        Some(())
+        self.literal(start, line)
     }
 }
 
@@ -502,7 +518,7 @@ mod tests {
     #[test]
     fn prefixes_suffixes_and_raw_names_end_where_rustc_ends_them() {
         let text =
-            "'r\"x\" \"x\"r \"y\" 'a'r b'a'r r#r\"z\" 'br 'r#a 1.5e-3f64 0x1Fu8 1..2 x.0 1.max";
+            "'r \"x\" \"x\"r \"y\" 'a'r b'a'r r#r \"z\" 'br 'r#a 1.5e-3f64 0x1Fu8 1..2 x.0 1.max";
 
         assert_eq!(
             texts(text),
@@ -535,39 +551,51 @@ mod tests {
     }
 
     #[test]
-    fn a_shebang_line_is_skipped_unless_an_inner_attribute_follows() {
+    fn a_name_ending_in_r_against_a_quote_or_hash_is_an_error_at_its_line() {
+        for text in [
+            "a\n'r\"x\"",
+            "a\n'br#x",
+            "a\n\"x\"r\"y\"",
+            "a\n1r\"x\"",
+            "a\nb'a'cr#x",
+            "a\nr#r\"z\"",
+            "a\nr#\"x\"#r#",
+        ] {
+            assert_eq!(
+                Source::new(text).tokens(),
+                Err(Unlexable(NonZeroU64::MIN.saturating_add(1))),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shebang_line_is_an_error_at_line_1_unless_an_inner_attribute_follows() {
         assert_eq!(
             (
-                texts("#!/usr/bin/env run \"\nfn f() {}"),
+                Source::new("#!/usr/bin/env run \"\nfn f() {}").tokens(),
                 texts("#! /* c */ [allow(x)]")
             ),
             (
-                vec![
-                    "fn".to_owned(),
-                    "f".to_owned(),
-                    "(".to_owned(),
-                    ")".to_owned(),
-                    "{".to_owned(),
-                    "}".to_owned()
-                ],
+                Err(Unlexable(NonZeroU64::MIN)),
                 ["#", "!", "[", "allow", "(", "x", ")", "]"]
                     .map(str::to_owned)
                     .to_vec()
             ),
-            "rustc_lexer::strip_shebang"
+            "rustc_lexer::strip_shebang decides which `#!` is a shebang"
         );
     }
 
     #[test]
     fn tokens_carry_the_line_they_start_on() {
-        let source = Source::new("#!shebang\r\na\r\n\"x\r\ny\"\nb");
+        let source = Source::new("x\r\na\r\n\"x\r\ny\"\nb");
         let lexed = source.tokens().expect("terminated");
 
         let lines: Vec<u64> = lexed.iter().map(|lexed| lexed.line.get()).collect();
         assert_eq!(
             lines,
-            [2, 3, 5],
-            "the shebang keeps its line; a multi-line literal starts on 3"
+            [1, 2, 3, 5],
+            "a multi-line literal starts on 3, and the token after it is on 5"
         );
     }
 
@@ -586,23 +614,26 @@ mod tests {
     }
 
     #[test]
-    fn a_shebang_is_kept_only_before_an_inner_attribute() {
+    fn a_shebang_is_told_from_an_inner_attribute_as_rustc_tells_them() {
+        let attribute = ["#", "!", "[", "x", "]"].map(str::to_owned).to_vec();
+        let shebang = Err(Unlexable(NonZeroU64::MIN));
+
         assert_eq!(
             (
                 texts("#! // c\n[x]"),
-                texts("#! /// c\n[x]"),
-                texts("#! /** c */ [x]"),
                 texts("#!\u{0B}\u{0C}[x]"),
-                texts("#! /* open\n[x]"),
+                Source::new("#! /// c\n[x]").tokens(),
+                Source::new("#! /** c */ [x]").tokens(),
+                Source::new("#! /* open\n[x]").tokens(),
             ),
             (
-                ["#", "!", "[", "x", "]"].map(str::to_owned).to_vec(),
-                ["[", "x", "]"].map(str::to_owned).to_vec(),
-                Vec::new(),
-                ["#", "!", "[", "x", "]"].map(str::to_owned).to_vec(),
-                ["[", "x", "]"].map(str::to_owned).to_vec(),
+                attribute.clone(),
+                attribute,
+                shebang.clone(),
+                shebang.clone(),
+                shebang,
             ),
-            "plain comments and whitespace are skipped; a doc comment or an open one is a token"
+            "plain comments and whitespace are skipped; a doc comment or an open one ends it"
         );
     }
 
@@ -635,7 +666,7 @@ mod tests {
             "a\n\"s\"\u{E9}",
             "a\nr#\u{E9}",
             "\n---\n",
-            "#!/bin/x\n---\n",
+            " \n---\n",
         ] {
             assert_eq!(
                 Source::new(text).tokens(),

@@ -204,7 +204,7 @@ fn unreported(expect: &ExpectAt<'_>) -> Finding {
 }
 
 /// One `blind-spot` finding per path or attribute the pinned scan cannot see.
-pub(super) fn blind(spots: &[Blind<'_>]) -> Vec<Finding> {
+pub(super) fn blind(spots: &[&Blind<'_>]) -> Vec<Finding> {
     spots
         .iter()
         .map(|spot| {
@@ -239,9 +239,10 @@ const fn wording(why: Why) -> (&'static str, &'static str) {
         ),
         Why::Symlink => (
             "symlink the temper scan cannot follow safely",
-            "This symlink does not resolve, inside the tree and through real \
-                     directories only, to a regular file (a `.rs` one for a `.rs` link). The \
-                     scan does not walk symlinked directories, but rustc follows them.",
+            "This symlink is a Rust file, which rustc and the scan need not read as the \
+                     same module, or it does not resolve, inside the tree and through real \
+                     directories only, to a regular file. The scan does not walk symlinked \
+                     directories, but rustc follows them. Commit the file itself.",
         ),
         Why::Extension => (
             "Rust source the temper scan does not match",
@@ -260,17 +261,26 @@ const fn wording(why: Why) -> (&'static str, &'static str) {
         ),
         Why::Reference => (
             "file the temper scan cannot pin down",
-            "An `include!` or `mod` declaration that does not name, from this file, a \
-                     `.rs` file of the tree the scan reads: a build script can write the file \
-                     rustc compiles after the scan ran. Include and declare only files in the \
-                     tree, by literal path, outside macro bodies.",
+            "An `include!`, whose text rustc reads in a context the scan does not model, \
+                     or a `mod` declaration that does not name, from this file, a `.rs` file \
+                     of the tree the scan reads wherever rustc can look for it: a build \
+                     script can write the file rustc compiles after the scan ran. Declare \
+                     modules at the top level of a file, outside brackets and macro bodies, \
+                     with their files in the tree, and do not `include!` Rust.",
+        ),
+        Why::Unreported => (
+            "`allow` the temper scan did not report",
+            "This `allow` attribute is one the temper scan should report at this line, \
+                     and it did not, so its baseline does not count it either. Remove the \
+                     `allow`, or write it plainly on one line.",
         ),
         Why::Unreadable => (
             "Rust source assay could not read",
             "A literal or comment in this file never ends, its code holds a character \
-                     outside ASCII or a token edition 2018 reads differently (`cr\"`, `'r#a'`), \
-                     it starts with frontmatter, or its bytes were not read, so its attributes \
-                     cannot be checked.",
+                     outside ASCII or a token whose boundary depends on the edition (`cr\"`, \
+                     `'r#a'`, or a suffix, lifetime or raw name ending in `r` against a `#` or \
+                     `\"`), it starts with a shebang line or frontmatter, or its bytes were not \
+                     read, so its attributes cannot be checked.",
         ),
     }
 }

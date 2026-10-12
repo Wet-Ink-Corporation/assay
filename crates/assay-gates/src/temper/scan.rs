@@ -6,6 +6,7 @@
 //! present. A hit covered by `#[expect(lint, reason = ..)]` is downgraded to `ask` and names
 //! the lint in `exception`; temper's exit code ignores it, so assay checks it here.
 
+use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 
 use serde::Deserialize;
@@ -15,6 +16,10 @@ use super::report::json_detail;
 /// The key of the hit temper reports for each `#[expect(..)]` attribute; its `exception` is
 /// the attribute's first lint only.
 const EXPECT_ATTR: &str = "expect-attr";
+
+/// The key of the hit temper reports for each `allow` attribute its pattern
+/// (`#\s*!?\s*\[\s*allow\s*\(`) matches, at the line of the `#`.
+const ALLOW_ATTR: &str = "allow-attr";
 
 /// A hit's level, as temper names it. Any other value fails the parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -55,23 +60,39 @@ pub(super) struct Request {
     pub(super) text: Option<String>,
 }
 
-/// The exception requests in `stdout`. Output that is not an array of hits with a non-empty
-/// `file`, a line of at least 1 and a known level is refused with a detail that does not quote
-/// it (the hits quote PR source).
-pub(super) fn requests(stdout: &[u8]) -> Result<Vec<Request>, String> {
+/// What the adapter reads from the scan's hits.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Scanned {
+    /// The exception requests.
+    pub(super) requests: Vec<Request>,
+    /// The (file, line) of every `allow-attr` hit, whatever its level.
+    pub(super) allows: BTreeSet<(String, NonZeroU64)>,
+}
+
+/// The exception requests and `allow` hits in `stdout`. Output that is not an array of hits
+/// with a non-empty `file`, a line of at least 1 and a known level is refused with a detail
+/// that does not quote it (the hits quote PR source).
+pub(super) fn scanned(stdout: &[u8]) -> Result<Scanned, String> {
     let hits: Vec<HitDto> = serde_json::from_slice(stdout).map_err(|error| json_detail(&error))?;
     if hits.iter().any(|hit| hit.file.is_empty()) {
         return Err("a hit has an empty file".to_owned());
     }
-    Ok(hits
-        .into_iter()
-        .filter(|hit| hit.severity == Level::Ask || hit.exception.is_some())
-        .map(|hit| Request {
-            file: hit.file,
-            line: hit.line,
-            attribute: hit.key.as_deref() == Some(EXPECT_ATTR),
-            lint: hit.exception,
-            text: hit.text,
-        })
-        .collect())
+    let mut scanned = Scanned::default();
+    for hit in hits {
+        let key = hit.key.as_deref();
+        if key == Some(ALLOW_ATTR) {
+            // The set and the request below each keep a copy of the path.
+            scanned.allows.insert((hit.file.clone(), hit.line));
+        }
+        if hit.severity == Level::Ask || hit.exception.is_some() {
+            scanned.requests.push(Request {
+                attribute: key == Some(EXPECT_ATTR),
+                file: hit.file,
+                line: hit.line,
+                lint: hit.exception,
+                text: hit.text,
+            });
+        }
+    }
+    Ok(scanned)
 }

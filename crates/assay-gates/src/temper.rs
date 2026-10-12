@@ -7,8 +7,9 @@
 //! 2. `exception`: the base's pinned temper runs `node <pinned>/temper.mjs scan --all --json`
 //!    over the head tree; every `ask` hit not admitted by base `.assay/exceptions.toml` fails,
 //!    as does an `#[expect]` naming more than one lint. What the scan cannot see (Rust under
-//!    the directories it skips, submodules, unsafe symlinks, `cfg_attr` suppressions and
-//!    `#[path]`) is a `blind-spot` that fails too.
+//!    the directories it skips, submodules, symlinks, `cfg_attr` suppressions, `#[path]`,
+//!    `include!`, modules without their files, and a plain `allow` it did not report) is a
+//!    `blind-spot` that fails too.
 //! 3. Gate-config diff: the keys of `.claude/temper.json` that steer temper, at base and head;
 //!    any difference fails unless base admits that exact base and head value.
 //!
@@ -26,6 +27,7 @@ mod exceptions;
 mod findings;
 mod gate_config;
 mod head;
+mod layout;
 mod references;
 mod report;
 mod scan;
@@ -214,9 +216,13 @@ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R> 
         failing.extend(self.gate_config(&allowlist)?);
         let head = self.head_tree()?;
         let analysis = head.analyse();
-        failing.extend(findings::blind(&analysis.blind));
-        let requests = self.scan(plugin.timeout())?;
-        failing.extend(findings::exceptions(requests, &analysis, &allowlist));
+        let scanned = self.scan(plugin.timeout())?;
+        failing.extend(findings::blind(&analysis.blind_with(&scanned.allows)));
+        failing.extend(findings::exceptions(
+            scanned.requests,
+            &analysis,
+            &allowlist,
+        ));
         let drift = self.vendored_drift(&head, &pin)?;
         let conclusion = if failing.is_empty() {
             GateConclusion::Pass
@@ -308,8 +314,8 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
         Ok(HeadTree::new(entries, blobs))
     }
 
-    /// Step 2: the exception requests of the pinned scan over the head tree.
-    fn scan(&mut self, timeout: Duration) -> Result<Vec<scan::Request>, ErrorOf<S, R>> {
+    /// Step 2: the exception requests and `allow` hits of the pinned scan over the head tree.
+    fn scan(&mut self, timeout: Duration) -> Result<scan::Scanned, ErrorOf<S, R>> {
         let spec = ProcessSpec {
             program: &self.settings.node,
             args: &self.settings.scan_args,
@@ -326,7 +332,7 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             Termination::Exited(0 | 1) => {}
             termination => return Err(TemperError::ScanEnded { termination }),
         }
-        scan::requests(&run.stdout).map_err(|detail| TemperError::ScanOutput { detail })
+        scan::scanned(&run.stdout).map_err(|detail| TemperError::ScanOutput { detail })
     }
 
     /// The vendored copy's drift from the pinned copy, compared by blob id.

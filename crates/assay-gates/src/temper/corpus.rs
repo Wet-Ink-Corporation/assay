@@ -2,6 +2,7 @@
 //! corpus of the forms where lexers disagree and on every Rust file of this workspace; and the
 //! workspace's own Rust against the attribute checks, since assay gates itself.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -328,9 +329,10 @@ fn the_lexer_ends_tokens_where_proc_macro2_does_on_this_workspace() -> Result<()
 fn this_workspace_has_no_attribute_the_scan_cannot_read() -> Result<(), Failure> {
     let tree = workspace_tree()?;
 
+    // No scan output: any plain `allow` would be a blind spot too, and the workspace has none.
     let blind: Vec<String> = tree
         .analyse()
-        .blind
+        .blind_with(&BTreeSet::new())
         .iter()
         .map(|spot| format!("{}:{} {:?}", spot.path, spot.line, spot.why))
         .collect();

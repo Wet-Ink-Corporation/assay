@@ -13,7 +13,7 @@ const HIDDEN: [&str; 3] = ["allow", "expect", "path"];
 /// can make them anything.
 const LISTED: [&str; 6] = ["allow", "expect", "warn", "deny", "forbid", "cfg_attr"];
 
-/// The macros that read another file into this one; `references.rs` resolves their calls.
+/// The macros that read another file into this one; `references.rs` judges their calls.
 pub(super) const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes"];
 
 /// The lines of attributes the scan does not read, once each:
@@ -30,7 +30,7 @@ pub(super) const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes
 ///   `#` or `!`: an attribute a macro call can assemble with no `#` beside its brackets
 ///   (`$hash $list`), or a call of a macro a fragment names (`$m!`);
 /// - `include`, `include_str` or `include_bytes` not called with `!` (`use std::include as
-///   inc;`), which renames a macro `references.rs` resolves.
+///   inc;`), which renames a macro `references.rs` judges.
 pub(super) fn unread(tokens: &[Lexed<'_>]) -> Vec<NonZeroU64> {
     let mut lines = Vec::new();
     let mut rest = tokens;
@@ -138,22 +138,40 @@ pub(super) type Expect = Vec<Option<String>>;
 /// Every `expect` attribute named plainly and followed by `(`, and the line of its `#`. Any
 /// other `expect` (`#[r#expect(..)]`, `#[expect $x]`) is one [`unread`] reports instead.
 pub(super) fn expects(tokens: &[Lexed<'_>]) -> Vec<(NonZeroU64, Expect)> {
-    let mut found = Vec::new();
-    let mut rest = tokens;
-    while let [first, tail @ ..] = rest {
-        if first.token == Token::Punct('#')
-            && let Some(Attribute::Named {
-                name: "expect",
+    listed(tokens, "expect")
+        .map(|(line, arguments)| (line, lints(arguments)))
+        .collect()
+}
+
+/// The line of the `#` of every `allow` attribute named plainly and followed by `(`, which the
+/// scan's `allow-attr` pattern is meant to report there. Any other `allow` is one [`unread`]
+/// reports instead.
+pub(super) fn allows(tokens: &[Lexed<'_>]) -> Vec<NonZeroU64> {
+    listed(tokens, "allow").map(|(line, _)| line).collect()
+}
+
+/// Every attribute named plainly `name` and followed by `(`: the line of its `#` and its
+/// arguments.
+fn listed<'t, 'a>(
+    tokens: &'t [Lexed<'a>],
+    name: &'static str,
+) -> impl Iterator<Item = (NonZeroU64, &'t [Lexed<'a>])> {
+    tokens.iter().enumerate().filter_map(move |(index, first)| {
+        if first.token != Token::Punct('#') {
+            return None;
+        }
+        let tail = tokens.get(index.checked_add(1)?..)?;
+        match attribute(tail) {
+            Some(Attribute::Named {
+                name: named,
                 raw: false,
                 rest: [open, inner @ ..],
-            }) = attribute(tail)
-            && open.token == Token::Punct('(')
-        {
-            found.push((first.line, lints(group(inner))));
+            }) if named == name && open.token == Token::Punct('(') => {
+                Some((first.line, group(inner)))
+            }
+            _ => None,
         }
-        rest = tail;
-    }
-    found
+    })
 }
 
 /// What a `#` starts.
@@ -291,6 +309,29 @@ mod tests {
                 (line(2), vec![Some("g".to_owned())])
             ],
             "commas inside the reason or a group do not split; a non-path is None"
+        );
+    }
+
+    #[test]
+    fn finds_every_plain_allow_with_its_list_at_the_line_of_its_hash() {
+        // Assembled, so this file's own scan does not report the text as an attribute.
+        let text = concat!(
+            "#[al",
+            "low(a)] #![al",
+            "low(b)]\n#/* c */\n[al",
+            "low(d)]\n",
+            "#[r#al",
+            "low(e)] #[al",
+            "low = \"f\"] #[warn(g)] #[cfg_attr(x, al",
+            "low(h))]"
+        );
+        let source = Source::new(text);
+        let lexed = source.tokens().expect("terminated");
+
+        assert_eq!(
+            allows(&lexed),
+            [line(1), line(1), line(2)],
+            "a raw or list-less one is unread's; one inside a cfg_attr is too"
         );
     }
 
