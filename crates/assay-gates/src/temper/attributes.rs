@@ -72,7 +72,7 @@ pub(super) fn unread_why(tokens: &[Lexed<'_>]) -> Vec<(NonZeroU64, Unread)> {
                     name: "cfg_attr", ..
                 },
                 [open, inner @ ..],
-            ) if open.token == Token::Punct('(') => cfg_attr(group(inner)),
+            ) if open.token == Token::Punct('(') => cfg_attr(group(open, inner)),
             (Token::Ident { name, .. }, _) if INCLUDES.contains(&name) => {
                 (!opens(tail, '!')).then_some(Unread::RenamedInclude)
             }
@@ -128,7 +128,7 @@ fn assembles(after_dollar: &[Lexed<'_>]) -> bool {
             Token::Ident { name: "crate", .. } => return false,
             Token::Ident { .. } => rest,
             Token::Punct('(') => {
-                let body = group(rest);
+                let body = group(fragment, rest);
                 if !open_ended(body) {
                     return false;
                 }
@@ -217,7 +217,7 @@ fn listed<'t, 'a>(
                 raw: false,
                 rest: [open, inner @ ..],
             }) if named == name && open.token == Token::Punct('(') => {
-                Some((first.line, group(inner)))
+                Some((first.line, group(open, inner)))
             }
             _ => None,
         }
@@ -260,21 +260,12 @@ fn attribute<'t, 'a>(after_hash: &'t [Lexed<'a>]) -> Option<Attribute<'t, 'a>> {
 
 /// The tokens inside a group whose opening bracket has been consumed, up to its matching
 /// close; all of `inner` when it never closes.
-pub(super) fn group<'t, 'a>(inner: &'t [Lexed<'a>]) -> &'t [Lexed<'a>] {
-    let mut depth = 0_usize;
-    for (index, lexed) in inner.iter().enumerate() {
-        match lexed.token {
-            Token::Punct('(' | '[' | '{') => depth = depth.saturating_add(1),
-            Token::Punct(')' | ']' | '}') => {
-                if depth == 0 {
-                    return inner.get(..index).unwrap_or(inner);
-                }
-                depth = depth.saturating_sub(1);
-            }
-            _ => {}
-        }
-    }
-    inner
+///
+/// `open` is the opening bracket and `inner` the tokens right after it, as the lexer gave them;
+/// the group's length was recorded on `open` when the file was lexed, so this takes constant
+/// time (H-13).
+pub(super) fn group<'t, 'a>(open: &Lexed<'_>, inner: &'t [Lexed<'a>]) -> &'t [Lexed<'a>] {
+    inner.get(..open.inside()).unwrap_or(inner)
 }
 
 /// The lint arguments of an `expect`'s argument list.

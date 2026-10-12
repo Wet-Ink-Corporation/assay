@@ -28,6 +28,11 @@ mod visit;
 /// nothing (H-13).
 const MAX_VISITS: usize = 10_000;
 
+/// Most bytes the walk reads on demand, over every file the tree does not already hold (the
+/// targets of include macros and `#[path]` that are not `.rs`), before the rest are not read
+/// and place nothing (H-13).
+const MAX_READ_BYTES: usize = 32 << 20;
+
 /// What one revision's Rust reads at compile time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompileTimeReach {
@@ -94,8 +99,11 @@ struct Walk<'r, 't, R> {
     revisions: &'r R,
     tree: &'t Tree<'t>,
     directories: HashSet<&'t str>,
-    /// Each file's reach once read; `None` when it does not lex or is not a regular file.
+    /// Each file's reach once read; `None` when it does not lex, is not a regular file or
+    /// was past the read budget.
     reaches: HashMap<String, Option<FileReach>>,
+    /// Bytes the walk may still read on demand, across every file (H-13).
+    bytes_left: usize,
 }
 
 impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
@@ -113,6 +121,7 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
             tree,
             directories,
             reaches: HashMap::new(),
+            bytes_left: MAX_READ_BYTES,
         }
     }
 
@@ -153,7 +162,10 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
             })
     }
 
-    /// Reads and scans the regular file at `path` once, into `reaches`.
+    /// Reads and scans the regular file at `path` once, into `reaches`. A file the tree does
+    /// not hold is read on demand and charged to [`MAX_READ_BYTES`]: by its listed size before
+    /// the read, by the bytes read when no size is listed. Past the budget it is not read and
+    /// reaches as a file that cannot be placed.
     fn load(&mut self, path: &str) -> Result<(), R::Error> {
         if self.reaches.contains_key(path) {
             return Ok(());
@@ -165,16 +177,42 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
         };
         let reach = match (self.tree.bytes(path), self.tree.entry(path)) {
             (Some(bytes), _) => of(bytes),
-            (None, Some(entry)) if entry.kind == EntryKind::File => self
-                .revisions
-                .read(&[entry])?
-                .into_iter()
-                .next()
-                .and_then(|bytes| of(&bytes)),
+            (None, Some(entry)) if entry.kind == EntryKind::File => {
+                self.read(entry)?.and_then(|bytes| of(&bytes))
+            }
             (None, _) => None,
         };
         self.reaches.insert(path.to_owned(), reach);
         Ok(())
+    }
+
+    /// The bytes of `entry`, spent from the read budget; `None` past it, or when the reader
+    /// gives no blob.
+    fn read(&mut self, entry: &TreeEntry) -> Result<Option<Vec<u8>>, R::Error> {
+        if let Some(size) = entry.size {
+            let size = usize::try_from(size).unwrap_or(usize::MAX);
+            if !self.spend(size) {
+                return Ok(None);
+            }
+        }
+        let Some(bytes) = self.revisions.read(&[entry])?.into_iter().next() else {
+            return Ok(None);
+        };
+        if entry.size.is_none() && !self.spend(bytes.len()) {
+            return Ok(None);
+        }
+        Ok(Some(bytes))
+    }
+
+    /// Spends `bytes` from the read budget; `false`, emptying it, when it holds fewer.
+    fn spend(&mut self, bytes: usize) -> bool {
+        if let Some(left) = self.bytes_left.checked_sub(bytes) {
+            self.bytes_left = left;
+            true
+        } else {
+            self.bytes_left = 0;
+            false
+        }
     }
 
     /// Every parsed manifest of the tree, with its directory; `None` when one does not parse.

@@ -114,7 +114,7 @@ fn attribute<'t, 'a>(after_hash: &'t [Lexed<'a>]) -> Option<(Attribute<'t, 'a>, 
     if open.token != Token::Punct('[') {
         return None;
     }
-    let tokens = group(inside);
+    let tokens = group(open, inside);
     let after = inside.get(tokens.len().saturating_add(1)..).unwrap_or(&[]);
     let mut path = Vec::new();
     let mut rest = tokens;
@@ -142,7 +142,9 @@ fn attribute<'t, 'a>(after_hash: &'t [Lexed<'a>]) -> Option<(Attribute<'t, 'a>, 
         }
     }
     let arguments = match rest {
-        [open, inner @ ..] if matches!(open.token, Token::Punct('(' | '[' | '{')) => group(inner),
+        [open, inner @ ..] if matches!(open.token, Token::Punct('(' | '[' | '{')) => {
+            group(open, inner)
+        }
         rest => rest,
     };
     let attribute = Attribute {
@@ -162,7 +164,7 @@ pub(super) fn gates_module(after: &[Lexed<'_>]) -> bool {
             if matches!(visibility.token, Token::Ident { name: "pub", .. })
                 && open.token == Token::Punct('(') =>
         {
-            rest.get(group(rest).len().saturating_add(1)..)
+            rest.get(group(open, rest).len().saturating_add(1)..)
                 .unwrap_or(&[])
         }
         [visibility, rest @ ..] if matches!(visibility.token, Token::Ident { name: "pub", .. }) => {

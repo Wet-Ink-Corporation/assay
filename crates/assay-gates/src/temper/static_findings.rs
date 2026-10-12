@@ -6,6 +6,7 @@
 use assay_domain::{Class, Finding, Severity, Side};
 
 use super::exceptions::Allowlist;
+use super::inventory::Unplaced;
 use super::manifests::{ManifestChecks, SwitchChange};
 use super::report::{Rule, Spot, finding, plain};
 use super::statics::{InventoryChange, Loss};
@@ -55,6 +56,19 @@ fn describe(loss: &Loss) -> String {
         Loss::Ignores { from, to } => format!("ignores {from} -> {to}"),
         Loss::Gate(text) => format!("new condition `{}`", plain(text)),
         Loss::Module(name) => format!("module `{}` no longer declared", plain(name)),
+        Loss::Unplaced(Unplaced::Path { name, path }) => format!(
+            "module `{}` (`#[path = \"{}\"]`) no longer declared",
+            plain(name),
+            plain(path)
+        ),
+        Loss::Unplaced(Unplaced::Uncertain(name)) => format!(
+            "module `{}` no longer declared, in a file whose module paths this check cannot \
+             place",
+            plain(name)
+        ),
+        Loss::Unplaced(Unplaced::Reference(kind)) => {
+            format!("{kind} that this check does not follow is gone")
+        }
         Loss::Unreadable => "its base text could not be counted".to_owned(),
         Loss::TooComplex => "its text asks for more work than the count's budget".to_owned(),
     }
@@ -169,4 +183,32 @@ fn switch(change: &SwitchChange<'_>) -> Finding {
 /// A blob id as the body shows it: the id is git's hex, or `absent`.
 fn blob(id: Option<&str>) -> String {
     id.map_or_else(|| "absent".to_owned(), |id| format!("`{}`", plain(id)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lost_unplaced_reference_is_named_by_its_kind_not_as_a_module() {
+        let losses = [
+            Loss::Unplaced(Unplaced::Path {
+                name: "tests".to_owned(),
+                path: "t.rs".to_owned(),
+            }),
+            Loss::Unplaced(Unplaced::Uncertain("tests".to_owned())),
+            Loss::Unplaced(Unplaced::Reference("a nested `macro_rules`")),
+        ];
+
+        assert_eq!(
+            losses.iter().map(describe).collect::<Vec<_>>(),
+            [
+                "module `tests` (`#[path = \"t.rs\"]`) no longer declared",
+                "module `tests` no longer declared, in a file whose module paths this check \
+                 cannot place",
+                "a nested `macro_rules` that this check does not follow is gone",
+            ],
+            "each kind has its own words; only PR text is made plain"
+        );
+    }
 }

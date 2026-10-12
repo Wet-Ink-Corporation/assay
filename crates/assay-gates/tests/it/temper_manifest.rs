@@ -413,6 +413,33 @@ fn a_removed_path_dependency_fails() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn a_removed_inherited_path_dependency_fails() -> Result<(), Box<dyn Error>> {
+    let path_root =
+        format!("{WORKSPACE}\n[workspace.dependencies]\nhelper = {{ path = \"crates/helper\" }}\n");
+    let registry_root = format!("{WORKSPACE}\n[workspace.dependencies]\nhelper = \"1\"\n");
+    let member = format!("{CRATE}\n[dependencies]\nhelper = {{ workspace = true }}\n");
+    for (root, expected) in [
+        (path_root, vec![seen("manifest-switch", MEMBER)]),
+        (WORKSPACE.to_owned(), vec![seen("manifest-switch", MEMBER)]),
+        (registry_root, Vec::new()),
+    ] {
+        let mut pr = pr(&root, CRATE)?;
+        pr.set(Revision::Base, ROOT, &root);
+        pr.set(Revision::Base, MEMBER, &member);
+        let outcome_expected = if expected.is_empty() { PASSED } else { FAILED };
+
+        let outcome = pr.outcome()?;
+
+        assert_eq!(
+            outcome,
+            (outcome_expected, expected),
+            "a path the workspace names, or one it cannot resolve, leaves the graph: {root}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn an_added_path_dependency_passes() -> Result<(), Box<dyn Error>> {
     let member = format!("{CRATE}\n[dependencies]\nhelper = {{ path = \"../helper\" }}\n");
     let mut pr = pr(WORKSPACE, &member)?;

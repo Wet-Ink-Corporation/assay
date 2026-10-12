@@ -157,7 +157,7 @@ fn macro_body_length(tail: &[Lexed<'_>]) -> usize {
         && matches!(open.token, Token::Punct('(' | '[' | '{'));
     // `!`, the name, the opening bracket, the body and its closing bracket.
     if shaped {
-        group(inner).len().saturating_add(4)
+        group(open, inner).len().saturating_add(4)
     } else {
         0
     }
@@ -172,7 +172,7 @@ fn one_literal(after_bang: &[Lexed<'_>]) -> Option<String> {
     if !matches!(open.token, Token::Punct('(' | '[' | '{')) {
         return None;
     }
-    match group(inner) {
+    match group(open, inner) {
         [only] => literal_path(only),
         [only, comma] if comma.token == Token::Punct(',') => literal_path(only),
         _ => None,
@@ -278,7 +278,7 @@ fn past_attributes_and_visibility<'t, 'a>(tokens: &'t [Lexed<'a>]) -> &'t [Lexed
             return &[];
         }
         rest = inner
-            .get(group(inner).len().saturating_add(1)..)
+            .get(group(open, inner).len().saturating_add(1)..)
             .unwrap_or(&[]);
     }
     match rest {
@@ -287,7 +287,7 @@ fn past_attributes_and_visibility<'t, 'a>(tokens: &'t [Lexed<'a>]) -> &'t [Lexed
                 && open.token == Token::Punct('(') =>
         {
             inner
-                .get(group(inner).len().saturating_add(1)..)
+                .get(group(open, inner).len().saturating_add(1)..)
                 .unwrap_or(&[])
         }
         [public, after @ ..] if matches!(public.token, Token::Ident { name: "pub", .. }) => after,

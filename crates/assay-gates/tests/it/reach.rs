@@ -425,6 +425,34 @@ fn a_closure_past_its_work_budget_makes_everything_exec_surface() -> Result<(), 
 }
 
 #[test]
+fn reads_past_the_byte_budget_place_nothing() -> Result<(), Box<dyn Error>> {
+    let big = format!("fn x() {{}}\n//{}\n", "x".repeat(4 << 20));
+    let names: Vec<String> = (0..9).map(|index| format!("g{index}.in")).collect();
+    let build: String = names
+        .iter()
+        .map(|name| ["include!(\"", name.as_str(), "\");\n"].concat())
+        .collect();
+    let manifest = package("");
+    let mut files = vec![
+        ("Cargo.toml", manifest.as_str()),
+        ("build.rs", build.as_str()),
+    ];
+    files.extend(names.iter().map(|name| (name.as_str(), big.as_str())));
+
+    let found = reach(&files)?;
+
+    assert_eq!(
+        (
+            found.exec_roots,
+            found.include_targets.contains(&String::new())
+        ),
+        (vec![ExecRoot::Everything], true),
+        "36 MiB of included files is past the 32 MiB the walk may read"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_cargo_target_that_is_not_rs_is_an_unplaced_include_target() -> Result<(), Box<dyn Error>> {
     for extra in [
         "\n[lib]\npath = \"lib.txt\"\n",

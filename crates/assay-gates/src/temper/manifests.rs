@@ -15,7 +15,7 @@ use toml::{Table, Value};
 
 use super::head::is_manifest;
 use super::statics::Tree;
-use super::switches::changed_switches;
+use super::switches::{Roots, changed_switches};
 
 /// The workspace manifest's path.
 const ROOT: &str = "Cargo.toml";
@@ -64,6 +64,14 @@ impl Side {
             (Some(_), None) => Self::Unreadable,
         }
     }
+
+    /// The table, when the manifest is present and parses.
+    const fn parsed(&self) -> Option<&Table> {
+        match self {
+            Self::Parsed(table) => Some(table),
+            Self::Absent | Self::Unreadable => None,
+        }
+    }
 }
 
 /// Steps 4b-4d over every manifest of `base` and `head`.
@@ -75,6 +83,11 @@ pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> 
         .chain(head.files(is_manifest))
         .collect();
     let empty = Table::new();
+    let (base_root, head_root) = (Side::of(base, ROOT), Side::of(head, ROOT));
+    let roots = Roots {
+        base: base_root.parsed(),
+        head: head_root.parsed(),
+    };
     for path in paths {
         let changed = base.object(path) != head.object(path);
         let (before, after) = match (Side::of(base, path), Side::of(head, path)) {
@@ -100,7 +113,7 @@ pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> 
         if !changed {
             continue;
         }
-        let switches = changed_switches(before.as_ref(), after.as_ref());
+        let switches = changed_switches(before.as_ref(), after.as_ref(), &roots);
         if !switches.is_empty() {
             found.switches.push(SwitchChange {
                 path,

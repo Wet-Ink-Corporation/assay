@@ -146,6 +146,27 @@ fn rust_that_does_not_lex_fails_at_the_open_literal() -> Result<(), Box<dyn Erro
 }
 
 #[test]
+fn brackets_nested_past_the_cap_fail_quickly() -> Result<(), Box<dyn Error>> {
+    let depth = 30_000;
+    let nested = format!(
+        "fn f() {{}}\nx!({}{});\n",
+        "cfg_attr(".repeat(depth),
+        ")".repeat(depth)
+    );
+    let mut pr = Pr::new()?;
+    pr.set(Revision::Head, "src/lib.rs", &nested);
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![blind("src/lib.rs", 2)]),
+        "past 256 open brackets the file is not read, so no group is walked again and again"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_symlink_to_a_directory_fails() -> Result<(), Box<dyn Error>> {
     let mut pr = Pr::new()?;
     pr.set(Revision::Head, "elsewhere/hidden.rs", "pub fn f() {}\n");

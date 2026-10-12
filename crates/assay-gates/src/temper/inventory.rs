@@ -36,9 +36,25 @@ pub(super) struct Inventory {
     /// The name of each top-level `mod name;` without `#[path]`, owned since the file's text is
     /// read only to count it.
     pub(super) modules: Vec<String>,
-    /// Each module reference this check cannot follow by name, described: a `#[path]` module
-    /// and each reference `references` cannot resolve. Dropping one is refused.
-    pub(super) unplaced_modules: Vec<String>,
+    /// Whether the reach scan could not place every module of the file (a `#[path]` past its
+    /// window, a `cfg_attr(.., path = ..)`, a form it does not read): any name in `modules` may
+    /// then name another file than its own, so dropping one is refused.
+    pub(super) modules_uncertain: bool,
+    /// Each module reference this check cannot follow by name: a `#[path]` module and each
+    /// reference `references` cannot resolve. Dropping one is refused.
+    pub(super) unplaced_modules: Vec<Unplaced>,
+}
+
+/// A module reference this check cannot follow by name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) enum Unplaced {
+    /// `mod name;` under `#[path = "path"]`.
+    Path { name: String, path: String },
+    /// `mod name;` in a file whose modules the reach scan could not all place. Only a loss
+    /// names one; the inventory keeps such a name in `modules` and sets `modules_uncertain`.
+    Uncertain(String),
+    /// A reference `references` does not resolve, by kind.
+    Reference(&'static str),
 }
 
 /// Most conditioned items a run of attributes can sit inside before the file is refused (H-13).
@@ -70,9 +86,10 @@ impl Budget {
 /// more than [`MAX_DEPTH`] nested conditioned items, more than [`MAX_CONDITION_BYTES`] of
 /// condition text, or item scans walking more than `MAX_DEPTH + 2` times the file's tokens.
 pub(super) fn inventory(tokens: &[Lexed<'_>]) -> Result<Inventory, Refused> {
-    let (modules, unplaced_modules) = declared_modules(tokens);
+    let (modules, modules_uncertain, unplaced_modules) = declared_modules(tokens);
     let mut found = Inventory {
         modules,
+        modules_uncertain,
         unplaced_modules,
         ..Inventory::default()
     };
@@ -143,25 +160,33 @@ fn condition_text(run: &[Attribute<'_, '_>]) -> Option<String> {
     (!own.is_empty()).then(|| own.join(" & "))
 }
 
-/// The top-level `mod name;` declarations of a file, by name, and every module reference this
-/// check cannot place by name: a `#[path]` module (its name and path), and each reference
-/// `references` cannot resolve (a `mod` in brackets or a macro, an include, a nested macro).
-fn declared_modules(tokens: &[Lexed<'_>]) -> (Vec<String>, Vec<String>) {
+/// The top-level `mod name;` declarations of a file, by name; whether the reach scan was
+/// uncertain of the file's modules; and every module reference this check cannot place by
+/// name: a `#[path]` module (its name and path), and each reference `references` cannot
+/// resolve (a `mod` in brackets or a macro, an include, a nested macro), by kind. A reference's
+/// line is left out: lines move between base and head, and the comparison is by value.
+fn declared_modules(tokens: &[Lexed<'_>]) -> (Vec<String>, bool, Vec<Unplaced>) {
+    let reach = reach::scan(tokens);
     let mut placed = Vec::new();
     let mut unplaced = Vec::new();
-    for (name, path) in reach::scan(tokens).modules {
+    for (name, path) in reach.modules {
         match path {
             None => placed.push(name),
-            Some(path) => unplaced.push(format!("{name} (path {path})")),
+            Some(path) => unplaced.push(Unplaced::Path { name, path }),
         }
     }
     unplaced.extend(
         references::references(tokens)
             .into_iter()
-            .filter(|(_, reference)| !matches!(reference, Reference::Module(_)))
-            .map(|_| "a reference this check does not follow".to_owned()),
+            .filter_map(|(_, reference)| match reference {
+                Reference::Module(_) => None,
+                Reference::Unresolvable => Some(Unplaced::Reference(
+                    "an include, or a `mod` inside brackets or a macro",
+                )),
+                Reference::NestedMacro => Some(Unplaced::Reference("a nested `macro_rules`")),
+            }),
     );
-    (placed, unplaced)
+    (placed, reach.uncertain, unplaced)
 }
 
 /// The number of tokens of the item `after` starts: up to its first `;` or through its first
@@ -176,7 +201,9 @@ fn item_length(after: &[Lexed<'_>], left: &mut usize) -> Result<usize, Refused> 
             Token::Punct(';') => return Ok(index.saturating_add(1)),
             Token::Punct('(' | '[' | '{') => {
                 let inner = after.get(index.saturating_add(1)..).unwrap_or(&[]);
-                index.saturating_add(group(inner).len()).saturating_add(2)
+                index
+                    .saturating_add(group(lexed, inner).len())
+                    .saturating_add(2)
             }
             _ => index.saturating_add(1),
         };

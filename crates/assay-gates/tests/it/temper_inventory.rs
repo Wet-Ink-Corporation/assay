@@ -297,9 +297,15 @@ fn a_pathological_nest_of_conditions_is_refused() -> Result<(), Box<dyn Error>> 
 #[test]
 fn a_dropped_module_this_check_cannot_place_is_refused() -> Result<(), Box<dyn Error>> {
     let lib = "crates/x/src/lib.rs";
+    let far_path = format!(
+        "#[path = \"t.rs\"]\n{}mod tests;\n",
+        "#[doc = \"x\"]\n".repeat(65)
+    );
     for base in [
         "#[path = \"t.rs\"]\nmod tests;\n",
         "fn f() {\n    mod inner;\n}\n",
+        "#[cfg_attr(unix, path = \"t.rs\")]\nmod tests;\n",
+        far_path.as_str(),
     ] {
         let mut pr = Pr::new()?;
         pr.both(MANIFEST.0, MANIFEST.1);

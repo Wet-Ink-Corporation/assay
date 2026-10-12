@@ -91,8 +91,14 @@ const DEPENDENCY_TABLES: [&str; 5] = [
 /// deleted manifest is compared with an empty one, and deleting a package is a switch of its
 /// own: its tests leave the workspace with it. A path dependency is compared by table, name
 /// and path; only one that base has and head does not counts (it can take a crate and its
-/// tests out of the graph).
-pub(super) fn changed_switches(base: Option<&Table>, head: Option<&Table>) -> Vec<&'static str> {
+/// tests out of the graph). An inherited dependency (`h = { workspace = true }`) is read
+/// through the `[workspace.dependencies]` of the side's root in `roots`; one the root does not
+/// resolve counts as a path dependency, failing closed.
+pub(super) fn changed_switches(
+    base: Option<&Table>,
+    head: Option<&Table>,
+    roots: &Roots<'_>,
+) -> Vec<&'static str> {
     let empty = Table::new();
     let new = base.is_none();
     let before = base.unwrap_or(&empty);
@@ -102,7 +108,7 @@ pub(super) fn changed_switches(base: Option<&Table>, head: Option<&Table>) -> Ve
         .filter(|(switch, _)| projection(before, *switch, false) != projection(after, *switch, new))
         .map(|(_, name)| name)
         .collect();
-    if !path_dependencies(before).is_subset(&path_dependencies(after)) {
+    if !path_dependencies(before, roots.base).is_subset(&path_dependencies(after, roots.head)) {
         changed.push("path dependency removed");
     }
     if head.is_none() && is_package(before) {
@@ -115,9 +121,23 @@ pub(super) fn changed_switches(base: Option<&Table>, head: Option<&Table>) -> Ve
 /// table (`dependencies`, `workspace.dependencies`), its name, and its path as written.
 type PathDependency<'m> = (Option<&'m str>, &'static str, &'m str, String);
 
+/// The workspace manifest (`Cargo.toml` at the repository root) at base and at head; `None`
+/// where it is absent or does not parse.
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct Roots<'r> {
+    pub(super) base: Option<&'r Table>,
+    pub(super) head: Option<&'r Table>,
+}
+
+/// The path an inherited dependency resolves to when the root does not resolve it.
+const UNRESOLVED: &str = "workspace, unresolved";
+
 /// Every path dependency of `manifest`, in its own tables, under `[target.<cfg>]` and in
-/// `[workspace.dependencies]`.
-fn path_dependencies(manifest: &Table) -> BTreeSet<PathDependency<'_>> {
+/// `[workspace.dependencies]`, with inherited ones read through `root`.
+fn path_dependencies<'m>(
+    manifest: &'m Table,
+    root: Option<&Table>,
+) -> BTreeSet<PathDependency<'m>> {
     let mut tables: Vec<(Option<&str>, &'static str, &Value)> = DEPENDENCY_TABLES
         .iter()
         .filter_map(|table| Some((None, *table, manifest.get(*table)?)))
@@ -136,16 +156,39 @@ fn path_dependencies(manifest: &Table) -> BTreeSet<PathDependency<'_>> {
     let mut found = BTreeSet::new();
     for (cfg, table, dependencies) in tables {
         for (name, spec) in dependencies.as_table().into_iter().flatten() {
-            if let Some(path) = spec.get("path") {
-                // A path that is not a string is kept in its debug form, so it still compares.
-                let path = path
-                    .as_str()
-                    .map_or_else(|| format!("{path:?}"), str::to_owned);
+            if let Some(path) = dependency_path(name, spec, root) {
                 found.insert((cfg, table, name.as_str(), path));
             }
         }
     }
     found
+}
+
+/// The path of the dependency `name` declared by `spec`: its own `path`, or for one inherited
+/// with `workspace = true` the root's `path` for it, marked as inherited (the two are relative
+/// to different directories), or [`UNRESOLVED`] when `root` does not declare it. `None` for a
+/// dependency that is not a path dependency.
+fn dependency_path(name: &str, spec: &Value, root: Option<&Table>) -> Option<String> {
+    if let Some(path) = spec.get("path") {
+        return Some(written(path));
+    }
+    if spec.get("workspace") != Some(&Value::Boolean(true)) {
+        return None;
+    }
+    let Some(declared) = root.and_then(|root| lookup(root, &["workspace", "dependencies", name]))
+    else {
+        return Some(UNRESOLVED.to_owned());
+    };
+    declared
+        .get("path")
+        .map(|path| format!("workspace, {}", written(path)))
+}
+
+/// A path as written; one that is not a string is kept in its debug form, so it still
+/// compares.
+fn written(path: &Value) -> String {
+    path.as_str()
+        .map_or_else(|| format!("{path:?}"), str::to_owned)
 }
 
 /// The values of `manifest` that `switch` covers, in a fixed order; `None` for an absent value.
@@ -239,7 +282,7 @@ mod tests {
         let head = table("lib = { test = false }\n");
 
         assert_eq!(
-            changed_switches(Some(&base), Some(&head)),
+            changed_switches(Some(&base), Some(&head), &Roots::default()),
             Vec::<&str>::new(),
             "compared parsed"
         );
@@ -251,7 +294,7 @@ mod tests {
         let head = table("[lib]\ntest = true\n");
 
         assert_eq!(
-            changed_switches(Some(&base), Some(&head)),
+            changed_switches(Some(&base), Some(&head), &Roots::default()),
             ["target test"],
             "every change is a human decision"
         );
@@ -265,7 +308,7 @@ mod tests {
         );
 
         assert_eq!(
-            changed_switches(None, Some(&head)),
+            changed_switches(None, Some(&head), &Roots::default()),
             [
                 "edition",
                 "autotests/autobenches/autobins/autoexamples/autolib",
@@ -285,11 +328,42 @@ mod tests {
 
         assert_eq!(
             (
-                changed_switches(Some(&base), Some(&moved)),
-                changed_switches(Some(&base), Some(&added))
+                changed_switches(Some(&base), Some(&moved), &Roots::default()),
+                changed_switches(Some(&base), Some(&added), &Roots::default())
             ),
             (vec!["path dependency removed"], Vec::new()),
             "the old path leaves the graph; an added one takes nothing out"
+        );
+    }
+
+    #[test]
+    fn an_inherited_dependency_is_read_through_the_workspace_root() {
+        let base = table("[dependencies]\nh = { workspace = true }\nr.workspace = true\n");
+        let head = table("[dependencies]\n");
+        let root = table("[workspace.dependencies]\nh = { path = \"crates/h\" }\nr = \"1\"\n");
+        let registry = table("[workspace.dependencies]\nh = \"1\"\nr = \"1\"\n");
+        let removed = |root: Option<&Table>| {
+            let roots = Roots {
+                base: root,
+                head: root,
+            };
+            changed_switches(Some(&base), Some(&head), &roots)
+        };
+
+        assert_eq!(
+            (
+                removed(Some(&root)),
+                removed(Some(&Table::new())),
+                removed(None),
+                removed(Some(&registry)),
+            ),
+            (
+                vec!["path dependency removed"],
+                vec!["path dependency removed"],
+                vec!["path dependency removed"],
+                Vec::new(),
+            ),
+            "a path in the root counts; one the root does not resolve counts too (fail closed)"
         );
     }
 }

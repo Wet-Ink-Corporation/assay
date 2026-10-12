@@ -3,9 +3,10 @@
 //! inventory compared file by file. The manifest checks are `manifests.rs`'s.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::Hash;
 
 use super::head::is_rust;
-use super::inventory::{Inventory, Refused, inventory};
+use super::inventory::{Inventory, Refused, Unplaced, inventory};
 use super::layout::module_files;
 use super::tokens::Source;
 use crate::revision::{EntryKind, TreeEntry};
@@ -138,6 +139,8 @@ pub(super) enum Loss {
     Gate(String),
     /// A `mod name;` no longer declared while a file it named still holds tests.
     Module(String),
+    /// A module reference this check cannot place is gone.
+    Unplaced(Unplaced),
     /// The base file did not lex or was not read, so its tests could not be counted.
     Unreadable,
     /// The file asked for more work than the inventory's budget, so it was not counted.
@@ -217,12 +220,14 @@ fn losses(base: &Tree<'_>, head: &Tree<'_>, path: &str) -> Vec<Loss> {
         });
     }
     losses.extend(added(&before.gates, &after.gates).map(Loss::Gate));
-    losses.extend(
-        added(&after.modules, &before.modules)
-            .filter(|name| still_tested(base, head, path, name))
-            .map(Loss::Module),
-    );
-    losses.extend(added(&after.unplaced_modules, &before.unplaced_modules).map(Loss::Module));
+    for name in added(&after.modules, &before.modules) {
+        if before.modules_uncertain {
+            losses.push(Loss::Unplaced(Unplaced::Uncertain(name)));
+        } else if still_tested(base, head, path, &name) {
+            losses.push(Loss::Module(name));
+        }
+    }
+    losses.extend(added(&after.unplaced_modules, &before.unplaced_modules).map(Loss::Unplaced));
     losses.extend(
         before
             .conditional
@@ -233,19 +238,19 @@ fn losses(base: &Tree<'_>, head: &Tree<'_>, path: &str) -> Vec<Loss> {
     losses
 }
 
-/// Each text of `after` beyond as many times as `before` holds it.
-fn added(before: &[String], after: &[String]) -> impl Iterator<Item = String> {
-    let mut left: HashMap<&str, usize> = HashMap::new();
-    for text in before {
-        let count = left.entry(text).or_default();
+/// Each value of `after` beyond as many times as `before` holds it.
+fn added<T: Clone + Eq + Hash>(before: &[T], after: &[T]) -> impl Iterator<Item = T> {
+    let mut left: HashMap<&T, usize> = HashMap::new();
+    for value in before {
+        let count = left.entry(value).or_default();
         *count = count.saturating_add(1);
     }
     let mut extra = Vec::new();
-    for text in after {
-        match left.get_mut(text.as_str()) {
+    for value in after {
+        match left.get_mut(value) {
             Some(count) if *count > 0 => *count = count.saturating_sub(1),
-            // The text outlives the counts; the loss owns its copy.
-            _ => extra.push(text.clone()),
+            // The value outlives the counts; the loss owns its copy.
+            _ => extra.push(value.clone()),
         }
     }
     extra.into_iter()
@@ -258,8 +263,8 @@ const MAX_MODULE_FILES: usize = 1_000;
 /// Whether a file the dropped `mod name;` of the file at `from` compiled at base, directly or
 /// through the modules below it, is still in the head tree and held tests at base (or could
 /// not be counted there). Every place rustc could look is followed; a file with a module
-/// reference this check cannot follow by name, and a walk past [`MAX_MODULE_FILES`], count as
-/// tested.
+/// reference this check cannot follow by name or whose modules the reach scan could not all
+/// place, and a walk past [`MAX_MODULE_FILES`], count as tested.
 fn still_tested(base: &Tree<'_>, head: &Tree<'_>, from: &str, name: &str) -> bool {
     let mut queue: Vec<String> = module_files(from, name).into();
     let mut seen: HashSet<String> = HashSet::new();
@@ -273,7 +278,7 @@ fn still_tested(base: &Tree<'_>, head: &Tree<'_>, from: &str, name: &str) -> boo
         let Ok(found) = counted(base, &file) else {
             return true;
         };
-        if !found.unplaced_modules.is_empty() {
+        if found.modules_uncertain || !found.unplaced_modules.is_empty() {
             return true;
         }
         let tested = found.tests > 0 || !found.conditional.is_empty();
