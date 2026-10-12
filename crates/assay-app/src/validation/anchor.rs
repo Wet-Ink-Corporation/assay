@@ -1,6 +1,7 @@
 //! Step 2 of 04 §4: locates a finding's evidence in the tree, relocates its lines, replaces its
 //! quotes with the tree's own lines and computes its fingerprint.
 
+use std::mem;
 use std::num::NonZeroU64;
 
 use assay_domain::{Caller, Disposition, Finding, FindingKind, Fingerprint, IntroducedBy, Side};
@@ -24,6 +25,9 @@ pub(super) struct Anchored {
     pub(super) in_diff: bool,
     /// Whether it can be an inline comment: its line, and `end_line` if any, are in one hunk.
     pub(super) inline: bool,
+    /// An interaction's caller evidence as the model wrote it, before the tree's lines replaced
+    /// it: model text, so the injection screen reads it (wi-d4735c).
+    pub(super) quoted_caller: Option<String>,
 }
 
 /// Step 2 for `finding`: finds its evidence in the cited file (base for `LEFT` and deleted
@@ -70,11 +74,14 @@ pub(super) fn anchor<'c>(
         .fingerprint(occurrence_index)
         .ok_or(Disposition::EvidenceMissing)?;
     let enclosing_symbol = enclosing_symbol.to_owned();
-    if finding.introduced_by == Some(IntroducedBy::Interaction) {
+    let quoted_caller = if finding.introduced_by == Some(IntroducedBy::Interaction) {
         let caller = finding.caller.as_mut().ok_or(Disposition::Schema)?;
-        relocate_caller(change, files, caller)?;
-    }
+        Some(relocate_caller(change, files, caller)?)
+    } else {
+        None
+    };
     Ok(Anchored {
+        quoted_caller,
         in_diff: hunk.is_some(),
         inline: hunk.is_some() && end_line_holds,
         file_at_head: located.file_at_head,
@@ -100,12 +107,12 @@ fn occurrence(indexed: &Indexed<'_>, matches: &[Match], found: Match, symbol: &s
 }
 
 /// Relocates an interaction's `caller` to its evidence at head, which must exist, and replaces
-/// that evidence with the lines it matched.
+/// that evidence with the lines it matched. Returns the evidence as the model wrote it.
 fn relocate_caller<'c>(
     change: &'c Change,
     files: &mut Files<'c>,
     caller: &mut Caller,
-) -> Result<(), Disposition> {
+) -> Result<String, Disposition> {
     if !evidence::has_enough_content(&caller.evidence) {
         return Err(Disposition::EvidenceMissing);
     }
@@ -117,8 +124,8 @@ fn relocate_caller<'c>(
     let found = evidence::nearest(&indexed.find(&caller.evidence), caller.line.get())
         .ok_or(Disposition::EvidenceMissing)?;
     caller.line = NonZeroU64::new(found.line).ok_or(Disposition::EvidenceMissing)?;
-    caller.evidence = indexed.span(found).ok_or(Disposition::EvidenceMissing)?;
-    Ok(())
+    let lines = indexed.span(found).ok_or(Disposition::EvidenceMissing)?;
+    Ok(mem::replace(&mut caller.evidence, lines))
 }
 
 /// `end_line` moved with `line` from `from` to `to`, keeping the span; dropped if it preceded

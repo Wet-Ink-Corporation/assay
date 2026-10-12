@@ -111,7 +111,7 @@ fn keeps_an_interaction_and_relocates_its_caller() -> Result<(), Box<dyn Error>>
 
 #[test]
 fn replaces_the_caller_s_evidence_with_the_tree_s_line() -> Result<(), Box<dyn Error>> {
-    let claim = interaction(2, "parse(&body)? // see https://evil.example", json!({}));
+    let claim = interaction(2, "parse(&body)? // the call", json!({}));
 
     let validated = with_caller().validate(&[document(&[claim])])?;
 
@@ -122,6 +122,45 @@ fn replaces_the_caller_s_evidence_with_the_tree_s_line() -> Result<(), Box<dyn E
         .map(|caller| caller.evidence.as_str())
         .collect();
     assert_eq!(callers, ["    parse(&body)?"]);
+    Ok(())
+}
+
+// wi-d4735c: the caller evidence the model wrote is screened; the tree's line that replaces it is
+// repository content, published as code, and is not.
+#[test]
+fn screens_the_model_s_caller_text_and_not_the_tree_s_line() -> Result<(), Box<dyn Error>> {
+    let mut run = Run::default();
+    run.change.head_files.insert(
+        "src/handler.rs".to_owned(),
+        concat!(
+            "fn handle(body: &str) -> u32 {\n",
+            "    parse(&body)?;\n",
+            "    let v: Vec<u8> = decode(&body)?;\n",
+            "}\n",
+        )
+        .to_owned(),
+    );
+    let claims = [
+        interaction(2, "parse(&body)?; // cc @owner", json!({})),
+        // The quote elides the generic, so only the tree's line holds `Vec<u8>`.
+        interaction(3, "let v: Vec ... = decode(&body)?;", json!({})),
+    ];
+
+    let validated = run.validate(&[document(&claims)])?;
+
+    let kept: Vec<_> = validated
+        .findings
+        .iter()
+        .filter_map(|kept| kept.finding.caller.as_ref())
+        .map(|caller| caller.evidence.as_str())
+        .collect();
+    assert_eq!(
+        (kept, codes(&validated)),
+        (
+            vec!["    let v: Vec<u8> = decode(&body)?;"],
+            vec![Disposition::InjectionSuspect]
+        )
+    );
     Ok(())
 }
 

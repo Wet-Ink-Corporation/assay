@@ -82,7 +82,9 @@ impl Steps<'_, '_> {
         let anchored = anchor(self.inputs.change, self.files, &mut finding)?;
         let placement = self.place(&mut finding, &anchored);
         self.cap(&mut finding);
-        if free_text(&finding).any(|text| screen::screen(text, self.inputs.repository).is_some()) {
+        if free_text(&finding, anchored.quoted_caller.as_ref())
+            .any(|text| screen::screen(text, self.inputs.repository).is_some())
+        {
             return Err(Disposition::InjectionSuspect);
         }
         let previously_dismissed = self.suppress(&finding, &anchored)?;
@@ -220,11 +222,14 @@ fn shape(finding: &Finding) -> Result<(), Disposition> {
     }
 }
 
-/// The text the injection screen reads: everything a reviewer wrote, `rule` included, and the
-/// caller's evidence. The finding's own evidence is the tree's lines by now (step 2 replaced
-/// it) and is not screened. The caller's evidence was replaced too, but is screened as a second
-/// line of defence: a caller line that reads as markup is dropped with its finding.
-fn free_text(finding: &Finding) -> impl Iterator<Item = &str> {
+/// The text the injection screen reads: everything the reviewer wrote, `rule` included, and an
+/// interaction's caller evidence as the reviewer quoted it (`quoted_caller`). The evidence and
+/// caller evidence the finding now holds are the tree's lines (step 2 replaced them): repository
+/// content, published as code, so not screened (wi-d4735c).
+fn free_text<'f>(
+    finding: &'f Finding,
+    quoted_caller: Option<&'f String>,
+) -> impl Iterator<Item = &'f str> {
     [
         Some(&finding.title),
         Some(&finding.body),
@@ -233,7 +238,7 @@ fn free_text(finding: &Finding) -> impl Iterator<Item = &str> {
         finding.expected_behavior.as_ref(),
         finding.group_hint.as_ref(),
         finding.rule.as_ref(),
-        finding.caller.as_ref().map(|caller| &caller.evidence),
+        quoted_caller,
     ]
     .into_iter()
     .flatten()
