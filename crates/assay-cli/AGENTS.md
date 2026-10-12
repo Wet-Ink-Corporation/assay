@@ -13,7 +13,7 @@ binary. Thin (ARC-14): no business logic, nothing a test would want to call dire
 - Never: `weighin-core` or temper code (P8).
 
 ## Public surface
-The `assay` command line. A library target, `assay_cli`, holds the adapters the composition root lends one crate from another, so they are tested before a command wires them: `ForgeSupervisor` (`new`), `assay-forge`'s process-group supervisor as an `assay_gates::Supervisor` and an `assay_runner::GroupKill` (wi-603c63). Nothing else is public.
+The `assay` command line. A library target, `assay_cli`, holds the adapters the composition root lends one crate from another, so they are tested before a command wires them: `ForgeSupervisor` (`new`), `assay-forge`'s process-group supervisor as an `assay_gates::Supervisor` and an `assay_runner::GroupKill` (wi-603c63). Nothing else is public. As a `Supervisor` it discards the gate's output, but forge reads it back first: a gate run briefly holds up to twice `max_output_bytes` in memory (32 MiB at `ExecLimits::DEFAULT`), accepted because one gate runs at a time.
 
 ## Invariants
 - `main` returns `ExitCode`; nothing calls `process::exit` (ARC-14).

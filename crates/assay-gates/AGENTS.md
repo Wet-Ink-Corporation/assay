@@ -19,7 +19,7 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
 
 ## Invariants
 - Gate tools run as external processes with timeouts and size-capped output (H-13).
-- A gate process sees only `PATH`, `HOME`, `CI`, `ASSAY_BASE_SHA`, `ASSAY_HEAD_SHA` and `ASSAY_RUN_KEY` (exact, case-sensitive names, 03 §2; no other `ASSAY_*` variable) plus the adapter's `ASSAY_FINDINGS_OUT`, which always overrides an inherited one.
+- A gate process sees only `PATH`, `HOME`, `CI`, `ASSAY_BASE_SHA`, `ASSAY_HEAD_SHA` and `ASSAY_RUN_KEY` (exact, case-sensitive names, 03 §2; no other `ASSAY_*` variable) plus the adapter's `ASSAY_FINDINGS_OUT`; an inherited `ASSAY_FINDINGS_OUT` never passes the allowlist.
 - The checkout and the output root are absolute paths (`ExecSettings::new`), so neither depends on this process's working directory.
 - `exec` runs only in its own Z2b job: `gates-static`, another Z2b job or a non-`exec` plugin is refused before anything runs.
 - Each run writes into `<output_root>/<plugin>/`, created fresh; an existing directory is refused, so a stale document is never read. The document is read only when it is a regular file (never through a symlink) of at most `max_document_bytes`.
@@ -28,6 +28,7 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
 `ExecError<E>` (`NotExec`, `OutsideBuildJob`, `WrongJob`, `OutputDirectory`, `Supervisor(E)`, `ReadDocument`): the gate could not run, recorded by the use case as `gate-error:not-run`. A gate that ran and failed is a `GateRun`, never an error (ERR-10). `ExecSettingsError` (`RelativeCheckout`, `RelativeOutputRoot`): the composition root passed a relative directory.
 
 ## Known gaps
+- Escaping the group kill: a gate is PR-controlled code, and a process it starts can leave the gate's process group with `setsid` or `setpgid`. The supervisor kills and waits for the group only, so such a process is neither killed at the deadline nor waited for, and can outlive the gate run (and write into the output directory afterwards). Only the job's VM or container boundary contains it; closing it needs a cgroup or PID-namespace supervisor (H-16, #150 review F5).
 - FIFO swap (`read_document`): the document's type check and its open are two calls. The supervisor has shown the gate's group gone first, so only a process that left the group (`setsid`) could swap a FIFO in between, which would block the open. Closing it needs `O_NOFOLLOW | O_NONBLOCK`, which std cannot name without `libc` (H-16; #152 F8).
 
 ## Test strategy

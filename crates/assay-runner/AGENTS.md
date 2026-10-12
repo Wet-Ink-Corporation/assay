@@ -14,13 +14,13 @@ adapter. Implements application ports; stream-json DTOs live here and are conver
 ## Public surface
 Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`:
 - `ClaudeHeadless<K>` (`new`, `with_max_output_bytes`): the `ModelRunner` that runs `claude -p` with the 03 §8 profile, built from the CLI's path, a `Workdir` (absolute, empty, checked again before every call), a `HeadlessEnv` (the OAuth token plus explicitly passed variables) and a `K: GroupKill`.
-- `GroupKill` (implemented for `&K` too): the process-group kill the composition root lends; `assay-cli` implements it with `assay-forge`'s `GroupKiller` (wi-603c63).
+- `GroupKill` (`kill_led_group` while the CLI is unreaped, `kill_group` after; implemented for `&K` too): the process-group kill the composition root lends; `assay-cli` implements it with `assay-forge`'s `GroupKiller` (wi-603c63).
 - `Replay`, `Recording` (`Completed`, `TimedOut`): the `ModelRunner` over recorded transcripts, classified exactly as live ones.
 - Errors: `HeadlessError`, `WorkdirError`, `EnvVarError`, `ReplayError`.
 
 ## Invariants
 - Every spawned process has an owner that waits on or kills it, and a timeout (H-13).
-- The CLI leads its own process group, which the `GroupKill` kills whole: at the timeout or the cap before the CLI is reaped (so its pid, the group id, cannot have been reused), and after the CLI exits on its own, so no process it started outlives the call. A call returns only once the group is shown gone, or with `HeadlessError::Kill`.
+- The CLI leads its own process group, which the `GroupKill` kills whole: at the timeout or the cap with `kill_led_group` before the CLI is reaped (so its pid, the group id, cannot have been reused), and after the CLI exits on its own with `kill_group`, so no process it started outlives the call. A call returns only once the group is shown gone, or with `HeadlessError::Kill`; the CLI itself is killed and reaped even when its group kill fails.
 - Output read from a process is size-capped (H-13): stdout is spooled to an anonymous temporary file and the call is killed past the cap (32 MiB by default); stderr is discarded.
 - The prompt reaches the CLI on stdin, from an anonymous temporary file written before the CLI starts, never as an argument (wi-9fe37e).
 - The argv is exactly 03 §8's, in its order (`tests/it/headless.rs` pins it flag for flag): `-p --output-format stream-json --verbose --json-schema --append-system-prompt-file --exclude-dynamic-system-prompt-sections --restricted --safe-mode --settings <03 §8 JSON> --tools Read,Grep,Glob --add-dir --permission-mode dontAsk --max-turns --max-budget-usd <cap>`. Never `--bare`. The tool set is a constant, not a call field.

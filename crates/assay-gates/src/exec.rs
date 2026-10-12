@@ -219,16 +219,11 @@ impl<S: Supervisor> GateRunner for ExecAdapter<S> {
 }
 
 impl<S> ExecAdapter<S> {
-    /// The allowlisted variables without any inherited findings path, then this run's.
+    /// The allowlisted variables, then this run's findings path.
     fn environment(&self, document: &Path) -> Vec<(OsString, OsString)> {
-        let mut env: Vec<_> = self
-            .settings
-            .environment
-            .vars()
-            .iter()
-            .filter(|(name, _)| name != FINDINGS_OUT_VAR)
-            .cloned()
-            .collect();
+        // The allowlist never holds an inherited `ASSAY_FINDINGS_OUT` (only the six names of
+        // 03 §2), so this run's path is the only one.
+        let mut env = self.settings.environment.vars().to_vec();
         env.push((FINDINGS_OUT_VAR.into(), document.into()));
         env
     }

@@ -17,7 +17,7 @@ use assay_runner::{
 use serde_json::Value;
 use tempfile::TempDir;
 
-use crate::support::{BUDGET, RecordingKill, call, fixtures_dir, stream_path};
+use crate::support::{Asked, BUDGET, RecordingKill, call, fixtures_dir, stream_path};
 
 const TOKEN: &str = "sk-ant-oat01-test-token";
 
@@ -71,6 +71,12 @@ impl Scene {
     /// The pid of the fake as it recorded it, which is also its process group's id.
     fn pid(&self) -> Result<u32, Box<dyn Error>> {
         Ok(fs::read_to_string(self.record("pid"))?.trim().parse()?)
+    }
+
+    /// Whether the fake's pid still names a process, running or a zombie: a reaped child has
+    /// no `/proc` entry (the pid is not reused this soon).
+    fn is_alive_or_unreaped(&self) -> Result<bool, Box<dyn Error>> {
+        Ok(Path::new(&format!("/proc/{}", self.pid()?)).exists())
     }
 
     /// The arguments the fake was started with.
@@ -297,7 +303,48 @@ fn a_timeout_kills_the_clis_whole_group_before_the_cli_is_reaped() -> Result<(),
 
     // The CLI leads its own group, so the group id is its pid, which cannot be reused while
     // the CLI is unreaped.
-    assert_eq!(scene.killer.take_asked(), [(scene.pid()?, true)]);
+    assert_eq!(
+        scene.killer.take_asked(),
+        [Asked::Led {
+            group: scene.pid()?,
+            leader_unreaped: true
+        }]
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
+fn a_failed_group_kill_at_the_timeout_is_a_kill_error_and_the_cli_is_reaped()
+-> Result<(), Box<dyn Error>> {
+    let scene = Scene::with_killer(RecordingKill::failing())?;
+    let mut call = call()?;
+    call.timeout = Duration::from_millis(300);
+
+    let failed = scene.runner("partial", true)?.run(&call);
+
+    assert_matches!(&failed, Err(error @ HeadlessError::Kill(_)) if error.may_have_run());
+    assert!(
+        !scene.is_alive_or_unreaped()?,
+        "the CLI itself is killed and reaped even when its group kill fails"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
+fn a_failed_group_kill_at_the_cap_is_a_kill_error_and_the_cli_is_reaped()
+-> Result<(), Box<dyn Error>> {
+    let scene = Scene::with_killer(RecordingKill::failing())?;
+    let runner = scene.runner("ok", true)?.with_max_output_bytes(64);
+
+    let failed = runner.run(&call()?);
+
+    assert_matches!(&failed, Err(error @ HeadlessError::Kill(_)) if error.may_have_run());
+    assert!(
+        !scene.is_alive_or_unreaped()?,
+        "the CLI itself is killed and reaped even when its group kill fails"
+    );
     Ok(())
 }
 
@@ -312,7 +359,13 @@ fn a_transcript_past_the_cap_kills_the_clis_whole_group() -> Result<(), Box<dyn 
 
     assert_eq!(
         (result.outcome, scene.killer.take_asked()),
-        (ModelOutcome::Malformed, vec![(scene.pid()?, true)])
+        (
+            ModelOutcome::Malformed,
+            vec![Asked::Led {
+                group: scene.pid()?,
+                leader_unreaped: true
+            }]
+        )
     );
     Ok(())
 }
@@ -324,14 +377,13 @@ fn a_cli_that_exits_has_whatever_it_left_in_its_group_killed() -> Result<(), Box
 
     let result = scene.runner("ok", false)?.run(&call()?)?;
 
-    let asked: Vec<u32> = scene
-        .killer
-        .take_asked()
-        .into_iter()
-        .map(|(group, _)| group)
-        .collect();
     assert_matches!(result.outcome, ModelOutcome::Ok(_));
-    assert_eq!(asked, [scene.pid()?]);
+    assert_eq!(
+        scene.killer.take_asked(),
+        [Asked::Sweep {
+            group: scene.pid()?
+        }]
+    );
     Ok(())
 }
 

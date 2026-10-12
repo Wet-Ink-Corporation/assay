@@ -35,6 +35,11 @@ impl Supervisor for ForgeSupervisor {
     /// A timeout and an over-cap output are terminations, reported once the group is shown
     /// gone.
     ///
+    /// Cost: [`process::run`] reads stdout and stderr back into memory before this discards
+    /// them, so a run briefly holds up to twice `spec.max_output_bytes` (32 MiB at
+    /// `ExecLimits::DEFAULT`). Kept rather than adding a forge variant that skips the
+    /// read-back, since one gate runs at a time (#150 review F4).
+    ///
     /// # Errors
     ///
     /// [`ProcessError::Kill`] when the group could not be shown gone (abort the job), and the
@@ -65,5 +70,9 @@ impl Supervisor for ForgeSupervisor {
 impl GroupKill for ForgeSupervisor {
     fn kill_group(&self, group: u32) -> io::Result<()> {
         self.killer.kill_group(group)
+    }
+
+    fn kill_led_group(&self, group: u32) -> io::Result<()> {
+        self.killer.kill_led_group(group)
     }
 }

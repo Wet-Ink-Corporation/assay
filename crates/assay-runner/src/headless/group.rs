@@ -19,10 +19,26 @@ pub trait GroupKill {
     /// When the group could not be observed or signalled, or still has a live member when the
     /// implementation stops waiting: the group may then still be running.
     fn kill_group(&self, group: u32) -> io::Result<()>;
+
+    /// Kills process group `group`, whose leader (the child with pid `group`) has not been
+    /// reaped yet, and returns once no live member is left.
+    ///
+    /// The unreaped leader holds the id, so it cannot have been reused and the group is
+    /// signalled without first looking for a live member.
+    ///
+    /// # Errors
+    ///
+    /// When the group could not be signalled or observed, or still has a live member when the
+    /// implementation stops waiting: the group may then still be running.
+    fn kill_led_group(&self, group: u32) -> io::Result<()>;
 }
 
 impl<K: GroupKill + ?Sized> GroupKill for &K {
     fn kill_group(&self, group: u32) -> io::Result<()> {
         (**self).kill_group(group)
+    }
+
+    fn kill_led_group(&self, group: u32) -> io::Result<()> {
+        (**self).kill_led_group(group)
     }
 }

@@ -122,14 +122,15 @@ fn watch(child: &mut Child, stdout: &File, cap: u64, deadline: Instant) -> io::R
     }
 }
 
-/// Kills the child's process group, then the child itself, and reaps it. The child is not yet
-/// reaped (watching stops before reaping it), so its pid still names its group.
+/// Kills the child's process group with [`GroupKill::kill_led_group`], then the child itself,
+/// and reaps it. The child is not yet reaped (watching stops before reaping it), so its pid
+/// still names its group.
 ///
 /// The child is killed and reaped even when the group kill fails, whose error is then
 /// reported. When the child's own kill fails it is not waited on, since the wait could be
 /// unbounded; either error says it may still be running.
 fn stop(child: &mut Child, killer: &impl GroupKill) -> Result<(), HeadlessError> {
-    let group = killer.kill_group(child.id());
+    let group = killer.kill_led_group(child.id());
     // Already-exited children report `Ok` here.
     child.kill().map_err(HeadlessError::Kill)?;
     child.wait().map_err(HeadlessError::Supervise)?;

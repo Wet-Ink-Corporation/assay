@@ -12,14 +12,23 @@ use assay_app::{ModelCall, Prompt};
 use assay_domain::Aeu;
 use assay_runner::GroupKill;
 
-/// A [`GroupKill`] that signals nothing: it records each group it is asked to kill, with
-/// whether the group's leader still held its pid (was not yet reaped) at that moment, and
-/// fails when told to.
+/// One kill a [`RecordingKill`] was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asked {
+    /// [`GroupKill::kill_led_group`], with whether the leader still held its pid (was not yet
+    /// reaped) at that moment.
+    Led { group: u32, leader_unreaped: bool },
+    /// [`GroupKill::kill_group`], the sweep after a reaped leader.
+    Sweep { group: u32 },
+}
+
+/// A [`GroupKill`] that signals nothing: it records each kill it is asked for, and fails when
+/// told to.
 #[derive(Debug, Default)]
 pub(crate) struct RecordingKill {
     fail: bool,
-    // Interior mutability: `GroupKill::kill_group` takes `&self`, as `ModelRunner::run` does.
-    asked: RefCell<Vec<(u32, bool)>>,
+    // Interior mutability: `GroupKill`'s methods take `&self`, as `ModelRunner::run` does.
+    asked: RefCell<Vec<Asked>>,
 }
 
 impl RecordingKill {
@@ -31,21 +40,32 @@ impl RecordingKill {
         }
     }
 
-    /// Each group asked for since the last call, with whether its leader was still unreaped.
-    pub(crate) fn take_asked(&self) -> Vec<(u32, bool)> {
+    /// Each kill asked for since the last call.
+    pub(crate) fn take_asked(&self) -> Vec<Asked> {
         self.asked.take()
     }
-}
 
-impl GroupKill for RecordingKill {
-    fn kill_group(&self, group: u32) -> io::Result<()> {
-        let leader_unreaped = Path::new(&format!("/proc/{group}")).exists();
-        self.asked.borrow_mut().push((group, leader_unreaped));
+    fn record(&self, asked: Asked) -> io::Result<()> {
+        self.asked.borrow_mut().push(asked);
         if self.fail {
             Err(io::Error::other("scripted: the group is still alive"))
         } else {
             Ok(())
         }
+    }
+}
+
+impl GroupKill for RecordingKill {
+    fn kill_group(&self, group: u32) -> io::Result<()> {
+        self.record(Asked::Sweep { group })
+    }
+
+    fn kill_led_group(&self, group: u32) -> io::Result<()> {
+        let leader_unreaped = Path::new(&format!("/proc/{group}")).exists();
+        self.record(Asked::Led {
+            group,
+            leader_unreaped,
+        })
     }
 }
 
