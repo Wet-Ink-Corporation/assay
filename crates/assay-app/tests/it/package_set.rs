@@ -1,7 +1,7 @@
 //! The package-set diff and the build-time path crates (04 §2.2, #65), from `cargo metadata`
 //! output: what a PR adds or alters that runs at build time.
 
-use assay_app::{ExecSurface, MetadataError, PackageSet, exec_surface};
+use assay_app::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 use assay_domain::{
     BaselineChange, ChangeSet, ExecCause, ExecRoot, FileChange, Lines, PackageChange, PackageDiff,
     PrClass, RepoGlobs, tier,
@@ -220,11 +220,23 @@ fn metadata_value(packages: &[Pkg]) -> Value {
 }
 
 fn set(packages: &[Pkg]) -> Result<PackageSet, MetadataError> {
-    PackageSet::from_metadata(&metadata(packages), ROOT)
+    linked(packages, &[])
+}
+
+/// The set of `packages` in a tree holding the symlinks `links` (path, resolved target).
+fn linked(packages: &[Pkg], links: &[(&str, &str)]) -> Result<PackageSet, MetadataError> {
+    let symlinks = links
+        .iter()
+        .map(|(path, target)| Symlink {
+            path: (*path).to_owned(),
+            target: (*target).to_owned(),
+        })
+        .collect();
+    PackageSet::from_metadata(&metadata(packages), ROOT, symlinks)
 }
 
 fn surface(base: &[Pkg], head: &[Pkg]) -> Result<ExecSurface, MetadataError> {
-    Ok(exec_surface(Some(&set(base)?), Some(&set(head)?)))
+    Ok(exec_surface(Some(&set(base)?), Some(&set(head)?), &[]))
 }
 
 fn packages(base: &[Pkg], head: &[Pkg]) -> Result<PackageDiff, MetadataError> {
@@ -405,9 +417,9 @@ fn dependency_with_no_named_kind_counts_as_build_time() -> Result<(), MetadataEr
         Pkg::member("helpers", "crates/helpers"),
     ]);
     value["resolve"]["nodes"][0]["deps"][0]["dep_kinds"] = json!([]);
-    let set = PackageSet::from_metadata(&value.to_string(), ROOT)?;
+    let set = PackageSet::from_metadata(&value.to_string(), ROOT, Vec::new())?;
 
-    let surface = exec_surface(Some(&set), Some(&set));
+    let surface = exec_surface(Some(&set), Some(&set), &[]);
 
     assert_eq!(surface.exec_roots, vec![path("crates/helpers")]);
     Ok(())
@@ -717,13 +729,94 @@ fn library_source_of_a_plain_crate_outside_its_directory_is_not_an_exec_root()
     Ok(())
 }
 
+/// `helpers` in `crates/helpers`, a build-dependency of `x`.
+fn build_time_helpers() -> [Pkg; 2] {
+    [
+        Pkg::member("x", "crates/x").on_path("helpers", "crates/helpers", Some("build")),
+        Pkg::member("helpers", "crates/helpers"),
+    ]
+}
+
+#[test]
+fn symlink_in_a_build_time_crate_leaving_it_is_everything() -> Result<(), MetadataError> {
+    // #65 review round 3 F1 (wi-b5affa, option b): `crates/helpers/src/lib.rs ->
+    // ../../shared/x.rs` runs `crates/shared/x.rs` at build time, outside every root.
+    let links = [("crates/helpers/src/lib.rs", "crates/shared/x.rs")];
+    let set = linked(&build_time_helpers(), &links)?;
+
+    let surface = exec_surface(Some(&set), Some(&set), &[]);
+
+    assert_eq!(surface.exec_roots, vec![ExecRoot::Everything]);
+    Ok(())
+}
+
+#[test]
+fn symlink_in_a_build_time_crate_staying_inside_it_changes_nothing() -> Result<(), MetadataError> {
+    let links = [("crates/helpers/src/lib.rs", "crates/helpers/gen/lib.rs")];
+    let set = linked(&build_time_helpers(), &links)?;
+
+    let surface = exec_surface(Some(&set), Some(&set), &[]);
+
+    assert_eq!(surface.exec_roots, vec![path("crates/helpers")]);
+    Ok(())
+}
+
+#[test]
+fn symlink_under_a_declared_root_leaving_it_is_everything() -> Result<(), MetadataError> {
+    // The #50 manifest roots have the same gap: `crates/x/build.rs -> ../../gen/build.rs`.
+    let declared = [ExecRoot::BuildSources {
+        crate_dir: "crates/x".to_owned(),
+    }];
+    let base = set(&[Pkg::member("x", "crates/x")])?;
+    let head = linked(
+        &[Pkg::member("x", "crates/x")],
+        &[("crates/x/build.rs", "gen/build.rs")],
+    )?;
+
+    let surface = exec_surface(Some(&base), Some(&head), &declared);
+
+    assert_eq!(surface.exec_roots, vec![ExecRoot::Everything]);
+    Ok(())
+}
+
+#[test]
+fn declared_roots_are_kept_with_the_build_time_crates() -> Result<(), MetadataError> {
+    let declared = [ExecRoot::BuildSources {
+        crate_dir: "crates/x".to_owned(),
+    }];
+    let set = set(&build_time_helpers())?;
+
+    let surface = exec_surface(Some(&set), Some(&set), &declared);
+
+    assert_eq!(
+        surface.exec_roots,
+        vec![
+            ExecRoot::BuildSources {
+                crate_dir: "crates/x".to_owned()
+            },
+            path("crates/helpers")
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn symlink_outside_every_root_changes_nothing() -> Result<(), MetadataError> {
+    let set = linked(&build_time_helpers(), &[("docs/readme.md", "README.md")])?;
+
+    let surface = exec_surface(Some(&set), Some(&set), &[]);
+
+    assert_eq!(surface.exec_roots, vec![path("crates/helpers")]);
+    Ok(())
+}
+
 #[test]
 fn metadata_without_a_resolve_graph_is_everything() -> Result<(), MetadataError> {
     let mut value = metadata_value(&[Pkg::member("x", "crates/x")]);
     value["resolve"] = Value::Null;
-    let without = PackageSet::from_metadata(&value.to_string(), ROOT)?;
+    let without = PackageSet::from_metadata(&value.to_string(), ROOT, Vec::new())?;
 
-    let surface = exec_surface(Some(&without), Some(&without));
+    let surface = exec_surface(Some(&without), Some(&without), &[]);
 
     assert_eq!(surface.exec_roots, vec![ExecRoot::Everything]);
     Ok(())
@@ -734,7 +827,7 @@ fn unavailable_side_is_exec_surface_everywhere() -> Result<(), MetadataError> {
     let head = set(&[Pkg::member("x", "crates/x")])?;
 
     assert_eq!(
-        exec_surface(None, Some(&head)),
+        exec_surface(None, Some(&head), &[]),
         ExecSurface {
             packages: PackageDiff::Unavailable,
             exec_roots: vec![ExecRoot::Everything],
@@ -748,7 +841,7 @@ fn a_tree_without_manifests_is_an_empty_set() -> Result<(), MetadataError> {
     let head = [Pkg::registry("bar", "1.0.0")];
 
     assert_eq!(
-        exec_surface(Some(&PackageSet::default()), Some(&set(&head)?)).packages,
+        exec_surface(Some(&PackageSet::default()), Some(&set(&head)?), &[]).packages,
         PackageDiff::Computed(vec![PackageChange::Registry {
             package: "bar".to_owned()
         }])
@@ -761,14 +854,14 @@ fn metadata_of_another_format_version_is_refused() {
     let mut value = metadata_value(&[]);
     value["version"] = json!(2);
 
-    let result = PackageSet::from_metadata(&value.to_string(), ROOT);
+    let result = PackageSet::from_metadata(&value.to_string(), ROOT, Vec::new());
 
     assert_eq!(result, Err(MetadataError::Version { found: 2 }));
 }
 
 #[test]
 fn unreadable_metadata_is_refused() {
-    let result = PackageSet::from_metadata("{\"packages\": [", ROOT);
+    let result = PackageSet::from_metadata("{\"packages\": [", ROOT, Vec::new());
 
     assert!(
         matches!(result, Err(MetadataError::Syntax { line: 1, .. })),
@@ -785,7 +878,7 @@ fn resolve_naming_an_unlisted_package_is_refused() {
         "dep_kinds": [{"kind": null, "target": null}],
     }]);
 
-    let result = PackageSet::from_metadata(&value.to_string(), ROOT);
+    let result = PackageSet::from_metadata(&value.to_string(), ROOT, Vec::new());
 
     assert_eq!(result, Err(MetadataError::UnknownPackage));
 }

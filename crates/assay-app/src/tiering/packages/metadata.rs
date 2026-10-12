@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use thiserror::Error;
 
-use super::{Declared, Edge, Location, Package, PackageSet, PathDeclared, Source};
+use super::{Declared, Edge, Location, Package, PackageSet, PathDeclared, Source, Symlink};
 
 /// The only `cargo metadata` format this reads.
 const FORMAT_VERSION: u32 = 1;
@@ -102,14 +102,22 @@ struct DepKindDto {
 impl PackageSet {
     /// Reads `cargo metadata --format-version 1` output (`metadata`) produced in the copy at
     /// `root`, the absolute directory cargo ran in. Paths are made relative to `root`; one
-    /// that is not under it, or not canonical, is outside the repository.
+    /// that is not under it, or not canonical, is outside the repository. `symlinks` are the
+    /// symlinks of the same tree, each with its resolved target (the manifest copy's), which
+    /// [`exec_surface`](super::exec_surface) checks against every exec root. They are
+    /// required here, not added later, so a set cannot be built without them by accident.
     ///
     /// # Errors
     ///
     /// [`MetadataError::Syntax`] for text that is not cargo's JSON shape,
     /// [`MetadataError::Version`] for another format version and
-    /// [`MetadataError::UnknownPackage`] for a resolve graph naming an unlisted package.
-    pub fn from_metadata(metadata: &str, root: &str) -> Result<Self, MetadataError> {
+    /// [`MetadataError::UnknownPackage`] for a resolve graph naming an unlisted package. The
+    /// side then has no set, and its symlinks no use.
+    pub fn from_metadata(
+        metadata: &str,
+        root: &str,
+        symlinks: Vec<Symlink>,
+    ) -> Result<Self, MetadataError> {
         let dto: MetadataDto =
             serde_json::from_str(metadata).map_err(|error| MetadataError::Syntax {
                 line: error.line(),
@@ -127,7 +135,11 @@ impl PackageSet {
             .into_iter()
             .map(|package| convert(package, root))
             .collect();
-        Ok(Self { packages, graph })
+        Ok(Self {
+            packages,
+            graph,
+            symlinks,
+        })
     }
 }
 

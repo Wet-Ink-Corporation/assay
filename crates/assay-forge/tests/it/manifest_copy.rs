@@ -9,7 +9,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
 use std::path::Path;
 
-use assay_forge::git::{CopyError, TreeLimits};
+use assay_forge::git::{CopiedSymlink, CopyError, TreeLimits};
 
 use crate::support::{Fixture, fixture, fixture_with_head, plain_git, write};
 
@@ -24,6 +24,43 @@ fn copy_head(fixture: &Fixture) -> Result<Result<(), CopyError>, Box<dyn Error>>
             TreeLimits::default(),
         )
         .map(drop))
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn each_accepted_symlink_is_reported_with_its_resolved_target() -> Result<(), Box<dyn Error>> {
+    // #65 review round 3 F1 (wi-b5affa): the app refuses an exec root holding a symlink whose
+    // target it does not hold, so the copy reports where each symlink leads.
+    let fixture = fixture_with_head(|work| {
+        write(work, "shared/x.rs", b"pub fn x() {}\n")?;
+        fs::create_dir_all(work.join("crates/x/src"))?;
+        symlink("../../../shared/x.rs", work.join("crates/x/src/lib.rs"))?;
+        symlink("./missing.rs", work.join("dangling.rs"))?;
+        Ok(())
+    })?;
+    let scratch = tempfile::tempdir()?;
+
+    let copy = fixture.repo.manifest_copy(
+        &fixture.head,
+        &scratch.path().join("copy"),
+        TreeLimits::default(),
+    )?;
+
+    assert_eq!(
+        copy.symlinks(),
+        [
+            CopiedSymlink {
+                path: "crates/x/src/lib.rs".to_owned(),
+                target: "shared/x.rs".to_owned(),
+            },
+            CopiedSymlink {
+                path: "dangling.rs".to_owned(),
+                target: "missing.rs".to_owned(),
+            },
+        ],
+        "in git's order, each target resolved from its symlink's directory"
+    );
+    Ok(())
 }
 
 #[test]

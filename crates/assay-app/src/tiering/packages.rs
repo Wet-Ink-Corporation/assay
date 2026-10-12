@@ -22,16 +22,29 @@ pub struct PackageSet {
     /// For each package, by index, the packages it depends on outside development; `None`
     /// when the metadata has no resolve graph.
     graph: Option<Vec<Vec<Edge>>>,
+    /// The tree's symlinks, with their resolved targets.
+    symlinks: Vec<Symlink>,
 }
 
 impl Default for PackageSet {
-    /// No package, and a resolve graph with nothing in it.
+    /// No package, a resolve graph with nothing in it, and no symlink.
     fn default() -> Self {
         Self {
             packages: Vec::new(),
             graph: Some(Vec::new()),
+            symlinks: Vec::new(),
         }
     }
+}
+
+/// A symlink of a commit's tree and where it leads: what the manifest copy accepted and
+/// wrote as an empty file. Both are repo-relative, `/`-separated paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symlink {
+    /// The symlink's own path.
+    pub path: String,
+    /// Its target, resolved from the symlink's directory.
+    pub target: String,
 }
 
 /// One package, reduced to what exec-surface detection compares.
@@ -120,21 +133,26 @@ struct Edge {
     build: bool,
 }
 
-/// What a PR changes in the package set and where build-time path crates live (04 §2.2).
+/// What a PR changes in the package set and where build-time code lives (04 §2.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecSurface {
     /// For `ChangeSet::packages`: the package-set diff, base vs head.
     pub packages: PackageDiff,
-    /// For `ChangeSet::exec_roots`, with the roots the manifests declare: the directories of
-    /// path crates that run at build time, at base or at head, sorted.
+    /// For `ChangeSet::exec_roots`: the declared roots, then the directories (and
+    /// out-of-crate library sources) of path crates that run at build time, at base or at
+    /// head, sorted; or only [`ExecRoot::Everything`].
     pub exec_roots: Vec<ExecRoot>,
 }
 
-/// The package-set diff and build-time path crates between `base` and `head`.
+/// The package-set diff and every exec root between `base` and `head`: `declared` (the
+/// manifests' roots, `manifest_exec_roots` over every manifest) and the build-time path
+/// crates.
 ///
 /// `None` is a side whose metadata could not be computed (cargo failed, or its output did not
 /// parse): the diff is then [`PackageDiff::Unavailable`] and the only root
-/// [`ExecRoot::Everything`] (fail closed).
+/// [`ExecRoot::Everything`] (fail closed). So is any root that holds a symlink of either side
+/// whose target it does not hold (#65 review round 3, wi-b5affa): an edit to the target runs
+/// at build time, and following targets further is not attempted.
 ///
 /// The diff has one entry per cause, packages in head order and removed packages last:
 /// - a package new or bumped with a `custom-build` target is `BuildScript` exec surface, and
@@ -160,22 +178,27 @@ pub struct ExecSurface {
 /// use assay_domain::{ExecRoot, PackageDiff};
 ///
 /// let none = PackageSet::default();
-/// let surface = exec_surface(Some(&none), None);
+/// let surface = exec_surface(Some(&none), None, &[]);
 /// assert_eq!(surface.packages, PackageDiff::Unavailable);
 /// assert_eq!(surface.exec_roots, [ExecRoot::Everything]);
 /// ```
 #[must_use]
-pub fn exec_surface(base: Option<&PackageSet>, head: Option<&PackageSet>) -> ExecSurface {
+pub fn exec_surface(
+    base: Option<&PackageSet>,
+    head: Option<&PackageSet>,
+    declared: &[ExecRoot],
+) -> ExecSurface {
     let (Some(base), Some(head)) = (base, head) else {
         return ExecSurface {
             packages: PackageDiff::Unavailable,
             exec_roots: vec![ExecRoot::Everything],
         };
     };
+    let build_time = roots::build_time(base)
+        .union(roots::build_time(head))
+        .into_roots();
     ExecSurface {
         packages: PackageDiff::Computed(diff::changes(base, head)),
-        exec_roots: roots::build_time(base)
-            .union(roots::build_time(head))
-            .into_roots(),
+        exec_roots: roots::confined(declared, build_time, [&base.symlinks, &head.symlinks]),
     }
 }

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use assay_domain::ExecRoot;
 
-use super::{Location, PackageSet, Source};
+use super::{Location, PackageSet, Source, Symlink};
 
 /// The build-time path crates of one or both sides.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +35,37 @@ impl BuildTime {
             Self::Everything => vec![ExecRoot::Everything],
         }
     }
+}
+
+/// `declared`, then each root of `build_time` not already in it; only
+/// [`ExecRoot::Everything`] when any of them is, or when a root holds one of `symlinks` but
+/// not its target (wi-b5affa: refused rather than modelled; targets are not followed further).
+/// `symlinks` are each side's.
+pub(super) fn confined(
+    declared: &[ExecRoot],
+    build_time: impl IntoIterator<Item = ExecRoot>,
+    symlinks: [&[Symlink]; 2],
+) -> Vec<ExecRoot> {
+    // The surface owns its roots; `declared` is the caller's.
+    let mut roots = declared.to_vec();
+    for root in build_time {
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    let escapes = |root: &ExecRoot| {
+        symlinks
+            .iter()
+            .flat_map(|side| side.iter())
+            .any(|link| root.holds(&link.path) && !root.holds(&link.target))
+    };
+    if roots
+        .iter()
+        .any(|root| *root == ExecRoot::Everything || escapes(root))
+    {
+        return vec![ExecRoot::Everything];
+    }
+    roots
 }
 
 /// The path crates of `set` that run at build time: each proc-macro crate and each target of

@@ -35,18 +35,17 @@ impl<'a> Tree<'a> {
         Self { links, dirs }
     }
 
-    /// Whether the symlink at `path`, whose blob is `target`, may stand in the copy as an
-    /// empty file: its target is relative UTF-8 text that, resolved segment by segment from
-    /// the link's directory, never leaves the tree, never passes through or ends at a
-    /// symlink, and does not end at the root or another directory. A target that names
-    /// nothing in the tree stays allowed: the real build sees no file there, and the copy's
-    /// empty file can only make cargo find more, never less.
-    pub(super) fn allows(&self, path: &str, target: &[u8]) -> bool {
-        let Ok(target) = std::str::from_utf8(target) else {
-            return false;
-        };
+    /// Where the symlink at `path`, whose blob is `target`, leads (repo-relative), when it may
+    /// stand in the copy as an empty file: its target is relative UTF-8 text that, resolved
+    /// segment by segment from the link's directory, never leaves the tree, never passes
+    /// through or ends at a symlink, and does not end at the root or another directory.
+    /// `None` refuses it. A target that names nothing in the tree stays allowed: the real
+    /// build sees no file there, and the copy's empty file can only make cargo find more,
+    /// never less.
+    pub(super) fn resolve(&self, path: &str, target: &[u8]) -> Option<String> {
+        let target = std::str::from_utf8(target).ok()?;
         if target.starts_with('/') {
-            return false;
+            return None;
         }
         let mut resolved: Vec<&str> = path.split('/').collect();
         // The link's own name: its target is resolved from its directory.
@@ -55,18 +54,18 @@ impl<'a> Tree<'a> {
             match segment {
                 "" | "." => {}
                 ".." => {
-                    if resolved.pop().is_none() {
-                        return false;
-                    }
+                    resolved.pop()?;
                 }
                 name => {
                     resolved.push(name);
                     if self.links.contains(resolved.join("/").as_str()) {
-                        return false;
+                        return None;
                     }
                 }
             }
         }
-        !resolved.is_empty() && !self.dirs.contains(resolved.join("/").as_str())
+        let resolved = resolved.join("/");
+        let leads_to_a_file = !resolved.is_empty() && !self.dirs.contains(resolved.as_str());
+        leads_to_a_file.then_some(resolved)
     }
 }

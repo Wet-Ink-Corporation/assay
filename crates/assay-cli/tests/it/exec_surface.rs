@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use assay_app::{ExecSurface, PackageSet, exec_surface};
+use assay_app::{ExecSurface, PackageSet, Symlink, exec_surface};
 use assay_cli::ForgeSupervisor;
 use assay_domain::{ExecCause, ExecRoot, PackageChange, PackageDiff};
 use assay_forge::git::{CommitSha, GitEnvironment, GitLimits, ObjectRepo, TreeLimits};
@@ -35,6 +35,8 @@ struct Vendored {
 struct Side<'a> {
     files: &'a [(&'a str, &'a str)],
     after_lock: &'a [(&'a str, &'a str)],
+    /// Symlinks (path, raw target) made after `files`, before the lockfile.
+    links: &'a [(&'a str, &'a str)],
     keep_lock: bool,
 }
 
@@ -111,6 +113,13 @@ fn commit(
 ) -> Result<CommitSha, Box<dyn Error>> {
     for (path, contents) in side.files {
         write(work, path, contents)?;
+    }
+    for (path, target) in side.links {
+        let link = work.join(path);
+        if let Some(parent) = link.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        std::os::unix::fs::symlink(target, link)?;
     }
     if !side.keep_lock {
         let generated = test_cargo(scratch, work)
@@ -207,8 +216,16 @@ fn package_set(
     )?;
     let mut supervisor = ForgeSupervisor::new(GroupKiller::system()?);
     let root = copy.root().to_str().ok_or("copy path is not UTF-8")?;
+    let symlinks = copy
+        .symlinks()
+        .iter()
+        .map(|link| Symlink {
+            path: link.path.clone(),
+            target: link.target.clone(),
+        })
+        .collect();
     match PinnedCargo::new(&mut supervisor, settings).metadata(copy.root()) {
-        Ok(metadata) => Ok(Some(PackageSet::from_metadata(&metadata, root)?)),
+        Ok(metadata) => Ok(Some(PackageSet::from_metadata(&metadata, root, symlinks)?)),
         Err(CargoError::Failed { .. }) => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -217,7 +234,9 @@ fn package_set(
 fn detect(pr: &Pr) -> Result<ExecSurface, Box<dyn Error>> {
     let base = package_set(pr, &pr.base, "base-copy")?;
     let head = package_set(pr, &pr.head, "head-copy")?;
-    Ok(exec_surface(base.as_ref(), head.as_ref()))
+    // The manifests' own roots are pinned by `assay-app`'s `exec_roots` tests; these cases
+    // exercise the package sets.
+    Ok(exec_surface(base.as_ref(), head.as_ref(), &[]))
 }
 
 #[test]
@@ -396,6 +415,98 @@ fn a_path_build_dependency_inherited_from_the_workspace_is_an_exec_root()
             exec_roots: vec![ExecRoot::Path("crates/helpers".to_owned())],
         },
         "an in-place edit changes no package, so only the root catches it"
+    );
+    Ok(())
+}
+
+/// The member `x`, with a build script and the build-dependency `helpers` at `helpers_path`
+/// (relative to `crates/x`).
+fn building_with(helpers_path: &str) -> String {
+    format!("{MEMBER}\n[build-dependencies]\nhelpers = {{ path = \"{helpers_path}\" }}\n")
+}
+
+const HELPERS: &str = "[package]\nname = \"helpers\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git and cargo; Miri cannot spawn processes")]
+fn a_symlink_leading_out_of_a_build_time_crate_is_everything() -> Result<(), Box<dyn Error>> {
+    // #65 review round 3 F1 (wi-b5affa): `crates/helpers/src/lib.rs` is a symlink to
+    // `shared/x.rs`, so an edit to `shared/x.rs` alone runs at build time.
+    let root = workspace("");
+    let member = building_with("../helpers");
+    let files = [
+        ("Cargo.toml", root.as_str()),
+        ("crates/x/Cargo.toml", member.as_str()),
+        ("crates/x/src/lib.rs", ""),
+        ("crates/x/build.rs", "fn main() {}\n"),
+        ("crates/helpers/Cargo.toml", HELPERS),
+        ("shared/x.rs", ""),
+    ];
+    let pr = pr(
+        &[],
+        &Side {
+            files: &files,
+            links: &[("crates/helpers/src/lib.rs", "../../../shared/x.rs")],
+            ..Side::default()
+        },
+        &Side {
+            files: &[("shared/x.rs", "pub fn edited() {}\n")],
+            ..Side::default()
+        },
+    )?;
+
+    let surface = detect(&pr)?;
+
+    assert_eq!(
+        surface,
+        ExecSurface {
+            packages: PackageDiff::Computed(Vec::new()),
+            exec_roots: vec![ExecRoot::Everything],
+        },
+        "the root cannot hold the symlink's target, so it is refused rather than modelled"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git and cargo; Miri cannot spawn processes")]
+fn a_library_path_outside_a_build_time_crate_is_everything() -> Result<(), Box<dyn Error>> {
+    // #65 review round 3 F2: `[lib] path = "../shared/lib.rs"` on a build-dependency. Real
+    // cargo reports `src_path` unnormalised (`<copy>/helpers/../shared/lib.rs`), and a path
+    // with a `..` segment is outside the copy, so this fails closed to `Everything` rather
+    // than giving `Path("shared")` (the normalised case is pinned in `assay-app`).
+    let root = workspace("");
+    let member = building_with("../../helpers");
+    let helpers = format!("{HELPERS}\n[lib]\npath = \"../shared/lib.rs\"\n");
+    let files = [
+        ("Cargo.toml", root.as_str()),
+        ("crates/x/Cargo.toml", member.as_str()),
+        ("crates/x/src/lib.rs", ""),
+        ("crates/x/build.rs", "fn main() {}\n"),
+        ("helpers/Cargo.toml", helpers.as_str()),
+        ("shared/lib.rs", ""),
+    ];
+    let pr = pr(
+        &[],
+        &Side {
+            files: &files,
+            ..Side::default()
+        },
+        &Side {
+            files: &[("shared/lib.rs", "pub fn edited() {}\n")],
+            ..Side::default()
+        },
+    )?;
+
+    let surface = detect(&pr)?;
+
+    assert_eq!(
+        surface,
+        ExecSurface {
+            packages: PackageDiff::Computed(Vec::new()),
+            exec_roots: vec![ExecRoot::Everything],
+        },
+        "the edit to shared/lib.rs is exec surface"
     );
     Ok(())
 }

@@ -63,7 +63,18 @@ impl ExecRoot {
     /// Whether `path` is this root or lies under it, ignoring ASCII case. A root that is not
     /// canonical (an empty `Path` included) holds every path, as `Everything` does (fail
     /// closed).
-    pub(super) fn holds(&self, path: &str) -> bool {
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use assay_domain::ExecRoot;
+    ///
+    /// let root = ExecRoot::Path("crates/helpers".to_owned());
+    /// assert!(root.holds("crates/helpers/src/lib.rs"));
+    /// assert!(!root.holds("crates/helpers-two/src/lib.rs"));
+    /// ```
+    #[must_use]
+    pub fn holds(&self, path: &str) -> bool {
         match self {
             Self::Path(root) => !is_canonical(root) || is_under(path, root),
             Self::BuildSources { crate_dir } => build_source(path, crate_dir),

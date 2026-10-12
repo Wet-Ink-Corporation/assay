@@ -29,9 +29,28 @@ const NEUTRALISED_DIR: &str = ".cargo";
 pub struct ManifestCopy {
     root: PathBuf,
     manifests: Vec<String>,
+    symlinks: Vec<CopiedSymlink>,
+}
+
+/// A symlink of the tree that the copy accepted and wrote as an empty file, with where it
+/// leads. Both are repo-relative, `/`-separated paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopiedSymlink {
+    /// The symlink's own path.
+    pub path: String,
+    /// Its target, resolved lexically from the symlink's directory; it may name nothing.
+    pub target: String,
 }
 
 impl ManifestCopy {
+    /// Every symlink the copy accepted (cargo configuration, toolchain files and attributes
+    /// are never copied, so theirs are not here), in git's order. A build-time root that
+    /// holds one but not its target must be widened by the caller (wi-b5affa).
+    #[must_use]
+    pub fn symlinks(&self) -> &[CopiedSymlink] {
+        &self.symlinks
+    }
+
     /// The copy's directory, canonical, so it is the directory cargo reports paths under.
     #[must_use]
     pub fn root(&self) -> &Path {
@@ -165,12 +184,21 @@ impl ObjectRepo {
             .collect();
         let contents = self.read_blobs(&blobs, limits).map_err(CopyError::Read)?;
         let tree = link::Tree::new(&entries);
-        if let Some(((entry, _), _)) = read.iter().zip(&contents).find(|((entry, role), target)| {
-            *role == Role::Link && !tree.allows(&entry.path, target)
-        }) {
-            return Err(CopyError::Symlink {
-                // The error owns the path it names.
+        let mut symlinks = Vec::new();
+        for ((entry, role), target) in read.iter().zip(&contents) {
+            if *role != Role::Link {
+                continue;
+            }
+            let Some(target) = tree.resolve(&entry.path, target) else {
+                return Err(CopyError::Symlink {
+                    // The error owns the path it names.
+                    path: entry.path.clone(),
+                });
+            };
+            symlinks.push(CopiedSymlink {
+                // The copy reports the symlinks it accepted, so it owns their paths.
                 path: entry.path.clone(),
+                target,
             });
         }
         for (entry, _) in roles
@@ -191,7 +219,11 @@ impl ObjectRepo {
             path: into.to_path_buf(),
             source,
         })?;
-        Ok(ManifestCopy { root, manifests })
+        Ok(ManifestCopy {
+            root,
+            manifests,
+            symlinks,
+        })
     }
 }
 
