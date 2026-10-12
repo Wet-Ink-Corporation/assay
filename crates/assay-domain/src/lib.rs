@@ -26,6 +26,7 @@ mod rubric;
 mod run_uid;
 mod severity;
 mod tier;
+mod tiering;
 
 pub use aeu::Aeu;
 pub use content_hash::ContentHash;
@@ -53,3 +54,8 @@ pub use rubric::{Rubric, RubricError};
 pub use run_uid::RunUid;
 pub use severity::{Marker, Severity};
 pub use tier::{PrClass, Tier};
+pub use tiering::{
+    BaselineChange, ChangeSet, ExecCause, FileChange, FilteredStats, Glob, GlobError, Lines,
+    ManifestKey, ManifestTrustChange, PackageChange, PackageDiff, RepoGlobs, RequiredRole,
+    TierReason, Tiering, tier,
+};
