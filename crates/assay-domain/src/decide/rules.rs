@@ -94,11 +94,7 @@ fn gates<'a>(
 /// A failed gate whose every finding was waived no longer fails; one with no findings cannot be
 /// waived.
 fn fully_waived(gate: &GateReport, waivers: &Waivers<'_>) -> bool {
-    !gate.findings.is_empty()
-        && gate
-            .findings
-            .iter()
-            .all(|finding| waivers.covers(gate, finding))
+    !gate.findings.is_empty() && gate.findings.iter().all(|finding| waivers.covers(finding))
 }
 
 /// Rules 2, 2a, 3 and 4: the base, the head, the tier and owner approval.
@@ -172,7 +168,7 @@ fn blockers(inputs: &DecisionInputs) -> Vec<Firing> {
             reason: Reason {
                 code: ReasonCode::BlockerVerified,
                 detail: "verified blocker".to_owned(),
-                fp: Some(finding.fp.clone()),
+                fp: Some(finding.fp),
             },
         })
         .collect()

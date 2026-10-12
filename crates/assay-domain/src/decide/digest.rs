@@ -19,6 +19,7 @@ use crate::decision::{DegradedRole, FindingDisposition, Reason};
 use crate::disposition::Disposition;
 use crate::event::VerifierVerdict;
 use crate::findings::GateConclusion;
+use crate::fingerprint::Fingerprint;
 use crate::reason::ReasonCode;
 use crate::rubric::Rubric;
 use crate::severity::Severity;
@@ -96,6 +97,14 @@ impl Canonical for str {
 impl Canonical for String {
     fn encode(&self, encoder: &mut Encoder) {
         self.as_str().encode(encoder);
+    }
+}
+
+/// A fingerprint is encoded as its wire text, 16 lowercase hex digits, length-prefixed like any
+/// string, so the digest reads the same bytes the decision's JSON carries.
+impl Canonical for Fingerprint {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.to_string().encode(encoder);
     }
 }
 

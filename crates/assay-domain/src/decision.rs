@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::decide::digest;
 use crate::disposition::Disposition;
+use crate::fingerprint::Fingerprint;
 use crate::reason::ReasonCode;
 use crate::vocabulary::closed_enum;
 
@@ -40,9 +41,8 @@ pub struct Reason {
     /// Human-readable detail: the gate, the base ref, the role or the override scope.
     pub detail: String,
     /// The finding this reason is about, if any.
-    // A plain string until the `Fingerprint` type of #49 lands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fp: Option<String>,
+    pub fp: Option<Fingerprint>,
 }
 
 /// How many findings of each severity the decision considered.
@@ -64,7 +64,7 @@ pub struct Counts {
 #[serde(deny_unknown_fields)]
 pub struct FindingDisposition {
     /// The finding's fingerprint.
-    pub fp: String,
+    pub fp: Fingerprint,
     /// What happened to it.
     pub code: Disposition,
 }
@@ -74,7 +74,7 @@ pub struct FindingDisposition {
 #[serde(deny_unknown_fields)]
 pub struct Waived {
     /// The waived finding's fingerprint.
-    pub fp: String,
+    pub fp: Fingerprint,
     /// Who waived it.
     pub by: String,
 }
@@ -107,7 +107,7 @@ pub struct Decision {
     /// Findings considered, by severity.
     pub counts: Counts,
     /// Verified blockers published while `llm_blockers` is advisory.
-    pub advisory_blockers: Vec<String>,
+    pub advisory_blockers: Vec<Fingerprint>,
     /// What happened to individual findings.
     pub dispositions: Vec<FindingDisposition>,
     /// Gate findings removed by owner waivers.

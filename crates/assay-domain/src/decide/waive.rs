@@ -2,88 +2,70 @@
 //! one human-decision gate finding from rule 1.
 //!
 //! A fingerprint names a finding, not a gate or a rule, and two findings can share one (a temper
-//! `exception` and a clippy finding on the same line). So a waiver is resolved to the
-//! (gate, fingerprint) pairs of findings whose own rule the rubric lists as waivable, and a
-//! finding counts as waived only if its own rule is waivable and its own pair was resolved.
+//! `exception` and a clippy finding on the same line). A waiver therefore applies all or
+//! nothing: it clears its fingerprint only when every gate finding carrying it, in every gate,
+//! has a rule the rubric lists as waivable for that gate. Otherwise it clears none of them, so
+//! what a decision counts and what it reports `waived` are always the same findings.
 
 use std::collections::BTreeMap;
 
 use crate::decide::inputs::{DecisionInputs, GateFinding, GateReport};
 use crate::decision::Waived;
+use crate::fingerprint::Fingerprint;
 use crate::rubric::Rubric;
 
 /// The waivers of one decision, resolved against its gates.
 pub(super) struct Waivers<'a> {
-    rubric: &'a Rubric,
-    gates: &'a [GateReport],
-    /// (gate name, fingerprint) of each waived finding, and who waived it.
-    applied: BTreeMap<(&'a str, &'a str), &'a str>,
+    /// Each applied fingerprint and who waived it. Every gate finding carrying one of these is
+    /// waivable for its own gate.
+    applied: BTreeMap<Fingerprint, &'a str>,
 }
 
 impl<'a> Waivers<'a> {
-    /// Resolves the inputs' waivers. A waiver with an empty actor is not applied: it could not
-    /// be recorded in the decision's `waived` list.
-    pub(super) fn resolve(rubric: &'a Rubric, inputs: &'a DecisionInputs) -> Self {
+    /// Resolves the inputs' waivers. A waiver is applied only if it has an actor (it could not
+    /// be recorded in the decision's `waived` list otherwise) and its fingerprint is carried by
+    /// at least one gate finding and only by waivable ones. The first applicable waiver of a
+    /// fingerprint names who waived it.
+    pub(super) fn resolve(rubric: &Rubric, inputs: &'a DecisionInputs) -> Self {
         let mut applied = BTreeMap::new();
-        for gate in &inputs.gates {
-            for finding in &gate.findings {
-                if !waivable(rubric, gate, finding) {
-                    continue;
-                }
-                let by = inputs
-                    .waivers
-                    .iter()
-                    .find(|waiver| waiver.fp == finding.fp && !waiver.by.is_empty());
-                if let Some(waiver) = by {
-                    applied
-                        .entry((gate.name.as_str(), finding.fp.as_str()))
-                        .or_insert(waiver.by.as_str());
-                }
+        for waiver in &inputs.waivers {
+            if !waiver.by.is_empty() && clearable(rubric, &inputs.gates, waiver.fp) {
+                applied.entry(waiver.fp).or_insert(waiver.by.as_str());
             }
         }
-        Self {
-            rubric,
-            gates: &inputs.gates,
-            applied,
-        }
+        Self { applied }
     }
 
-    /// Whether `finding` of `gate` is waived: its own rule is waivable and its own
-    /// (gate, fingerprint) pair was waived.
-    pub(super) fn covers(&self, gate: &GateReport, finding: &GateFinding) -> bool {
-        waivable(self.rubric, gate, finding)
-            && self
-                .applied
-                .contains_key(&(gate.name.as_str(), finding.fp.as_str()))
+    /// Whether `finding` is waived: a waiver applied to its fingerprint.
+    pub(super) fn covers(&self, finding: &GateFinding) -> bool {
+        self.applied.contains_key(&finding.fp)
     }
 
-    /// The decision's `waived` list: one entry per fingerprint that every gate finding carrying
-    /// it is waived under, sorted. A fingerprint some other finding still carries unwaived is
-    /// not reported, so the decision never says a finding was waived that still counts.
+    /// The decision's `waived` list: one entry per applied fingerprint, sorted.
     pub(super) fn waived(&self) -> Vec<Waived> {
-        let by_fp: BTreeMap<&str, &str> = self
-            .applied
+        self.applied
             .iter()
-            .map(|(&(_, fp), &by)| (fp, by))
-            .collect();
-        by_fp
-            .into_iter()
-            .filter(|&(fp, _)| self.every_carrier_covered(fp))
-            .map(|(fp, by)| Waived {
-                fp: fp.to_owned(),
+            .map(|(&fp, &by)| Waived {
+                fp,
                 by: by.to_owned(),
             })
             .collect()
     }
+}
 
-    fn every_carrier_covered(&self, fp: &str) -> bool {
-        self.gates.iter().all(|gate| {
+/// Whether a waiver of `fp` may clear it: some gate finding carries it, and every one that does
+/// has a rule the rubric lists as waivable for its own gate.
+fn clearable(rubric: &Rubric, gates: &[GateReport], fp: Fingerprint) -> bool {
+    let mut carriers = gates
+        .iter()
+        .flat_map(|gate| {
             gate.findings
                 .iter()
-                .filter(|finding| finding.fp == fp)
-                .all(|finding| self.covers(gate, finding))
+                .filter(move |finding| finding.fp == fp)
+                .map(move |finding| (gate, finding))
         })
-    }
+        .peekable();
+    carriers.peek().is_some() && carriers.all(|(gate, finding)| waivable(rubric, gate, finding))
 }
 
 fn waivable(rubric: &Rubric, gate: &GateReport, finding: &GateFinding) -> bool {

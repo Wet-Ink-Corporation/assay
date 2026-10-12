@@ -2,11 +2,13 @@
 //! from a deferred LLM stage, a decision that reads back as written, and a required gate no
 //! waiver can clear failing unless an `all` override applies.
 
+use std::collections::BTreeSet;
+
 use assay_domain::{
-    Authorship, Conclusion, DecisionInputs, Deferral, DegradedRole, Disposition,
-    FindingDisposition, GateConclusion, GateFinding, GateOutcome, GateReport, InfraPolicy,
-    LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy, PrClass,
-    PullRequest, Readiness, ReviewedFinding, Rubric, Severity, StepAttribution, Tier,
+    Authorship, Conclusion, Counts, DecisionInputs, Deferral, DegradedRole, Disposition,
+    FindingDisposition, Fingerprint, GateConclusion, GateFinding, GateOutcome, GateReport,
+    InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy,
+    PrClass, PullRequest, Readiness, ReviewedFinding, Rubric, Severity, StepAttribution, Tier,
     VerifierVerdict, Waiver, WeighIn, decide,
 };
 use proptest::collection::vec;
@@ -14,12 +16,21 @@ use proptest::option;
 use proptest::prelude::*;
 use proptest::sample::select;
 
-use crate::support::{clean_inputs, rubric_v1};
+use crate::support::{clean_inputs, fp as fingerprint, rubric_v1};
 
 /// Few distinct fingerprints, so waivers often name a generated finding and fingerprints collide
 /// across gates and rules.
-fn fp() -> impl Strategy<Value = String> {
-    "[0-3]".prop_map(|tail| format!("000000000000000{tail}"))
+fn fp() -> impl Strategy<Value = Fingerprint> {
+    select(
+        [
+            "0000000000000000",
+            "0000000000000001",
+            "0000000000000002",
+            "0000000000000003",
+        ]
+        .map(fingerprint)
+        .to_vec(),
+    )
 }
 
 /// Whether no waiver can clear `gate`'s rule 1 failure: it errored or was skipped, or it failed
@@ -274,9 +285,65 @@ fn gate_inputs() -> impl Strategy<Value = DecisionInputs> {
     })
 }
 
+/// Whether rule 8a may leave `inputs` pending, read from the raw inputs alone: the LLM stage was
+/// deferred, or it did not run on a tier that has one (`full`, `lite`, `micro`) without a real
+/// draft to excuse it (`no-llm-tier` contradicts the tier; `draft` needs a PR that is still a
+/// draft).
+fn may_be_pending(inputs: &DecisionInputs) -> bool {
+    match inputs.llm {
+        LlmStage::Deferred { .. } => true,
+        LlmStage::NotRun { reason } => {
+            matches!(inputs.pr.tier, Tier::Full | Tier::Lite | Tier::Micro)
+                && (reason == NotRunReason::NoLlmTier || inputs.pr.readiness == Readiness::Ready)
+        }
+        LlmStage::Completed => false,
+    }
+}
+
+/// Clean inputs except for the LLM stage and what rule 8 reads beside it, so rule 8 decides the
+/// conclusion.
+fn llm_inputs() -> impl Strategy<Value = DecisionInputs> {
+    (
+        select(Tier::ALL.to_vec()),
+        select(Readiness::ALL.to_vec()),
+        select(Authorship::ALL.to_vec()),
+        0_u32..5,
+        select(InfraPolicy::ALL.to_vec()),
+        llm_stage(),
+    )
+        .prop_map(
+            |(tier, readiness, authorship, requeues, on_infra_failure, llm)| {
+                let mut inputs = clean_inputs();
+                inputs.pr.tier = tier;
+                inputs.pr.readiness = readiness;
+                inputs.pr.authorship = authorship;
+                inputs.pr.requeues = requeues;
+                inputs.policy.on_infra_failure = on_infra_failure;
+                inputs.llm = llm;
+                inputs
+            },
+        )
+}
+
+/// Any inputs, made a ready PR on a tier with an LLM stage whose stage did not run.
+fn ready_reviewed_not_run_inputs() -> impl Strategy<Value = DecisionInputs> {
+    (
+        prop_oneof![inputs(), llm_inputs()],
+        select(vec![Tier::Full, Tier::Lite, Tier::Micro]),
+        select(NotRunReason::ALL.to_vec()),
+    )
+        .prop_map(|(mut inputs, tier, reason)| {
+            inputs.pr.tier = tier;
+            inputs.pr.readiness = Readiness::Ready;
+            inputs.llm = LlmStage::NotRun { reason };
+            inputs
+        })
+}
+
 proptest! {
-    // The waiver-clears-everything case is a few percent of generated inputs; 4,096 cases run in
-    // well under a second and find a gate wrongly cleared reliably.
+    // The cases these properties are about (every gate cleared by waivers, a stage that did not
+    // run on a tier without one) are a few percent of generated inputs or fewer; 4,096 cases
+    // run in about a second and find them reliably.
     #![proptest_config(ProptestConfig::with_cases(4096))]
 
     #[test]
@@ -320,6 +387,46 @@ proptest! {
         }
     }
 
+    #[test]
+    fn the_findings_a_waiver_stops_counting_are_exactly_those_reported_waived(
+        inputs in gate_inputs(),
+    ) {
+        let rubric = rubric_v1().expect("rubric/v1.toml parses");
+
+        let decision = decide(&rubric, &inputs);
+
+        // `gate_inputs` has no reviewer findings, so every count is a gate finding's: those
+        // whose fingerprint is reported waived drop out, and every other one still counts.
+        let waived: BTreeSet<Fingerprint> = decision.waived.iter().map(|w| w.fp).collect();
+        let mut expected = Counts::default();
+        for finding in inputs.gates.iter().flat_map(|gate| &gate.findings) {
+            if waived.contains(&finding.fp) {
+                continue;
+            }
+            let count = match finding.severity {
+                Severity::Blocker => &mut expected.blocker,
+                Severity::Major => &mut expected.major,
+                Severity::Minor => &mut expected.minor,
+                Severity::Nit => &mut expected.nit,
+            };
+            *count += 1;
+        }
+        prop_assert_eq!(decision.counts, expected, "waived {:?}", waived);
+    }
+
+    #[test]
+    fn pending_comes_only_from_a_deferred_or_unexcused_llm_stage(
+        inputs in prop_oneof![inputs(), llm_inputs()],
+    ) {
+        let rubric = rubric_v1().expect("rubric/v1.toml parses");
+
+        let decision = decide(&rubric, &inputs);
+
+        prop_assert!(
+            decision.conclusion != Conclusion::Pending || may_be_pending(&inputs),
+            "{:?} from {:?} on {:?}", decision.reasons, inputs.llm, inputs.pr
+        );
+    }
 }
 
 proptest! {
@@ -336,15 +443,16 @@ proptest! {
     }
 
     #[test]
-    fn pending_comes_only_from_a_deferred_llm_stage(inputs in inputs()) {
+    fn a_ready_reviewed_pr_whose_llm_stage_did_not_run_never_succeeds_silently(
+        inputs in ready_reviewed_not_run_inputs(),
+    ) {
         let rubric = rubric_v1().expect("rubric/v1.toml parses");
 
         let decision = decide(&rubric, &inputs);
 
         prop_assert!(
-            decision.conclusion != Conclusion::Pending
-                || matches!(inputs.llm.effective(&inputs.pr), LlmStage::Deferred { .. }),
-            "{:?} from {:?}", decision.reasons, inputs.llm
+            decision.conclusion != Conclusion::Success || !decision.reasons.is_empty(),
+            "a reasonless success from {:?} on a ready {:?} PR", inputs.llm, inputs.pr.tier
         );
     }
 

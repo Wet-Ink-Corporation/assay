@@ -1,5 +1,6 @@
-//! Waivers are bound to one gate and one waivable rule: a fingerprint names a finding, not a
-//! gate or a rule, so a colliding fingerprint never clears anything else; and a failed gate is
+//! Waivers apply all or nothing: a fingerprint names a finding, not a gate or a rule, so a
+//! waiver clears its fingerprint only where every gate finding carrying it has a rule waivable
+//! for its own gate, and otherwise clears none of them; and a failed gate is
 //! cleared only when its adapter attested that no step failed without a finding
 //! (`docs/architecture/04-pipeline.md` §5 waive, 03 §2.1).
 
@@ -10,7 +11,7 @@ use assay_domain::{
     GateOutcome, GateReport, ReasonCode, Severity, StepAttribution, Waived, Waiver, decide,
 };
 
-use crate::support::{attested_gate, clean_inputs, gate, gate_finding, reason, rubric_v1};
+use crate::support::{attested_gate, clean_inputs, fp, gate, gate_finding, reason, rubric_v1};
 
 const SHARED_FP: &str = "00000000000000c1";
 
@@ -18,9 +19,9 @@ fn decided(inputs: &DecisionInputs) -> Result<Decision, Box<dyn Error>> {
     Ok(decide(&rubric_v1()?, inputs))
 }
 
-fn waiver(fp: &str, by: &str) -> Waiver {
+fn waiver(fp_text: &str, by: &str) -> Waiver {
     Waiver {
-        fp: fp.to_owned(),
+        fp: fp(fp_text),
         by: by.to_owned(),
     }
 }
@@ -35,7 +36,8 @@ fn failed_temper(steps: StepAttribution, findings: Vec<GateFinding>) -> GateRepo
 }
 
 #[test]
-fn a_waiver_does_not_clear_a_colliding_finding_of_another_gate() -> Result<(), Box<dyn Error>> {
+fn a_waiver_clears_nothing_when_its_fingerprint_also_names_an_unwaivable_finding_of_another_gate()
+-> Result<(), Box<dyn Error>> {
     let mut inputs = clean_inputs();
     inputs.gates = vec![
         attested_gate(
@@ -54,7 +56,20 @@ fn a_waiver_does_not_clear_a_colliding_finding_of_another_gate() -> Result<(), B
     assert_eq!(decision.conclusion, Conclusion::Failure);
     assert_eq!(
         decision.reasons,
-        [reason(ReasonCode::GateFailed, "custom-lint")]
+        [
+            reason(ReasonCode::GateFailed, "temper"),
+            reason(ReasonCode::GateFailed, "custom-lint"),
+        ],
+        "the waiver names a fingerprint it cannot clear everywhere, so it clears it nowhere"
+    );
+    assert_eq!(
+        decision.counts,
+        Counts {
+            blocker: 0,
+            major: 2,
+            minor: 0,
+            nit: 0,
+        }
     );
     Ok(())
 }
@@ -83,7 +98,7 @@ fn a_fingerprint_is_not_reported_waived_while_another_finding_carries_it_unwaive
 }
 
 #[test]
-fn a_waiver_does_not_clear_a_colliding_non_waivable_finding_of_the_same_gate()
+fn a_waiver_clears_nothing_when_its_fingerprint_also_names_an_unwaivable_finding_of_its_gate()
 -> Result<(), Box<dyn Error>> {
     let mut inputs = clean_inputs();
     inputs.gates = vec![attested_gate(
@@ -104,11 +119,11 @@ fn a_waiver_does_not_clear_a_colliding_non_waivable_finding_of_the_same_gate()
         decision.counts,
         Counts {
             blocker: 1,
-            major: 0,
+            major: 1,
             minor: 0,
             nit: 0,
         },
-        "the clippy finding still counts; the waived exception does not"
+        "both findings still count: a waiver that cannot clear every carrier clears none"
     );
     Ok(())
 }

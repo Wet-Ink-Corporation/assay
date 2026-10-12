@@ -7,9 +7,10 @@ use std::io;
 use std::path::PathBuf;
 
 use assay_domain::{
-    Authorship, DecisionInputs, GateConclusion, GateFinding, GateOutcome, GateReport, InfraPolicy,
-    LlmPolicy, LlmStage, OwnerApproval, Policy, PrClass, PullRequest, Readiness, Reason,
-    ReasonCode, ReviewedFinding, Rubric, Severity, StepAttribution, Tier, VerifierVerdict, WeighIn,
+    Authorship, DecisionInputs, Fingerprint, GateConclusion, GateFinding, GateOutcome, GateReport,
+    InfraPolicy, LlmPolicy, LlmStage, OwnerApproval, Policy, PrClass, PullRequest, Readiness,
+    Reason, ReasonCode, ReviewedFinding, Rubric, Severity, StepAttribution, Tier, VerifierVerdict,
+    WeighIn,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -157,10 +158,16 @@ pub(crate) fn attested_gate(name: &str, findings: Vec<GateFinding>) -> GateRepor
     }
 }
 
+/// The fingerprint written `text`, 16 lowercase hex digits.
+pub(crate) fn fp(text: &str) -> Fingerprint {
+    text.parse()
+        .expect("test fingerprints are written as 16 lowercase hex digits")
+}
+
 /// A gate finding of `rule` at `severity`.
-pub(crate) fn gate_finding(fp: &str, rule: &str, severity: Severity) -> GateFinding {
+pub(crate) fn gate_finding(fp_text: &str, rule: &str, severity: Severity) -> GateFinding {
     GateFinding {
-        fp: fp.to_owned(),
+        fp: fp(fp_text),
         rule: Some(rule.to_owned()),
         severity,
     }
@@ -168,10 +175,10 @@ pub(crate) fn gate_finding(fp: &str, rule: &str, severity: Severity) -> GateFind
 
 /// A finding from the `bugs` role in its own group, confirmed by the verifier and introduced by
 /// the diff.
-pub(crate) fn confirmed(fp: &str, severity: Severity) -> ReviewedFinding {
+pub(crate) fn confirmed(fp_text: &str, severity: Severity) -> ReviewedFinding {
     ReviewedFinding {
-        fp: fp.to_owned(),
-        group_id: format!("group-{fp}"),
+        fp: fp(fp_text),
+        group_id: format!("group-{fp_text}"),
         role: "bugs".to_owned(),
         severity,
         pre_existing: false,

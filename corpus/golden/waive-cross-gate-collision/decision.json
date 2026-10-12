@@ -6,12 +6,16 @@
   "reasons": [
     {
       "code": "gate-failed",
+      "detail": "temper"
+    },
+    {
+      "code": "gate-failed",
       "detail": "custom-lint"
     }
   ],
   "counts": {
     "blocker": 0,
-    "major": 1,
+    "major": 2,
     "minor": 0,
     "nit": 0
   },

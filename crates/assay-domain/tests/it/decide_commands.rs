@@ -9,7 +9,7 @@ use assay_domain::{
     ReasonCode, Severity, Tier, Waived, Waiver, decide,
 };
 
-use crate::support::{attested_gate, clean_inputs, confirmed, gate_finding, reason, rubric_v1};
+use crate::support::{attested_gate, clean_inputs, confirmed, fp, gate_finding, reason, rubric_v1};
 
 /// `printf 'gate-failed\n' | sha256sum`
 const GATE_FAILED_DIGEST: &str =
@@ -48,9 +48,9 @@ fn temper_failed(with_clippy: bool) -> DecisionInputs {
     inputs
 }
 
-fn waiver(fp: &str) -> Waiver {
+fn waiver(fp_text: &str) -> Waiver {
     Waiver {
-        fp: fp.to_owned(),
+        fp: fp(fp_text),
         by: "owner".to_owned(),
     }
 }
@@ -75,14 +75,14 @@ fn waiving_the_only_human_decision_finding_clears_the_gate() -> Result<(), Box<d
     assert_eq!(
         decision.waived,
         [Waived {
-            fp: "00000000000000a1".to_owned(),
+            fp: fp("00000000000000a1"),
             by: "owner".to_owned(),
         }]
     );
     assert_eq!(
         decision.dispositions,
         [FindingDisposition {
-            fp: "00000000000000a1".to_owned(),
+            fp: fp("00000000000000a1"),
             code: Disposition::WaivedByOwner,
         }]
     );
@@ -314,8 +314,8 @@ fn counts_hold_reviewer_findings_and_unwaived_gate_findings() -> Result<(), Box<
 #[test]
 fn upstream_dispositions_are_kept_sorted() -> Result<(), Box<dyn Error>> {
     let mut inputs = clean_inputs();
-    let disposition = |fp: &str, code| FindingDisposition {
-        fp: fp.to_owned(),
+    let disposition = |fp_text: &str, code| FindingDisposition {
+        fp: fp(fp_text),
         code,
     };
     inputs.dispositions = vec![

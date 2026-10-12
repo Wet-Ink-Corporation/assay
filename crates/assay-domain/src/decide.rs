@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 
 use crate::decision::{Conclusion, Counts, Decision, DecisionSchema, FindingDisposition, Reason};
 use crate::disposition::Disposition;
+use crate::fingerprint::Fingerprint;
 use crate::reason::ReasonCode;
 use crate::rubric::Rubric;
 use crate::severity::Severity;
@@ -52,7 +53,7 @@ pub fn decide(rubric: &Rubric, inputs: &DecisionInputs) -> Decision {
         .iter()
         .cloned()
         .chain(waived.iter().map(|w| FindingDisposition {
-            fp: w.fp.clone(),
+            fp: w.fp,
             code: Disposition::WaivedByOwner,
         }))
         .collect();
@@ -118,9 +119,9 @@ fn counts(inputs: &DecisionInputs, waivers: &Waivers<'_>) -> Counts {
     let gates = inputs
         .gates
         .iter()
-        .flat_map(|gate| gate.findings.iter().map(move |f| (gate, f)))
-        .filter(|&(gate, f)| !waivers.covers(gate, f))
-        .map(|(_, f)| f.severity);
+        .flat_map(|gate| &gate.findings)
+        .filter(|f| !waivers.covers(f))
+        .map(|f| f.severity);
     reviewer
         .chain(gates)
         .fold(Counts::default(), |mut counts, severity| {
@@ -136,12 +137,10 @@ fn counts(inputs: &DecisionInputs, waivers: &Waivers<'_>) -> Counts {
 }
 
 /// Verified blockers published, not failing, while `llm_blockers` is advisory.
-fn advisory_blockers(inputs: &DecisionInputs) -> Vec<String> {
+fn advisory_blockers(inputs: &DecisionInputs) -> Vec<Fingerprint> {
     if inputs.policy.llm_blockers != LlmPolicy::Advisory {
         return Vec::new();
     }
-    let fps: BTreeSet<&str> = rules::verified_blockers(inputs)
-        .map(|f| f.fp.as_str())
-        .collect();
-    fps.into_iter().map(str::to_owned).collect()
+    let fps: BTreeSet<Fingerprint> = rules::verified_blockers(inputs).map(|f| f.fp).collect();
+    fps.into_iter().collect()
 }

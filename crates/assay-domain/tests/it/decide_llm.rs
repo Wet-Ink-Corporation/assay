@@ -9,7 +9,7 @@ use assay_domain::{
     decide,
 };
 
-use crate::support::{clean_inputs, confirmed, reason, rubric_v1};
+use crate::support::{clean_inputs, confirmed, fp, reason, rubric_v1};
 
 fn decided(inputs: &DecisionInputs) -> Result<Decision, Box<dyn Error>> {
     Ok(decide(&rubric_v1()?, inputs))
@@ -49,7 +49,7 @@ fn an_advisory_verified_blocker_succeeds_and_is_listed() -> Result<(), Box<dyn E
 
     assert_eq!(decision.conclusion, Conclusion::Success);
     assert_eq!(decision.reasons, []);
-    assert_eq!(decision.advisory_blockers, ["00000000000000b1"]);
+    assert_eq!(decision.advisory_blockers, [fp("00000000000000b1")]);
     Ok(())
 }
 
@@ -66,10 +66,10 @@ fn a_verified_blocker_fails_when_llm_blockers_block() -> Result<(), Box<dyn Erro
         [Reason {
             code: ReasonCode::BlockerVerified,
             detail: "verified blocker".to_owned(),
-            fp: Some("00000000000000b1".to_owned()),
+            fp: Some(fp("00000000000000b1")),
         }]
     );
-    assert_eq!(decision.advisory_blockers, Vec::<String>::new());
+    assert_eq!(decision.advisory_blockers, []);
     Ok(())
 }
 

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::decision::{DegradedRole, FindingDisposition};
 use crate::event::VerifierVerdict;
 use crate::findings::GateConclusion;
+use crate::fingerprint::Fingerprint;
 use crate::reason::ReasonCode;
 use crate::severity::Severity;
 use crate::tier::{PrClass, Tier};
@@ -97,8 +98,11 @@ pub struct PullRequest {
     pub owner_approval: OwnerApproval,
     /// Whether an agent identity authored the PR (rule 8a, `slot-busy`).
     pub authorship: Authorship,
-    /// Whether the PR is a draft (04 §2.4: drafts run gates only); checked against an LLM stage
-    /// excused as a draft.
+    /// The PR's draft flag from Z4's GitHub state snapshot taken at decide time (04 §5 inputs,
+    /// 03 §2.1). It is independent of the plan whose `draft` yields
+    /// [`NotRunReason::Draft`]: that excuse holds only while this still reads `Draft`. A
+    /// decide-only re-decision must refresh it from a new snapshot, never reuse the evidence
+    /// run's plan or snapshot, or a PR marked ready after its run would keep its draft excuse.
     pub readiness: Readiness,
     /// How many times this head's deferred run was already requeued (rule 8a).
     pub requeues: u32,
@@ -125,7 +129,8 @@ closed_enum! {
 }
 
 closed_enum! {
-    /// Whether the PR is a draft, from the event that triggered the run.
+    /// Whether the PR is a draft, as GitHub reported it in the snapshot taken at decide time
+    /// (see [`PullRequest::readiness`]).
     pub enum Readiness {
         /// A draft: the LLM stage runs on `ready_for_review` (04 §2.4).
         Draft => "draft",
@@ -198,8 +203,7 @@ impl StepAttribution {
 #[serde(deny_unknown_fields)]
 pub struct GateFinding {
     /// The fingerprint Z4 computed.
-    // A plain string until the `Fingerprint` type of #49 lands.
-    pub fp: String,
+    pub fp: Fingerprint,
     /// The plugin's rule id; waivers read it.
     pub rule: Option<String>,
     /// The display severity the adapter mapped.
@@ -274,7 +278,9 @@ closed_enum! {
     pub enum NotRunReason {
         /// The plan says the tier has no LLM stage (`trivial`, `needs-split`).
         NoLlmTier => "no-llm-tier",
-        /// The PR is a draft: gates only until `ready_for_review` (04 §2.4).
+        /// The plan (`assay.run/1` `draft`) says the PR is a draft: gates only until
+        /// `ready_for_review` (04 §2.4). Excused only while [`PullRequest::readiness`], read at
+        /// decide time, still says `Draft`.
         Draft => "draft",
     }
 }
@@ -308,8 +314,7 @@ impl Deferral {
 #[serde(deny_unknown_fields)]
 pub struct ReviewedFinding {
     /// The fingerprint Z4 computed.
-    // A plain string until the `Fingerprint` type of #49 lands.
-    pub fp: String,
+    pub fp: Fingerprint,
     /// The coordinator's root-cause group; majors are counted by distinct group.
     pub group_id: String,
     /// The role that raised it.
@@ -327,7 +332,7 @@ pub struct ReviewedFinding {
 #[serde(deny_unknown_fields)]
 pub struct Waiver {
     /// The finding it names.
-    pub fp: String,
+    pub fp: Fingerprint,
     /// The eligible owner who issued it.
     pub by: String,
 }
