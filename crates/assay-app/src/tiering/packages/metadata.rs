@@ -141,7 +141,10 @@ fn graph(packages: &[PackageDto], resolve: ResolveDto) -> Result<Vec<Vec<Edge>>,
             .ok_or(MetadataError::UnknownPackage)?;
         for dep in node.deps {
             let to = find(&dep.pkg)?;
-            let (normal, build) = dep.dep_kinds.iter().fold((false, false), |seen, kind| {
+            // No named kind at all (older cargo, or a shape it may print): count it as both
+            // (fail closed).
+            let unnamed = (dep.dep_kinds.is_empty(), dep.dep_kinds.is_empty());
+            let (normal, build) = dep.dep_kinds.iter().fold(unnamed, |seen, kind| {
                 match kind.kind.as_deref() {
                     None => (true, seen.1),
                     Some("build") => (seen.0, true),

@@ -44,8 +44,17 @@ impl Pkg {
     }
 
     fn git(name: &'static str, version: &'static str) -> Self {
+        Self::from(
+            "git+https://example.invalid/x.git#0123456789abcdef",
+            name,
+            version,
+        )
+    }
+
+    /// A lib-only package from `source`.
+    fn from(source: &'static str, name: &'static str, version: &'static str) -> Self {
         Self {
-            source: Some("git+https://example.invalid/x.git#0123456789abcdef"),
+            source: Some(source),
             ..Self::registry(name, version)
         }
     }
@@ -312,6 +321,71 @@ fn new_git_crate_is_exec_surface() -> Result<(), MetadataError> {
         packages(&[], &head)?,
         PackageDiff::Computed(vec![exec("foo", ExecCause::SourceChanged)])
     );
+    Ok(())
+}
+
+#[test]
+fn new_crate_from_the_sparse_crates_io_index_is_a_registry_change() -> Result<(), MetadataError> {
+    let head = [Pkg::from("sparse+https://index.crates.io/", "bar", "1.0.0")];
+
+    assert_eq!(
+        packages(&[], &head)?,
+        PackageDiff::Computed(vec![PackageChange::Registry {
+            package: "bar".to_owned()
+        }])
+    );
+    Ok(())
+}
+
+#[test]
+fn new_crate_from_another_registry_is_a_source_change() -> Result<(), MetadataError> {
+    // Fail closed (Weigh-In default, #65 review F6): only crates.io is the registry 04 §2.2's
+    // reduction trusts; a private index is a source the owner has not approved.
+    let head = [Pkg::from(
+        "registry+https://registry.example.invalid/index",
+        "bar",
+        "1.0.0",
+    )];
+
+    assert_eq!(
+        packages(&[], &head)?,
+        PackageDiff::Computed(vec![exec("bar", ExecCause::SourceChanged)])
+    );
+    Ok(())
+}
+
+#[test]
+fn two_unchanged_versions_with_different_build_dependencies_change_nothing()
+-> Result<(), MetadataError> {
+    // #65 review F1: each version is compared with itself, not with the first of its name.
+    let packages = || {
+        [
+            Pkg::registry("foo", "1.0.0").on("cc", Some("build")),
+            Pkg::registry("foo", "2.0.0"),
+            Pkg::registry("cc", "1.0.0"),
+        ]
+    };
+
+    assert_eq!(
+        surface(&packages(), &packages())?.packages,
+        PackageDiff::Computed(Vec::new())
+    );
+    Ok(())
+}
+
+#[test]
+fn dependency_with_no_named_kind_counts_as_build_time() -> Result<(), MetadataError> {
+    // #65 review F5: an edge whose `dep_kinds` is empty is read as normal and build.
+    let mut value = metadata_value(&[
+        Pkg::member("x", "crates/x").on_path("helpers", "crates/helpers", None),
+        Pkg::member("helpers", "crates/helpers"),
+    ]);
+    value["resolve"]["nodes"][0]["deps"][0]["dep_kinds"] = json!([]);
+    let set = PackageSet::from_metadata(&value.to_string(), ROOT)?;
+
+    let surface = exec_surface(Some(&set), Some(&set));
+
+    assert_eq!(surface.exec_roots, vec![path("crates/helpers")]);
     Ok(())
 }
 

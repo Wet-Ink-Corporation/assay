@@ -274,6 +274,57 @@ fn a_relative_copy_is_refused_before_anything_runs() -> Result<(), Box<dyn Error
 }
 
 #[test]
+fn a_copy_under_a_manifest_is_refused_before_anything_runs() -> Result<(), Box<dyn Error>> {
+    // #65 review F4: cargo walks up from the copy for a workspace root.
+    let scratch = tempfile::tempdir()?;
+    std::fs::write(scratch.path().join("Cargo.toml"), "[workspace]\n")?;
+    let copy = scratch.path().join("runs/copy");
+    let mut supervisor = Scripted::default();
+
+    let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(&copy);
+
+    assert!(
+        matches!(&result, Err(CargoError::UnsafeAncestor { path }) if path == scratch.path()),
+        "got {result:?}"
+    );
+    assert_eq!(supervisor.seen, Vec::new(), "nothing runs");
+    Ok(())
+}
+
+#[test]
+fn a_copy_under_cargo_configuration_is_refused_before_anything_runs() -> Result<(), Box<dyn Error>>
+{
+    // #65 review F4: cargo reads `.cargo/config.toml` in every ancestor of its directory.
+    let scratch = tempfile::tempdir()?;
+    std::fs::create_dir(scratch.path().join(".cargo"))?;
+    let copy = scratch.path().join("runs/copy");
+    let mut supervisor = Scripted::default();
+
+    let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(&copy);
+
+    assert!(
+        matches!(&result, Err(CargoError::UnsafeAncestor { path }) if path == scratch.path()),
+        "got {result:?}"
+    );
+    assert_eq!(supervisor.seen, Vec::new(), "nothing runs");
+    Ok(())
+}
+
+#[test]
+fn a_failed_run_names_its_termination_in_words() {
+    // #65 review F8: the message is for an operator, not `Debug` output.
+    let error = CargoError::<CannotStart>::Failed {
+        step: CargoStep::Fetch,
+        termination: Termination::Exited(101),
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "cargo fetch did not succeed: it exited with code 101"
+    );
+}
+
+#[test]
 fn settings_refuse_relative_paths_and_an_empty_toolchain() {
     let environment = || CargoEnvironment::from_vars(Vec::new());
     let with = |toolchain: PinnedToolchain, home: &str| {

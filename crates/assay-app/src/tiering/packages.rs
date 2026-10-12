@@ -59,12 +59,18 @@ enum Source {
     Other(String),
 }
 
+/// crates.io's index, in the forms cargo records it: the only registry 04 §2.2's reduction
+/// trusts (Weigh-In default, #65 review F6); any other registry is a source change.
+const CRATES_IO: [&str; 2] = [
+    "registry+https://github.com/rust-lang/crates.io-index",
+    "sparse+https://index.crates.io/",
+];
+
 impl Source {
-    /// Whether the source is a package registry, which serves a package only at the checksum
-    /// the lockfile records.
+    /// Whether the source is crates.io, which serves a package only at the checksum the
+    /// lockfile records.
     fn is_registry(&self) -> bool {
-        matches!(self, Self::Other(source)
-            if source.starts_with("registry+") || source.starts_with("sparse+"))
+        matches!(self, Self::Other(source) if CRATES_IO.contains(&source.as_str()))
     }
 }
 
@@ -132,11 +138,11 @@ pub struct ExecSurface {
 ///   with a `proc-macro` target `ProcMacro`, including a path package whose version changed;
 ///   an unchanged package that gains either target is too;
 /// - a package whose name is in base only from another source, and a new package from
-///   neither a registry nor a path (git), is `SourceChanged`;
+///   neither crates.io nor a path (git, another registry), is `SourceChanged`;
 /// - a package whose `[build-dependencies]` declarations differ from its base counterpart's
 ///   (the same package, else the same name and source) is `BuildDependency`;
 /// - a package that declares a `path` dependency its counterpart did not is `PathDependency`;
-/// - any other new or bumped registry package is a `Registry` change, and any other new,
+/// - any other new or bumped crates.io package is a `Registry` change, and any other new,
 ///   bumped or removed package a `Lockfile` change.
 ///
 /// The roots are the path crates reached from a build-dependency edge or from a proc-macro

@@ -435,6 +435,11 @@ fn an_unresolvable_workspace_dependency_fails_closed() -> Result<(), Box<dyn Err
     Ok(())
 }
 
+/// Proves only that the PR's root `.cargo/config.toml` `rustc` and `rustc-wrapper` never run
+/// (#65 review F3). The other files are passengers: cargo here is the toolchain's own binary,
+/// not a rustup proxy, so `rust-toolchain.toml` could not select a toolchain either way, and
+/// cargo reads no `.cargo` below its working directory. That the copy holds none of them is
+/// pinned by forge's `manifest_copy` tests.
 #[test]
 #[cfg_attr(miri, ignore = "runs git and cargo; Miri cannot spawn processes")]
 fn no_pr_configuration_or_toolchain_file_reaches_cargo() -> Result<(), Box<dyn Error>> {

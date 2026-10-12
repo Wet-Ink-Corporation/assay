@@ -9,7 +9,108 @@ use std::path::Path;
 
 use assay_forge::git::{CopyError, TreeLimits};
 
-use crate::support::{fixture, fixture_with_head, write};
+use crate::support::{Fixture, fixture, fixture_with_head, plain_git, write};
+
+/// The copy of `fixture`'s head, into a fresh scratch directory.
+fn copy_head(fixture: &Fixture) -> Result<Result<(), CopyError>, Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    Ok(fixture
+        .repo
+        .manifest_copy(
+            &fixture.head,
+            &scratch.path().join("copy"),
+            TreeLimits::default(),
+        )
+        .map(drop))
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_symlink_to_a_directory_is_refused() -> Result<(), Box<dyn Error>> {
+    // #65 review F2: as an empty file it would hide a directory cargo's glob `members` (or a
+    // path dependency) sees in the real tree.
+    let fixture = fixture_with_head(|work| {
+        write(
+            work,
+            "crates/x/Cargo.toml",
+            "[package]\nname = \"x\"\n".as_bytes(),
+        )?;
+        symlink("x", work.join("crates/y"))?;
+        Ok(())
+    })?;
+
+    let result = copy_head(&fixture)?;
+
+    assert!(
+        matches!(&result, Err(CopyError::Symlink { path }) if path == "crates/y"),
+        "got {result:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_symlink_leaving_the_tree_is_refused() -> Result<(), Box<dyn Error>> {
+    let fixture = fixture_with_head(|work| {
+        fs::create_dir_all(work.join("crates/x"))?;
+        symlink("../../../outside/build.rs", work.join("crates/x/build.rs"))?;
+        Ok(())
+    })?;
+
+    let result = copy_head(&fixture)?;
+
+    assert!(
+        matches!(&result, Err(CopyError::Symlink { path }) if path == "crates/x/build.rs"),
+        "got {result:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_symlink_to_a_symlink_is_refused() -> Result<(), Box<dyn Error>> {
+    let fixture = fixture_with_head(|work| {
+        symlink("README.md", work.join("first"))?;
+        symlink("first", work.join("second"))?;
+        Ok(())
+    })?;
+
+    let result = copy_head(&fixture)?;
+
+    assert!(
+        matches!(&result, Err(CopyError::Symlink { path }) if path == "second"),
+        "got {result:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_submodule_is_refused() -> Result<(), Box<dyn Error>> {
+    // A submodule's crates exist in the real build but not in the copy.
+    let fixture = fixture_with_head(|work| {
+        // An unpopulated submodule's directory, so `git add --all` keeps the gitlink.
+        fs::create_dir_all(work.join("vendor/sub"))?;
+        plain_git(
+            work,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "160000,0123456789abcdef0123456789abcdef01234567,vendor/sub",
+            ],
+        )?;
+        Ok(())
+    })?;
+
+    let result = copy_head(&fixture)?;
+
+    assert!(
+        matches!(&result, Err(CopyError::Submodule { path }) if path == "vendor/sub"),
+        "got {result:?}"
+    );
+    Ok(())
+}
 
 /// Files by path relative to a copy's root, with their contents.
 type Files = Vec<(String, Vec<u8>)>;
@@ -177,7 +278,7 @@ fn a_tree_over_the_entry_limit_is_refused() -> Result<(), Box<dyn Error>> {
         .manifest_copy(&fixture.head, &scratch.path().join("copy"), limits);
 
     assert!(
-        matches!(result, Err(CopyError::Git(_))),
+        matches!(result, Err(CopyError::List(_))),
         "the copy is bounded by the listing, got {result:?}"
     );
     Ok(())

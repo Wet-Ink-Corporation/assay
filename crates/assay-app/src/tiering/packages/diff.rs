@@ -32,7 +32,8 @@ fn package_changes(base: &[Package], package: &Package) -> Vec<PackageChange> {
             .filter(|old| old.name == package.name && old.source == package.source)
     };
     let unchanged = same_source().find(|old| old.version == package.version);
-    let causes = causes(base, package, unchanged, same_source().next());
+    let counterpart = unchanged.or_else(|| same_source().next());
+    let causes = causes(base, package, unchanged, counterpart);
     // Each change names its package, so it owns a copy of the name.
     let name = || package.name.clone();
     if !causes.is_empty() {
@@ -51,8 +52,9 @@ fn package_changes(base: &[Package], package: &Package) -> Vec<PackageChange> {
     }
 }
 
-/// Why `package` is exec surface, given the same package at base (`unchanged`) and the first
-/// base package of the same name and source (`counterpart`, a bump when `unchanged` is
+/// Why `package` is exec surface, given the same package at base (`unchanged`) and what its
+/// declarations are compared with (`counterpart`: `unchanged`, else the first base package of
+/// the same name and source, a bump when `unchanged` is
 /// `None`).
 fn causes(
     base: &[Package],
@@ -90,8 +92,9 @@ fn causes(
 }
 
 /// Whether `package`, which has no base package of its name and source, changed source: its
-/// name is in base from another source, or it is new from a source other than a registry or a
-/// path (git), which 04 §2.2's registry reduction does not cover (fail closed).
+/// name is in base from another source, or it is new from a source other than crates.io or a
+/// path (git, another registry), which 04 §2.2's registry reduction does not cover (fail
+/// closed).
 fn source_changed(base: &[Package], package: &Package) -> bool {
     let named_in_base = base.iter().any(|old| old.name == package.name);
     let unpinned = !package.source.is_registry() && !matches!(package.source, Source::Path(_));

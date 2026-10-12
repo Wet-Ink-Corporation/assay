@@ -9,6 +9,8 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -200,6 +202,22 @@ pub enum CargoError<E> {
         /// The refused path.
         path: PathBuf,
     },
+    /// A directory above the copy holds a `Cargo.toml` or a `.cargo` entry, which cargo would
+    /// read as a workspace root or as configuration.
+    #[error("{} above the copy holds a Cargo.toml or .cargo", path.display())]
+    UnsafeAncestor {
+        /// The directory.
+        path: PathBuf,
+    },
+    /// A directory above the copy could not be inspected, so it may hold either.
+    #[error("could not inspect {} above the copy", path.display())]
+    InspectAncestor {
+        /// The entry that could not be inspected.
+        path: PathBuf,
+        /// Why.
+        #[source]
+        source: io::Error,
+    },
     /// The supervisor could not run cargo, or could not show its process group gone.
     #[error("{step} could not be run")]
     Supervisor {
@@ -211,7 +229,7 @@ pub enum CargoError<E> {
     },
     /// cargo ran and did not succeed: a non-zero exit (an unresolvable manifest, a stale
     /// lockfile, a missing package), a signal, its deadline or its output cap.
-    #[error("{step} did not succeed: {termination:?}")]
+    #[error("{step} did not succeed: {}", Ended(*termination))]
     Failed {
         /// The run that failed.
         step: CargoStep,
@@ -221,6 +239,49 @@ pub enum CargoError<E> {
     /// `cargo metadata` printed something other than UTF-8.
     #[error("cargo metadata printed output that is not UTF-8")]
     NotUtf8,
+}
+
+/// How a cargo run ended, in words for [`CargoError::Failed`].
+struct Ended(Termination);
+
+impl fmt::Display for Ended {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Termination::Exited(code) => write!(f, "it exited with code {code}"),
+            Termination::Signalled => f.write_str("a signal ended it"),
+            Termination::TimedOut => f.write_str("it was killed at its deadline"),
+            Termination::OutputTooLarge => f.write_str("it was killed past its output cap"),
+        }
+    }
+}
+
+/// Entries cargo reads in every directory above the one it runs in: a workspace root's
+/// manifest and configuration.
+const ANCESTOR_ENTRIES: [&str; 2] = ["Cargo.toml", ".cargo"];
+
+/// Refuses `copy` when a directory above it holds an entry of [`ANCESTOR_ENTRIES`] (of any
+/// type, a dangling symlink included) or cannot be inspected.
+fn check_ancestors<E>(copy: &Path) -> Result<(), CargoError<E>> {
+    for dir in copy.ancestors().skip(1) {
+        for name in ANCESTOR_ENTRIES {
+            let entry = dir.join(name);
+            match fs::symlink_metadata(&entry) {
+                Ok(_) => {
+                    return Err(CargoError::UnsafeAncestor {
+                        path: dir.to_path_buf(),
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(CargoError::InspectAncestor {
+                        path: entry,
+                        source,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The pinned base cargo, generic over the supervisor that bounds each run.
@@ -245,9 +306,16 @@ impl<S: CaptureSupervisor> PinnedCargo<S> {
     /// copy at `copy` (its root `Cargo.toml`), after `cargo fetch --locked` has put every
     /// locked package in `CARGO_HOME`. Both run with `copy` as their working directory.
     ///
+    /// Precondition: no directory above `copy` holds a `Cargo.toml` or a `.cargo` entry,
+    /// because cargo reads them from every ancestor of the directory it runs in (as a
+    /// workspace root and as configuration). It is checked before anything runs; place the
+    /// copy under a scratch directory of its own, not inside a checkout or a home directory.
+    ///
     /// # Errors
     ///
     /// [`CargoError::CopyPath`] before anything runs when `copy` is relative or not UTF-8;
+    /// [`CargoError::UnsafeAncestor`] or [`CargoError::InspectAncestor`] before anything runs
+    /// when an ancestor of `copy` holds a `Cargo.toml` or `.cargo` entry, or cannot be read;
     /// [`CargoError::Supervisor`] or [`CargoError::Failed`] when either run fails (metadata
     /// never runs after a failed fetch); [`CargoError::NotUtf8`] for unreadable output.
     pub fn metadata(&mut self, copy: &Path) -> Result<String, CargoError<S::Error>> {
@@ -260,6 +328,7 @@ impl<S: CaptureSupervisor> PinnedCargo<S> {
             .ok_or_else(|| CargoError::CopyPath {
                 path: copy.to_path_buf(),
             })?;
+        check_ancestors(copy)?;
         let locate = ["--manifest-path", manifest.as_str()];
         self.run(
             copy,
