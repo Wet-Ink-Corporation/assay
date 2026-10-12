@@ -18,7 +18,8 @@ assay-domain = { workspace = true }
 assay-forge = { workspace = true }
 assay-gates = { workspace = true }
 assay-runner = { workspace = true }
+# Writes the `assay-self` gate's document (#76); pre-approved, a dev-dependency before.
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 tempfile = { workspace = true }
