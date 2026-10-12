@@ -246,8 +246,9 @@ fn first_row(held: &[TierReason]) -> (Tier, Vec<TierReason>) {
 }
 
 /// 04 §3: full = bugs, security, design (+ meta for a trust path or exec surface); lite =
-/// combined; micro = combined-micro; no LLM for trivial or needs-split.
-fn required_roles(tier: Tier, trust_class: bool) -> Vec<RequiredRole> {
+/// combined; micro = combined-micro; no LLM for trivial or needs-split. `decide` rule 8 reads the
+/// same table.
+pub(crate) fn required_roles(tier: Tier, trust_class: bool) -> Vec<RequiredRole> {
     match tier {
         Tier::NeedsSplit | Tier::Trivial => Vec::new(),
         Tier::Full => {

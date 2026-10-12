@@ -114,7 +114,7 @@ Levers if over budget, in order: (1) raise the `micro` floor; (2) merge `design`
 | `base-not-protected` | **`failure`** (the check is not required there, so nothing is blocked) | A stale result is fail-safe if the head is later retargeted to a protected base; `neutral` counted as passing and opened a retarget-and-merge window (R3-03) |
 | Publish | **closed** after retries | A stuck pending check is worse |
 | LLM stage unavailable/degraded | **by class**: trust-path and exec-surface PRs (the `block_on_infra_for` classes) ⇒ deferral (`in_progress`, ≤ 3 requeues) or `required-role-degraded` failure; otherwise `success` with a prominent, event-recorded `llm-degraded` warning | The LLM stage is advisory until promoted (QA-05); gates still enforce; quota outages must not freeze the founder for hours |
-| Verifier unavailable | Treated as "LLM unavailable" (above); candidate blockers are shown as *unverified majors* | No silent downgrade |
+| Verifier unavailable, coordinator failed | Treated as a degraded stage (above), never a deferral, since waiting cannot heal a cap: the `verifier` or `coordinator` is listed in `degraded` and the PR gets `required-role-degraded` (blocking classes or policy) or `llm-degraded` (`04 §5` rule 8); candidate blockers are shown as *unverified majors* | No silent downgrade |
 | Persist (bundle) | **closed** for trust-path/exec-surface PRs; **open** (warning) for others | Approval and replay depend on it |
 | Telemetry, ledger write | **open** | Observability must not block merges |
 

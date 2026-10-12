@@ -34,7 +34,7 @@ pub use decide::decide;
 pub use decide::inputs::{
     Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
     LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
-    Readiness, ReviewedFinding, StepAttribution, Waiver, WeighIn,
+    Readiness, ReviewedFinding, StepAttribution, SupportOutcome, Waiver, WeighIn,
 };
 pub use decision::{
     Conclusion, Counts, Decision, DecisionSchema, DegradedRole, FindingDisposition, Reason, Waived,

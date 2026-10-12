@@ -43,6 +43,18 @@
   },
   "findings": [],
   "dispositions": [],
+  "completed_roles": [
+    "bugs",
+    "security",
+    "design",
+    "meta"
+  ],
+  "coordinator": {
+    "status": "completed"
+  },
+  "verifier": {
+    "status": "not-needed"
+  },
   "degraded": [],
   "waivers": [],
   "override_record": null

@@ -64,6 +64,7 @@
       }
     },
     "degraded": {
+      "description": "Every degraded role of the LLM stage, sorted, once each: a specialist, `coordinator` or `verifier`, with its reported reason or `missing` (04 §5 rules 8b, 8c; 03 §5).",
       "type": "array",
       "items": {
         "type": "object",

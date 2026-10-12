@@ -79,13 +79,14 @@ pub struct Waived {
     pub by: String,
 }
 
-/// A reviewer role that ran degraded.
+/// A role of the LLM stage that ran degraded or never reported (rules 8b, 8c).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DegradedRole {
-    /// The role (`bugs`, `combined`).
+    /// The role: a specialist (`bugs`, `combined`), `coordinator` or `verifier`.
     pub role: String,
-    /// Why: its own cap, turns, timeout, or malformed output after a retry.
+    /// Why: its own cap, turns, timeout, malformed output after a retry, `unavailable`, or
+    /// `missing` for a required role that never reported.
     pub reason: String,
 }
 
@@ -112,7 +113,7 @@ pub struct Decision {
     pub dispositions: Vec<FindingDisposition>,
     /// Gate findings removed by owner waivers.
     pub waived: Vec<Waived>,
-    /// Required roles that ran degraded.
+    /// Every degraded role of the LLM stage, sorted, once each; the check summary lists them.
     pub degraded: Vec<DegradedRole>,
     /// The rubric version that made the decision.
     pub rubric_version: String,

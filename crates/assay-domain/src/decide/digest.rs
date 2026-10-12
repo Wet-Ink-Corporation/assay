@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use crate::decide::inputs::{
     Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
     LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
-    Readiness, ReviewedFinding, StepAttribution, Waiver, WeighIn,
+    Readiness, ReviewedFinding, StepAttribution, SupportOutcome, Waiver, WeighIn,
 };
 use crate::decision::{DegradedRole, FindingDisposition, Reason};
 use crate::disposition::Disposition;
@@ -24,6 +24,7 @@ use crate::reason::ReasonCode;
 use crate::rubric::Rubric;
 use crate::severity::Severity;
 use crate::tier::{PrClass, Tier};
+use crate::tiering::RequiredRole;
 
 /// Separates this encoding from any other use of SHA-256 over similar bytes.
 const INPUTS_DOMAIN: &str = "assay.decide-inputs/1";
@@ -169,6 +170,7 @@ canonical_by_code!(
     OwnerApproval,
     PrClass,
     Readiness,
+    RequiredRole,
     Severity,
     Tier,
     VerifierVerdict,
@@ -197,6 +199,9 @@ canonical_struct!(DecisionInputs {
     llm,
     findings,
     dispositions,
+    completed_roles,
+    coordinator,
+    verifier,
     degraded,
     waivers,
     override_record,
@@ -266,6 +271,19 @@ impl Canonical for StepAttribution {
             Self::Known(steps) => {
                 "known".encode(encoder);
                 steps.encode(encoder);
+            }
+        }
+    }
+}
+
+impl Canonical for SupportOutcome {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Self::NotNeeded => "not-needed".encode(encoder),
+            Self::Completed => "completed".encode(encoder),
+            Self::Failed { reason } => {
+                "failed".encode(encoder);
+                reason.encode(encoder);
             }
         }
     }

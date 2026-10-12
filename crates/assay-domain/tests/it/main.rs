@@ -3,6 +3,7 @@
 mod content_hash;
 mod decide;
 mod decide_commands;
+mod decide_degradation;
 mod decide_llm;
 mod decide_not_run;
 mod decide_properties;
