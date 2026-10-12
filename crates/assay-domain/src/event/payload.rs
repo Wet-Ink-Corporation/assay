@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::EventKind;
 use crate::disposition::Disposition;
 use crate::findings::GateConclusion;
+use crate::fingerprint::Fingerprint;
 use crate::run_uid::RunUid;
 use crate::severity::Severity;
 use crate::vocabulary::closed_enum;
@@ -210,8 +211,8 @@ pub enum EventPayload {
     WaiverApplied {
         /// Who waived it.
         who: String,
-        /// The finding's fingerprint, lowercase hex.
-        fp: String,
+        /// The finding's fingerprint.
+        fp: Fingerprint,
     },
     /// An owner override was applied.
     OverrideApplied {

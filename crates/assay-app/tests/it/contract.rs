@@ -20,7 +20,7 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 35] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 36] = [
     (
         Contract::Findings,
         "reviewer-without-role",
@@ -176,6 +176,11 @@ const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 35] = [
         Rejection::Violation("/data", "additionalProperties"),
     ),
     (Contract::Event, "unknown-version", Rejection::Version(2)),
+    (
+        Contract::Event,
+        "waiver-applied-uppercase-fp",
+        Rejection::Violation("/data/fp", "pattern"),
+    ),
     // `data` is an object even for the kinds whose fields 03 §6 does not list.
     (
         Contract::Event,
