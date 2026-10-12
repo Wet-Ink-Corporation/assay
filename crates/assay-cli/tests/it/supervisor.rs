@@ -14,7 +14,7 @@ use assay_app::{ModelCall, ModelRunner, Prompt, Termination};
 use assay_cli::ForgeSupervisor;
 use assay_domain::Aeu;
 use assay_forge::process::{GroupKiller, ProcessError};
-use assay_gates::{ProcessSpec, Supervisor};
+use assay_gates::{CaptureSupervisor, CapturedRun, ProcessSpec, Supervisor};
 use assay_runner::{ClaudeHeadless, HeadlessEnv, Workdir};
 use tempfile::TempDir;
 
@@ -181,6 +181,63 @@ fn a_bare_program_is_found_on_the_gates_own_path() -> Result<(), Box<dyn Error>>
     let ended = supervisor()?.run(&spec);
 
     assert_eq!(ended?, Termination::Exited(0));
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+fn a_captured_run_keeps_stdout_and_its_exit_code() -> Result<(), Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    let args = [
+        "-c".to_owned(),
+        "echo '[]'; echo noise >&2; exit 1".to_owned(),
+    ];
+    let spec = ProcessSpec {
+        program: Path::new("/bin/sh"),
+        args: &args,
+        cwd: scratch.path(),
+        env: &[],
+        timeout: GENEROUS,
+        max_output_bytes: 1024,
+    };
+
+    let run = supervisor()?.capture(&spec)?;
+
+    assert_eq!(
+        run,
+        CapturedRun {
+            termination: Termination::Exited(1),
+            stdout: b"[]\n".to_vec(),
+        },
+        "stdout is kept, stderr is not"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+fn a_captured_run_past_its_output_cap_keeps_nothing() -> Result<(), Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    let args = ["-c".to_owned(), "while :; do echo y; done".to_owned()];
+    let spec = ProcessSpec {
+        program: Path::new("/bin/sh"),
+        args: &args,
+        cwd: scratch.path(),
+        env: &[],
+        timeout: GENEROUS,
+        max_output_bytes: 1024,
+    };
+
+    let run = supervisor()?.capture(&spec)?;
+
+    assert_eq!(
+        run,
+        CapturedRun {
+            termination: Termination::OutputTooLarge,
+            stdout: Vec::new(),
+        },
+        "a truncated output is never handed on"
+    );
     Ok(())
 }
 

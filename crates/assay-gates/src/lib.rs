@@ -6,9 +6,11 @@
 //! [`ExecAdapter`] runs `exec` gates in Z2b jobs through a [`Supervisor`] with the
 //! [`GateEnvironment`] allowlist.
 
+mod capture;
 mod environment;
 mod exec;
 
+pub use capture::{CaptureSupervisor, CapturedRun};
 pub use environment::GateEnvironment;
 pub use exec::{
     ExecAdapter, ExecError, ExecLimits, ExecSettings, ExecSettingsError, FINDINGS_FILE,
