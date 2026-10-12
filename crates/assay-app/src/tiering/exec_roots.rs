@@ -60,8 +60,9 @@ pub fn exec_roots(manifest_path: &str, manifest: &str) -> Vec<ExecRoot> {
 /// The exec roots of the manifest at `manifest_path` across a PR.
 ///
 /// From its `base` and `head` text (`None` where the manifest does not exist): the roots of
-/// both sides, and, when they differ, the manifest itself, so a change that only turns existing code into build-time
-/// code (adding `build = "tools/gen.rs"`, setting `proc-macro = true`) is exec surface.
+/// both sides, and, when they differ, the manifest itself, so a change that only turns existing
+/// code into build-time code (adding `build = "tools/gen.rs"`, setting `proc-macro = true`) is
+/// exec surface.
 ///
 /// # Examples
 ///

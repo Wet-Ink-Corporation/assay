@@ -130,22 +130,38 @@ fn root_build_sources_hold_top_level_files_and_mod_files_only() {
         crate_dir: String::new(),
     }];
 
-    let classes = exec_classes(
-        &roots,
-        &[
-            "helper.rs",
-            "codegen/mod.rs",
-            "codegen/other.rs",
-            "src/lib.rs",
-            "notes.md",
-        ],
-    );
+    let classes = exec_classes(&roots, &["helper.rs", "codegen/mod.rs", "notes.md"]);
 
     let exec = vec![PrClass::ExecSurface];
-    assert_eq!(
-        classes,
-        vec![exec.clone(), exec, Vec::new(), Vec::new(), Vec::new()]
-    );
+    assert_eq!(classes, vec![exec.clone(), exec, Vec::new()]);
+}
+
+#[test]
+fn nested_root_module_reached_by_build_script_awaits_issue_64() {
+    // The root `build.rs` can reach `codegen/other.rs` through `mod codegen;` and `src/` through
+    // `include!` or `#[path]`. `BuildSources` does not hold them; #64's syn scan adds that
+    // closure to `ChangeSet.exec_roots` (Weigh-In default wi-a29f26). This pins the gap.
+    let roots = [ExecRoot::BuildSources {
+        crate_dir: String::new(),
+    }];
+
+    let classes = exec_classes(&roots, &["codegen/other.rs", "src/lib.rs"]);
+
+    assert_eq!(classes, vec![Vec::<PrClass>::new(); 2]);
+}
+
+#[test]
+fn build_script_include_of_src_awaits_issue_64() {
+    // `crates/x/build.rs` doing `include!("src/cli.rs")` runs `src/cli.rs` at build time, but
+    // `BuildSources` leaves `src/` out; #64's syn scan adds the `include!` closure to
+    // `ChangeSet.exec_roots` (Weigh-In default wi-a29f26). This pins the gap.
+    let roots = [ExecRoot::BuildSources {
+        crate_dir: "crates/x".to_owned(),
+    }];
+
+    let classes = exec_classes(&roots, &["crates/x/src/cli.rs"]);
+
+    assert_eq!(classes, vec![Vec::<PrClass>::new()]);
 }
 
 #[test]

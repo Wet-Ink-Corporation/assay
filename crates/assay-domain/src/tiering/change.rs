@@ -35,10 +35,15 @@ pub struct ChangeSet {
 pub enum ExecRoot {
     /// A canonical repo-relative file or directory; it and everything under it is exec surface.
     Path(String),
-    /// The sources a crate's build script (`build.rs`, default or named) can reach through
-    /// `mod`, `#[path]` or `include!`: every `.rs` file under `crate_dir` outside `src/`,
-    /// `tests/`, `benches/` and `examples/`; for the root package (`crate_dir` empty), only
-    /// top-level `.rs` files and `<segment>/mod.rs`.
+    /// A crate's likely build-script sources, by path alone: every `.rs` file under
+    /// `crate_dir` outside its `src/`, `tests/`, `benches/` and `examples/` directories; for the
+    /// root package (`crate_dir` empty), only top-level `.rs` files and `<segment>/mod.rs`.
+    ///
+    /// It does not hold what a build script or proc-macro lib reaches elsewhere through
+    /// `include!`, `#[path]` or `mod` (such as `include!("src/cli.rs")`, or the root's
+    /// `codegen/other.rs`): #64's `syn` scan adds that closure as further
+    /// `ChangeSet::exec_roots`. It also holds the `.rs` files of nested packages under
+    /// `crate_dir` (such as `fuzz/`), accepted as fail-closed noise.
     BuildSources {
         /// The crate's directory; `""` for the root manifest's package.
         crate_dir: String,

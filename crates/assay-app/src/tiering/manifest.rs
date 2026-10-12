@@ -7,9 +7,9 @@ use toml::{Table, Value};
 
 /// The trust keys that differ between the `base` and `head` text of one manifest.
 ///
-/// Keys come in [`ManifestKey::ALL`] order. A missing side (an added or removed manifest) reads as an empty
-/// manifest, so every trust key it sets counts as changed. Values are compared parsed, so
-/// formatting and key order do not count, and only the keys of 04 §2.2 are read.
+/// Keys come in [`ManifestKey::ALL`] order. A missing side (an added or removed manifest) reads
+/// as an empty manifest, so every trust key it sets counts as changed. Values are compared
+/// parsed, so formatting and key order do not count, and only the keys of 04 §2.2 are read.
 ///
 /// Fails closed: if either side does not parse, the result is
 /// `[ManifestKey::Unparseable]`.
