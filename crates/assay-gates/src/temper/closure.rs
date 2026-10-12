@@ -10,7 +10,7 @@
 //! from every file that included it. What it cannot place at all gives
 //! [`ExecRoot::Everything`]. The include targets are `closure/targets.rs`'s.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use assay_domain::ExecRoot;
 use toml::{Table, Value};
@@ -21,12 +21,20 @@ use super::statics::{BlobCount, Files, Tree};
 use super::tokens::Source;
 use crate::revision::{EntryKind, Revision, RevisionFiles, TreeEntry};
 
+mod index;
 mod targets;
 mod visit;
 
-/// Most files the closure visits, or include targets it scans, before it gives up and places
-/// nothing (H-13).
+use index::TreeIndex;
+
+/// Most files the closure visits, or the include-target walk reads, before it gives up and
+/// places nothing (H-13). The literals those files hold are bounded by [`MAX_TARGETS`] and,
+/// in the closure, by `visit::MAX_WORK`.
 const MAX_VISITS: usize = 10_000;
+
+/// Most distinct include literals, one file's `(directory, literal)` pairs, the include-target
+/// walk resolves before it gives up and places nothing (H-13).
+const MAX_TARGETS: usize = 10_000;
 
 /// Most bytes the walk reads on demand, over every file the tree does not already hold (the
 /// targets of include macros and `#[path]` that are not `.rs`), before the rest are not read
@@ -113,7 +121,7 @@ const fn unplaced() -> String {
 struct Walk<'r, 't, R> {
     revisions: &'r R,
     tree: &'t Tree<'t>,
-    directories: HashSet<&'t str>,
+    index: TreeIndex<'t>,
     /// Each file's reach once read; `None` when it does not lex, is not a regular file or
     /// was past the read budget.
     reaches: HashMap<String, Option<FileReach>>,
@@ -123,21 +131,10 @@ struct Walk<'r, 't, R> {
 
 impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
     fn new(revisions: &'r R, tree: &'t Tree<'t>) -> Self {
-        let mut directories = HashSet::from([""]);
-        for entry in tree.entries() {
-            // From the deepest directory up, stopping at one already known: its own are too.
-            let mut above = entry.path.as_str();
-            while let Some((directory, _)) = above.rsplit_once('/') {
-                if !directories.insert(directory) {
-                    break;
-                }
-                above = directory;
-            }
-        }
         Self {
             revisions,
             tree,
-            directories,
+            index: TreeIndex::new(tree),
             reaches: HashMap::new(),
             bytes_left: MAX_READ_BYTES,
         }
@@ -145,52 +142,15 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
 
     /// `literal` resolved from `dir`: canonical, inside the repository, every `..` leaving a
     /// real directory, and within [`MAX_PATH_BYTES`] and [`MAX_SEGMENTS`] as written and as
-    /// resolved; `None` otherwise.
+    /// resolved; `None` otherwise. Costs the length of `dir` and `literal` (`TreeIndex`).
     fn resolve(&self, dir: &str, literal: &str) -> Option<String> {
-        let unsafe_text = literal.starts_with('/')
-            || literal.contains('\\')
-            || literal.chars().any(char::is_control)
-            || !within_caps(literal);
-        if unsafe_text {
-            return None;
-        }
-        let mut resolved = dir
-            .split('/')
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join("/");
-        for part in literal.split('/') {
-            match part {
-                "" | "." => {}
-                ".." => {
-                    if resolved.is_empty() || !self.directories.contains(resolved.as_str()) {
-                        return None;
-                    }
-                    let parent = resolved.rfind('/').unwrap_or(0);
-                    resolved.truncate(parent);
-                }
-                part => {
-                    if !resolved.is_empty() {
-                        resolved.push('/');
-                    }
-                    resolved.push_str(part);
-                }
-            }
-        }
-        (!resolved.is_empty() && within_caps(&resolved)).then_some(resolved)
+        self.index.resolve(dir, literal)
     }
 
-    /// Whether `path` or a directory above it is a symlink or a submodule in the tree. `path`
-    /// comes from [`Self::resolve`] or the tree, so its prefixes are within the caps.
+    /// Whether `path` or a directory above it is a symlink or a submodule in the tree. Costs
+    /// the length of `path` (`TreeIndex`).
     fn behind_link(&self, path: &str) -> bool {
-        path.match_indices('/')
-            .filter_map(|(slash, _)| path.get(..slash))
-            .chain([path])
-            .any(|prefix| {
-                self.tree
-                    .entry(prefix)
-                    .is_some_and(|entry| entry.kind != EntryKind::File)
-            })
+        self.index.behind_link(path)
     }
 
     /// Reads and scans the regular file at `path` once, into `reaches`. A file the tree does
@@ -258,7 +218,8 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
     }
 
     /// The entry files of every package's build script and proc-macro lib; `None` when one
-    /// cannot be placed.
+    /// cannot be placed, or when there are more than the closure could visit ([`MAX_VISITS`]),
+    /// refused before the rest resolve (H-13).
     fn entries(&self) -> Option<Vec<String>> {
         let linked = self
             .tree
@@ -270,6 +231,10 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
         }
         let mut found = Vec::new();
         for (dir, manifest) in self.manifests()? {
+            if found.len() > MAX_VISITS {
+                // The closure could not visit them all: refused before more resolve.
+                return None;
+            }
             if let Some(package) = manifest.get("package").or_else(|| manifest.get("project")) {
                 found.extend(self.build_scripts(dir, package.get("build"))?);
             }
@@ -294,7 +259,7 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
                 Some(present.then_some(default).into_iter().collect())
             }
             Some(Value::String(script)) => Some(vec![self.resolve(dir, script)?]),
-            Some(Value::Array(scripts)) => scripts
+            Some(Value::Array(scripts)) if scripts.len() <= MAX_VISITS => scripts
                 .iter()
                 .map(|script| self.resolve(dir, script.as_str()?))
                 .collect(),

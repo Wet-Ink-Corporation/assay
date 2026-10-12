@@ -2,8 +2,9 @@
 //! `#[path]` and `mod`, each file read with the context it was reached from.
 //!
 //! Bounded by a fixed work budget (H-13): every file it queues costs one unit plus one for
-//! each directory its context holds, spent before the context is built, and a context holds
-//! at most [`MAX_DIRS`] directories of each kind. Running out, or [`MAX_VISITS`] visits, gives
+//! each directory its context holds, spent before the context is built, and its path's and
+//! context's bytes, spent from [`MAX_QUEUED_BYTES`] as it is queued; a context holds at most
+//! [`MAX_DIRS`] directories of each kind. Running out, or [`MAX_VISITS`] visits, gives
 //! [`ExecRoot::Everything`].
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +20,11 @@ pub(super) const MAX_WORK: usize = 100_000;
 
 /// Most directories of each kind one context holds before the closure gives up (H-13).
 pub(super) const MAX_DIRS: usize = 32;
+
+/// Most bytes of paths, each queued file's and its context's directories', one closure queues
+/// before it gives up (H-13). [`MAX_WORK`] counts directories, not their length, and a path
+/// can be 4 KiB long.
+pub(super) const MAX_QUEUED_BYTES: usize = 32 << 20;
 
 /// How a visited file was reached: where its `mod name;` and its literal paths resolve from.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -58,6 +64,14 @@ impl Context {
             file_dirs: BTreeSet::from([dir.to_owned()]),
             modules_unplaced: false,
         }
+    }
+
+    /// The bytes of its directories.
+    fn bytes(&self) -> usize {
+        self.module_dirs
+            .iter()
+            .chain(&self.file_dirs)
+            .fold(0, |bytes, dir| bytes.saturating_add(dir.len()))
     }
 
     /// The units of work queueing a file with this context costs.
@@ -116,10 +130,12 @@ enum Reached {
     Data,
 }
 
-/// The files the closure has still to visit, and the work it may still spend queueing more.
+/// The files the closure has still to visit, and the work and bytes it may still spend
+/// queueing more.
 #[derive(Debug)]
 struct Pending {
     budget: usize,
+    bytes_left: usize,
     queue: Vec<(String, Reached)>,
 }
 
@@ -130,9 +146,18 @@ impl Pending {
         Some(())
     }
 
-    /// Queues `path`, reached as `reached`, its cost already spent.
-    fn push(&mut self, path: String, reached: Reached) {
+    /// Queues `path`, reached as `reached`, its cost already spent, charging the bytes of the
+    /// path and of its context's directories to [`MAX_QUEUED_BYTES`]; `None` past it.
+    fn push(&mut self, path: String, reached: Reached) -> Option<()> {
+        let context = match &reached {
+            Reached::Code(context) => context.bytes(),
+            Reached::Data => 0,
+        };
+        self.bytes_left = self
+            .bytes_left
+            .checked_sub(path.len().saturating_add(context))?;
         self.queue.push((path, reached));
+        Some(())
     }
 }
 
@@ -145,14 +170,17 @@ impl<R: RevisionFiles> Walk<'_, '_, R> {
         };
         let mut pending = Pending {
             budget: MAX_WORK,
+            bytes_left: MAX_QUEUED_BYTES,
             queue: Vec::new(),
         };
         for path in entries {
             let context = Context::root(&path);
-            if pending.spend(context.cost()).is_none() {
+            let queued = pending
+                .spend(context.cost())
+                .and_then(|()| pending.push(path, Reached::Code(context)));
+            if queued.is_none() {
                 return everything;
             }
-            pending.push(path, Reached::Code(context));
         }
         let mut seen: BTreeMap<String, Context> = BTreeMap::new();
         let mut data: BTreeSet<String> = BTreeSet::new();
@@ -233,7 +261,7 @@ impl<R: RevisionFiles> Walk<'_, '_, R> {
                         Reached::Code(Context::included(&target, context, nested)?)
                     }
                 };
-                pending.push(target, reached);
+                pending.push(target, reached)?;
             }
         }
         for (name, literal) in &reach.modules {
@@ -255,7 +283,7 @@ impl<R: RevisionFiles> Walk<'_, '_, R> {
             for target in targets {
                 let module = Context::module(&target);
                 pending.spend(module.cost())?;
-                pending.push(target, Reached::Code(module));
+                pending.push(target, Reached::Code(module))?;
             }
         }
         Some(())
@@ -286,9 +314,32 @@ mod tests {
     }
 
     #[test]
+    fn queueing_past_the_byte_budget_is_refused() {
+        let context = Context::root("crates/a/build.rs");
+        let path = "crates/a/build.rs".to_owned();
+        let one = path.len() + context.bytes();
+        let mut pending = Pending {
+            budget: MAX_WORK,
+            bytes_left: one + 1,
+            queue: Vec::new(),
+        };
+
+        assert_eq!(
+            (
+                pending.push(path.clone(), Reached::Code(context.clone())),
+                pending.push(path, Reached::Code(context)),
+                pending.queue.len(),
+            ),
+            (Some(()), None, 1),
+            "the path and both its context's directories are charged; the second does not fit"
+        );
+    }
+
+    #[test]
     fn spending_past_the_budget_is_refused() {
         let mut pending = Pending {
             budget: 3,
+            bytes_left: MAX_QUEUED_BYTES,
             queue: Vec::new(),
         };
 

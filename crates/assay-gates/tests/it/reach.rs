@@ -446,6 +446,53 @@ fn a_path_past_the_caps_places_nothing_quickly() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn include_literals_past_the_target_budget_place_nothing() -> Result<(), Box<dyn Error>> {
+    let deep = format!("{}lib.rs", "d/".repeat(250));
+    let embed = |literal: String| format!("const _: &str = include_str!(\"{literal}\");\n");
+    let distinct: String = (0..100_000)
+        .map(|index| embed(format!("x{index}")))
+        .collect();
+    let repeated: String = (0..100_000).map(|_| embed("x".to_owned())).collect();
+
+    let many = reach(&[(deep.as_str(), distinct.as_str())])?;
+    let one = reach(&[(deep.as_str(), repeated.as_str())])?;
+
+    assert_eq!(
+        (
+            many.include_targets.first().map(String::as_str),
+            many.include_targets.len() <= 10_001,
+            one.include_targets,
+        ),
+        (Some(""), true, vec![format!("{}x", "d/".repeat(250))]),
+        "100,000 distinct literals spend the 10,000-target budget; one literal repeated is one"
+    );
+    Ok(())
+}
+
+#[test]
+fn build_scripts_past_the_visit_cap_are_refused_before_they_resolve() -> Result<(), Box<dyn Error>>
+{
+    let dir = "d/".repeat(250);
+    let scripts: Vec<String> = (0..100_000)
+        .map(|index| format!("\"b{index}.rs\""))
+        .collect();
+    let manifest = format!(
+        "[package]\nname = \"p\"\nbuild = [{}]\n\n[lints]\nworkspace = true\n",
+        scripts.join(", ")
+    );
+    let path = format!("{dir}Cargo.toml");
+
+    let found = reach(&[(path.as_str(), manifest.as_str())])?;
+
+    assert_eq!(
+        found.exec_roots,
+        vec![ExecRoot::Everything],
+        "more build scripts than the closure can visit place nothing"
+    );
+    Ok(())
+}
+
+#[test]
 fn reads_past_the_byte_budget_place_nothing() -> Result<(), Box<dyn Error>> {
     let big = format!("fn x() {{}}\n//{}\n", "x".repeat(4 << 20));
     let names: Vec<String> = (0..9).map(|index| format!("g{index}.in")).collect();

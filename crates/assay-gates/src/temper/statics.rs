@@ -184,7 +184,7 @@ pub(super) fn test_inventory<'t>(base: &Tree<'t>, head: &Tree<'t>) -> Vec<Invent
     let mut walks = BaseWalks {
         base,
         visited: HashMap::new(),
-        visits_left: MAX_WALK_VISITS,
+        work_left: MAX_WALK_WORK,
     };
     paths
         .into_iter()
@@ -269,8 +269,8 @@ const MAX_MODULE_FILES: usize = 1_000;
 /// through the modules below it, is still in the head tree and held tests at base (or could
 /// not be counted there). Every place rustc could look is followed; a file with a module
 /// reference this check cannot follow by name or whose modules the reach scan could not all
-/// place, and a walk past [`MAX_MODULE_FILES`] or past the visits left to every walk, count as
-/// tested.
+/// place, and a walk past [`MAX_MODULE_FILES`] or past the work left to every walk
+/// ([`MAX_WALK_WORK`]), count as tested.
 fn still_tested(walks: &mut BaseWalks<'_, '_>, head: &Tree<'_>, from: &str, name: &str) -> bool {
     let mut queue: Vec<String> = module_files(from, name).into();
     let mut seen: HashSet<String> = HashSet::new();
@@ -298,17 +298,19 @@ fn still_tested(walks: &mut BaseWalks<'_, '_>, head: &Tree<'_>, from: &str, name
     false
 }
 
-/// Most files every [`still_tested`] walk of one `test_inventory` visits together (H-13).
-const MAX_WALK_VISITS: usize = 10_000;
+/// Most units of work every [`still_tested`] walk of one `test_inventory` does together: one
+/// per file visited, plus one per byte of the places it queues for the modules the file
+/// declares, since a memoised file's places are built again on every visit (H-13).
+const MAX_WALK_WORK: usize = 64 << 20;
 
 /// What the [`still_tested`] walks of one `test_inventory` share: what each base file they
-/// visit holds, counted once, and the visits they may still make.
+/// visit holds, counted once, and the work they may still do.
 struct BaseWalks<'b, 't> {
     base: &'b Tree<'t>,
     /// Each visited file's [`Visited`]; `None` when it could not be counted or declares a
     /// module this check cannot place, either of which makes it count as tested.
     visited: HashMap<String, Option<Visited>>,
-    visits_left: usize,
+    work_left: usize,
 }
 
 /// What a walk reads of one base file.
@@ -320,12 +322,14 @@ struct Visited {
 }
 
 impl BaseWalks<'_, '_> {
-    /// What `file` holds at base, counted on its first visit; `None`, so that it counts as
-    /// tested, once the visits are spent or when it could not be counted or placed.
+    /// What `file` holds at base, counted on its first visit, and charged on every visit one
+    /// unit for itself and one per byte of the places its modules queue (`module_files`' four
+    /// each); `None`, so that it counts as tested, when it could not be counted or placed or
+    /// the work is spent.
     fn visit(&mut self, file: &str) -> Option<&Visited> {
-        self.visits_left = self.visits_left.checked_sub(1)?;
         let base = self.base;
-        self.visited
+        let visited = self
+            .visited
             .entry(file.to_owned())
             .or_insert_with(|| {
                 let found = counted(base, file).ok()?;
@@ -335,7 +339,14 @@ impl BaseWalks<'_, '_> {
                     modules: found.modules,
                 })
             })
-            .as_ref()
+            .as_ref()?;
+        // Each of `module_files`' four places is at most the file's path, the name and 8 bytes.
+        let cost = visited.modules.iter().fold(1_usize, |cost, module| {
+            let place = file.len().saturating_add(module.len()).saturating_add(8);
+            cost.saturating_add(place.saturating_mul(4))
+        });
+        self.work_left = self.work_left.checked_sub(cost)?;
+        Some(visited)
     }
 }
 
@@ -389,6 +400,60 @@ mod tests {
                 .collect::<Vec<_>>(),
             [vec![Loss::Unreadable]],
             "not read is not empty"
+        );
+    }
+
+    #[test]
+    fn walks_count_a_base_file_once_and_spend_one_unit_each_time() {
+        let file = entry("a.rs", "1");
+        let base = Tree::new([(&file, Some(&b"fn f() {}"[..]))]);
+        let mut walks = BaseWalks {
+            base: &base,
+            visited: HashMap::new(),
+            work_left: MAX_WALK_WORK,
+        };
+
+        let untested = (0..2_000)
+            .filter(|_| walks.visit("a.rs").is_some_and(|found| !found.tested))
+            .count();
+
+        assert_eq!(
+            (untested, walks.visited.len(), walks.work_left),
+            (2_000, 1, MAX_WALK_WORK - 2_000),
+            "counted once, charged every time"
+        );
+        walks.work_left = 0;
+        assert!(
+            walks.visit("a.rs").is_none(),
+            "out of work, the file counts as tested"
+        );
+    }
+
+    #[test]
+    fn a_visit_is_charged_at_least_the_bytes_of_the_places_it_queues() {
+        let path = format!("{}a.rs", "deep/".repeat(100));
+        let file = entry(&path, "1");
+        let text = format!("mod {};\nmod c;\n", "b".repeat(1_000));
+        let base = Tree::new([(&file, Some(text.as_bytes()))]);
+        let mut walks = BaseWalks {
+            base: &base,
+            visited: HashMap::new(),
+            work_left: MAX_WALK_WORK,
+        };
+
+        let queued: usize = walks.visit(&path).map_or(0, |found| {
+            found
+                .modules
+                .iter()
+                .flat_map(|module| module_files(&path, module))
+                .map(|place| place.len())
+                .sum()
+        });
+        let charged = MAX_WALK_WORK - walks.work_left;
+
+        assert!(
+            queued > 2_000 && charged >= queued,
+            "queued {queued} bytes of places, charged {charged}"
         );
     }
 

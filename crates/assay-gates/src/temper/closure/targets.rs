@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use toml::{Table, Value};
 
-use super::{MAX_VISITS, Walk, directory, is_rust, unplaced};
+use super::{MAX_TARGETS, MAX_VISITS, Walk, directory, is_rust, unplaced};
 use crate::revision::{EntryKind, RevisionFiles};
 use crate::temper::layout::exactly_rs;
 use crate::temper::reach::{FileReach, Include};
@@ -45,7 +45,7 @@ fn rust_targets(manifest: &Table) -> bool {
 }
 
 /// What the walk over the tree's include targets has found so far.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Targets {
     /// The targets, sorted.
     found: BTreeSet<String>,
@@ -53,14 +53,18 @@ struct Targets {
     queue: Vec<String>,
     /// Files some `include!` reads.
     included: HashSet<String>,
+    /// Literals the walk may still resolve, out of [`MAX_TARGETS`].
+    left: usize,
 }
 
 impl<R: RevisionFiles> Walk<'_, '_, R> {
     /// The include targets of the tree, sorted.
     pub(super) fn include_targets(&mut self) -> Result<Vec<String>, R::Error> {
         let mut targets = Targets {
+            found: BTreeSet::new(),
             queue: self.tree.files(is_rust).map(str::to_owned).collect(),
-            ..Targets::default()
+            included: HashSet::new(),
+            left: MAX_TARGETS,
         };
         let rust_targets = self
             .manifests()
@@ -83,11 +87,15 @@ impl<R: RevisionFiles> Walk<'_, '_, R> {
                 break;
             }
             self.load(&path)?;
-            match self.reaches.get(&path) {
-                Some(Some(reach)) => self.record(&path, reach, &mut targets),
-                _ => {
-                    targets.found.insert(unplaced());
-                }
+            let Some(Some(reach)) = self.reaches.get(&path) else {
+                targets.found.insert(unplaced());
+                read.insert(path);
+                continue;
+            };
+            if self.record(&path, reach, &mut targets).is_none() {
+                // Out of targets: what the rest name cannot be placed.
+                targets.found.insert(unplaced());
+                break;
             }
             read.insert(path);
         }
@@ -104,16 +112,23 @@ impl<R: RevisionFiles> Walk<'_, '_, R> {
     }
 
     /// Records the targets `reach`, the file at `path`'s, names, queueing those read as Rust.
-    fn record(&self, path: &str, reach: &FileReach, targets: &mut Targets) {
+    /// Each distinct literal and use (code, data, module) is resolved once and spends one of
+    /// [`MAX_TARGETS`]; `None` once they are spent.
+    fn record(&self, path: &str, reach: &FileReach, targets: &mut Targets) -> Option<()> {
         let includes = reach
             .includes
             .iter()
-            .map(|(kind, literal)| (literal, *kind != Include::Data, true));
+            .map(|(kind, literal)| (literal.as_str(), *kind != Include::Data, true));
         let modules = reach
             .modules
             .iter()
-            .filter_map(|(_, literal)| Some((literal.as_ref()?, true, false)));
+            .filter_map(|(_, literal)| Some((literal.as_deref()?, true, false)));
+        let mut distinct = HashSet::new();
         for (literal, is_code, is_include) in includes.chain(modules) {
+            if !distinct.insert((literal, is_code, is_include)) {
+                continue;
+            }
+            targets.left = targets.left.checked_sub(1)?;
             let Some(target) = self.resolve(directory(path), literal) else {
                 targets.found.insert(unplaced());
                 continue;
@@ -132,5 +147,6 @@ impl<R: RevisionFiles> Walk<'_, '_, R> {
         if reach.uncertain {
             targets.found.insert(unplaced());
         }
+        Some(())
     }
 }
