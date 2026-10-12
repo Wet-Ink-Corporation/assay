@@ -20,7 +20,7 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 37] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 38] = [
     (
         Contract::Findings,
         "reviewer-without-role",
@@ -66,6 +66,12 @@ const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 37] = [
         Contract::Run,
         "reused-evidence-unknown-llm",
         Rejection::Violation("/budget/reused_evidence/llm", "enum"),
+    ),
+    // A built-in gate has a pin and an `exec` gate a job, never both (03 §4).
+    (
+        Contract::Run,
+        "plugin-with-pin-and-job",
+        Rejection::Violation("/plugins/0", "oneOf"),
     ),
     // The key under the open `artifact_names` map is producer-chosen: the path masks it.
     (

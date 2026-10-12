@@ -14,11 +14,11 @@ workspace = true
 
 [dependencies]
 assay-app = { workspace = true }
+assay-domain = { workspace = true }
 assay-forge = { workspace = true }
 assay-gates = { workspace = true }
 assay-runner = { workspace = true }
 
 [dev-dependencies]
-assay-domain = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

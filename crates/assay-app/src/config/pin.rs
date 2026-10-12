@@ -58,6 +58,19 @@ impl CommitId {
     }
 }
 
+impl FromStr for CommitId {
+    type Err = ParseCommitIdError;
+
+    /// Parses a full commit id; an abbreviated, uppercase or prefixed one never parses.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        if is_lower_hex(text, COMMIT_HEX_LEN) {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(ParseCommitIdError)
+        }
+    }
+}
+
 impl fmt::Display for CommitId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -115,6 +128,11 @@ pub enum ParsePinError {
     #[error("a pin must start with `git:` or `oci:`")]
     UnknownScheme,
 }
+
+/// A commit id that is not 40 lowercase hexadecimal digits, such as a branch name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("a commit id must be 40 lowercase hexadecimal digits")]
+pub struct ParseCommitIdError;
 
 /// A digest that is not `sha256:<64 lowercase hex>`, such as a tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]

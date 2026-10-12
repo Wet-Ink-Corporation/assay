@@ -7,7 +7,7 @@ use std::error::Error;
 use assay_domain::{
     Class, Conclusion, Confidence, DecisionSchema, Disposition, EventKind, FeedbackSignal,
     FindingKind, GateConclusion, IntroducedBy, PrClass, RateLimitStatus, ReasonCode, Severity,
-    Side, SourceKind, VerifierVerdict, VoidReason,
+    Side, SourceKind, Tier, VerifierVerdict, VoidReason,
 };
 
 use crate::support::{enum_at, schema, spec_line, spec_names, wire_codes};
@@ -177,6 +177,17 @@ fn pr_classes_are_exactly_the_run_schema_enum() -> Result<(), Box<dyn Error>> {
     let schema = enum_at(&schema("run-1")?, "/properties/classes/items/enum")?;
 
     let domain = wire_codes(PrClass::ALL)?;
+
+    assert_eq!(domain, schema);
+    Ok(())
+}
+
+/// `plan` writes every tier the domain computes, `needs-split` included (04 §2.3).
+#[test]
+fn tiers_are_exactly_the_run_schema_enum() -> Result<(), Box<dyn Error>> {
+    let schema = enum_at(&schema("run-1")?, "/$defs/tier/enum")?;
+
+    let domain = wire_codes(Tier::ALL)?;
 
     assert_eq!(domain, schema);
     Ok(())
