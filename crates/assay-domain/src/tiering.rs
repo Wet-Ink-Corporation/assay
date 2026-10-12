@@ -12,7 +12,7 @@ mod lists;
 use std::collections::BTreeSet;
 
 pub use change::{
-    BaselineChange, ChangeSet, ExecCause, FileChange, FileKind, Lines, ManifestKey,
+    BaselineChange, ChangeSet, ExecCause, ExecRoot, FileChange, FileKind, Lines, ManifestKey,
     ManifestTrustChange, PackageChange, PackageDiff,
 };
 pub use glob::{Glob, GlobError};
@@ -297,12 +297,7 @@ fn trust_paths(lists: &Lists<'_>, changes: &ChangeSet) -> Vec<String> {
 /// Build scripts and files under an exec root on either side of every file, and exec-surface
 /// packages.
 fn exec_surface(lists: &Lists<'_>, changes: &ChangeSet) -> Vec<String> {
-    let under_root = |path: &str| {
-        changes
-            .exec_roots
-            .iter()
-            .any(|root| change::is_under(path, root))
-    };
+    let under_root = |path: &str| changes.exec_roots.iter().any(|root| root.holds(path));
     let scripts = changes
         .files
         .iter()

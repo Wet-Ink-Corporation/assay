@@ -2,14 +2,18 @@
 //! workspace proc-macro crates, non-canonical paths, `include_*!` target spelling, and files
 //! that are not regular files.
 
-use assay_domain::{FileKind, PrClass, RepoGlobs, Tier, tier};
+use assay_domain::{ExecRoot, FileKind, PrClass, RepoGlobs, Tier, tier};
 
 use crate::support::{changes, file, globs};
+
+fn root(path: &str) -> ExecRoot {
+    ExecRoot::Path(path.to_owned())
+}
 
 #[test]
 fn custom_named_build_script_edited_in_place_is_exec_surface() {
     let mut set = changes(vec![file("tools/gen.rs", 1, 1)]);
-    set.exec_roots = vec!["tools/gen.rs".to_owned()];
+    set.exec_roots = vec![root("tools/gen.rs")];
 
     let tiering = tier(&RepoGlobs::default(), &set);
 
@@ -26,7 +30,7 @@ fn custom_named_build_script_edited_in_place_is_exec_surface() {
 #[test]
 fn edit_to_a_workspace_proc_macro_crate_source_is_exec_surface() {
     let mut set = changes(vec![file("crates/derive/src/lib.rs", 1, 1)]);
-    set.exec_roots = vec!["crates/derive".to_owned()];
+    set.exec_roots = vec![root("crates/derive")];
 
     let tiering = tier(&RepoGlobs::default(), &set);
 
@@ -42,11 +46,34 @@ fn edit_to_a_workspace_proc_macro_crate_source_is_exec_surface() {
 #[test]
 fn exec_root_matches_whole_segments_only() {
     let mut set = changes(vec![file("crates/derive-docs/src/lib.rs", 1, 1)]);
-    set.exec_roots = vec!["crates/derive".to_owned()];
+    set.exec_roots = vec![root("crates/derive")];
 
     let tiering = tier(&RepoGlobs::default(), &set);
 
     assert_eq!(tiering.classes, Vec::new());
+}
+
+#[test]
+fn everything_root_makes_any_change_exec_surface() {
+    let mut set = changes(vec![file("README.md", 1, 0)]);
+    set.exec_roots = vec![ExecRoot::Everything];
+
+    let tiering = tier(&RepoGlobs::default(), &set);
+
+    assert_eq!(
+        (tiering.tier, tiering.classes),
+        (Tier::Full, vec![PrClass::ExecSurface])
+    );
+}
+
+#[test]
+fn empty_path_root_holds_every_path() {
+    let mut set = changes(vec![file("src/lib.rs", 1, 0)]);
+    set.exec_roots = vec![root("")];
+
+    let tiering = tier(&RepoGlobs::default(), &set);
+
+    assert_eq!(tiering.classes, vec![PrClass::ExecSurface]);
 }
 
 #[test]

@@ -205,6 +205,34 @@ fn added_manifest_reports_the_trust_keys_it_sets() {
 }
 
 #[test]
+fn legacy_project_table_keys_are_trust_keys() {
+    let base = "[project]\nname = \"x\"\nedition = \"2018\"\nrust-version = \"1.60\"\n";
+    let cases = [
+        (
+            base.replace("edition = \"2018\"", "edition = \"2015\""),
+            ManifestKey::Edition,
+        ),
+        (base.replace("1.60", "1.50"), ManifestKey::RustVersion),
+        (
+            format!("{base}autotests = false\n"),
+            ManifestKey::TestSwitch,
+        ),
+        (
+            format!("{base}autobenches = false\n"),
+            ManifestKey::TestSwitch,
+        ),
+    ];
+
+    let found: Vec<_> = cases
+        .iter()
+        .map(|(head, _)| manifest_trust_keys(Some(base), Some(head)))
+        .collect();
+
+    let expected: Vec<_> = cases.iter().map(|(_, key)| vec![*key]).collect();
+    assert_eq!(found, expected);
+}
+
+#[test]
 fn target_edition_change_is_an_edition_change() {
     let head = edited("[lib]", "[lib]\nedition = \"2015\"");
 

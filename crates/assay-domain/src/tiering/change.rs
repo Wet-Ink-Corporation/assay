@@ -18,14 +18,35 @@ pub struct ChangeSet {
     /// ASCII case.
     pub include_targets: Vec<String>,
     /// Source roots of the workspace's `custom-build` and `proc-macro` targets at base and at
-    /// head, as canonical repo-relative paths: a custom build script file (`[package] build`)
-    /// or a proc-macro crate's directory. Any changed file at or under a root is exec surface.
+    /// head: the directory of a custom build script (`[package] build`), a proc-macro crate's
+    /// directory and its `[lib] path`. Any changed file at or under a root is exec surface.
     /// Derived from the parsed manifests (`assay_app::exec_roots`) or filled by #65.
-    pub exec_roots: Vec<String>,
+    pub exec_roots: Vec<ExecRoot>,
     /// The package-set diff, base vs head.
     pub packages: PackageDiff,
     /// How `.claude/temper-baseline.json` changed, when it did.
     pub temper_baseline: BaselineChange,
+}
+
+/// Where build-time code lives (04 §2.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecRoot {
+    /// A canonical repo-relative file or directory; it and everything under it is exec surface.
+    Path(String),
+    /// The root could not be placed inside the repository (an unparseable root manifest, or a
+    /// build path that is absolute, holds a `\` or climbs out): every file is exec surface.
+    Everything,
+}
+
+impl ExecRoot {
+    /// Whether `path` is this root or lies under it, ignoring ASCII case. An empty `Path`
+    /// holds every path, as `Everything` does (fail closed).
+    pub(super) fn holds(&self, path: &str) -> bool {
+        match self {
+            Self::Path(root) => is_under(path, root),
+            Self::Everything => true,
+        }
+    }
 }
 
 /// One changed file.
@@ -100,7 +121,7 @@ pub(super) fn is_canonical(path: &str) -> bool {
 
 /// Whether `path` is `root` or lies under it, ignoring ASCII case; an empty root holds every
 /// path (fail closed).
-pub(super) fn is_under(path: &str, root: &str) -> bool {
+fn is_under(path: &str, root: &str) -> bool {
     let root = root.trim_end_matches('/');
     if root.is_empty() {
         return true;

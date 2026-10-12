@@ -40,6 +40,7 @@ fn parse(text: Option<&str>) -> Result<Table, toml::de::Error> {
 }
 
 /// The values of `manifest` that `key` covers, in a fixed order; `None` for an absent value.
+/// The legacy `[project]` table, which cargo still reads as `[package]`, is projected too.
 fn projection(manifest: &Table, key: ManifestKey) -> Vec<Option<&Value>> {
     let at = |path: &[&str]| lookup(manifest, path);
     match key {
@@ -51,10 +52,12 @@ fn projection(manifest: &Table, key: ManifestKey) -> Vec<Option<&Value>> {
         ManifestKey::WorkspaceExclude => vec![at(&["workspace", "exclude"])],
         ManifestKey::RustVersion => vec![
             at(&["package", "rust-version"]),
+            at(&["project", "rust-version"]),
             at(&["workspace", "package", "rust-version"]),
         ],
         ManifestKey::Edition => [
             at(&["package", "edition"]),
+            at(&["project", "edition"]),
             at(&["workspace", "package", "edition"]),
         ]
         .into_iter()
@@ -63,6 +66,8 @@ fn projection(manifest: &Table, key: ManifestKey) -> Vec<Option<&Value>> {
         ManifestKey::TestSwitch => [
             at(&["package", "autotests"]),
             at(&["package", "autobenches"]),
+            at(&["project", "autotests"]),
+            at(&["project", "autobenches"]),
         ]
         .into_iter()
         .chain(target_keys(manifest, &["test", "doctest", "harness"]))
