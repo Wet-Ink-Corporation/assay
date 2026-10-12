@@ -54,30 +54,46 @@ fn a_changed_gate_key_fails_at_its_line() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn every_compared_key_is_checked() -> Result<(), Box<dyn Error>> {
-    for (from, to) in [
-        ("\"exempt\": []", "\"exempt\": [\"src/**\"]"),
-        ("\"ownLints\": []", "\"ownLints\": [\"x\"]"),
-        ("\"review\": \"required\"", "\"review\": \"off\""),
-        ("\"skillGate\": true", "\"skillGate\": false"),
+    for (from, to, key) in [
+        ("\"exempt\": []", "\"exempt\": [\"src/**\"]", "scanner"),
+        ("\"ownLints\": []", "\"ownLints\": [\"x\"]", "manifests"),
+        ("\"review\": \"required\"", "\"review\": \"off\"", "review"),
+        ("\"skillGate\": true", "\"skillGate\": false", "skillGate"),
         (
             "\"askOnNewDependency\": true",
             "\"askOnNewDependency\": false",
+            "askOnNewDependency",
         ),
         (
             "[\"serde\", \"thiserror\"]",
             "[\"serde\", \"thiserror\", \"tokio\"]",
+            "preapprovedDependencies",
         ),
         (
             "\"skillGate\": true,",
             "\"skillGate\": true, \"protected\": [],",
+            "protected",
         ),
     ] {
         let mut pr = Pr::new()?;
-        pr.set(Revision::Head, CONFIG, &TEMPER_JSON.replace(from, to));
+        let head = TEMPER_JSON.replace(from, to);
+        pr.set(Revision::Head, CONFIG, &head);
 
         let outcome = pr.outcome()?;
 
-        assert_eq!(outcome.0, FAILED, "{from} -> {to}");
+        assert_eq!(
+            outcome,
+            (
+                FAILED,
+                vec![(
+                    "gate-config".to_owned(),
+                    CONFIG.to_owned(),
+                    key_line(&head, key)?,
+                    Severity::Blocker
+                )]
+            ),
+            "{from} -> {to}"
+        );
     }
     Ok(())
 }

@@ -8,7 +8,7 @@ use std::num::NonZeroU64;
 use std::path::Path;
 
 use super::attributes::{self, Expect};
-use super::tokens::{self, Unterminated};
+use super::tokens::{Source, Unlexable};
 use crate::revision::{EntryKind, TreeEntry};
 
 /// Directories temper's walk skips at any depth (temper 1.3.0, `walkRust`).
@@ -37,10 +37,13 @@ pub(super) enum Why {
     /// A symlink that does not resolve, inside the tree and through real directories only, to
     /// a regular file (a `.rs` one when the link's name ends in `.rs`).
     Symlink,
-    /// An attribute the scan does not read.
+    /// A Rust file whose extension is not exactly `.rs` (`lib.RS`), which the scan's walk
+    /// skips.
+    Extension,
+    /// An attribute or `include!` the scan does not read.
     Attribute,
     /// A `.rs` file this adapter could not read: not listed with its bytes, or holding a
-    /// literal or comment that never ends.
+    /// literal or comment that never ends, code outside ASCII, or frontmatter.
     Unreadable,
 }
 
@@ -118,6 +121,12 @@ impl HeadTree {
                 (EntryKind::Submodule, _) => Some(Why::Submodule),
                 (EntryKind::File | EntryKind::Symlink, _) if rust && skipped => {
                     Some(Why::SkippedDirectory)
+                }
+                // The scan's walk matches `.rs` exactly; `rust` matched it in any case.
+                (EntryKind::File | EntryKind::Symlink, _)
+                    if rust && Path::new(path).extension().is_none_or(|e| e != "rs") =>
+                {
+                    Some(Why::Extension)
                 }
                 (EntryKind::Symlink, Some(target)) if index.resolves(path, target) => None,
                 (EntryKind::Symlink, _) => Some(Why::Symlink),
@@ -198,9 +207,11 @@ impl<'h> Index<'h> {
 }
 
 /// Lexes the `.rs` file at `path`, recording its unread attributes and its `expect`s.
-fn read_source<'h>(path: &'h str, source: &[u8], analysis: &mut Analysis<'h>) {
-    let text = String::from_utf8_lossy(source);
-    match tokens::tokens(&text) {
+fn read_source<'h>(path: &'h str, bytes: &[u8], analysis: &mut Analysis<'h>) {
+    let lossy = String::from_utf8_lossy(bytes);
+    let source = Source::new(&lossy);
+    let text = source.text();
+    match source.tokens() {
         Ok(lexed) => {
             analysis
                 .blind
@@ -208,7 +219,7 @@ fn read_source<'h>(path: &'h str, source: &[u8], analysis: &mut Analysis<'h>) {
                     path,
                     line,
                     why: Why::Attribute,
-                    quote: line_text(&text, line),
+                    quote: line_text(text, line),
                 }));
             analysis
                 .expects
@@ -222,7 +233,7 @@ fn read_source<'h>(path: &'h str, source: &[u8], analysis: &mut Analysis<'h>) {
                         }),
                 );
         }
-        Err(Unterminated(line)) => analysis.blind.push(Blind {
+        Err(Unlexable(line)) => analysis.blind.push(Blind {
             path,
             line,
             why: Why::Unreadable,

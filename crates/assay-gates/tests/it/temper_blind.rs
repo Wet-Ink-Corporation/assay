@@ -274,6 +274,228 @@ fn no_literal_lifetime_or_shebang_hides_an_attribute_from_the_lexer() -> Result<
     Ok(())
 }
 
+/// Line 2 of every source below: an attribute the checks must see, then a line closing any
+/// string a desynchronised lexer opened on line 1.
+const HIDDEN: &str = "\n#[cfg_attr(all(), allow(unused))]\nconst S: &str = \"\\\"\";\n";
+
+/// `sources`, each expected to fail with one `blind-spot` at `line`.
+fn each_blind_at(sources: &[(&str, u64)]) -> Vec<(String, Outcome)> {
+    sources
+        .iter()
+        .map(|(source, line)| {
+            (
+                (*source).to_owned(),
+                (FAILED, vec![blind("src/lib.rs", *line)]),
+            )
+        })
+        .collect()
+}
+
+/// The outcome of each of `sources`, keyed by its text.
+fn owned_outcomes(sources: &[(&str, u64)]) -> Result<Vec<(String, Outcome)>, Box<dyn Error>> {
+    let texts: Vec<&str> = sources.iter().map(|(source, _)| *source).collect();
+    Ok(outcomes(&texts)?
+        .into_iter()
+        .map(|(source, outcome)| (source.to_owned(), outcome))
+        .collect())
+}
+
+#[test]
+fn code_outside_ascii_fails_where_it_starts() -> Result<(), Box<dyn Error>> {
+    // rustc reads LRM as whitespace and `x·r`, `'℘` as an identifier and a lifetime, by
+    // Unicode tables this lexer does not carry: any non-ASCII character outside a literal or
+    // comment is read as a blind spot instead (wi-6c128e).
+    let skip = format!("skip!(x\u{B7}r\"\\\"\");{HIDDEN}");
+    let lifetime = format!("m!('\u{2118} '\\\"');{HIDDEN}");
+    let sources = [
+        (
+            "// one\n#[cfg_attr\u{200E}(all(), allow(x))]\nfn f() {}\n",
+            2,
+        ),
+        ("// one\n#\u{200E}[allow(x)]\nfn f() {}\n", 2),
+        ("#!\u{200E}[allow(x)]\nfn f() {}\n", 1),
+        ("// one\nfn f() {}\u{2028}\n", 2),
+        ("// one\nfn f() {}\u{85}\n", 2),
+        ("// one\nfn f\u{200F}() {}\n", 2),
+        ("// one\nfn caf\u{E9}() {}\n", 2),
+        (skip.as_str(), 1),
+        (lifetime.as_str(), 1),
+    ];
+
+    let seen = owned_outcomes(&sources)?;
+
+    assert_eq!(
+        seen,
+        each_blind_at(&sources),
+        "rustc lexes these by Unicode rules"
+    );
+    Ok(())
+}
+
+#[test]
+fn text_in_comments_and_literals_may_be_any_unicode() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(
+        Revision::Head,
+        "src/lib.rs",
+        "/// caf\u{E9} \u{200E}\nconst C: char = '\u{2118}';\nconst S: &str = \"\u{2028}\";\n\
+         /* \u{85} */ fn f() {}\n",
+    );
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(outcome, (PASSED, Vec::new()), "only code must be ASCII");
+    Ok(())
+}
+
+#[test]
+fn a_byte_order_mark_or_frontmatter_hides_nothing() -> Result<(), Box<dyn Error>> {
+    let bom = format!("\u{FEFF}#!/bin/x r\"{HIDDEN}");
+    let crlf = "m!(r\"x\"\r\n);\r\n#[cfg_attr(all(), allow(unused))]\r\nfn f() {}\r\n";
+    let frontmatter = format!("---\nx = \"\n---{HIDDEN}");
+    let indented = format!("\n  ---\nx = \"\n---{HIDDEN}");
+    let sources = [
+        (bom.as_str(), 2),
+        (crlf, 3),
+        (frontmatter.as_str(), 1),
+        (indented.as_str(), 2),
+    ];
+
+    let seen = owned_outcomes(&sources)?;
+
+    assert_eq!(
+        seen,
+        each_blind_at(&sources),
+        "rustc drops the mark and the shebang, and reads `---` first as frontmatter"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_lint_attribute_without_its_argument_list_fails() -> Result<(), Box<dyn Error>> {
+    let sources = [
+        (
+            "macro_rules! m {\n    ($a:tt) => { #[allow $a] fn f() {} };\n}\n",
+            2,
+        ),
+        (
+            "macro_rules! m {\n    ($a:tt) => { #[expect $a] fn f() {} };\n}\n",
+            2,
+        ),
+        (
+            "macro_rules! m {\n    ($a:tt) => { #[cfg_attr $a] fn f() {} };\n}\n",
+            2,
+        ),
+        ("macro_rules! m {\n    ($a:tt) => { #![warn $a] };\n}\n", 2),
+        (
+            "macro_rules! m {\n    ($a:tt) => { #[deny $a] fn f() {} };\n}\n",
+            2,
+        ),
+        (
+            "macro_rules! m {\n    ($a:tt) => { #[forbid $a] fn f() {} };\n}\n",
+            2,
+        ),
+    ];
+
+    let seen = owned_outcomes(&sources)?;
+
+    assert_eq!(
+        seen,
+        each_blind_at(&sources),
+        "`$a` can be `(unused)`, which no scan reads"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_fragment_before_a_bracket_fails() -> Result<(), Box<dyn Error>> {
+    let sources = [
+        (
+            "macro_rules! m {\n    ($h:tt) => { $h [allow(x)] fn f() {} };\n}\n",
+            2,
+        ),
+        (
+            "macro_rules! m {\n    ($h:tt) => { $h ! [allow(x)] };\n}\n",
+            2,
+        ),
+        (
+            "macro_rules! m {\n    ($($h:tt)*) => { $($h)* [allow(x)] fn f() {} };\n}\n",
+            2,
+        ),
+        (
+            "macro_rules! m {\n    ($($h:tt),*) => { $($h),* [allow(x)] fn f() {} };\n}\n",
+            2,
+        ),
+    ];
+
+    let seen = owned_outcomes(&sources)?;
+
+    assert_eq!(
+        seen,
+        each_blind_at(&sources),
+        "`m!(#)` makes each an attribute with no `#` in the source"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_include_of_anything_but_named_rust_source_fails() -> Result<(), Box<dyn Error>> {
+    let sources = [
+        ("// one\ninclude!(\"gen.txt\");\n", 2),
+        ("// one\ninclude!(\"gen.r\\x73\");\n", 2),
+        ("// one\ninclude!(\"gen.rs\"x);\n", 2),
+        (
+            "// one\ninclude!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n",
+            2,
+        ),
+        (
+            "// one\nconst S: &str = include_str!(concat!(\"a\", \".txt\"));\n",
+            2,
+        ),
+        ("// one\nconst B: &[u8] = include_bytes!(env!(\"X\"));\n", 2),
+        ("// one\nconst B: &[u8] = include_bytes![];\n", 2),
+    ];
+
+    let seen = owned_outcomes(&sources)?;
+
+    assert_eq!(
+        seen,
+        each_blind_at(&sources),
+        "rustc compiles or embeds a file the scan never reads"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_include_of_named_rust_source_passes() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(
+        Revision::Head,
+        "src/lib.rs",
+        "include!(\"gen.rs\");\ninclude! { r#\"other.rs\"#, }\n",
+    );
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(outcome, (PASSED, Vec::new()), "the scan reads `.rs` files");
+    Ok(())
+}
+
+#[test]
+fn rust_whose_extension_the_scan_does_not_match_fails() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(Revision::Head, "src/lib.RS", "#[allow(x)]\nfn f() {}\n");
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![blind("src/lib.RS", 1)]),
+        "temper's walk matches `.rs` exactly, and `[lib] path` can name this file"
+    );
+    Ok(())
+}
+
 #[test]
 fn an_attribute_named_by_a_raw_identifier_fails() -> Result<(), Box<dyn Error>> {
     let sources = [

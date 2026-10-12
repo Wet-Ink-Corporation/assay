@@ -227,17 +227,26 @@ pub(super) fn blind(spots: &[Blind<'_>]) -> Vec<Finding> {
                      directories only, to a regular file (a `.rs` one for a `.rs` link). The \
                      scan does not walk symlinked directories, but rustc follows them.",
                 ),
+                Why::Extension => (
+                    "Rust source the temper scan does not match",
+                    "This Rust file's extension is not exactly `.rs`, so the temper scan \
+                     skips it, yet a `#[path]` or a Cargo target path could compile it. Name \
+                     it `.rs`.",
+                ),
                 Why::Attribute => (
                     "attribute the temper scan does not read",
-                    "A `cfg_attr` carrying `allow`, `expect`, `path` or a macro fragment, or a \
-                     `#[path]` attribute: the scan sees neither the suppression nor the file \
-                     it compiles. Write the attribute without `cfg_attr`, and keep modules at \
-                     their default paths.",
+                    "A `cfg_attr` carrying `allow`, `expect`, `path` or a macro fragment, a \
+                     `#[path]` attribute, a lint attribute without its `(..)` list, an \
+                     attribute named by `r#` or built from a macro fragment, or an `include!` \
+                     of anything but a named `.rs` file: the scan sees neither the suppression \
+                     nor the file it compiles. Write the attribute plainly, and keep modules \
+                     at their default paths.",
                 ),
                 Why::Unreadable => (
                     "Rust source assay could not read",
-                    "A literal or comment in this file never ends, or its bytes were not \
-                     read, so its attributes cannot be checked.",
+                    "A literal or comment in this file never ends, its code holds a character \
+                     outside ASCII, it starts with frontmatter, or its bytes were not read, so \
+                     its attributes cannot be checked.",
                 ),
             };
             let fallback = format!("{path}: {title}");

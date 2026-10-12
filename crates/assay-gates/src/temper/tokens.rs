@@ -4,10 +4,16 @@
 //! The source is PR-controlled, so the token boundaries follow `rustc_lexer` (rustc 1.98):
 //! whole lifetimes and labels (`'r#x` raw), literal prefixes (`b'`, `b"`, `br`, `c"`, `cr`,
 //! `r"`, `r#"`) and suffixes (`"x"r`, `'a'r`, `1u8`), rustc's number shape, raw identifiers
-//! (the word after `r#` is a plain identifier), and a leading shebang line. A literal or comment
-//! that never ends is an error the caller fails on; anything else it does not recognise is
-//! punctuation. `corpus.rs` checks the boundaries against `proc-macro2`'s lexer.
+//! (the word after `r#` is a plain identifier), and a leading byte order mark and shebang line.
+//! `corpus.rs` checks the boundaries against `proc-macro2`'s lexer.
+//!
+//! Code must be ASCII. rustc reads identifiers, lifetimes and some whitespace by Unicode tables
+//! (`XID_Start`, `Pattern_White_Space`) this lexer does not carry, so any other character
+//! outside a literal or comment is an error the caller fails on, as is a literal or comment
+//! that never ends and a leading frontmatter block. Literal and comment boundaries are found by
+//! ASCII rules only. Any other ASCII character is punctuation.
 
+use std::borrow::Cow;
 use std::num::NonZeroU64;
 
 /// One token.
@@ -31,43 +37,94 @@ pub(super) struct Lexed<'a> {
     pub(super) line: NonZeroU64,
 }
 
-/// A literal or block comment that starts on this line and never ends.
+/// Where this lexer stops reading a file, at the line it happens on: a literal or block
+/// comment that never ends, a character outside ASCII in code, or a leading frontmatter block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Unterminated(pub(super) NonZeroU64);
+pub(super) struct Unlexable(pub(super) NonZeroU64);
 
-/// The tokens of `text`, in order.
-pub(super) fn tokens(text: &str) -> Result<Vec<Lexed<'_>>, Unterminated> {
-    let mut lexer = Lexer::new(strip_shebang(text));
-    while let Some(next) = lexer.rest.chars().next() {
-        lexer.step(next)?;
+/// A `.rs` file's text as rustc lexes it: one leading byte order mark removed and every CRLF
+/// made LF, as rustc normalises a source file before lexing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Source<'a>(Cow<'a, str>);
+
+impl<'a> Source<'a> {
+    pub(super) fn new(text: &'a str) -> Self {
+        let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
+        Self(if text.contains("\r\n") {
+            Cow::Owned(text.replace("\r\n", "\n"))
+        } else {
+            Cow::Borrowed(text)
+        })
     }
-    Ok(lexer.out)
+
+    /// The normalised text.
+    pub(super) fn text(&self) -> &str {
+        &self.0
+    }
+
+    /// The tokens of the text, in order. A leading shebang line is skipped as
+    /// `rustc_lexer::strip_shebang` skips it; frontmatter (`---` first, past whitespace) is
+    /// refused, since rustc's lexer does not tokenise its contents.
+    pub(super) fn tokens(&self) -> Result<Vec<Lexed<'_>>, Unlexable> {
+        let body = strip_shebang(&self.0);
+        let mut lexer = Lexer::new(body);
+        let lead = body.trim_start_matches(is_pattern_white_space);
+        if lead.starts_with("---") {
+            lexer
+                .skip(body.len().saturating_sub(lead.len()))
+                .ok_or(Unlexable(NonZeroU64::MIN))?;
+            return Err(Unlexable(lexer.line));
+        }
+        while let Some(next) = lexer.first() {
+            lexer.step(next)?;
+        }
+        Ok(lexer.out)
+    }
 }
 
 /// `text` without its shebang line, as `rustc_lexer::strip_shebang` removes it: a first line
-/// starting `#!` whose next token (past whitespace and comments) is not `[`. The line break
-/// stays, so lines still count from the file's first. When the rest does not lex, nothing is
-/// stripped: reading the line as code can only show more.
+/// starting `#!` whose next token, past whitespace and comments other than doc comments, is not
+/// `[`. The line break stays, so lines still count from the file's first.
 fn strip_shebang(text: &str) -> &str {
     let Some(tail) = text.strip_prefix("#!") else {
         return text;
     };
     let mut lexer = Lexer::new(tail);
-    while lexer.out.is_empty() {
-        let Some(next) = lexer.rest.chars().next() else {
-            break;
-        };
-        if lexer.step(next).is_err() {
-            return text;
-        }
+    while lexer.skip_trivia().is_some() {}
+    if lexer.first() == Some('[') {
+        return text;
     }
-    match lexer.out.first() {
-        Some(first) if first.token == Token::Punct('[') => text,
-        _ => text
-            .find('\n')
-            .and_then(|end| text.get(end..))
-            .unwrap_or(""),
-    }
+    text.find('\n')
+        .and_then(|end| text.get(end..))
+        .unwrap_or("")
+}
+
+/// rustc's whitespace: Unicode's `Pattern_White_Space`.
+const fn is_pattern_white_space(c: char) -> bool {
+    matches!(
+        c,
+        '\t' | '\n'
+            | '\u{0B}'
+            | '\u{0C}'
+            | '\r'
+            | ' '
+            | '\u{85}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{2028}'
+            | '\u{2029}'
+    )
+}
+
+/// Whether `rest` starts a doc line comment: `///` (not `////`) or `//!`.
+fn is_doc_line(rest: &str) -> bool {
+    (rest.starts_with("///") && !rest.starts_with("////")) || rest.starts_with("//!")
+}
+
+/// Whether `rest` starts a doc block comment: `/*!`, or `/**` (not `/***` or `/**/`).
+fn is_doc_block(rest: &str) -> bool {
+    rest.starts_with("/*!")
+        || (rest.starts_with("/**") && !rest.starts_with("/***") && !rest.starts_with("/**/"))
 }
 
 struct Lexer<'a> {
@@ -85,10 +142,25 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Consumes one whitespace character or one comment that is not a doc comment; `None` when
+    /// neither starts here, or a block comment runs to the end.
+    fn skip_trivia(&mut self) -> Option<()> {
+        let rest = self.rest;
+        match self.first()? {
+            c if is_pattern_white_space(c) => self.bump(),
+            '/' if rest.starts_with("//") && !is_doc_line(rest) => {
+                self.skip(rest.find('\n').unwrap_or(rest.len()))
+            }
+            '/' if rest.starts_with("/*") && !is_doc_block(rest) => self.block_comment(),
+            _ => None,
+        }
+    }
+
     /// Consumes the token or the comment that starts with `next`.
-    fn step(&mut self, next: char) -> Result<(), Unterminated> {
+    fn step(&mut self, next: char) -> Result<(), Unlexable> {
         let (start, line) = (self.rest, self.line);
         let ended = match next {
+            next if !next.is_ascii() => None,
             '/' if self.rest.starts_with("//") => {
                 let end = self.rest.find('\n').unwrap_or(self.rest.len());
                 self.skip(end)
@@ -101,10 +173,10 @@ impl<'a> Lexer<'a> {
             '\'' => self.char_or_lifetime(),
             next if next.is_ascii_digit() => self.number().map(|()| self.literal(start, line)),
             next if is_ident_start(next) => self.word(),
-            next if next.is_whitespace() => self.bump(),
+            next if is_pattern_white_space(next) => self.bump(),
             next => self.bump().map(|()| self.push(Token::Punct(next), line)),
         };
-        ended.ok_or(Unterminated(line))
+        ended.ok_or(Unlexable(line))
     }
 
     fn push(&mut self, token: Token<'a>, line: NonZeroU64) {
@@ -221,10 +293,15 @@ impl<'a> Lexer<'a> {
     }
 
     /// A character literal (`'x'`, `'\n'`, `'"'r`) or a whole lifetime or label (`'a`,
-    /// `'r#a`), as `rustc_lexer`'s `lifetime_or_char` tells them apart.
+    /// `'r#a`), as `rustc_lexer`'s `lifetime_or_char` tells them apart. A quote then a
+    /// character outside ASCII not closed at once (`'℘ `) is refused: whether rustc reads a
+    /// lifetime there depends on Unicode tables.
     fn char_or_lifetime(&mut self) -> Option<()> {
         let (start, line) = (self.rest, self.line);
         self.bump()?;
+        if self.first().is_some_and(|c| !c.is_ascii()) && self.nth(1) != Some('\'') {
+            return None;
+        }
         let lifetime = self.nth(1) != Some('\'')
             && self
                 .first()
@@ -363,12 +440,14 @@ impl<'a> Lexer<'a> {
     }
 }
 
-fn is_ident_start(c: char) -> bool {
-    c == '_' || c.is_alphabetic()
+/// An ASCII identifier's first character; others are refused before this is asked.
+const fn is_ident_start(c: char) -> bool {
+    c == '_' || c.is_ascii_alphabetic()
 }
 
-fn is_ident_continue(c: char) -> bool {
-    c == '_' || c.is_alphanumeric()
+/// An ASCII identifier's later character.
+const fn is_ident_continue(c: char) -> bool {
+    c == '_' || c.is_ascii_alphanumeric()
 }
 
 #[cfg(test)]
@@ -377,7 +456,8 @@ mod tests {
 
     /// The tokens of `text` as written.
     fn texts(text: &str) -> Vec<String> {
-        tokens(text)
+        Source::new(text)
+            .tokens()
             .expect("terminated")
             .into_iter()
             .map(|lexed| match lexed.token {
@@ -470,13 +550,49 @@ mod tests {
 
     #[test]
     fn tokens_carry_the_line_they_start_on() {
-        let lexed = tokens("#!shebang\na\n\"x\ny\"\nb").expect("terminated");
+        let source = Source::new("#!shebang\r\na\r\n\"x\r\ny\"\nb");
+        let lexed = source.tokens().expect("terminated");
 
         let lines: Vec<u64> = lexed.iter().map(|lexed| lexed.line.get()).collect();
         assert_eq!(
             lines,
             [2, 3, 5],
             "the shebang keeps its line; a multi-line literal starts on 3"
+        );
+    }
+
+    #[test]
+    fn a_byte_order_mark_goes_and_crlf_becomes_lf() {
+        let source = Source::new("\u{FEFF}a\r\n\"b\r\nc\"\rd");
+
+        assert_eq!(
+            (source.text(), texts("\u{FEFF}a\r\n\"b\r\nc\"\rd")),
+            (
+                "a\n\"b\nc\"\rd",
+                ["a", "\"b\nc\"", "d"].map(str::to_owned).to_vec()
+            ),
+            "rustc's normalisation; a lone CR stays, as whitespace"
+        );
+    }
+
+    #[test]
+    fn a_shebang_is_kept_only_before_an_inner_attribute() {
+        assert_eq!(
+            (
+                texts("#! // c\n[x]"),
+                texts("#! /// c\n[x]"),
+                texts("#! /** c */ [x]"),
+                texts("#!\u{0B}\u{0C}[x]"),
+                texts("#! /* open\n[x]"),
+            ),
+            (
+                ["#", "!", "[", "x", "]"].map(str::to_owned).to_vec(),
+                ["[", "x", "]"].map(str::to_owned).to_vec(),
+                Vec::new(),
+                ["#", "!", "[", "x", "]"].map(str::to_owned).to_vec(),
+                ["[", "x", "]"].map(str::to_owned).to_vec(),
+            ),
+            "plain comments and whitespace are skipped; a doc comment or an open one is a token"
         );
     }
 
@@ -490,10 +606,41 @@ mod tests {
             "a\nr##x",
         ] {
             assert_eq!(
-                tokens(text),
-                Err(Unterminated(NonZeroU64::MIN.saturating_add(1))),
+                Source::new(text).tokens(),
+                Err(Unlexable(NonZeroU64::MIN.saturating_add(1))),
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn code_outside_ascii_and_frontmatter_are_errors_at_their_line() {
+        for text in [
+            "a\nb\u{200E}",
+            "a\n\u{2028}",
+            "a\nx\u{B7}y",
+            "a\n'\u{2118} ",
+            "a\n'a\u{E9}",
+            "a\n1\u{E9}",
+            "a\n\"s\"\u{E9}",
+            "a\nr#\u{E9}",
+            "\n---\n",
+            "#!/bin/x\n---\n",
+        ] {
+            assert_eq!(
+                Source::new(text).tokens(),
+                Err(Unlexable(NonZeroU64::MIN.saturating_add(1))),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn literals_and_comments_may_hold_any_text() {
+        assert_eq!(
+            texts("'\u{2118}' \"\u{200E}\" /* \u{85} */ // \u{E9}\nb'\u{E9}' x"),
+            ["'\u{2118}'", "\"\u{200E}\"", "b'\u{E9}'", "x"].map(str::to_owned),
+            "the boundaries are ASCII"
+        );
     }
 }
