@@ -36,3 +36,9 @@ pub use prompt_bundle::{
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};
+
+mod validation;
+pub use validation::{
+    Change, DiffPaths, FileDiff, FindingRef, Hunk, Inputs, LineSpan, Placement, SuppressRules,
+    Transition, ValidFinding, Validated, validate,
+};
