@@ -6,3 +6,4 @@ mod repository;
 mod single_constructor;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod support;
+mod tree;

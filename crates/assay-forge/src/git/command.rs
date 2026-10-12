@@ -60,6 +60,12 @@ pub enum GitOperation {
     Diff,
     /// `git check-attr`, reading paths from stdin.
     CheckAttr,
+    /// `git ls-tree -r -z -l`: the entries at or under a path of a commit, with sizes.
+    ListTree,
+    /// `git cat-file --batch`: the raw bytes of listed blobs, by object id from stdin.
+    ReadBlobs,
+    /// `git hash-object --no-filters --stdin`: the blob id of some bytes, nothing written.
+    HashBlob,
 }
 
 impl GitOperation {
@@ -79,6 +85,9 @@ impl GitOperation {
             Self::VerifyCommit => &["cat-file", "-e"],
             Self::Diff => &["diff", "--no-ext-diff", "--no-textconv", "--no-color"],
             Self::CheckAttr => &["check-attr", "-z", "--stdin"],
+            Self::ListTree => &["ls-tree", "-r", "-z", "-l"],
+            Self::ReadBlobs => &["cat-file", "--batch"],
+            Self::HashBlob => &["hash-object", "--no-filters", "--stdin"],
         }
     }
 }
@@ -91,6 +100,9 @@ impl fmt::Display for GitOperation {
             Self::VerifyCommit => "cat-file",
             Self::Diff => "diff",
             Self::CheckAttr => "check-attr",
+            Self::ListTree => "ls-tree",
+            Self::ReadBlobs => "cat-file --batch",
+            Self::HashBlob => "hash-object",
         };
         f.write_str(name)
     }
@@ -209,6 +221,9 @@ mod tests {
             GitOperation::VerifyCommit,
             GitOperation::Diff,
             GitOperation::CheckAttr,
+            GitOperation::ListTree,
+            GitOperation::ReadBlobs,
+            GitOperation::HashBlob,
         ] {
             let command = hardened(operation);
 

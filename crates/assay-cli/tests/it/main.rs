@@ -11,3 +11,5 @@ mod layout;
 mod release_workflow;
 #[cfg(unix)] // process groups and Unix file modes
 mod supervisor;
+#[cfg(unix)] // process groups, Unix file modes and a `/bin/sh` stand-in for node
+mod temper;

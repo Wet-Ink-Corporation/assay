@@ -4,3 +4,9 @@ mod environment;
 mod exec;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod support;
+mod temper;
+mod temper_blind;
+mod temper_config;
+mod temper_exception;
+#[cfg(test)]
+mod temper_support;

@@ -6,19 +6,25 @@
 /// The enum also gets an `ALL` array of every variant in declaration order and a `code()`
 /// returning the wire code.
 ///
-/// Attributes before `enum` (docs, extra derives) are kept; `Debug`, `Clone`, `Copy`,
-/// `PartialEq`, `Eq`, `Hash`, `Serialize` and `Deserialize` are always derived.
+/// Docs and extra derives before `enum`, and docs and `#[default]` on a variant, are kept;
+/// `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`, `Serialize` and `Deserialize` are
+/// always derived. Only those attributes are accepted, and each is written out by name: an
+/// attribute forwarded whole (`#[$meta]`) could carry a lint suppression no source scan reads
+/// (03 §2.1 step 2, the temper adapter's `blind-spot`).
 macro_rules! closed_enum {
     (
-        $(#[$meta:meta])*
+        $(#[doc = $doc:expr])*
+        $(#[derive $($derive:tt)*])*
         pub enum $name:ident {
             $(
-                $(#[$variant_meta:meta])*
+                $(#[doc = $variant_doc:expr])*
+                $(#[default $($default:tt)*])?
                 $variant:ident => $code:literal,
             )+
         }
     ) => {
-        $(#[$meta])*
+        $(#[doc = $doc])*
+        $(#[derive $($derive)*])*
         #[derive(
             Debug,
             Clone,
@@ -31,7 +37,8 @@ macro_rules! closed_enum {
         )]
         pub enum $name {
             $(
-                $(#[$variant_meta])*
+                $(#[doc = $variant_doc])*
+                $(#[default $($default)*])?
                 #[serde(rename = $code)]
                 $variant,
             )+
