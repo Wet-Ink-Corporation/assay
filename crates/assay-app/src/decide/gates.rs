@@ -16,7 +16,7 @@ use super::ports::RunArtifacts;
 use super::recompute::AuthenticPlan;
 use super::refusal::{OutputsProblem, PlanMismatch, Refusal};
 use super::request::{DecideRequest, GateJobOutputs, JobResult, Reported, UpstreamJob};
-use super::{Halt, Reader};
+use super::{Halt, Reader, RunDocument};
 use crate::config::{Plugin, Sha256Digest};
 use crate::contract::{Contract, ContractValidator};
 use crate::gate::{BuildJob, Conclusion, GateError, GateJob, scheduled};
@@ -27,6 +27,8 @@ use crate::plan::{ArtifactJob, PullRequestObjects};
 pub(super) struct Gates {
     pub(super) reports: Vec<GateReport>,
     pub(super) findings: Vec<assay_domain::Finding>,
+    /// Every gate document whose bytes matched their job's digest, valid or not, for the bundle.
+    pub(super) documents: Vec<RunDocument>,
 }
 
 /// One scheduled gate before its findings are anchored.
@@ -58,6 +60,7 @@ pub(super) fn gates<O: PullRequestObjects, S, A: RunArtifacts>(
         (GateJob::Build(BuildJob::Test), &request.gates_test),
     ];
     let mut pending = Vec::new();
+    let mut documents = Vec::new();
     for (job, outputs) in jobs {
         let plugins: Vec<&Plugin> = plan
             .recomputed
@@ -89,7 +92,9 @@ pub(super) fn gates<O: PullRequestObjects, S, A: RunArtifacts>(
                         artifact,
                         digest: document,
                     };
-                    documented(&reported, plugin, reader)?
+                    let (state, authentic) = documented(&reported, plugin, reader)?;
+                    documents.extend(authentic);
+                    state
                 }
                 (Some(Reported::Error(error)), _) => State::Settled(errored(&error.detail())),
                 (Some(Reported::Concluded { .. }), None) => {
@@ -107,7 +112,9 @@ pub(super) fn gates<O: PullRequestObjects, S, A: RunArtifacts>(
             pending.push(Pending { plugin, state });
         }
     }
-    anchored(request, plan, reader.objects, pending)
+    let mut gates = anchored(request, plan, reader.objects, pending)?;
+    gates.documents = documents;
+    Ok(gates)
 }
 
 /// What a gate's job reported with a document: its conclusion, the job's artifact and the
@@ -118,13 +125,13 @@ struct Report<'r> {
     digest: &'r Sha256Digest,
 }
 
-/// The state of a gate whose job `reported` a document. A document whose bytes are not the
-/// published ones refuses the run (F18).
+/// The state of a gate whose job `reported` a document, and the document when its bytes are the
+/// published ones. A document whose bytes are not refuses the run (F18).
 fn documented<O: PullRequestObjects, S, A: RunArtifacts>(
     reported: &Report<'_>,
     plugin: &Plugin,
     reader: &mut Reader<'_, O, A>,
-) -> Result<State, Halt<O::Error, S, A::Error>> {
+) -> Result<(State, Option<RunDocument>), Halt<O::Error, S, A::Error>> {
     let file = format!("{}.json", plugin.name());
     let fetched = reader
         .fetcher
@@ -135,18 +142,21 @@ fn documented<O: PullRequestObjects, S, A: RunArtifacts>(
             let job = reported.artifact.job;
             return Err(Refusal::ArtifactDigest { job, file }.into());
         }
-        Fetch::Missing => return Ok(State::Settled(errored("artifact-missing"))),
+        Fetch::Missing => return Ok((State::Settled(errored("artifact-missing")), None)),
         Fetch::TooLarge => {
             let detail = GateError::DocumentTooLarge.detail();
-            return Ok(State::Settled(errored(&detail)));
+            return Ok((State::Settled(errored(&detail)), None));
         }
     };
-    Ok(read_document(
-        &bytes,
-        plugin,
-        reported.conclusion,
-        reader.validator,
-    ))
+    let state = read_document(&bytes, plugin, reported.conclusion, reader.validator);
+    let document = RunDocument {
+        job: reported.artifact.job,
+        file,
+        // The bundle records the digest beside the bytes; the request keeps its own.
+        digest: reported.digest.clone(),
+        bytes,
+    };
+    Ok((state, Some(document)))
 }
 
 /// The job's reports by plugin, refusing outputs that name a plugin base config does not

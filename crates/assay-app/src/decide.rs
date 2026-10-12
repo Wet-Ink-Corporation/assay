@@ -39,7 +39,7 @@ pub use self::request::{
     AdmitJob, ArtifactDocument, DecideRequest, GateJobOutputs, JobResult, PlanJob, Reported,
     ReportedGate, ReviewJob, TierDegrade, UpstreamJob,
 };
-use crate::config::{self, AssaySettings, InfraFailurePolicy, Promotion};
+use crate::config::{self, AssaySettings, InfraFailurePolicy, Promotion, Sha256Digest};
 use crate::contract::ContractValidator;
 use crate::plan::{ArtifactJob, EvidenceKey, PlanError, PullRequestEvent, PullRequestObjects};
 
@@ -74,6 +74,32 @@ pub struct AuthenticatedRun {
     gates: Vec<GateReport>,
     gate_findings: Vec<Finding>,
     review_documents: Vec<Vec<u8>>,
+    /// The bundle's record of the run's artifact documents (#57).
+    record: RunRecord,
+}
+
+/// What `decide` read and authenticated, kept for the `RunInputs` bundle (02 §5).
+#[derive(Debug)]
+pub(crate) struct RunRecord {
+    /// The `decide` job's own artifact.
+    pub(crate) bundle_artifact: String,
+    /// `run.json`, then every authentic gate document, in job then file order.
+    pub(crate) documents: Vec<RunDocument>,
+    /// The `review` documents' names and digests, one per entry of `review_documents`.
+    pub(crate) review_files: Vec<ArtifactDocument>,
+}
+
+/// An artifact document whose bytes hash to its producing job's output digest.
+#[derive(Debug)]
+pub(crate) struct RunDocument {
+    /// The producing job.
+    pub(crate) job: ArtifactJob,
+    /// The file in its artifact.
+    pub(crate) file: String,
+    /// The digest the job published, which the bytes match.
+    pub(crate) digest: Sha256Digest,
+    /// The bytes as fetched.
+    pub(crate) bytes: Vec<u8>,
 }
 
 /// The facts of GitHub's state snapshot a decision needs about the PR (#58's to compute).
@@ -145,6 +171,11 @@ impl AuthenticatedRun {
     #[must_use]
     pub fn review_documents(&self) -> &[Vec<u8>] {
         &self.review_documents
+    }
+
+    /// What the bundle records of the run's artifacts.
+    pub(crate) const fn record(&self) -> &RunRecord {
+        &self.record
     }
 
     /// The PR as rubric v1 reads it: Z4's facts with the snapshot's.
@@ -387,8 +418,19 @@ fn run<O: PullRequestObjects, S: PullRequestState, A: RunArtifacts>(
     let AuthenticPlan {
         recomputed,
         artifact_names,
+        bundle_artifact,
+        document,
         tier,
     } = plan;
+    let mut documents = vec![document];
+    documents.extend(gates.documents);
+    let record = RunRecord {
+        bundle_artifact,
+        documents,
+        // `review_documents` fetched each of these in order, so the two line up; the run's
+        // record owns its copy of the names and digests.
+        review_files: request.review.documents.clone(),
+    };
     Ok(Authentication::Authenticated(Box::new(AuthenticatedRun {
         run_key: recomputed.run_key,
         artifact_names,
@@ -401,6 +443,7 @@ fn run<O: PullRequestObjects, S: PullRequestState, A: RunArtifacts>(
         gates: gates.reports,
         gate_findings: gates.findings,
         review_documents,
+        record,
     })))
 }
 

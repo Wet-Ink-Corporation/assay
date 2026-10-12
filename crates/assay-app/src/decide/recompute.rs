@@ -12,7 +12,7 @@ use super::fetch::{Artifact, Fetch};
 use super::ports::RunArtifacts;
 use super::refusal::{PlanMismatch, PlanRefusal, Refusal, Unreadable};
 use super::request::{DecideRequest, JobResult, TierDegrade};
-use super::{DecideError, Halt, Reader};
+use super::{DecideError, Halt, Reader, RunDocument};
 use crate::contract::Contract;
 use crate::plan::{
     ArtifactJob, ArtifactNonce, PlanError, PullRequestObjects, Recomputed, recompute,
@@ -26,6 +26,10 @@ pub(super) const PLAN_FILE: &str = "run.json";
 pub(super) struct AuthenticPlan {
     pub(super) recomputed: Recomputed,
     pub(super) artifact_names: BTreeMap<ArtifactJob, String>,
+    /// The `decide` job's own artifact, where the bundle goes.
+    pub(super) bundle_artifact: String,
+    /// The authentic `run.json`, for the bundle.
+    pub(super) document: RunDocument,
     /// The tier the LLM stage was run at: the recomputed one, or `lite` after `admit`'s
     /// accepted degrade.
     pub(super) tier: Tier,
@@ -62,7 +66,7 @@ pub(super) fn authenticate_plan<O: PullRequestObjects, S, A: RunArtifacts>(
         .validator
         .read(Contract::Run, &bytes)
         .map_err(|_invalid| Refusal::from(PlanMismatch::Invalid))?;
-    let artifact_names =
+    let (artifact_names, bundle_artifact) =
         artifact_names(&document, &job.artifact).ok_or(PlanMismatch::ArtifactNames)?;
     let recomputed = recompute::<O, Infallible>(&request.plan, reader.objects).map_err(refused)?;
     let expected = recomputed
@@ -73,9 +77,18 @@ pub(super) fn authenticate_plan<O: PullRequestObjects, S, A: RunArtifacts>(
         return Err(Refusal::from(PlanMismatch::Field { name }).into());
     }
     let tier = degraded_tier(request, &recomputed)?;
+    let authentic = RunDocument {
+        job: ArtifactJob::Plan,
+        file: PLAN_FILE.to_owned(),
+        // The bundle records the digest beside the bytes; the request keeps its own.
+        digest: job.document.clone(),
+        bytes,
+    };
     Ok(AuthenticPlan {
         recomputed,
         artifact_names,
+        bundle_artifact,
+        document: authentic,
         tier,
     })
 }
@@ -94,8 +107,11 @@ fn refused<O, S, A>(error: PlanError<O, Infallible>) -> Halt<O, S, A> {
 }
 
 /// The plan's artifact names, one `assay-<job>-<nonce>` per job with distinct nonces and its
-/// own equal to the `plan` job's output; `None` otherwise.
-fn artifact_names(document: &Value, plan_artifact: &str) -> Option<BTreeMap<ArtifactJob, String>> {
+/// own equal to the `plan` job's output, with the `decide` job's own; `None` otherwise.
+fn artifact_names(
+    document: &Value,
+    plan_artifact: &str,
+) -> Option<(BTreeMap<ArtifactJob, String>, String)> {
     let names = document.get("artifact_names")?.as_object()?;
     if names.len() != ArtifactJob::ALL.len() {
         return None;
@@ -115,7 +131,10 @@ fn artifact_names(document: &Value, plan_artifact: &str) -> Option<BTreeMap<Arti
         }
         parsed.insert(job, name.to_owned());
     }
-    (parsed.get(&ArtifactJob::Plan).map(String::as_str) == Some(plan_artifact)).then_some(parsed)
+    // The run keeps the bundle's artifact name beside the map, which owns its own.
+    let bundle = parsed.get(&ArtifactJob::Decide)?.clone();
+    let own = parsed.get(&ArtifactJob::Plan)? == plan_artifact;
+    own.then_some((parsed, bundle))
 }
 
 /// The first top-level field, in key order, whose value differs between Z4's document and the

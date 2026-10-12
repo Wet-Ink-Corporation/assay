@@ -425,6 +425,30 @@ proptest! {
         }
     }
 
+    /// R3-03: `base-not-protected` is `failure`, never `neutral`, under any valid override.
+    #[test]
+    fn an_unprotected_base_fails_under_any_override(inputs in inputs()) {
+        let rubric = rubric_v1().expect("rubric/v1.toml parses");
+        if inputs.policy.protected_bases.contains(&inputs.pr.base_ref) {
+            // The property says nothing about a protected base.
+            return Ok(());
+        }
+        let reasons_digest = decide(&rubric, &inputs).reasons_digest();
+
+        for scope in OverrideScope::ALL {
+            let mut overridden = inputs.clone();
+            overridden.override_record = Some(Override {
+                scope,
+                reasons_digest: reasons_digest.clone(),
+                by: "owner".to_owned(),
+            });
+
+            let conclusion = decide(&rubric, &overridden).conclusion;
+
+            prop_assert_eq!(conclusion, Conclusion::Failure, "under {:?}", scope);
+        }
+    }
+
     #[test]
     fn the_findings_a_waiver_stops_counting_are_exactly_those_reported_waived(
         inputs in gate_inputs(),
