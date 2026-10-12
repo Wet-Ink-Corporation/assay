@@ -7,5 +7,5 @@ mod exec_roots;
 mod manifest;
 
 pub use baseline::baseline_change;
-pub use exec_roots::exec_roots;
+pub use exec_roots::{exec_roots, manifest_exec_roots};
 pub use manifest::manifest_trust_keys;

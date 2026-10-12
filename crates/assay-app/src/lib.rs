@@ -34,4 +34,4 @@ pub use model_runner::{
 pub use prompt_bundle::{
     BundleFile, BundleFileError, BundleFiles, InvalidBundle, PromptBundle, Role,
 };
-pub use tiering::{baseline_change, exec_roots, manifest_trust_keys};
+pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};

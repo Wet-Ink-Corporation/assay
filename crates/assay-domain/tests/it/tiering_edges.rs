@@ -76,6 +76,102 @@ fn empty_path_root_holds_every_path() {
     assert_eq!(tiering.classes, vec![PrClass::ExecSurface]);
 }
 
+/// The exec surface `exec_roots` give each of `paths`, one change at a time.
+fn exec_classes(roots: &[ExecRoot], paths: &[&str]) -> Vec<Vec<PrClass>> {
+    paths
+        .iter()
+        .map(|path| {
+            let mut set = changes(vec![file(path, 1, 0)]);
+            set.exec_roots = roots.to_vec();
+            tier(&RepoGlobs::default(), &set).classes
+        })
+        .collect()
+}
+
+#[test]
+fn build_sources_hold_crate_rust_files_outside_target_directories() {
+    let roots = [ExecRoot::BuildSources {
+        crate_dir: "crates/x".to_owned(),
+    }];
+
+    let classes = exec_classes(
+        &roots,
+        &[
+            "crates/x/helper.rs",
+            "crates/x/build/codegen.rs",
+            "crates/x/src/lib.rs",
+            "crates/x/tests/it.rs",
+            "crates/x/benches/b.rs",
+            "crates/x/examples/e.rs",
+            "crates/x/README.md",
+            "crates/y/helper.rs",
+        ],
+    );
+
+    let exec = vec![PrClass::ExecSurface];
+    assert_eq!(
+        classes,
+        vec![
+            exec.clone(),
+            exec,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new()
+        ]
+    );
+}
+
+#[test]
+fn root_build_sources_hold_top_level_files_and_mod_files_only() {
+    let roots = [ExecRoot::BuildSources {
+        crate_dir: String::new(),
+    }];
+
+    let classes = exec_classes(
+        &roots,
+        &[
+            "helper.rs",
+            "codegen/mod.rs",
+            "codegen/other.rs",
+            "src/lib.rs",
+            "notes.md",
+        ],
+    );
+
+    let exec = vec![PrClass::ExecSurface];
+    assert_eq!(
+        classes,
+        vec![exec.clone(), exec, Vec::new(), Vec::new(), Vec::new()]
+    );
+}
+
+#[test]
+fn non_canonical_root_holds_every_path() {
+    let roots = [
+        root("./crates/x"),
+        ExecRoot::BuildSources {
+            crate_dir: "crates/../x".to_owned(),
+        },
+    ];
+
+    let classes = exec_classes(&roots, &["docs/guide.md"]);
+
+    assert_eq!(classes, vec![vec![PrClass::ExecSurface]]);
+}
+
+#[test]
+fn path_build_dependency_edited_in_place_awaits_issue_65() {
+    // A path crate reachable as a build-dependency, or as a dependency of a proc-macro, runs at
+    // build time. Its directory is an exec root that #65 adds from the package-set diff; until
+    // then, with no root for it, an edit there is not exec surface. This pins that gap.
+    let classes = exec_classes(&[], &["crates/codegen-helpers/src/lib.rs"]);
+
+    assert_eq!(classes, vec![Vec::<PrClass>::new()]);
+}
+
 #[test]
 fn non_canonical_paths_are_trust_paths() {
     let paths = [

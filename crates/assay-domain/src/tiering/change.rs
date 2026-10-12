@@ -19,8 +19,10 @@ pub struct ChangeSet {
     pub include_targets: Vec<String>,
     /// Source roots of the workspace's `custom-build` and `proc-macro` targets at base and at
     /// head: the directory of a custom build script (`[package] build`), a proc-macro crate's
-    /// directory and its `[lib] path`. Any changed file at or under a root is exec surface.
-    /// Derived from the parsed manifests (`assay_app::exec_roots`) or filled by #65.
+    /// directory and its `[lib] path`, and each package's build sources. Any changed file a
+    /// root holds is exec surface. Derived from the parsed manifests
+    /// (`assay_app::manifest_exec_roots`). #65 adds the directories of path crates reachable as
+    /// build-dependencies or as dependencies of a proc-macro, from the package-set diff.
     pub exec_roots: Vec<ExecRoot>,
     /// The package-set diff, base vs head.
     pub packages: PackageDiff,
@@ -33,20 +35,70 @@ pub struct ChangeSet {
 pub enum ExecRoot {
     /// A canonical repo-relative file or directory; it and everything under it is exec surface.
     Path(String),
-    /// The root could not be placed inside the repository (an unparseable root manifest, or a
-    /// build path that is absolute, holds a `\` or climbs out): every file is exec surface.
+    /// The sources a crate's build script (`build.rs`, default or named) can reach through
+    /// `mod`, `#[path]` or `include!`: every `.rs` file under `crate_dir` outside `src/`,
+    /// `tests/`, `benches/` and `examples/`; for the root package (`crate_dir` empty), only
+    /// top-level `.rs` files and `<segment>/mod.rs`.
+    BuildSources {
+        /// The crate's directory; `""` for the root manifest's package.
+        crate_dir: String,
+    },
+    /// The root could not be placed inside the repository: an unparseable root manifest, a
+    /// root manifest's custom build script or proc-macro (whose directory is the whole
+    /// repository), or a build or `[lib] path` that is absolute, holds a `\` or climbs out.
+    /// Every file is exec surface.
     Everything,
 }
 
+/// Directories of a crate whose sources are not reachable from its build script.
+const TARGET_DIRS: [&str; 4] = ["src", "tests", "benches", "examples"];
+
 impl ExecRoot {
-    /// Whether `path` is this root or lies under it, ignoring ASCII case. An empty `Path`
-    /// holds every path, as `Everything` does (fail closed).
+    /// Whether `path` is this root or lies under it, ignoring ASCII case. A root that is not
+    /// canonical (an empty `Path` included) holds every path, as `Everything` does (fail
+    /// closed).
     pub(super) fn holds(&self, path: &str) -> bool {
         match self {
-            Self::Path(root) => is_under(path, root),
+            Self::Path(root) => !is_canonical(root) || is_under(path, root),
+            Self::BuildSources { crate_dir } => build_source(path, crate_dir),
             Self::Everything => true,
         }
     }
+}
+
+/// Whether `path` is a build source of the crate at `crate_dir` (see
+/// [`ExecRoot::BuildSources`]).
+fn build_source(path: &str, crate_dir: &str) -> bool {
+    if !crate_dir.is_empty() && !is_canonical(crate_dir) {
+        return true;
+    }
+    let is_rust = |name: &str| {
+        name.len() > 3
+            && name
+                .get(name.len().saturating_sub(3)..)
+                .is_some_and(|ext| ext.eq_ignore_ascii_case(".rs"))
+    };
+    if crate_dir.is_empty() {
+        return match path.split('/').collect::<Vec<_>>().as_slice() {
+            [file] => is_rust(file),
+            [_, file] => file.eq_ignore_ascii_case("mod.rs"),
+            _ => false,
+        };
+    }
+    let Some(relative) = path
+        .get(..crate_dir.len())
+        .filter(|prefix| prefix.eq_ignore_ascii_case(crate_dir))
+        .and_then(|_| path.get(crate_dir.len()..))
+        .and_then(|rest| rest.strip_prefix('/'))
+    else {
+        return false;
+    };
+    let in_target_dir = relative.split_once('/').is_some_and(|(first, _)| {
+        TARGET_DIRS
+            .iter()
+            .any(|dir| first.eq_ignore_ascii_case(dir))
+    });
+    is_rust(relative) && !in_target_dir
 }
 
 /// One changed file.
