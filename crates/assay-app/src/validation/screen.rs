@@ -119,11 +119,14 @@ fn has_html(prose: &str) -> bool {
 
 /// Whether `prose` references another repository, which GitHub links: `owner/name#digits` (an
 /// issue or pull request) or `owner/name@` and 7 to 40 hex digits (a commit), unless
-/// `owner/name` is `repository` (ASCII case-insensitive).
+/// `owner/name` is `repository`; or `user@` and 7 to 40 hex digits (a commit in that user's
+/// fork), unless `user` is `repository`'s owner. Names compare ASCII case-insensitively. A user
+/// is not required to start at a word boundary: flagging more is the safe side (wi-b5affa).
 ///
-/// Cost: linear. The name and owner read back from each `#` or `@` hold neither, nor `/`
+/// Cost: linear. The name, owner and user read back from each `#` or `@` hold neither, nor `/`
 /// before the name, so no character is read back over for two markers.
 fn has_cross_reference(prose: &str, repository: &str) -> bool {
+    let owner = repository.split_once('/').map(|(owner, _)| owner);
     prose.match_indices(['#', '@']).any(|(at, marker)| {
         let (Some(before), Some(after)) = (prose.get(..at), prose.get(at.saturating_add(1)..))
         else {
@@ -139,8 +142,25 @@ fn has_cross_reference(prose: &str, repository: &str) -> bool {
                 (7..=40).contains(&run.len()) && run.bytes().all(|b| b.is_ascii_hexdigit())
             })
         };
-        target && referenced(before).is_some_and(|named| !named.eq_ignore_ascii_case(repository))
+        target
+            && match referenced(before) {
+                Some(named) => !named.eq_ignore_ascii_case(repository),
+                None => {
+                    marker == "@"
+                        && fork_user(before).is_some_and(|user| {
+                            !owner.is_some_and(|o| o.eq_ignore_ascii_case(user))
+                        })
+                }
+            }
     })
+}
+
+/// The user that `before` ends with, if any: one or more ASCII letters, digits or `-`.
+fn fork_user(before: &str) -> Option<&str> {
+    let start = before
+        .trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '-')
+        .len();
+    before.get(start..).filter(|user| !user.is_empty())
 }
 
 /// The `owner/name` that `before` ends with, if it ends with one: a name of ASCII letters,
@@ -492,6 +512,35 @@ mod tests {
             "See other/repo@abc1234.",
             "See Wet-Ink-Corporation/assay#12 and wet-ink-corporation/ASSAY@abcdef0.",
             "Half a/b# or c/d@xyz.",
+        ];
+
+        assert_eq!(
+            texts.map(screened),
+            [Some(Suspicion::Url), Some(Suspicion::Url), None, None]
+        );
+    }
+
+    #[test]
+    fn flags_a_reference_definition_whose_backticks_pair_as_spans() {
+        // Round 6 F1: definitions are parsed before code spans, so spans cannot hide `]:`.
+        let texts = [
+            "Short finding text.\n\n[a`]: //evil.example \"`\"\nSee [a`] for details.",
+            "Short finding text.\n\n[a\nb`]: //evil.example \"`\"\nSee [a\nb`] for details.",
+            "Short finding text.\n\n[a`]: //evil.example \"`\"",
+            "Short finding text.\n\n[a\nb`]: //evil.example \"`\"",
+        ];
+
+        assert_eq!(texts.map(screened), [Some(Suspicion::Url); 4]);
+    }
+
+    #[test]
+    fn flags_a_commit_in_another_users_fork() {
+        // Round 6 F2: GitHub links `user@sha` to the commit in that user's fork.
+        let texts = [
+            "See evil@a5c3785ed8d6a35868bc169f07e40e889087fd2e",
+            "See (evil@a5c3785) here.",
+            "See wet-ink-corporation@a5c3785ed8d6a35868bc169f07e40e889087fd2e",
+            "See Wet-Ink-Corporation@a5c3785.",
         ];
 
         assert_eq!(

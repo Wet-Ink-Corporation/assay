@@ -56,8 +56,9 @@ pub(super) fn has_foreign_link(lower: &str, prose_lower: &str, repository: &str)
         Link::Reference | Link::Overlong => true,
         Link::Absolute { .. } | Link::Bare { .. } => false,
     });
-    // `]:` defines a link reference wherever a container lets it start a line.
-    written || ambiguous || markdown || prose_lower.contains("]:")
+    // `]:` defines a link reference wherever a container lets it start a line. Definitions are
+    // parsed before code spans, so it is looked for in the whole text, spans included.
+    written || ambiguous || markdown || lower.contains("]:")
 }
 
 /// Whether `c` ends a URL for every renderer: an ASCII space or control character.
