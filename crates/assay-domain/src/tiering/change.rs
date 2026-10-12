@@ -11,11 +11,12 @@ pub struct ChangeSet {
     pub files: Vec<FileChange>,
     /// Trust keys that differ between the base and head manifests, found by TOML parsing.
     pub manifests: Vec<ManifestTrustChange>,
-    /// Files a `.rs` file at base or head reads at compile time, found by the Z2s `syn` scan
-    /// (#64): the targets of `include!`, `include_str!`, `include_bytes!` (including
-    /// `#[doc = include_str!(..)]`) and `#[path = ..]`. Each is a canonical repo-relative path
-    /// (`/`-separated, no `.` or `..` segments); it is never `trivial`, and matching ignores
-    /// ASCII case.
+    /// Files a `.rs` file at base or head reads at compile time, found by the Z2s scan
+    /// (`assay_gates::compile_time_reach`, #64): the targets of `include!`, `include_str!`,
+    /// `include_bytes!` (including `#[doc = include_str!(..)]`) and `#[path = ..]`. Each is a
+    /// canonical repo-relative path (`/`-separated, no `.` or `..` segments); it is never
+    /// `trivial`, and matching ignores ASCII case. A target that is not canonical (the scan
+    /// reports one it cannot place as `""`) matches every path, so no change is `trivial`.
     pub include_targets: Vec<String>,
     /// Source roots of the workspace's `custom-build` and `proc-macro` targets at base and at
     /// head: the directory of a custom build script (`[package] build`), a proc-macro crate's
@@ -41,8 +42,8 @@ pub enum ExecRoot {
     ///
     /// It does not hold what a build script or proc-macro lib reaches elsewhere through
     /// `include!`, `#[path]` or `mod` (such as `include!("src/cli.rs")`, or the root's
-    /// `codegen/other.rs`): #64's `syn` scan adds that closure as further
-    /// `ChangeSet::exec_roots`. It also holds the `.rs` files of nested packages under
+    /// `codegen/other.rs`): the Z2s scan (`assay_gates::compile_time_reach`, #64) adds that
+    /// closure as further `ChangeSet::exec_roots`. It also holds the `.rs` files of nested packages under
     /// `crate_dir` (such as `fuzz/`), accepted as fail-closed noise.
     BuildSources {
         /// The crate's directory; `""` for the root manifest's package.

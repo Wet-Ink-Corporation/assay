@@ -32,34 +32,84 @@ pub(super) const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes
 /// - `include`, `include_str` or `include_bytes` not called with `!` (`use std::include as
 ///   inc;`), which renames a macro `references.rs` judges.
 pub(super) fn unread(tokens: &[Lexed<'_>]) -> Vec<NonZeroU64> {
-    let mut lines = Vec::new();
+    let mut lines: Vec<NonZeroU64> = unread_why(tokens)
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect();
+    lines.dedup();
+    lines
+}
+
+/// Why [`unread`] reports a token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Unread {
+    /// A `cfg_attr` naming `path` or a macro fragment, which can make it a `#[path]`.
+    CfgAttrPath,
+    /// A `cfg_attr` naming `allow` or `expect` only.
+    CfgAttrLint,
+    /// An include macro not called with `!`.
+    RenamedInclude,
+    /// `#[path ..]` or `#![path ..]`.
+    Path,
+    /// A lint or `cfg_attr` attribute whose name is not followed by `(`.
+    Listless,
+    /// An attribute named by a raw identifier.
+    Raw,
+    /// A `#` that does not start an attribute, or an attribute a fragment names.
+    Fragment,
+    /// A fragment or repetition that can assemble an attribute or name a macro.
+    Assembled,
+}
+
+/// Every token [`unread`] reports, at its line, with why, in order.
+pub(super) fn unread_why(tokens: &[Lexed<'_>]) -> Vec<(NonZeroU64, Unread)> {
+    let mut found = Vec::new();
     let mut rest = tokens;
     while let [first, tail @ ..] = rest {
-        let hidden = match (first.token, tail) {
+        let why = match (first.token, tail) {
             (
                 Token::Ident {
                     name: "cfg_attr", ..
                 },
                 [open, inner @ ..],
-            ) if open.token == Token::Punct('(') => {
-                group(inner).iter().any(|lexed| hides(lexed.token))
+            ) if open.token == Token::Punct('(') => cfg_attr(group(inner)),
+            (Token::Ident { name, .. }, _) if INCLUDES.contains(&name) => {
+                (!opens(tail, '!')).then_some(Unread::RenamedInclude)
             }
-            (Token::Ident { name, .. }, _) if INCLUDES.contains(&name) => !opens(tail, '!'),
             (Token::Punct('#'), _) => match attribute(tail) {
-                Some(Attribute::Fragment) | None => true,
-                Some(Attribute::Named { name, raw, rest }) => {
-                    raw || name == "path" || (LISTED.contains(&name) && !opens(rest, '('))
+                Some(Attribute::Fragment) | None => Some(Unread::Fragment),
+                Some(Attribute::Named { raw: true, .. }) => Some(Unread::Raw),
+                Some(Attribute::Named { name: "path", .. }) => Some(Unread::Path),
+                Some(Attribute::Named { name, rest, .. }) => {
+                    (LISTED.contains(&name) && !opens(rest, '(')).then_some(Unread::Listless)
                 }
             },
-            (Token::Punct('$'), _) => assembles(tail),
-            _ => false,
+            (Token::Punct('$'), _) => assembles(tail).then_some(Unread::Assembled),
+            _ => None,
         };
-        if hidden && lines.last() != Some(&first.line) {
-            lines.push(first.line);
+        if let Some(why) = why {
+            found.push((first.line, why));
         }
         rest = tail;
     }
-    lines
+    found
+}
+
+/// Why a `cfg_attr` with these arguments is unread, if it is.
+fn cfg_attr(arguments: &[Lexed<'_>]) -> Option<Unread> {
+    let names_path = arguments.iter().any(|lexed| match lexed.token {
+        Token::Ident { name, .. } => name == "path",
+        Token::Punct(punct) => punct == '$',
+        Token::Lifetime(_) | Token::Literal(_) => false,
+    });
+    if names_path {
+        Some(Unread::CfgAttrPath)
+    } else {
+        arguments
+            .iter()
+            .any(|lexed| hides(lexed.token))
+            .then_some(Unread::CfgAttrLint)
+    }
 }
 
 /// Whether `tokens` starts with the punctuation `punct`.

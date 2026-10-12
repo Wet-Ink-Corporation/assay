@@ -17,14 +17,14 @@ use crate::revision::{EntryKind, TreeEntry};
 
 /// Whether `path` names Rust source: its extension is `rs` in any case, so a `.RS` file the
 /// scan's walk would pass over is still read here.
-fn is_rust(path: &str) -> bool {
+pub(super) fn is_rust(path: &str) -> bool {
     Path::new(path)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
 }
 
 /// Whether `path` names a Cargo manifest, which decides the crate roots `layout.rs` reads.
-fn is_manifest(path: &str) -> bool {
+pub(super) fn is_manifest(path: &str) -> bool {
     path.rsplit('/').next() == Some("Cargo.toml")
 }
 
@@ -110,10 +110,11 @@ impl<'h> Analysis<'h> {
     }
 }
 
-/// Whether the checks read `entry`'s bytes.
+/// Whether the checks read `entry`'s bytes: Rust sources and symlinks (step 2), and Cargo
+/// manifests (step 4).
 pub(super) fn needs_bytes(entry: &TreeEntry) -> bool {
     match entry.kind {
-        EntryKind::File => is_rust(&entry.path),
+        EntryKind::File => is_rust(&entry.path) || is_manifest(&entry.path),
         EntryKind::Symlink => true,
         EntryKind::Submodule => false,
     }
@@ -143,6 +144,13 @@ impl HeadTree {
     /// Every entry.
     pub(super) fn entries(&self) -> impl Iterator<Item = &TreeEntry> {
         self.0.iter().map(|(entry, _)| entry)
+    }
+
+    /// Every entry, with its bytes when they were read.
+    pub(super) fn files(&self) -> impl Iterator<Item = (&TreeEntry, Option<&[u8]>)> {
+        self.0
+            .iter()
+            .map(|(entry, bytes)| (entry, bytes.as_deref()))
     }
 
     /// The blind spots, the `expect` attributes and the plain `allow`s, by path and line.

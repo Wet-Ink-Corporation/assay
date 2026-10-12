@@ -13,6 +13,9 @@ use crate::temper_support::{Pr, Seen, hit};
 const FAILED: GateOutcome = GateOutcome::Concluded(Conclusion::Fail);
 const PASSED: GateOutcome = GateOutcome::Concluded(Conclusion::Pass);
 
+/// A package manifest, inheriting the workspace lints as step 4d requires of every package.
+const PACKAGE: &str = "[package]\nname = \"x\"\n\n[lints]\nworkspace = true\n";
+
 fn blind(file: &str, line: u64) -> Seen {
     (
         "blind-spot".to_owned(),
@@ -213,7 +216,7 @@ fn attributes_the_scan_does_not_read_fail_at_their_line() -> Result<(), Box<dyn 
         let source = format!("// one\n{attribute}\nmod m;\n");
         pr.set(Revision::Head, "src/lib.rs", &source);
         pr.set(Revision::Head, "src/m.rs", "fn f() {}\n");
-        pr.set(Revision::Head, "Cargo.toml", "[package]\nname = \"x\"\n");
+        pr.set(Revision::Head, "Cargo.toml", PACKAGE);
 
         let outcome = pr.outcome()?;
 
@@ -617,7 +620,7 @@ fn an_include_the_scan_cannot_pin_to_a_file_fails() -> Result<(), Box<dyn Error>
 
 #[test]
 fn a_module_without_its_file_in_the_tree_fails() -> Result<(), Box<dyn Error>> {
-    const MANIFEST: (&str, &str) = ("Cargo.toml", "[package]\nname = \"x\"\n");
+    const MANIFEST: (&str, &str) = ("Cargo.toml", PACKAGE);
     let cases: [&[(&str, &str)]; 8] = [
         &[("src/lib.rs", "// one\nmod generated;\n"), MANIFEST],
         &[
@@ -695,7 +698,7 @@ fn a_module_with_its_file_in_the_tree_passes() -> Result<(), Box<dyn Error>> {
         ("tests/it/support.rs", "fn s() {}\n"),
         ("tests/smoke.rs", "mod common;\n"),
         ("tests/common/mod.rs", "fn c() {}\n"),
-        ("Cargo.toml", "[package]\nname = \"x\"\n"),
+        ("Cargo.toml", PACKAGE),
     ])?;
 
     assert_eq!(outcome, (PASSED, Vec::new()), "rustc's module paths");
@@ -709,7 +712,7 @@ fn a_root_also_declared_a_module_passes_with_both_files() -> Result<(), Box<dyn 
         ("src/main.rs", "mod lib;\n"),
         ("src/x.rs", "fn x() {}\n"),
         ("src/lib/x.rs", "fn x() {}\n"),
-        ("Cargo.toml", "[package]\nname = \"x\"\n"),
+        ("Cargo.toml", PACKAGE),
     ])?;
 
     assert_eq!(

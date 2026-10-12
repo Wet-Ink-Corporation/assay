@@ -20,6 +20,7 @@
 
 mod attributes;
 mod baseline;
+mod closure;
 #[cfg(test)]
 mod corpus;
 mod error;
@@ -27,10 +28,16 @@ mod exceptions;
 mod findings;
 mod gate_config;
 mod head;
+mod inventory;
 mod layout;
+mod manifests;
+mod reach;
 mod references;
 mod report;
 mod scan;
+mod static_findings;
+mod statics;
+mod switches;
 mod tokens;
 mod vendored;
 
@@ -42,12 +49,14 @@ use std::time::Duration;
 use assay_app::{Adapter, GateDocument, GateJob, GateRun, GateRunner, Plugin, Termination};
 use assay_domain::{Finding, FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind};
 
+pub use closure::{CompileTimeReach, compile_time_reach};
 pub use error::{TemperError, TemperSettingsError};
 
 use self::baseline::Totals;
 use self::exceptions::Allowlist;
 use self::gate_config::TemperConfig;
 use self::head::HeadTree;
+use self::statics::{Files, Tree};
 use self::vendored::PinnedIds;
 use crate::capture::CaptureSupervisor;
 use crate::environment::GateEnvironment;
@@ -223,6 +232,20 @@ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R> 
             &analysis,
             &allowlist,
         ));
+        let head_view = Tree::new(head.files());
+        let base = self.base_files(&head_view)?;
+        let base_view = Tree::new(
+            base.files()
+                .map(|(entry, bytes)| (entry, bytes.or_else(|| head_view.same_bytes(entry)))),
+        );
+        failing.extend(static_findings::inventory(
+            &statics::test_inventory(&base_view, &head_view),
+            &allowlist,
+        ));
+        failing.extend(static_findings::manifests(
+            &manifests::check(&base_view, &head_view),
+            &allowlist,
+        ));
         let drift = self.vendored_drift(&head, &pin)?;
         let conclusion = if failing.is_empty() {
             GateConclusion::Pass
@@ -312,6 +335,21 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             .collect();
         let blobs = self.revisions.read(&wanted).map_err(failed)?;
         Ok(HeadTree::new(entries, blobs))
+    }
+
+    /// Step 4's base tree: every entry, with the bytes of its manifests and of the Rust files
+    /// `head` does not hold unchanged, in one bounded read.
+    fn base_files(&self, head: &Tree<'_>) -> Result<Files, ErrorOf<S, R>> {
+        let failed = |source| TemperError::Revision {
+            revision: Revision::Base,
+            path: TREE,
+            source,
+        };
+        let entries = self.revisions.list(Revision::Base, None).map_err(failed)?;
+        let wanted = |entry: &TreeEntry| statics::base_needs_bytes(entry, head);
+        let selected: Vec<&TreeEntry> = entries.iter().filter(|entry| wanted(entry)).collect();
+        let blobs = self.revisions.read(&selected).map_err(failed)?;
+        Ok(Files::new(entries, blobs, wanted))
     }
 
     /// Step 2: the exception requests and `allow` hits of the pinned scan over the head tree.
