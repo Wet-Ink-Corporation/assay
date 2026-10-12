@@ -1,0 +1,20 @@
+# assay's own additions to the shipped glob lists (docs/architecture/03-contracts.md §1,
+# 04-pipeline.md §2.2). Read from the base commit only; each list only adds to the shipped one.
+#
+# T16 (02 §7, 05 T16): assay gates assay, so everything that decides a verdict is a trust path
+# and needs owner approval (rubric rule 4). `.github/workflows/release.yml`, `.assay/**` and
+# `deny.toml` are already shipped trust paths; they are listed again so this file states 02 §7
+# whole. `corpus/golden/**` goes beyond 02 §7's list: the `assay-self` gate passes a verdict
+# change only when the PR updates its snapshot, and the snapshot update is what the owner
+# approves, whatever caused it (fail-closed reading, wi-b5affa; owner to confirm).
+trust = [
+    "crates/**",
+    "rubric/**",
+    "plugin/**",
+    "schemas/**",
+    "workflows/**",
+    ".github/workflows/release.yml",
+    ".assay/**",
+    "deny.toml",
+    "corpus/golden/**",
+]
