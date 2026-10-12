@@ -35,3 +35,9 @@ pub use prompt_bundle::{
     BundleFile, BundleFileError, BundleFiles, InvalidBundle, PromptBundle, Role,
 };
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};
+
+mod validation;
+pub use validation::{
+    Change, DiffPaths, FileDiff, FindingRef, Hunk, Inputs, LineSpan, Placement, SuppressRules,
+    Transition, ValidFinding, Validated, validate,
+};
