@@ -51,7 +51,8 @@ pub(super) fn degraded_roles(inputs: &DecisionInputs) -> Vec<DegradedRole> {
         .collect()
 }
 
-/// The calls a completed stage owed but that never reported (04 §3):
+/// The calls a completed stage owed but that never reported (04 §3). A call reported in
+/// `degraded` did report, so it is never also `missing`:
 /// - each role the PR's tier and classes require that neither completed nor reported degraded;
 /// - on `full`, a coordinator that did not run although there are reviewer findings (wi-98c82b);
 /// - on `full` or `lite`, a verifier that did not run although a blocker or major, a candidate
@@ -66,7 +67,8 @@ fn missing(inputs: &DecisionInputs) -> Vec<&'static str> {
         .collect();
     let ungrouped = pr.tier == Tier::Full
         && inputs.coordinator == SupportOutcome::NotNeeded
-        && !inputs.findings.is_empty();
+        && !inputs.findings.is_empty()
+        && !reported("coordinator");
     if ungrouped {
         missing.push("coordinator");
     }
@@ -75,7 +77,8 @@ fn missing(inputs: &DecisionInputs) -> Vec<&'static str> {
         && inputs
             .findings
             .iter()
-            .any(|f| f.severity >= Severity::Major);
+            .any(|f| f.severity >= Severity::Major)
+        && !reported("verifier");
     if unverified {
         missing.push("verifier");
     }

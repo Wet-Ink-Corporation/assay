@@ -93,6 +93,30 @@ fn a_required_role_reported_degraded_is_not_also_missing() -> Result<(), Box<dyn
 }
 
 #[test]
+fn a_support_call_reported_degraded_is_not_also_missing() -> Result<(), Box<dyn Error>> {
+    let mut inputs = clean_inputs();
+    inputs.pr.tier = Tier::Full;
+    inputs.coordinator = SupportOutcome::NotNeeded;
+    inputs.verifier = SupportOutcome::NotNeeded;
+    inputs.findings = vec![confirmed("00000000000000b1", Severity::Blocker)];
+    inputs.degraded = vec![
+        degraded("coordinator", "cap"),
+        degraded("verifier", "turns"),
+    ];
+
+    let decision = decided(&inputs)?;
+
+    assert_eq!(
+        decision.degraded,
+        [
+            degraded("coordinator", "cap"),
+            degraded("verifier", "turns")
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn a_failed_coordinator_fails_an_exec_surface_pr() -> Result<(), Box<dyn Error>> {
     let mut inputs = full_trust_path();
     inputs.pr.classes = vec![PrClass::ExecSurface];

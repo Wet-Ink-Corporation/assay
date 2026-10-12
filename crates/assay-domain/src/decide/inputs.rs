@@ -292,7 +292,7 @@ impl LlmStage {
 ///
 /// A `Failed` call always degrades the stage (rules 8b, 8c): on a PR of a blocking class or
 /// policy it is `required-role-degraded`, which waiting cannot heal, never a deferral.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum SupportOutcome {
     /// No call was due: no candidate for the verifier, no coordinator on `lite` or `micro`.

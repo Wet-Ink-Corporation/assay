@@ -32,8 +32,9 @@ use waive::Waivers;
 /// `degraded` and fire rule 8b or 8c.
 ///
 /// Pure and total: the same rubric and inputs give the same decision, whose `inputs_digest`
-/// identifies both. The decision is a new document: the keys, fingerprints, dispositions and
-/// degraded roles it repeats from the borrowed inputs are copied into it.
+/// identifies both. The decision is a new document that owns its data: the keys, fingerprints
+/// and dispositions it repeats from the borrowed inputs are copied into it, and its degraded
+/// roles are derived from them.
 #[must_use]
 pub fn decide(rubric: &Rubric, inputs: &DecisionInputs) -> Decision {
     let waivers = Waivers::resolve(rubric, inputs);
