@@ -1,15 +1,16 @@
 //! Properties of `decide` over generated inputs: determinism down to the byte, `pending` only
-//! from a deferred LLM stage, a decision that reads back as written, and a required gate no
-//! waiver can clear failing unless an `all` override applies.
+//! from a deferred LLM stage, no silent success when the stage did not run or completed without
+//! its required roles, a decision that reads back as written, and a required gate no waiver can
+//! clear failing unless an `all` override applies.
 
 use std::collections::BTreeSet;
 
 use assay_domain::{
-    Authorship, Conclusion, Counts, DecisionInputs, Deferral, DegradedRole, Disposition,
-    FindingDisposition, Fingerprint, GateConclusion, GateFinding, GateOutcome, GateReport,
-    InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy,
-    PrClass, PullRequest, Readiness, ReviewedFinding, Rubric, Severity, StepAttribution, Tier,
-    VerifierVerdict, Waiver, WeighIn, decide,
+    Authorship, CallFailure, Conclusion, Counts, DecisionInputs, Deferral, DegradedRole,
+    Disposition, FindingDisposition, Fingerprint, GateConclusion, GateFinding, GateOutcome,
+    GateReport, InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope,
+    OwnerApproval, Policy, PrClass, PullRequest, Readiness, RequiredRole, ReviewedFinding, Rubric,
+    Severity, StepAttribution, SupportOutcome, Tier, VerifierVerdict, Waiver, WeighIn, decide,
 };
 use proptest::collection::vec;
 use proptest::option;
@@ -178,6 +179,24 @@ fn llm_stage() -> impl Strategy<Value = LlmStage> {
     ]
 }
 
+fn support_outcome() -> impl Strategy<Value = SupportOutcome> {
+    prop_oneof![
+        Just(SupportOutcome::NotNeeded),
+        Just(SupportOutcome::Completed),
+        select(CallFailure::ALL.to_vec()).prop_map(|reason| SupportOutcome::Failed { reason }),
+    ]
+}
+
+/// The specialist roles that completed, and how the coordinator and the verifier ran.
+fn role_runs() -> impl Strategy<Value = (BTreeSet<RequiredRole>, SupportOutcome, SupportOutcome)> {
+    (
+        proptest::sample::subsequence(RequiredRole::ALL.to_vec(), 0..=RequiredRole::ALL.len())
+            .prop_map(BTreeSet::from_iter),
+        support_outcome(),
+        support_outcome(),
+    )
+}
+
 fn commands() -> impl Strategy<Value = (Vec<Waiver>, Option<Override>)> {
     let waiver = fp().prop_map(|fp| Waiver {
         fp,
@@ -217,11 +236,12 @@ fn inputs() -> impl Strategy<Value = DecisionInputs> {
         llm_stage(),
         vec(reviewed_finding(), 0..6),
         dispositions,
-        degraded,
+        (role_runs(), degraded),
         commands(),
     )
         .prop_map(
-            |(policy, pr, gates, weigh_in, llm, findings, dispositions, degraded, commands)| {
+            |(policy, pr, gates, weigh_in, llm, findings, dispositions, roles, commands)| {
+                let ((completed_roles, coordinator, verifier), degraded) = roles;
                 let (waivers, override_record) = commands;
                 DecisionInputs {
                     decision_key: "dec-42-1".to_owned(),
@@ -233,6 +253,9 @@ fn inputs() -> impl Strategy<Value = DecisionInputs> {
                     llm,
                     findings,
                     dispositions,
+                    completed_roles,
+                    coordinator,
+                    verifier,
                     degraded,
                     waivers,
                     override_record,
@@ -336,6 +359,21 @@ fn ready_reviewed_not_run_inputs() -> impl Strategy<Value = DecisionInputs> {
             inputs.pr.tier = tier;
             inputs.pr.readiness = Readiness::Ready;
             inputs.llm = LlmStage::NotRun { reason };
+            inputs
+        })
+}
+
+/// Any inputs, made a PR on a tier with an LLM stage whose stage completed while no specialist
+/// role did.
+fn completed_without_roles_inputs() -> impl Strategy<Value = DecisionInputs> {
+    (
+        prop_oneof![inputs(), llm_inputs()],
+        select(vec![Tier::Full, Tier::Lite, Tier::Micro]),
+    )
+        .prop_map(|(mut inputs, tier)| {
+            inputs.pr.tier = tier;
+            inputs.llm = LlmStage::Completed;
+            inputs.completed_roles = BTreeSet::new();
             inputs
         })
 }
@@ -453,6 +491,21 @@ proptest! {
         prop_assert!(
             decision.conclusion != Conclusion::Success || !decision.reasons.is_empty(),
             "a reasonless success from {:?} on a ready {:?} PR", inputs.llm, inputs.pr.tier
+        );
+    }
+
+    #[test]
+    fn a_completed_stage_without_its_required_roles_never_succeeds_silently(
+        inputs in completed_without_roles_inputs(),
+    ) {
+        let rubric = rubric_v1().expect("rubric/v1.toml parses");
+
+        let decision = decide(&rubric, &inputs);
+
+        prop_assert!(!decision.degraded.is_empty(), "nothing degraded on {:?}", inputs.pr);
+        prop_assert!(
+            decision.conclusion != Conclusion::Success || !decision.reasons.is_empty(),
+            "a reasonless success on a {:?} PR", inputs.pr.tier
         );
     }
 

@@ -66,6 +66,15 @@
     }
   ],
   "dispositions": [],
+  "completed_roles": [
+    "combined"
+  ],
+  "coordinator": {
+    "status": "not-needed"
+  },
+  "verifier": {
+    "status": "completed"
+  },
   "degraded": [],
   "waivers": [],
   "override_record": null

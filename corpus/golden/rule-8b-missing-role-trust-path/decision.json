@@ -1,0 +1,29 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-8b-missing-role-trust-path",
+  "evidence_key": "run-rule-8b-missing-role-trust-path",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "required-role-degraded",
+      "detail": "meta: missing"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [
+    {
+      "role": "meta",
+      "reason": "missing"
+    }
+  ],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:d49951aa896e0371dd2b35eba4cef7b05aaa9adb3d19b30d08b8384054078d16"
+}
