@@ -6,7 +6,7 @@ use assay_domain::{ExecCause, PackageChange};
 use super::{Declared, Package, PackageSet, PathDeclared, Source};
 
 /// Every change from `base` to `head`, one entry per cause: head's packages in order, then the
-/// packages whose name is gone.
+/// removed packages.
 pub(super) fn changes(base: &PackageSet, head: &PackageSet) -> Vec<PackageChange> {
     let mut changes: Vec<PackageChange> = head
         .packages
@@ -16,13 +16,30 @@ pub(super) fn changes(base: &PackageSet, head: &PackageSet) -> Vec<PackageChange
     changes.extend(
         base.packages
             .iter()
-            .filter(|old| !head.packages.iter().any(|new| new.name == old.name))
+            .filter(|old| removed(old, &base.packages, &head.packages))
             .map(|old| PackageChange::Lockfile {
                 // The change names its package, so it owns a copy of the name.
                 package: old.name.clone(),
             }),
     );
     changes
+}
+
+/// Whether `old`, a package of `base`, is removed: no head package has its name, version and
+/// source, and no head package of its name is new (a bump or a source change, which already
+/// reports the name). So a dropped version of a name with several is a removal (#65 review
+/// round 2 F4).
+fn removed(old: &Package, base: &[Package], head: &[Package]) -> bool {
+    let kept = head.iter().any(|new| same(new, old));
+    let replaced = head
+        .iter()
+        .any(|new| new.name == old.name && !base.iter().any(|other| same(other, new)));
+    !kept && !replaced
+}
+
+/// Whether `a` and `b` are the same package: name, version and source.
+fn same(a: &Package, b: &Package) -> bool {
+    a.name == b.name && a.version == b.version && a.source == b.source
 }
 
 /// The changes `package` at head makes against the packages of `base`.

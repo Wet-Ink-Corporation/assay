@@ -56,7 +56,12 @@ struct PackageDto {
 #[derive(Debug, Deserialize)]
 struct TargetDto {
     kind: Vec<String>,
+    src_path: String,
 }
+
+/// The target kinds whose code is linked into a dependent, and so runs when a build script
+/// or proc-macro does: every library crate type, and `proc-macro`.
+const LIBRARY_KINDS: [&str; 6] = ["lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"];
 
 #[derive(Debug, Deserialize)]
 struct DependencyDto {
@@ -179,6 +184,17 @@ fn convert(package: PackageDto, root: &str) -> Package {
             .any(|target| target.kind.iter().any(|kind| kind == wanted))
     };
     let (build_script, proc_macro) = (has("custom-build"), has("proc-macro"));
+    let libraries = package
+        .targets
+        .iter()
+        .filter(|target| {
+            target
+                .kind
+                .iter()
+                .any(|kind| LIBRARY_KINDS.contains(&kind.as_str()))
+        })
+        .map(|target| location(&target.src_path, root))
+        .collect();
     let (build_dependencies, path_dependencies) = declarations(package.dependencies, root);
     Package {
         name: package.name,
@@ -186,6 +202,7 @@ fn convert(package: PackageDto, root: &str) -> Package {
         source,
         build_script,
         proc_macro,
+        libraries,
         build_dependencies,
         path_dependencies,
     }

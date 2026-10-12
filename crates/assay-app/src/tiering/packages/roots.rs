@@ -61,16 +61,47 @@ pub(super) fn build_time(set: &PackageSet) -> BuildTime {
             continue;
         }
         *seen = true;
-        match set.packages.get(at).map(|package| &package.source) {
-            Some(Source::Path(Location::Inside(dir))) if !dir.is_empty() => {
+        let Some(package) = set.packages.get(at) else {
+            return BuildTime::Everything;
+        };
+        match &package.source {
+            Source::Path(Location::Inside(dir)) if !dir.is_empty() => {
                 // The set keeps its package; the root owns a copy of the directory.
                 dirs.insert(dir.clone());
+                if !add_libraries(dir, &package.libraries, &mut dirs) {
+                    return BuildTime::Everything;
+                }
             }
-            Some(Source::Path(_)) | None => return BuildTime::Everything,
-            Some(Source::Other(_)) => {}
+            Source::Path(_) => return BuildTime::Everything,
+            Source::Other(_) => {}
         }
         let edges = graph.get(at).map_or(&[][..], Vec::as_slice);
         pending.extend(edges.iter().map(|edge| edge.to));
     }
     BuildTime::Dirs(dirs)
+}
+
+/// Adds to `roots` each library source of the build-time crate in `dir` that lies outside
+/// `dir` (`[lib] path`, #65 review round 2 F1): the file and its directory, which holds the
+/// modules it declares. `false` when one is outside the copy or directly in its root, which
+/// only [`BuildTime::Everything`] covers.
+fn add_libraries(dir: &str, libraries: &[Location], roots: &mut BTreeSet<String>) -> bool {
+    for library in libraries {
+        let Location::Inside(file) = library else {
+            return false;
+        };
+        let inside_crate = file
+            .strip_prefix(dir)
+            .is_some_and(|rest| rest.starts_with('/'));
+        if inside_crate {
+            continue;
+        }
+        let Some((parent, _)) = file.rsplit_once('/') else {
+            return false;
+        };
+        // The set keeps its package; the roots own copies of the paths.
+        roots.insert(parent.to_owned());
+        roots.insert(file.clone());
+    }
+    true
 }

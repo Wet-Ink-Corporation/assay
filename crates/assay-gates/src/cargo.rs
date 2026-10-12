@@ -209,10 +209,11 @@ pub enum CargoError<E> {
         /// The directory.
         path: PathBuf,
     },
-    /// A directory above the copy could not be inspected, so it may hold either.
-    #[error("could not inspect {} above the copy", path.display())]
+    /// The copy could not be made canonical, or an entry above it could not be inspected, so
+    /// a directory above it may hold either.
+    #[error("could not inspect {} or the directories above the copy", path.display())]
     InspectAncestor {
-        /// The entry that could not be inspected.
+        /// The copy, or the entry above it, that could not be inspected.
         path: PathBuf,
         /// Why.
         #[source]
@@ -260,9 +261,15 @@ impl fmt::Display for Ended {
 const ANCESTOR_ENTRIES: [&str; 2] = ["Cargo.toml", ".cargo"];
 
 /// Refuses `copy` when a directory above it holds an entry of [`ANCESTOR_ENTRIES`] (of any
-/// type, a dangling symlink included) or cannot be inspected.
+/// type, a dangling symlink included) or cannot be inspected. The walk is over `copy`'s
+/// canonical path, the ancestors cargo really sees, not over the path as given (#65 review
+/// round 2 F3).
 fn check_ancestors<E>(copy: &Path) -> Result<(), CargoError<E>> {
-    for dir in copy.ancestors().skip(1) {
+    let canonical = fs::canonicalize(copy).map_err(|source| CargoError::InspectAncestor {
+        path: copy.to_path_buf(),
+        source,
+    })?;
+    for dir in canonical.ancestors().skip(1) {
         for name in ANCESTOR_ENTRIES {
             let entry = dir.join(name);
             match fs::symlink_metadata(&entry) {
@@ -315,7 +322,8 @@ impl<S: CaptureSupervisor> PinnedCargo<S> {
     ///
     /// [`CargoError::CopyPath`] before anything runs when `copy` is relative or not UTF-8;
     /// [`CargoError::UnsafeAncestor`] or [`CargoError::InspectAncestor`] before anything runs
-    /// when an ancestor of `copy` holds a `Cargo.toml` or `.cargo` entry, or cannot be read;
+    /// when an ancestor of `copy`'s canonical path holds a `Cargo.toml` or `.cargo` entry, or
+    /// when `copy` or an ancestor cannot be inspected;
     /// [`CargoError::Supervisor`] or [`CargoError::Failed`] when either run fails (metadata
     /// never runs after a failed fetch); [`CargoError::NotUtf8`] for unreadable output.
     pub fn metadata(&mut self, copy: &Path) -> Result<String, CargoError<S::Error>> {

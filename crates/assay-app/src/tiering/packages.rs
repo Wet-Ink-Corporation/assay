@@ -44,6 +44,9 @@ struct Package {
     build_script: bool,
     /// It has a `proc-macro` target.
     proc_macro: bool,
+    /// The source files of its library and proc-macro targets (`src_path`), which may lie
+    /// outside its directory (`[lib] path`).
+    libraries: Vec<Location>,
     /// Its `[build-dependencies]` declarations, sorted.
     build_dependencies: Vec<Declared>,
     /// Its declarations of every kind that name a `path`, sorted.

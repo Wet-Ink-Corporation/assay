@@ -28,6 +28,9 @@ struct Pkg {
     /// The manifest's directory, relative to [`ROOT`] for a path package.
     dir: &'static str,
     kinds: Vec<&'static str>,
+    /// Its library target's source file, relative to [`ROOT`] (or absolute); `None` is
+    /// `src/lib.rs` in its directory.
+    lib: Option<&'static str>,
     deps: Vec<Dep>,
 }
 
@@ -39,6 +42,7 @@ impl Pkg {
             source: Some(CRATES_IO),
             dir: "registry",
             kinds: vec!["lib"],
+            lib: None,
             deps: Vec::new(),
         }
     }
@@ -66,7 +70,26 @@ impl Pkg {
             source: None,
             dir,
             kinds: vec!["lib"],
+            lib: None,
             deps: Vec::new(),
+        }
+    }
+
+    /// Its library target's source is `file` (`[lib] path`), relative to [`ROOT`] or absolute.
+    fn lib_at(self, file: &'static str) -> Self {
+        Self {
+            lib: Some(file),
+            ..self
+        }
+    }
+
+    /// The source file of its target of `kind`, absolute.
+    fn src_path(&self, kind: &str) -> String {
+        match (kind, self.lib) {
+            ("custom-build", _) => format!("{}/build.rs", self.manifest_dir()),
+            (_, Some(file)) if file.starts_with('/') => file.to_owned(),
+            (_, Some(file)) => format!("{ROOT}/{file}"),
+            (_, None) => format!("{}/src/lib.rs", self.manifest_dir()),
         }
     }
 
@@ -155,6 +178,7 @@ fn metadata_value(packages: &[Pkg]) -> Value {
                 "manifest_path": format!("{}/Cargo.toml", package.manifest_dir()),
                 "targets": package.kinds.iter().map(|kind| json!({
                     "kind": [kind],
+                    "src_path": package.src_path(kind),
                     "name": package.name,
                 })).collect::<Vec<_>>(),
                 "dependencies": package.deps.iter().map(|dep| json!({
@@ -438,6 +462,24 @@ fn removed_package_is_a_lockfile_change() -> Result<(), MetadataError> {
 }
 
 #[test]
+fn removed_version_of_a_multi_version_crate_is_a_lockfile_change() -> Result<(), MetadataError> {
+    // #65 review round 2 F4: removals match by name, version and source, not by name.
+    let base = [
+        Pkg::registry("rand", "0.7.3"),
+        Pkg::registry("rand", "0.8.5"),
+    ];
+    let head = [Pkg::registry("rand", "0.8.5")];
+
+    assert_eq!(
+        packages(&base, &head)?,
+        PackageDiff::Computed(vec![PackageChange::Lockfile {
+            package: "rand".to_owned()
+        }])
+    );
+    Ok(())
+}
+
+#[test]
 fn member_with_a_build_script_bumping_its_version_is_exec_surface() -> Result<(), MetadataError> {
     // Fail closed (Weigh-In default): 04 §2.2 makes every bumped package with a build script
     // exec surface, and a path package is no exception.
@@ -604,6 +646,74 @@ fn path_crate_outside_the_copy_reached_at_build_time_is_everything() -> Result<(
         surface(&packages(), &packages())?.exec_roots,
         vec![ExecRoot::Everything]
     );
+    Ok(())
+}
+
+#[test]
+fn library_source_outside_a_build_time_crate_is_an_exec_root() -> Result<(), MetadataError> {
+    // #65 review round 2 F1: `[lib] path = "../../tools/gen.rs"` on a build-dependency runs
+    // `tools/gen.rs` (and the modules beside it) at build time.
+    let packages = || {
+        [
+            Pkg::member("x", "crates/x").on_path("helpers", "crates/helpers", Some("build")),
+            Pkg::member("helpers", "crates/helpers").lib_at("tools/gen.rs"),
+        ]
+    };
+
+    assert_eq!(
+        surface(&packages(), &packages())?.exec_roots,
+        vec![path("crates/helpers"), path("tools"), path("tools/gen.rs")]
+    );
+    Ok(())
+}
+
+#[test]
+fn proc_macro_source_outside_its_crate_is_an_exec_root() -> Result<(), MetadataError> {
+    let packages = || {
+        [Pkg::member("derive", "crates/derive")
+            .proc_macro()
+            .lib_at("shared/derive.rs")]
+    };
+
+    assert_eq!(
+        surface(&packages(), &packages())?.exec_roots,
+        vec![
+            path("crates/derive"),
+            path("shared"),
+            path("shared/derive.rs")
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn library_source_of_a_build_time_crate_at_the_root_or_outside_is_everything()
+-> Result<(), MetadataError> {
+    let reached = |file: &'static str| {
+        [
+            Pkg::member("x", "crates/x").on_path("helpers", "crates/helpers", Some("build")),
+            Pkg::member("helpers", "crates/helpers").lib_at(file),
+        ]
+    };
+
+    let roots = [
+        surface(&reached("gen.rs"), &reached("gen.rs"))?.exec_roots,
+        surface(&reached("/elsewhere/gen.rs"), &reached("/elsewhere/gen.rs"))?.exec_roots,
+    ];
+
+    assert_eq!(
+        roots,
+        [vec![ExecRoot::Everything], vec![ExecRoot::Everything]]
+    );
+    Ok(())
+}
+
+#[test]
+fn library_source_of_a_plain_crate_outside_its_directory_is_not_an_exec_root()
+-> Result<(), MetadataError> {
+    let packages = || [Pkg::member("x", "crates/x").lib_at("tools/gen.rs")];
+
+    assert_eq!(surface(&packages(), &packages())?.exec_roots, Vec::new());
     Ok(())
 }
 

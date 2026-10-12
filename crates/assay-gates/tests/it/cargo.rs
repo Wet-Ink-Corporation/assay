@@ -5,7 +5,10 @@ use std::collections::VecDeque;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
+
+use tempfile::TempDir;
 
 use assay_app::Termination;
 use assay_gates::{
@@ -15,7 +18,14 @@ use assay_gates::{
 
 use crate::support::SeenSpec;
 
-const COPY: &str = "/scratch/copy";
+/// A fresh, empty copy directory alone in a scratch directory, by its canonical path; the
+/// returned guard keeps the scratch directory alive.
+fn scratch_copy() -> Result<(TempDir, PathBuf), Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    let copy = scratch.path().join("copy");
+    fs::create_dir(&copy)?;
+    Ok((scratch, fs::canonicalize(copy)?))
+}
 
 /// A supervisor failure, scripted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,9 +107,15 @@ fn settings() -> Result<CargoSettings, CargoSettingsError> {
 fn runs_fetch_then_metadata_in_the_copy_with_the_pinned_toolchain() -> Result<(), Box<dyn Error>> {
     let mut supervisor = Scripted::new([Ok(exited(0, b"")), Ok(exited(0, b"{\"version\":1}"))]);
 
-    let metadata = PinnedCargo::new(&mut supervisor, settings()?).metadata(Path::new(COPY))?;
+    let (_scratch, copy) = scratch_copy()?;
 
-    let manifest = format!("{COPY}/Cargo.toml");
+    let metadata = PinnedCargo::new(&mut supervisor, settings()?).metadata(&copy)?;
+
+    let manifest = copy
+        .join("Cargo.toml")
+        .to_str()
+        .ok_or("scratch path is not UTF-8")?
+        .to_owned();
     let expected_env = vars(&[
         ("PATH", "/usr/bin:/bin"),
         ("HOME", "/home/ci"),
@@ -111,7 +127,7 @@ fn runs_fetch_then_metadata_in_the_copy_with_the_pinned_toolchain() -> Result<()
     let run = |args: &[&str], timeout| SeenSpec {
         program: PathBuf::from("/opt/rust/bin/cargo"),
         args: args.iter().map(|arg| (*arg).to_owned()).collect(),
-        cwd: PathBuf::from(COPY),
+        cwd: copy.clone(),
         env: expected_env.clone(),
         timeout,
         max_output_bytes: CargoLimits::DEFAULT.max_output_bytes,
@@ -189,7 +205,8 @@ fn inherited_cargo_and_rust_variables_never_reach_cargo() {
 fn a_failed_fetch_stops_before_metadata() -> Result<(), Box<dyn Error>> {
     let mut supervisor = Scripted::new([Ok(exited(101, b""))]);
 
-    let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(Path::new(COPY));
+    let (_scratch, copy) = scratch_copy()?;
+    let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(&copy);
 
     assert!(
         matches!(
@@ -215,7 +232,8 @@ fn a_metadata_run_past_its_deadline_is_an_error() -> Result<(), Box<dyn Error>> 
         }),
     ]);
 
-    let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(Path::new(COPY));
+    let (_scratch, copy) = scratch_copy()?;
+    let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(&copy);
 
     assert!(
         matches!(
@@ -234,7 +252,8 @@ fn a_metadata_run_past_its_deadline_is_an_error() -> Result<(), Box<dyn Error>> 
 fn metadata_that_is_not_utf8_is_an_error() -> Result<(), Box<dyn Error>> {
     let mut supervisor = Scripted::new([Ok(exited(0, b"")), Ok(exited(0, b"{\"x\":\"\xff\"}"))]);
 
-    let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(Path::new(COPY));
+    let (_scratch, copy) = scratch_copy()?;
+    let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(&copy);
 
     assert!(matches!(result, Err(CargoError::NotUtf8)), "got {result:?}");
     Ok(())
@@ -244,7 +263,8 @@ fn metadata_that_is_not_utf8_is_an_error() -> Result<(), Box<dyn Error>> {
 fn a_supervisor_failure_is_an_error() -> Result<(), Box<dyn Error>> {
     let mut supervisor = Scripted::new([Err(CannotStart)]);
 
-    let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(Path::new(COPY));
+    let (_scratch, copy) = scratch_copy()?;
+    let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(&copy);
 
     assert!(
         matches!(
@@ -276,15 +296,16 @@ fn a_relative_copy_is_refused_before_anything_runs() -> Result<(), Box<dyn Error
 #[test]
 fn a_copy_under_a_manifest_is_refused_before_anything_runs() -> Result<(), Box<dyn Error>> {
     // #65 review F4: cargo walks up from the copy for a workspace root.
-    let scratch = tempfile::tempdir()?;
-    std::fs::write(scratch.path().join("Cargo.toml"), "[workspace]\n")?;
-    let copy = scratch.path().join("runs/copy");
+    let (_guard, scratch) = canonical_scratch()?;
+    fs::write(scratch.join("Cargo.toml"), "[workspace]\n")?;
+    let copy = scratch.join("runs/copy");
+    fs::create_dir_all(&copy)?;
     let mut supervisor = Scripted::default();
 
     let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(&copy);
 
     assert!(
-        matches!(&result, Err(CargoError::UnsafeAncestor { path }) if path == scratch.path()),
+        matches!(&result, Err(CargoError::UnsafeAncestor { path }) if *path == scratch),
         "got {result:?}"
     );
     assert_eq!(supervisor.seen, Vec::new(), "nothing runs");
@@ -295,19 +316,66 @@ fn a_copy_under_a_manifest_is_refused_before_anything_runs() -> Result<(), Box<d
 fn a_copy_under_cargo_configuration_is_refused_before_anything_runs() -> Result<(), Box<dyn Error>>
 {
     // #65 review F4: cargo reads `.cargo/config.toml` in every ancestor of its directory.
-    let scratch = tempfile::tempdir()?;
-    std::fs::create_dir(scratch.path().join(".cargo"))?;
-    let copy = scratch.path().join("runs/copy");
+    let (_guard, scratch) = canonical_scratch()?;
+    fs::create_dir(scratch.join(".cargo"))?;
+    let copy = scratch.join("runs/copy");
+    fs::create_dir_all(&copy)?;
     let mut supervisor = Scripted::default();
 
     let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(&copy);
 
     assert!(
-        matches!(&result, Err(CargoError::UnsafeAncestor { path }) if path == scratch.path()),
+        matches!(&result, Err(CargoError::UnsafeAncestor { path }) if *path == scratch),
         "got {result:?}"
     );
     assert_eq!(supervisor.seen, Vec::new(), "nothing runs");
     Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn a_copy_reached_through_a_symlinked_parent_is_checked_where_it_really_is()
+-> Result<(), Box<dyn Error>> {
+    // #65 review round 2 F3: cargo walks the real ancestors, not the path it was given.
+    let (_guard, scratch) = canonical_scratch()?;
+    fs::create_dir_all(scratch.join("unsafe/deep/copy"))?;
+    fs::write(scratch.join("unsafe/Cargo.toml"), "[workspace]\n")?;
+    fs::create_dir(scratch.join("clean"))?;
+    std::os::unix::fs::symlink("../unsafe/deep", scratch.join("clean/link"))?;
+    let mut supervisor = Scripted::default();
+
+    let result =
+        PinnedCargo::new(&mut supervisor, settings()?).metadata(&scratch.join("clean/link/copy"));
+
+    let unsafe_dir = scratch.join("unsafe");
+    assert!(
+        matches!(&result, Err(CargoError::UnsafeAncestor { path }) if *path == unsafe_dir),
+        "got {result:?}"
+    );
+    assert_eq!(supervisor.seen, Vec::new(), "nothing runs");
+    Ok(())
+}
+
+#[test]
+fn a_copy_that_does_not_exist_is_refused_before_anything_runs() -> Result<(), Box<dyn Error>> {
+    let (_guard, scratch) = canonical_scratch()?;
+    let mut supervisor = Scripted::default();
+
+    let result = PinnedCargo::new(&mut supervisor, settings()?).metadata(&scratch.join("absent"));
+
+    assert!(
+        matches!(&result, Err(CargoError::InspectAncestor { .. })),
+        "got {result:?}"
+    );
+    assert_eq!(supervisor.seen, Vec::new(), "nothing runs");
+    Ok(())
+}
+
+/// A scratch directory and its canonical path; the guard keeps it alive.
+fn canonical_scratch() -> Result<(TempDir, PathBuf), Box<dyn Error>> {
+    let guard = tempfile::tempdir()?;
+    let path = fs::canonicalize(guard.path())?;
+    Ok((guard, path))
 }
 
 #[test]

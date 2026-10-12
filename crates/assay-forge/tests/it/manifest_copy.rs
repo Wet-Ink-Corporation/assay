@@ -3,7 +3,9 @@
 //! configuration at all.
 
 use std::error::Error;
+use std::ffi::OsStr;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
 use std::path::Path;
 
@@ -61,6 +63,67 @@ fn a_symlink_leaving_the_tree_is_refused() -> Result<(), Box<dyn Error>> {
 
     assert!(
         matches!(&result, Err(CopyError::Symlink { path }) if path == "crates/x/build.rs"),
+        "got {result:?}"
+    );
+    Ok(())
+}
+
+/// The result of copying a head that adds the symlink `link` with the raw target `target`.
+fn copy_with_link(link: &str, target: &[u8]) -> Result<Result<(), CopyError>, Box<dyn Error>> {
+    let fixture = fixture_with_head(|work| {
+        let link = work.join(link);
+        if let Some(parent) = link.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        symlink(OsStr::from_bytes(target), link)?;
+        Ok(())
+    })?;
+    copy_head(&fixture)
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_symlink_to_an_absolute_path_is_refused() -> Result<(), Box<dyn Error>> {
+    let result = copy_with_link("crates/x/build.rs", b"/etc/passwd")?;
+
+    assert!(
+        matches!(&result, Err(CopyError::Symlink { path }) if path == "crates/x/build.rs"),
+        "got {result:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_symlink_whose_target_is_not_utf8_is_refused() -> Result<(), Box<dyn Error>> {
+    let result = copy_with_link("crates/x/build.rs", b"gen\xff.rs")?;
+
+    assert!(
+        matches!(&result, Err(CopyError::Symlink { path }) if path == "crates/x/build.rs"),
+        "got {result:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_symlink_to_its_own_directory_is_refused() -> Result<(), Box<dyn Error>> {
+    let result = copy_with_link("crates/here", b".")?;
+
+    assert!(
+        matches!(&result, Err(CopyError::Symlink { path }) if path == "crates/here"),
+        "got {result:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_symlink_climbing_back_to_the_root_is_refused() -> Result<(), Box<dyn Error>> {
+    let result = copy_with_link("back", b"sub/..")?;
+
+    assert!(
+        matches!(&result, Err(CopyError::Symlink { path }) if path == "back"),
         "got {result:?}"
     );
     Ok(())
