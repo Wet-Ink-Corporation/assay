@@ -21,6 +21,10 @@ const BUDGET_DEFERRED_DIGEST: &str =
 const GATE_FAILED_NEEDS_SPLIT_DIGEST: &str =
     "sha256:f9838b74a72d134a2d6270babd99be12097ea49c033b6ab2e780ef72f630024f";
 
+/// `printf 'base-not-protected\n' | sha256sum`
+const BASE_NOT_PROTECTED_DIGEST: &str =
+    "sha256:d1fa2bd6cdcd5ce1e62470b52b22ceac7266c7cac035505c75ad7cf54b06962c";
+
 /// `printf 'required-role-degraded\n' | sha256sum`
 const REQUIRED_ROLE_DEGRADED_DIGEST: &str =
     "sha256:aa332cda0bc178fd07e089e308e9526626762da10c53c4cf1e6c89bca1282473";
@@ -269,6 +273,28 @@ fn an_override_without_an_actor_is_not_applied() -> Result<(), Box<dyn Error>> {
 
     assert_eq!(decision.conclusion, Conclusion::Failure);
     assert_eq!(decision.reasons, [reason(ReasonCode::GateFailed, "temper")]);
+    Ok(())
+}
+
+/// R3-03: the check is not required on an unprotected base, so a `neutral` there would only pass
+/// a stale check if the PR is retargeted; an override never applies to it.
+#[test]
+fn an_all_override_never_neutralises_an_unprotected_base() -> Result<(), Box<dyn Error>> {
+    let mut inputs = clean_inputs();
+    inputs.pr.base_ref = "scratch".to_owned();
+    inputs.override_record = Some(override_record(
+        OverrideScope::All,
+        BASE_NOT_PROTECTED_DIGEST,
+    ));
+
+    let decision = decided(&inputs)?;
+
+    assert_eq!(decision.conclusion, Conclusion::Failure);
+    assert_eq!(
+        decision.reasons,
+        [reason(ReasonCode::BaseNotProtected, "scratch")]
+    );
+    assert_eq!(decision.reasons_digest(), BASE_NOT_PROTECTED_DIGEST);
     Ok(())
 }
 

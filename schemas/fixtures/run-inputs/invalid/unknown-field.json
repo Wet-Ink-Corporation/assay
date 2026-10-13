@@ -1,0 +1,11 @@
+{
+  "schema": "assay.run-inputs/1",
+  "run_uid": { "repo_id": 42, "run_id": 7, "run_attempt": 1 },
+  "evidence_key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "documents": [],
+  "inputs": {},
+  "rubric_version": "v1",
+  "decision": {},
+  "events": [],
+  "raw_snapshot": {}
+}

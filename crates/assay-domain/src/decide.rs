@@ -25,8 +25,9 @@ use waive::Waivers;
 /// 8a, 8b, 8c (rule 9 is success); `pending` comes only from rule 8a. The reasons are those of
 /// every rule that fires, in that order, and are kept when an override turns the conclusion
 /// `neutral`. A waiver removes one human-decision gate finding the rubric lists from rule 1; an
-/// override is void unless the reasons hash to the digest it quotes, and scope `llm` only
-/// neutralises a decision whose every failing or pending reason comes from rule 8. A required
+/// override is void unless the reasons hash to the digest it quotes, never applies when rule 2
+/// fired (`base-not-protected` is always `failure`, R3-03), and scope `llm` only neutralises a
+/// decision whose every failing or pending reason comes from rule 8. A required
 /// role of the PR's tier and classes that did not complete, a coordinator or verifier that
 /// failed or was due but did not run, and every role reported degraded are listed once each in
 /// `degraded` and fire rule 8b or 8c.
@@ -108,6 +109,14 @@ fn overriding_scope(
         return None;
     }
     if record.reasons_digest != digest::reasons_digest(firings.iter().map(|f| &f.reason)) {
+        return None;
+    }
+    // The check is not required on an unprotected base: `neutral` there would only let a stale
+    // check pass after a retarget, so rule 2 is never overridden (R3-03).
+    if firings
+        .iter()
+        .any(|f| f.reason.code == ReasonCode::BaseNotProtected)
+    {
         return None;
     }
     let outside_rule_8 = firings.iter().any(|f| f.effect == Effect::Fail);

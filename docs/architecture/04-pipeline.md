@@ -128,6 +128,7 @@ waive    /assay waive <finding-id>: removes ONE human-decision gate finding (rai
          test-inventory decrease, manifest switch) from rule 1. Never clippy, build, test or deny failures. Recorded in the decision.
 override /assay override llm|all <reasons_digest> <reason> → neutral, original reasons retained. reasons_digest = sha256 of the sorted current reason
          codes, printed in the summary; void if any reason is ADDED. `llm` neutralises only rule 8; `all` is the break-glass. Weekly report lists both separately.
+         Neither ever neutralises rule 2: on an unprotected base `neutral` would only let a stale check pass after a retarget (R3-03).
 ```
 
 - `owner_approved(head)` (and the eligibility of **every** privileged action: waive, override, dismiss, retry, Weigh-In ack): a numeric GitHub user id in `.assay/owners` ∪ `approvers`, lists that hold **privileged identities only** (accounts never authenticated in any agent-reachable context: no Claude GitHub App authorisation, no `gh` token on a machine where agents run, no PAT given to a session; the owner's daily account is a `maintainer` and is never eligible; R3-01, `H-06`, `H-13`), that is **not** (a) the PR author, (b) a GitHub-attributed author or committer of any commit in the PR range, nor (c) the `sender_id` of any push record for this PR in the ledger. One rule, used verbatim by R-07, R-08, P10, T9, ADR-16 and §6.

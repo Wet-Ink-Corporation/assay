@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 809347446b989d67e43da855aab672101ba4278e0189c13aa4dd53a727293dba # shrinks to inputs = DecisionInputs { decision_key: "dec-42-1", evidence_key: "run-42-1", policy: Policy { protected_bases: [], llm_blockers: Advisory, llm_majors: Advisory, on_infra_failure: Warn, block_on_infra_for: [] }, pr: PullRequest { base_ref: "main", open_prs_on_head: 0, tier: NeedsSplit, classes: [], owner_approval: Approved, authorship: Agent, readiness: Draft, requeues: 0 }, gates: [], weigh_in: NotRequired, llm: NotRun { reason: NoLlmTier }, findings: [], dispositions: [], completed_roles: {}, coordinator: NotNeeded, verifier: NotNeeded, degraded: [], waivers: [], override_record: None }

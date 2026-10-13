@@ -16,7 +16,7 @@ use super::ports::RunArtifacts;
 use super::recompute::AuthenticPlan;
 use super::refusal::{OutputsProblem, PlanMismatch, Refusal};
 use super::request::{DecideRequest, GateJobOutputs, JobResult, Reported, UpstreamJob};
-use super::{Halt, Reader};
+use super::{Halt, Reader, RunDocument};
 use crate::config::{Plugin, Sha256Digest};
 use crate::contract::{Contract, ContractValidator};
 use crate::gate::{BuildJob, Conclusion, GateError, GateJob, scheduled};
@@ -119,7 +119,7 @@ struct Report<'r> {
 }
 
 /// The state of a gate whose job `reported` a document. A document whose bytes are not the
-/// published ones refuses the run (F18).
+/// published ones refuses the run (F18); authentic ones, valid or not, are kept for the bundle.
 fn documented<O: PullRequestObjects, S, A: RunArtifacts>(
     reported: &Report<'_>,
     plugin: &Plugin,
@@ -141,12 +141,15 @@ fn documented<O: PullRequestObjects, S, A: RunArtifacts>(
             return Ok(State::Settled(errored(&detail)));
         }
     };
-    Ok(read_document(
-        &bytes,
-        plugin,
-        reported.conclusion,
-        reader.validator,
-    ))
+    let state = read_document(&bytes, plugin, reported.conclusion, reader.validator);
+    reader.kept.push(RunDocument {
+        job: reported.artifact.job,
+        file,
+        // The bundle records the digest beside the bytes; the request keeps its own.
+        digest: reported.digest.clone(),
+        bytes,
+    });
+    Ok(state)
 }
 
 /// The job's reports by plugin, refusing outputs that name a plugin base config does not
