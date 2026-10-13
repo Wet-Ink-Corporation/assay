@@ -49,6 +49,8 @@ mod rereview_settle;
 mod rereview_target;
 mod self_trust;
 mod session_init;
+mod shard;
+mod shard_runs;
 mod spec;
 mod specialists;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns

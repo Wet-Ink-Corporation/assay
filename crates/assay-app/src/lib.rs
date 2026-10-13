@@ -24,6 +24,7 @@ mod publish;
 mod replay;
 mod rereview;
 mod session_init;
+mod shard;
 mod specialists;
 mod status;
 mod tiering;
@@ -119,9 +120,14 @@ pub use rereview::{
     PriorHistory, RangeDiff, RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError,
     TargetRequest, read_carried, recheck_anchors, review_target, settle_carried,
 };
+pub use shard::{
+    Import, MAX_IMPORTS, MAX_SHARD_FILES, MAX_SHARDS, Shard, ShardCount, ShardError, ShardFile,
+    Sharding, full_run_cap, shard,
+};
 pub use specialists::{
-    HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport, Specialists,
-    SpecialistsRequest, run_specialists,
+    HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport,
+    ShardedSpecialists, ShardsError, ShardsRequest, Specialists, SpecialistsRequest, run_shards,
+    run_specialists,
 };
 pub use status::{
     AppId, BundleProblem, CheckView, Detail, FetchedAt, Identities, InvalidFetchedAt,

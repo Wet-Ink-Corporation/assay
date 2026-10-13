@@ -385,6 +385,74 @@ fn a_refused_thread_charges_nothing_and_the_next_role_starts() {
 }
 
 #[test]
+fn a_quota_pause_after_the_run_cap_halt_is_reported_as_the_pause() {
+    let mut schedule = Schedule::<Error>::new(&[Role::Bugs, Role::Security]);
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
+    schedule.settle(0, result(ModelOutcome::Malformed, 700_000));
+    // Security's cap no longer fits beside what bugs spent: the run cap halts it, and the
+    // retry gets what is left.
+    let retry = schedule.next();
+    assert_eq!(
+        retry,
+        Some(Start {
+            slot: 0,
+            role: Role::Bugs,
+            budget: Aeu::from_micros(400_000)
+        })
+    );
+
+    schedule.settle(0, result(ModelOutcome::QuotaExhausted, 0));
+
+    let specialists = schedule.finish();
+    assert_eq!(specialists.halt, Some(Halt::RateLimited));
+    // Security was skipped for the run cap, before the pause.
+    assert_eq!(
+        specialists.roles.get(1).map(|report| &report.outcome),
+        Some(&RoleOutcome::Skipped(Halt::RunCap))
+    );
+}
+
+#[test]
+fn a_panic_after_a_quota_pause_is_reported_as_the_panic() {
+    let mut schedule = Schedule::<Error>::new(&[Role::Bugs, Role::Security]);
+    let started: Vec<_> = std::iter::from_fn(|| schedule.next()).collect();
+    assert_eq!(started.len(), 2);
+
+    schedule.settle(0, result(ModelOutcome::QuotaExhausted, 0));
+    schedule.settle(1, Joined::Panicked);
+
+    assert_eq!(schedule.finish().halt, Some(Halt::Panicked));
+}
+
+#[test]
+fn a_pause_after_a_panic_stays_the_panic() {
+    let mut schedule = Schedule::<Error>::new(&[Role::Bugs, Role::Security]);
+    let started: Vec<_> = std::iter::from_fn(|| schedule.next()).collect();
+    assert_eq!(started.len(), 2);
+
+    schedule.settle(0, Joined::Panicked);
+    schedule.settle(1, result(ModelOutcome::QuotaExhausted, 0));
+
+    assert_eq!(schedule.finish().halt, Some(Halt::Panicked));
+}
+
+#[test]
+fn a_lost_call_fails_as_lost_and_is_charged_its_budget() {
+    let mut schedule = Schedule::<Error>::new(&[Role::Design]);
+    assert_eq!(schedule.next(), Some(first(0, Role::Design)));
+
+    schedule.settle(0, Joined::Lost);
+
+    assert_eq!(schedule.in_flight(), 0);
+    let report = schedule.finish().roles.pop();
+    let summary = report.map(|report| (report.outcome, report.cost));
+    assert_eq!(
+        summary,
+        Some((RoleOutcome::Failed(RoleFailure::Lost), Role::Design.cap()))
+    );
+}
+
+#[test]
 fn a_runner_error_is_charged_at_the_role_cap() {
     let mut schedule = Schedule::<Error>::new(&[Role::Design]);
     assert_eq!(schedule.next(), Some(first(0, Role::Design)));

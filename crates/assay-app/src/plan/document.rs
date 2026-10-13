@@ -200,7 +200,8 @@ struct FilteredStats<'a> {
 
 /// The document as JSON. A draft schedules no reviewer and no shard (04 §2.4: gates only), but
 /// keeps the roles its tier requires, so `decide` knows what review it lacks; otherwise every
-/// file left after filtering is one shard (sharding is #98's).
+/// file left after filtering is one shard. `plan` holds neither the context pack nor the
+/// import graph, so the split by dependency cluster is the review job's ([`crate::shard`]).
 pub(super) fn to_json(inputs: &Inputs<'_>) -> Result<Vec<u8>, serde_json::Error> {
     let Inputs {
         pull_request,
