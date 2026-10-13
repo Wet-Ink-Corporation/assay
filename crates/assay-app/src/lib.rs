@@ -14,6 +14,7 @@ mod gate;
 mod golden;
 mod model_runner;
 mod plan;
+mod preflight;
 mod prompt_bundle;
 mod publish;
 mod session_init;
@@ -22,6 +23,11 @@ mod tiering;
 pub use doctor::{
     CanaryProbe, CanaryRun, CanaryToken, Check, CheckFailure, CheckResult, DoctorError,
     DoctorReport, doctor,
+};
+pub use preflight::{
+    AuthProof, CliProbe, CliStatus, FIRST_PARTY_PROVIDER, OAUTH_TOKEN_METHOD, PreflightFailed,
+    PreflightFailure, PreflightPassed, StatusParts, StatusReadError, UNOBSERVED,
+    is_provider_variable, preflight,
 };
 pub use session_init::{
     AllowlistDrift, InitParts, InitPlugin, InitReadError, InitUnclean, SessionInit,
@@ -67,10 +73,13 @@ pub use prompt_bundle::{
 };
 pub use publish::{
     BUNDLE_FILE, BundleError, BundleStore, CheckConclusion, CheckName, CheckRun, CheckRunId,
-    CheckState, CheckStatus, CheckUpdate, CommentId, Decided, EvidenceEntry, EvidencePointer,
-    EvidenceRecord, ForgeStep, LlmEvidence, MAX_BUNDLE_BYTES, PersistFailure, Publication,
+    CheckState, CheckStatus, CheckUpdate, CommentForge, CommentId, CommentStep, Decided,
+    EvidenceEntry, EvidencePointer, EvidenceRecord, FindingsError, FindingsOutcome,
+    FindingsPublication, FindingsPublished, FindingsWritten, ForgeStep, InlineComment, LlmEvidence,
+    MAX_BUNDLE_BYTES, MAX_INLINE_COMMENTS, MAX_PRIOR_COMMENTS, PersistFailure, Publication,
     PublishError, PublishFailure, PublishLedger, PublishOutcome, PublishPorts, Published,
     SUMMARY_MARKER, Stale, SummaryComment, Target, Unlock, Verdict, VerdictForge, Written, publish,
+    publish_findings,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};
@@ -79,4 +88,11 @@ mod validation;
 pub use validation::{
     Change, DiffPaths, FileDiff, FindingRef, Hunk, Inputs, LineSpan, Placement, SuppressRules,
     Transition, ValidFinding, Validated, validate,
+};
+
+mod verify;
+pub use verify::{
+    Judgement, MAX_REASON_CHARS, REJECT_RATE_MIN_RUNS, RejectRate, UnsupportedTier, VERDICT_SCHEMA,
+    VERIFIER_CAP, VERIFIER_MAX_TURNS, VerdictReason, VerdictTally, Verification, VerifiedFinding,
+    VerifierFailure, VerifierStatus, VerifierTier, VerifyRequest, verify,
 };

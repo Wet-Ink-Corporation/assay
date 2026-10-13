@@ -11,6 +11,8 @@ use std::time::Duration;
 use assay_domain::{Aeu, RateLimitStatus};
 use serde_json::Value;
 
+use crate::session_init::{InitReadError, SessionInit};
+
 pub use prompt::{InvalidPrompt, Prompt, PromptError};
 pub use retry::{ModelAttempts, RetryError, run_with_retry};
 
@@ -62,6 +64,10 @@ pub struct ModelResult {
     pub cost: Aeu,
     /// The `rejected` and `allowed_warning` rate-limit events of the call, in stream order.
     pub rate_limits: Vec<RateLimitObserved>,
+    /// The session's `system/init`, or why it could not be read. The preflight judges the first
+    /// call's ([`AuthProof::check_first_call`](crate::AuthProof::check_first_call)); a call
+    /// whose init is not clean must not be used.
+    pub init: Result<SessionInit, InitReadError>,
 }
 
 /// How a model call ended (03 §7).

@@ -4,9 +4,9 @@
 use std::fmt;
 use std::num::NonZeroU64;
 
-use assay_domain::Tier;
+use assay_domain::{Side, Tier};
 
-use crate::config::{CommitId, Sha256Digest};
+use crate::config::{CommitId, GateName, Sha256Digest};
 
 /// The verdict check and the summary comment, written with the `assay-verdict` App's token.
 /// Implemented by the forge adapter (#53).
@@ -59,6 +59,60 @@ pub trait VerdictForge {
     ///
     /// [`Self::Error`] when the comment cannot be edited.
     fn update_summary(&self, id: CommentId, body: &str) -> Result<(), Self::Error>;
+}
+
+/// The inline review comments and the per-gate checks, written with the `assay-verdict` App's
+/// token beside the verdict check. Implemented by the forge adapter (#53).
+pub trait CommentForge: VerdictForge {
+    /// The bodies of every review comment on PR `number` that the App authored, across all
+    /// pages. A comment by anyone else is never returned, whatever it contains, so no one else
+    /// can mark a fingerprint as posted.
+    ///
+    /// # Errors
+    ///
+    /// [`VerdictForge::Error`] when the review comments cannot be listed.
+    fn app_review_comments(&self, number: NonZeroU64) -> Result<Vec<String>, Self::Error>;
+
+    /// Posts `comment` on the diff of PR `number`, as a single review comment.
+    ///
+    /// # Errors
+    ///
+    /// [`VerdictForge::Error`] when the comment cannot be posted.
+    fn create_review_comment(
+        &self,
+        number: NonZeroU64,
+        comment: &InlineComment<'_>,
+    ) -> Result<(), Self::Error>;
+
+    /// Creates the check run `name` on `head` with `update`'s status, conclusion, output and
+    /// `external_id`. Never called for the verdict check, which only `open` creates.
+    ///
+    /// # Errors
+    ///
+    /// [`VerdictForge::Error`] when the check cannot be created.
+    fn create_check(
+        &self,
+        head: &CommitId,
+        name: &CheckName,
+        update: &CheckUpdate,
+    ) -> Result<(), Self::Error>;
+}
+
+/// One inline review comment: where on the diff it goes and its body, already sanitised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineComment<'a> {
+    /// The head commit the comment is anchored at.
+    pub commit_id: &'a CommitId,
+    /// The file's path at head (the base path for a deleted file).
+    pub path: &'a str,
+    /// The last line of the span, as GitHub's `line`.
+    pub line: NonZeroU64,
+    /// The first line of a span over several lines, as GitHub's `start_line`.
+    pub start_line: Option<NonZeroU64>,
+    /// The side of the diff the lines are on.
+    pub side: Side,
+    /// The Markdown body, with the hidden fingerprint marker on its first line.
+    pub body: String,
 }
 
 /// The ledger repository, written with the App's ledger installation token. Implemented by the
@@ -133,6 +187,11 @@ impl CheckName {
         } else {
             Self(format!("assay / verdict @{base_ref}"))
         }
+    }
+
+    /// The name of the non-required check for plugin `gate`: `assay / gate: <name>`.
+    pub(crate) fn for_gate(gate: &GateName) -> Self {
+        Self(format!("assay / gate: {gate}"))
     }
 
     /// The name as GitHub shows it.

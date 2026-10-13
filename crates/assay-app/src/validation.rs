@@ -23,6 +23,12 @@ use assay_domain::{
 pub use change::{Change, DiffPaths, FileDiff, Hunk, LineSpan};
 pub(crate) use symbol::enclosing_functions;
 
+/// Whether the injection screen of step 5 flags `text`, for a change to `repository`
+/// (`owner/name`). Shared with the verifier, whose one-line reason is published too.
+pub(crate) fn is_injection_suspect(text: &str, repository: &str) -> bool {
+    screen::screen(text, repository).is_some()
+}
+
 use crate::contract::{Contract, ContractValidator};
 use crate::prompt_bundle::Role;
 

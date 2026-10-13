@@ -1,0 +1,8 @@
+{
+  "loggedIn": true,
+  "authMethod": "oauth_token",
+  "apiProvider": "firstParty",
+  "analyticsDisabled": false,
+  "projectsDirectory": "/home/runner/.claude/projects",
+  "configDirectory": "/home/runner/.claude"
+}
