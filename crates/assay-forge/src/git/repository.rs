@@ -382,6 +382,7 @@ pub(super) const fn call<'a>(
         scope: Scope {
             work_tree: None,
             index: None,
+            user: None,
         },
     }
 }

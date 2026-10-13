@@ -7,7 +7,7 @@ use std::fmt;
 use std::time::Duration;
 
 use assay_app::{
-    ChangePatches, ChangedFiles, CommitId, EntryKind, FilePatch, Hunk, LineSpan,
+    ChangePatches, ChangedFiles, CommitId, EntryKind, FilePatch, Hunk, LineSpan, PatchBudget,
     PullRequestObjects, TreeEntry,
 };
 use assay_domain::{FileChange, FileKind, Lines};
@@ -148,16 +148,18 @@ impl ChangePatches for ForgePullRequest<'_> {
 
     /// One `git diff -M --unified=3 base...head` per file, over its path and, for a rename,
     /// its base path too. The text is read as UTF-8 with any invalid byte replaced: it is
-    /// context for the model, while the hunks are git's own line numbers.
+    /// context for the model, while the hunks are git's own line numbers. Each text passes
+    /// through `budget` before the next diff runs, so at most the budget's bytes of text, plus
+    /// one diff, are held.
     ///
     /// # Errors
     ///
     /// [`ForgeObjectsError`] when a diff cannot run or does not read as one file's patch.
     fn patches(
         &self,
-        base: &CommitId,
-        head: &CommitId,
+        (base, head): (&CommitId, &CommitId),
         files: &[FileChange],
+        mut budget: PatchBudget,
     ) -> Result<Vec<FilePatch>, ForgeObjectsError> {
         let (base, head) = (sha(base)?, sha(head)?);
         files
@@ -170,8 +172,9 @@ impl ChangePatches for ForgePullRequest<'_> {
                     .chain([file.path.as_str()])
                     .collect();
                 let patch = self.repo.file_patch(&base, &head, &paths)?;
+                let text = String::from_utf8_lossy(&patch.text).into_owned();
                 Ok(FilePatch {
-                    text: String::from_utf8_lossy(&patch.text).into_owned(),
+                    text: budget.keep(text),
                     hunks: patch
                         .hunks
                         .into_iter()

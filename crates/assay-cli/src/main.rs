@@ -77,6 +77,7 @@ fn run_check(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         cwd: env::current_dir(),
         path: env::var_os("PATH"),
         home: env::var_os("HOME"),
+        xdg_config_home: env::var_os("XDG_CONFIG_HOME"),
         vars: env::vars_os().collect(),
     };
     let checked = match check::run(args, variables) {
@@ -85,6 +86,9 @@ fn run_check(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     };
     if let Err(error) = checked.write(io::stdout().lock()) {
         return report(&error);
+    }
+    if let Some(left) = &checked.scratch_left {
+        return report(left);
     }
     if checked.passed() {
         ExitCode::SUCCESS

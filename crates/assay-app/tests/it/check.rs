@@ -491,8 +491,8 @@ fn a_context_pack_holding_a_nul_is_not_sent() -> Result<(), Box<dyn Error>> {
     let pr = dirty_tree();
     let setup = Setup::of(&pr)?;
     let mut patches = FakePatches::lib();
-    if let Some(patch) = patches.by_path.get_mut("src/lib.rs") {
-        patch.text.push('\0');
+    if let Some(text) = lib_text(&mut patches) {
+        text.push('\0');
     }
     let model = FakeModel::finding(&[]);
     let ports = CheckPorts {
@@ -513,8 +513,16 @@ fn a_context_pack_holding_a_nul_is_not_sent() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// The text of `patches`' `src/lib.rs` patch.
+pub(crate) fn lib_text(patches: &mut FakePatches) -> Option<&mut String> {
+    patches
+        .by_path
+        .get_mut("src/lib.rs")
+        .and_then(|patch| patch.text.as_mut())
+}
+
 /// The prompt of the one model call a check over `patches` makes.
-fn prompt_with(patches: &FakePatches, pr: &FakePr) -> Result<String, Box<dyn Error>> {
+pub(crate) fn prompt_with(patches: &FakePatches, pr: &FakePr) -> Result<String, Box<dyn Error>> {
     let setup = Setup::of(pr)?;
     let model = FakeModel::finding(&[]);
     let ports = CheckPorts {
@@ -534,9 +542,9 @@ fn the_diff_is_sent_whole_at_its_cap_and_left_out_one_byte_over() -> Result<(), 
     let pr = dirty_tree();
     let sized = |len: usize| {
         let mut patches = FakePatches::lib();
-        if let Some(patch) = patches.by_path.get_mut("src/lib.rs") {
-            let pad = len.saturating_sub(patch.text.len());
-            patch.text.push_str(&" ".repeat(pad));
+        if let Some(text) = lib_text(&mut patches) {
+            let pad = len.saturating_sub(text.len());
+            text.push_str(&" ".repeat(pad));
         }
         patches
     };

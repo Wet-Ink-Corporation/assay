@@ -59,7 +59,7 @@ pub use attributes::{
     AttributeAllowlist, AttributeError, AttributeReport, PolicedAttribute, is_protected_path,
 };
 pub use changes::{ChangeListing, ChangedFile};
-pub use command::{GitEnvironment, GitOperation};
+pub use command::{GitEnvironment, GitOperation, UserDirs};
 pub use copy::{CopiedSymlink, CopyError, ManifestCopy};
 pub use glob::GlobError;
 pub use numstat::{DiffOutcome, FileChange, LineCount};

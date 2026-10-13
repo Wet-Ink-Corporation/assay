@@ -13,8 +13,11 @@ use std::io::{self, Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
+mod developer;
+
+use self::developer::Sparse;
 use super::GitError;
-use super::command::{GitEnvironment, GitOperation, Scope};
+use super::command::{GitEnvironment, GitOperation, Scope, UserDirs};
 use super::repository::{Call, GitLimits, ObjectRepo, call, run_in};
 use super::sha::CommitSha;
 use super::tree::is_object_id;
@@ -23,7 +26,8 @@ use crate::process::Captured;
 /// Largest `.git` file read: a linked worktree's `gitdir: <path>` line.
 const MAX_GIT_FILE_BYTES: u64 = 4096;
 
-/// Largest `info/exclude` copied into the scratch repository.
+/// Most bytes of exclude rules copied into the scratch repository: the developer's global
+/// excludes file and `info/exclude` together.
 const MAX_EXCLUDE_BYTES: u64 = 1 << 20;
 
 /// The scratch index the snapshot is staged in, inside the scratch repository.
@@ -42,6 +46,8 @@ pub struct WorkingTree {
     git_dir: PathBuf,
     objects: PathBuf,
     exclude: PathBuf,
+    /// The developer's global excludes file, when their git has one.
+    excludes_file: Option<PathBuf>,
     environment: GitEnvironment,
     limits: GitLimits,
 }
@@ -73,15 +79,20 @@ impl WorkingTree {
     /// The repository whose working tree is `root`: `root/.git` is its git directory, or a
     /// `gitdir: <path>` file naming one (a linked worktree). Its object store and
     /// `info/exclude` are asked of git, so a linked worktree finds the shared ones.
+    /// The developer's global excludes file is looked up with `user`'s `HOME` and
+    /// `XDG_CONFIG_HOME`, as their own git looks it up.
     ///
     /// # Errors
     /// [`GitError::NotAWorkingTree`] for a relative `root`, a `root` without `.git`, a `.git`
-    /// that is a symlink or a file other than one `gitdir:` line of at most 4096 bytes, or a git
-    /// directory git does not accept; [`GitError`] when git cannot run or prints paths this
-    /// layer cannot read.
+    /// that is a symlink or a file other than one `gitdir:` line of at most 4096 bytes, a git
+    /// directory git does not accept, a sparse working tree (`core.sparseCheckout` set, or
+    /// skip-worktree entries), or a global excludes file that is not
+    /// named by an absolute path; [`GitError`] when git cannot run, fails, or prints something
+    /// this layer cannot read.
     pub fn open(
         root: impl Into<PathBuf>,
         environment: GitEnvironment,
+        user: &UserDirs,
         limits: GitLimits,
     ) -> Result<Self, GitError> {
         let root = root.into();
@@ -111,14 +122,20 @@ impl WorkingTree {
             other => other?,
         };
         let [git_dir, objects, exclude] = absolute_lines(&captured.stdout)?;
-        Ok(Self {
+        let mut tree = Self {
             root,
             git_dir,
             objects,
             exclude,
+            excludes_file: None,
             environment,
             limits,
-        })
+        };
+        if let Sparse::Yes(reason) = tree.sparse(user)? {
+            return Err(not_a_tree(tree.root, reason));
+        }
+        tree.excludes_file = tree.excludes_file(user)?;
+        Ok(tree)
     }
 
     /// The working tree's root.
@@ -167,16 +184,18 @@ impl WorkingTree {
 
 impl ObjectRepo {
     /// Records `worktree` on top of `head` in this repository: it borrows the developer's
-    /// object store and `info/exclude`, loads `head`'s tree into a scratch index, stages the
-    /// working tree with `git add --all` (edits, deletions, and untracked files `.gitignore`
-    /// and `info/exclude` do not ignore; a tracked file stays whatever they say), and writes the
-    /// tree and a commit of it. Only this repository is written. Call it once per repository.
+    /// object store, global excludes file and `info/exclude`, loads `head`'s tree into a
+    /// scratch index, stages the working tree with `git add --all` (edits, deletions, and
+    /// untracked files `.gitignore` and the exclude files do not ignore; a tracked file stays
+    /// whatever they say), and writes the tree and a commit of it. Only this repository is
+    /// written. Call it once per repository.
     ///
     /// # Errors
     /// [`GitError::Write`] when the borrowed store or exclude file cannot be set up (including
-    /// on a second call), [`GitError::NotAWorkingTree`] when the developer's `info/exclude` is
-    /// over 1 MiB or the object store's path holds a newline, and [`GitError`] when a git step
-    /// cannot run, fails or prints something other than one object id.
+    /// on a second call), [`GitError::Inspect`] when an exclude file cannot be read,
+    /// [`GitError::NotAWorkingTree`] when the exclude files hold over 1 MiB together or the
+    /// object store's path holds a newline, and [`GitError`] when a git step cannot run, fails
+    /// or prints something other than one object id.
     pub fn snapshot(&self, worktree: &WorkingTree, head: &CommitSha) -> Result<Snapshot, GitError> {
         self.borrow_objects(worktree)?;
         self.copy_exclude(worktree)?;
@@ -184,6 +203,7 @@ impl ObjectRepo {
         let staging = Scope {
             work_tree: Some(worktree.root()),
             index: Some(&index),
+            user: None,
         };
         self.run(Call {
             scope: staging,
@@ -241,6 +261,7 @@ impl ObjectRepo {
         let scope = Scope {
             work_tree: Some(dest),
             index: Some(&index),
+            user: None,
         };
         self.run(Call {
             scope,
@@ -255,17 +276,14 @@ impl ObjectRepo {
 
     /// Points this repository's `objects/info/alternates` at the developer's object store.
     fn borrow_objects(&self, worktree: &WorkingTree) -> Result<(), GitError> {
-        let objects = worktree.objects.as_os_str().as_bytes();
-        if objects.contains(&b'\n') {
+        let Some(line) = alternates_line(&worktree.objects) else {
             return Err(not_a_tree(
                 // The error owns the root it names; the working tree keeps its own.
                 worktree.root.clone(),
                 "its object store's path holds a newline",
             ));
-        }
+        };
         let path = self.git_dir().join("objects/info/alternates");
-        let mut line = objects.to_vec();
-        line.push(b'\n');
         OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -274,37 +292,62 @@ impl ObjectRepo {
             .map_err(|source| GitError::Write { path, source })
     }
 
-    /// Copies the developer's `info/exclude` (at most 1 MiB) over this repository's, which
-    /// `git add` reads; an absent one leaves nothing excluded but `.gitignore`.
+    /// Writes the developer's global excludes file, then their `info/exclude` (later rules
+    /// win, as in git), over this repository's `info/exclude`, which `git add` reads. Together
+    /// they may hold at most 1 MiB; an absent file adds nothing, as it does for git.
     fn copy_exclude(&self, worktree: &WorkingTree) -> Result<(), GitError> {
-        let text = match File::open(&worktree.exclude) {
-            Ok(file) => {
-                read_capped(file, MAX_EXCLUDE_BYTES).map_err(|source| GitError::Inspect {
-                    // The error owns the path it names, as below.
-                    git_dir: worktree.exclude.clone(),
-                    source,
-                })?
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Some(Vec::new()),
-            Err(source) => {
-                return Err(GitError::Inspect {
-                    git_dir: worktree.exclude.clone(),
-                    source,
-                });
-            }
+        let global = match &worktree.excludes_file {
+            Some(path) => read_exclude(path, MAX_EXCLUDE_BYTES)?,
+            None => Some(Vec::new()),
         };
-        let Some(text) = text else {
+        let local = global.as_ref().map_or(Ok(None), |global| {
+            let left = u64::try_from(global.len())
+                .ok()
+                .and_then(|used| MAX_EXCLUDE_BYTES.checked_sub(used))
+                .unwrap_or(0);
+            read_exclude(&worktree.exclude, left)
+        })?;
+        let (Some(mut text), Some(local)) = (global, local) else {
             return Err(not_a_tree(
                 // The error owns the root it names.
                 worktree.root.clone(),
-                "its info/exclude is over 1 MiB",
+                "its exclude files are over 1 MiB together",
             ));
         };
+        if !text.is_empty() && !local.is_empty() {
+            text.push(b'\n');
+        }
+        text.extend(local);
         let path = self.git_dir().join("info/exclude");
         fs::create_dir_all(self.git_dir().join("info"))
             .and_then(|()| fs::write(&path, text))
             .map_err(|source| GitError::Write { path, source })
     }
+}
+
+/// The exclude rules at `path`: empty when it does not exist, `None` when over `cap` bytes.
+fn read_exclude(path: &Path, cap: u64) -> Result<Option<Vec<u8>>, GitError> {
+    let inspect = |source| GitError::Inspect {
+        git_dir: path.to_path_buf(),
+        source,
+    };
+    match File::open(path) {
+        Ok(file) => read_capped(file, cap).map_err(inspect),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Some(Vec::new())),
+        Err(source) => Err(inspect(source)),
+    }
+}
+
+/// The `objects/info/alternates` line naming `objects`; `None` when the path holds a newline,
+/// which would end the line early and name another store.
+fn alternates_line(objects: &Path) -> Option<Vec<u8>> {
+    let bytes = objects.as_os_str().as_bytes();
+    if bytes.contains(&b'\n') {
+        return None;
+    }
+    let mut line = bytes.to_vec();
+    line.push(b'\n');
+    Some(line)
 }
 
 /// The git directory `root/.git` names, or why it names none.
@@ -343,11 +386,11 @@ fn read_capped(reader: impl Read, cap: u64) -> io::Result<Option<Vec<u8>>> {
         .then_some(bytes))
 }
 
-/// The three absolute paths `rev-parse` printed, one per line.
-fn absolute_lines(stdout: &[u8]) -> Result<[PathBuf; 3], GitError> {
+/// The `N` absolute paths `rev-parse` printed, one per line.
+fn absolute_lines<const N: usize>(stdout: &[u8]) -> Result<[PathBuf; N], GitError> {
     let malformed = GitError::Malformed {
         operation: GitOperation::RevParse,
-        detail: "rev-parse did not print three absolute paths",
+        detail: "rev-parse did not print one absolute path per question",
     };
     let Some(body) = stdout.strip_suffix(b"\n") else {
         return Err(malformed);
@@ -356,7 +399,7 @@ fn absolute_lines(stdout: &[u8]) -> Result<[PathBuf; 3], GitError> {
         .split(|&byte| byte == b'\n')
         .map(|line| PathBuf::from(OsString::from_vec(line.to_vec())))
         .collect();
-    match <[PathBuf; 3]>::try_from(paths) {
+    match <[PathBuf; N]>::try_from(paths) {
         Ok(paths) if paths.iter().all(|path| path.is_absolute()) => Ok(paths),
         _ => Err(malformed),
     }
@@ -393,10 +436,19 @@ mod tests {
     }
 
     #[test]
+    fn an_object_store_path_with_a_newline_has_no_alternates_line() {
+        assert_eq!(
+            alternates_line(Path::new("/repo/.git/objects")),
+            Some(b"/repo/.git/objects\n".to_vec())
+        );
+        assert_eq!(alternates_line(Path::new("/repo\n/etc/objects")), None);
+    }
+
+    #[test]
     fn three_absolute_lines_are_paths_and_anything_else_is_malformed() {
-        let read = absolute_lines(b"/a\n/b\n/c\n");
-        let relative = absolute_lines(b"/a\nb\n/c\n");
-        let short = absolute_lines(b"/a\n/b\n");
+        let read = absolute_lines::<3>(b"/a\n/b\n/c\n");
+        let relative = absolute_lines::<3>(b"/a\nb\n/c\n");
+        let short = absolute_lines::<3>(b"/a\n/b\n");
 
         assert!(
             matches!(&read, Ok([a, b, c]) if *a == Path::new("/a") && *b == Path::new("/b")

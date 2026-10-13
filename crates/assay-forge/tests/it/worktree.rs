@@ -6,9 +6,11 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod refusals;
+
 use assay_forge::git::{
     CommitSha, EntryKind, GitEnvironment, GitError, GitLimits, ObjectRepo, Snapshot, TreeLimits,
-    WorkingTree,
+    UserDirs, WorkingTree,
 };
 use tempfile::TempDir;
 
@@ -19,7 +21,8 @@ const GENEROUS: TreeLimits = TreeLimits {
     max_total_bytes: 1 << 20,
 };
 
-/// A developer's clone: `work/` with one commit, plus a scratch directory for the snapshot.
+/// A developer's clone: `work/` with one commit, plus a scratch directory for the snapshot and
+/// an empty `home/` as the developer's `HOME`.
 struct Clone {
     scratch: TempDir,
     root: PathBuf,
@@ -31,6 +34,7 @@ impl Clone {
         let scratch = tempfile::tempdir()?;
         let root = scratch.path().join("work");
         plain_git(scratch.path(), &["init", "--quiet", "work"])?;
+        fs::create_dir(scratch.path().join("home"))?;
         write(&root, ".gitignore", b"*.secret\n")?;
         write(&root, "src/lib.rs", b"pub fn one() {}\n")?;
         write(&root, "src/gone.rs", b"pub fn gone() {}\n")?;
@@ -42,10 +46,21 @@ impl Clone {
         })
     }
 
+    /// The developer's `HOME`.
+    fn home(&self) -> PathBuf {
+        self.scratch.path().join("home")
+    }
+
+    /// The developer's user dirs: [`Clone::home`] and no `XDG_CONFIG_HOME`.
+    fn user(&self) -> UserDirs {
+        UserDirs::new(Some(self.home().into_os_string()), None)
+    }
+
     fn open(&self) -> Result<WorkingTree, Box<dyn Error>> {
         Ok(WorkingTree::open(
             &self.root,
             GitEnvironment::from_process_env()?,
+            &self.user(),
             GitLimits::default(),
         )?)
     }
@@ -243,6 +258,7 @@ fn a_linked_worktree_is_read_through_its_git_file() -> Result<(), Box<dyn Error>
     let tree = WorkingTree::open(
         &linked,
         GitEnvironment::from_process_env()?,
+        &clone.user(),
         GitLimits::default(),
     )?;
     let head = tree.resolve("HEAD")?;
@@ -292,6 +308,7 @@ fn an_unborn_head_is_an_unknown_revision() -> Result<(), Box<dyn Error>> {
     let tree = WorkingTree::open(
         scratch.path().join("fresh"),
         GitEnvironment::from_process_env()?,
+        &UserDirs::default(),
         GitLimits::default(),
     )?;
 
@@ -309,6 +326,7 @@ fn open_error(root: &Path) -> Result<String, Box<dyn Error>> {
     match WorkingTree::open(
         root,
         GitEnvironment::from_process_env()?,
+        &UserDirs::default(),
         GitLimits::default(),
     ) {
         Err(GitError::NotAWorkingTree { reason, .. }) => Ok(reason.to_owned()),

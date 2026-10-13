@@ -182,6 +182,23 @@ fn a_dirty_tree_is_checked_and_its_report_written_under_the_git_dir() -> Result<
 }
 
 #[test]
+fn a_file_the_developer_ignores_globally_never_reaches_the_model() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new()?;
+    let work = scene.path("work");
+    write(&scene.path("home"), ".config/git/ignore", ".idea/\n")?;
+    write(&work, ".idea/workspace.xml", "<private/>\n")?;
+
+    let outcome = scene.check(&["--local", "--claude", &scene.claude()?])?;
+
+    assert_eq!(
+        fs::read_to_string(scene.path("seen-tree"))?,
+        "./.assay/plugins.toml\n./.gitignore\n./gate.sh\n./src/lib.rs\n./src/new.rs\n",
+        "git's default global excludes file applies to the snapshot: {outcome:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn without_package_sets_a_rust_change_is_full_tier_and_the_decision_says_what_is_missing()
 -> Result<(), Box<dyn Error>> {
     let scene = Scene::new()?;

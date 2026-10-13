@@ -12,8 +12,8 @@ use std::time::Duration;
 use assay_app::{
     BundleFiles, ChangePatches, ChangedFiles, CheckRequest, CommitId, FilePatch, GateDocument,
     GateJob, GateRun, GateRunner, Hunk, InitParts, InitReadError, LineSpan, ModelCall,
-    ModelOutcome, ModelResult, ModelRunner, PlanRequest, Plugin, PromptBundle, PullRequestObjects,
-    ReviewSetup, SessionInit, Structured, Termination, TreeEntry,
+    ModelOutcome, ModelResult, ModelRunner, PatchBudget, PlanRequest, Plugin, PromptBundle,
+    PullRequestObjects, ReviewSetup, SessionInit, Structured, Termination, TreeEntry,
 };
 use assay_domain::{Aeu, FileChange, Lines};
 use serde_json::{Value, json};
@@ -126,6 +126,8 @@ pub(crate) struct FakePatches {
     pub(crate) failing: bool,
     /// One patch fewer than files asked for.
     pub(crate) short: bool,
+    /// The budget of each call, in order.
+    pub(crate) budgets: RefCell<Vec<PatchBudget>>,
 }
 
 impl FakePatches {
@@ -135,10 +137,12 @@ impl FakePatches {
         patches.by_path.insert(
             "src/lib.rs".to_owned(),
             FilePatch {
-                text: "diff --git a/src/lib.rs b/src/lib.rs\n@@ -1,3 +1,3 @@\n \
-                       pub fn parse(input: &str) -> u32 {\n-    input.parse().unwrap_or(0)\n\
-                       +    input.parse().unwrap()\n }\n"
-                    .to_owned(),
+                text: Some(
+                    "diff --git a/src/lib.rs b/src/lib.rs\n@@ -1,3 +1,3 @@\n \
+                     pub fn parse(input: &str) -> u32 {\n-    input.parse().unwrap_or(0)\n\
+                     +    input.parse().unwrap()\n }\n"
+                        .to_owned(),
+                ),
                 hunks: vec![Hunk {
                     base: LineSpan { start: 1, count: 3 },
                     head: LineSpan { start: 1, count: 3 },
@@ -154,16 +158,23 @@ impl ChangePatches for FakePatches {
 
     fn patches(
         &self,
-        base: &CommitId,
-        head: &CommitId,
+        (base, head): (&CommitId, &CommitId),
         files: &[FileChange],
+        mut budget: PatchBudget,
     ) -> Result<Vec<FilePatch>, FakeError> {
+        self.budgets.borrow_mut().push(budget);
         if self.failing || (base.as_str(), head.as_str()) != (BASE, HEAD) {
             return Err(FakeError);
         }
         let mut patches: Vec<FilePatch> = files
             .iter()
-            .map(|file| self.by_path.get(&file.path).cloned().unwrap_or_default())
+            .map(|file| {
+                let patch = self.by_path.get(&file.path).cloned().unwrap_or_default();
+                FilePatch {
+                    text: patch.text.and_then(|text| budget.keep(text)),
+                    hunks: patch.hunks,
+                }
+            })
             .collect();
         if self.short {
             patches.pop();

@@ -12,9 +12,10 @@ pub const MAX_FILE_LIST_BYTES: usize = 32 << 10;
 /// The most bytes of diff in a context pack: 120 KiB (04 §3).
 pub const MAX_DIFF_BYTES: usize = 120 << 10;
 
-/// The pack for `diffs` (the change's files, in order) and their patch texts, one per diff. Linear in the
-/// listed lines and patches; each section stops growing at its cap.
-pub(super) fn context_pack(diffs: &[FileDiff], patches: &[String]) -> String {
+/// The pack for `diffs` (the change's files, in order) and their patch texts, one per diff
+/// (`None` for one the patches port withheld, which counts as not shown). Linear in the listed
+/// lines and patches; each section stops growing at its cap.
+pub(super) fn context_pack(diffs: &[FileDiff], patches: &[Option<String>]) -> String {
     let mut pack = format!("Changed files ({}):\n", diffs.len());
     let lines = diffs.iter().map(|diff| status_line(&diff.paths));
     let unlisted = append_capped(&mut pack, lines, MAX_FILE_LIST_BYTES);
@@ -23,7 +24,9 @@ pub(super) fn context_pack(diffs: &[FileDiff], patches: &[String]) -> String {
         pack.extend(["[", &count, " more ", files(unlisted), " not listed]\n"]);
     }
     pack.push_str("\nDiff:\n");
-    let unshown = append_capped(&mut pack, patches.iter(), MAX_DIFF_BYTES);
+    let withheld = patches.iter().filter(|text| text.is_none()).count();
+    let unshown =
+        append_capped(&mut pack, patches.iter().flatten(), MAX_DIFF_BYTES).saturating_add(withheld);
     if unshown > 0 {
         let count = unshown.to_string();
         let cap = MAX_DIFF_BYTES.to_string();

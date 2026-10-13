@@ -40,7 +40,8 @@ pub use session_init::{
 
 pub use check::{
     ChangePatches, CheckError, CheckPorts, CheckRequest, FilePatch, LocalGate, LocalReport,
-    LocalReview, MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES, ReviewSetup, ReviewStatus, check_local,
+    LocalReview, MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES, PatchBudget, ReviewSetup, ReviewStatus,
+    check_local,
 };
 pub use config::{
     Adapter, Argv, AssaySettings, BuiltinAllowlist, BuiltinKind, BuiltinsError, CommitId,

@@ -27,7 +27,7 @@ use assay_app::{
 use assay_cli::{ForgeObjectsError, ForgePullRequest, ForgeSupervisor};
 use assay_domain::{Conclusion, ContentHash, RunUid};
 use assay_forge::git::{
-    CommitSha, GitEnvironment, GitError, GitLimits, ObjectRepo, TreeLimits, WorkingTree,
+    CommitSha, GitEnvironment, GitError, GitLimits, ObjectRepo, TreeLimits, UserDirs, WorkingTree,
 };
 use assay_forge::process::{GroupKiller, KillerError};
 use assay_gates::{
@@ -68,8 +68,10 @@ pub(crate) struct CheckVariables {
     pub(crate) cwd: io::Result<PathBuf>,
     /// `PATH`, for git, the gates and the CLI.
     pub(crate) path: Option<OsString>,
-    /// `HOME`, where the CLI finds its stored login.
+    /// `HOME`, where the CLI finds its stored login and git the developer's user config.
     pub(crate) home: Option<OsString>,
+    /// `XDG_CONFIG_HOME`, where git also looks for the developer's user config.
+    pub(crate) xdg_config_home: Option<OsString>,
     /// Every variable, for the gates' allowlist.
     pub(crate) vars: Vec<(OsString, OsString)>,
 }
@@ -160,10 +162,30 @@ impl fmt::Display for CheckCliError {
 
 impl std::error::Error for CheckCliError {}
 
-/// What the check produced: the report and where it was written.
+/// What the check produced: the report, where it was written, and the scratch directory if it
+/// could not be removed.
 pub(crate) struct Checked {
     pub(crate) report: LocalReport,
     pub(crate) path: PathBuf,
+    pub(crate) scratch_left: Option<ScratchLeft>,
+}
+
+/// The scratch directory (a 0700 copy of the snapshot) could not be removed.
+#[derive(Debug)]
+pub(crate) struct ScratchLeft {
+    path: PathBuf,
+    source: io::Error,
+}
+
+impl fmt::Display for ScratchLeft {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "could not remove the scratch directory {}, which holds a copy of the snapshot: {}",
+            self.path.display(),
+            self.source
+        )
+    }
 }
 
 impl Checked {
@@ -268,8 +290,11 @@ pub(crate) fn run(
     // A cheap handle (the `kill` program's path), owned by each process runner.
     let git = GitEnvironment::new(path, killer.clone());
     let limits = GitLimits::default();
+    // The user dirs own their copy of `HOME`; the CLI's environment below owns its own.
+    let user = UserDirs::new(variables.home.clone(), variables.xdg_config_home);
     // The working tree and the scratch repository each own an environment.
-    let worktree = WorkingTree::open(root, git.clone(), limits).map_err(CheckCliError::Git)?;
+    let worktree =
+        WorkingTree::open(root, git.clone(), &user, limits).map_err(CheckCliError::Git)?;
     let head = worktree.resolve("HEAD").map_err(CheckCliError::Git)?;
     let base = match worktree.resolve(&["refs/remotes/origin/", &args.base].concat()) {
         Ok(base) => base,
@@ -314,7 +339,11 @@ pub(crate) fn run(
     };
     let report = check_local(&request, ports, &validator).map_err(CheckCliError::Check)?;
     let path = write_report(&worktree.git_dir().join(REPORT_DIR), &report)?;
-    Ok(Checked { report, path })
+    Ok(Checked {
+        report,
+        path,
+        scratch_left: scratch.close(),
+    })
 }
 
 /// The working tree as a PR from `commits` (base, then the snapshot) into `branch`, with git's
@@ -429,6 +458,15 @@ impl Scratch {
 
     fn path(&self, name: &str) -> PathBuf {
         self.dir.path().join(name)
+    }
+
+    /// Removes the directory, saying where it is left when it cannot be removed.
+    fn close(self) -> Option<ScratchLeft> {
+        let path = self.dir.path().to_path_buf();
+        self.dir
+            .close()
+            .err()
+            .map(|source| ScratchLeft { path, source })
     }
 
     /// The `exec` gates, run in the working tree at `root` with `environment`.

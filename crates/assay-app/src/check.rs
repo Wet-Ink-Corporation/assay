@@ -27,7 +27,7 @@ pub use self::gates::LocalGate;
 use self::gates::Ran;
 use self::inputs::Facts;
 pub use self::pack::{MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES};
-pub use self::ports::{ChangePatches, FilePatch};
+pub use self::ports::{ChangePatches, FilePatch, PatchBudget};
 pub use self::report::{LocalReport, LocalReview, ReviewStatus};
 use self::review::Reviewer;
 use crate::config::CommitId;
@@ -162,16 +162,15 @@ where
     let commits = (&event.base_sha, &event.head_sha);
     let recomputed = plan::recompute(request.plan, objects).map_err(CheckError::Plan)?;
     let files = &recomputed.files;
-    let patches = read_patches(patches, commits, files)?;
     let ran = gates::run(&recomputed.config.plugins, runner, validator);
     let role = review::role(recomputed.tiering.tier);
-    let ReviewReads { paths, snapshot } = match role {
-        Some(_) => review_reads(objects, commits, files)?,
+    let reads = match role {
+        Some(_) => review_reads(objects, patches, commits, files)?,
         None => ReviewReads::default(),
     };
-    let texts = read_texts(objects, commits, files, &cite(&ran, &paths))?;
+    let texts = read_texts(objects, commits, files, &cite(&ran, &reads.paths))?;
     let gates = gates::anchor(ran, &texts);
-    let (change, patch_texts) = change(texts, paths, patches);
+    let (change, patch_texts) = change(texts, reads.paths, reads.patches);
     let reviewer = Reviewer {
         setup: &request.review,
         model,
@@ -182,7 +181,7 @@ where
         .map(|role| {
             let pack = pack::context_pack(&change.diffs, &patch_texts);
             let egress = EgressScan::without_token(
-                known_runs(&snapshot).with_commits([&event.base_sha, &event.head_sha]),
+                known_runs(&reads.snapshot).with_commits([commits.0, commits.1]),
             );
             let inputs = review::inputs(event.repo.as_str(), &change, &gates.findings, &egress);
             let outcome = reviewer.review(role, &pack, &inputs)?;
@@ -212,14 +211,15 @@ where
     })
 }
 
-/// The patch of each of `files`, refusing a reply that is not one patch per file.
+/// The patch of each of `files`, with at most the pack's diff cap of text, refusing a reply
+/// that is not one patch per file.
 fn read_patches<P: ChangePatches, O>(
     patches: &P,
     (base, head): (&CommitId, &CommitId),
     files: &[FileChange],
 ) -> Result<Vec<FilePatch>, CheckError<O, P::Error>> {
     let read = patches
-        .patches(base, head, files)
+        .patches((base, head), files, PatchBudget::new(MAX_DIFF_BYTES))
         .map_err(CheckError::Patches)?;
     if read.len() == files.len() {
         Ok(read)
@@ -232,9 +232,13 @@ fn read_patches<P: ChangePatches, O>(
 }
 
 /// The change validation reads, with each file's hunks, and the patch texts for the pack.
-fn change(texts: Texts, paths: Vec<DiffPaths>, patches: Vec<FilePatch>) -> (Change, Vec<String>) {
+fn change(
+    texts: Texts,
+    paths: Vec<DiffPaths>,
+    patches: Vec<FilePatch>,
+) -> (Change, Vec<Option<String>>) {
     let (head_files, base_files) = texts.into_sides();
-    let (patch_texts, hunks): (Vec<String>, Vec<_>) = patches
+    let (patch_texts, hunks): (Vec<Option<String>>, Vec<_>) = patches
         .into_iter()
         .map(|patch| (patch.text, patch.hunks))
         .unzip();
@@ -255,19 +259,24 @@ fn change(texts: Texts, paths: Vec<DiffPaths>, patches: Vec<FilePatch>) -> (Chan
 struct ReviewReads {
     /// Each changed file's paths.
     paths: Vec<DiffPaths>,
+    /// Each changed file's patch, its text within the pack's diff cap.
+    patches: Vec<FilePatch>,
     /// The snapshot's texts, for the egress scan.
     snapshot: Vec<Vec<u8>>,
 }
 
-/// Reads what a review needs, listing the head tree once for both.
-fn review_reads<O: PullRequestObjects, P>(
+/// Reads what a review needs, listing the head tree once for the paths and the snapshot.
+fn review_reads<O: PullRequestObjects, P: ChangePatches>(
     objects: &O,
-    (base, head): (&CommitId, &CommitId),
+    patches: &P,
+    commits: (&CommitId, &CommitId),
     files: &[FileChange],
-) -> Result<ReviewReads, CheckError<O::Error, P>> {
-    let listed = objects.list(head, None).map_err(CheckError::Objects)?;
+) -> Result<ReviewReads, CheckError<O::Error, P::Error>> {
+    let patches = read_patches(patches, commits, files)?;
+    let listed = objects.list(commits.1, None).map_err(CheckError::Objects)?;
     Ok(ReviewReads {
-        paths: diff_paths(objects, base, &listed, files)?,
+        paths: diff_paths(objects, commits.0, &listed, files)?,
+        patches,
         snapshot: known::snapshot_texts(objects, &listed)?,
     })
 }

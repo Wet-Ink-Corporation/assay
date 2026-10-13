@@ -1,11 +1,11 @@
 //! The single constructor of git processes (`docs/architecture/03-contracts.md` §9).
 //!
-//! [`git`] is the only place in this crate that creates a [`Command`]; every git operation
+//! [`git_in`] is the only place in this crate that creates a [`Command`]; every git operation
 //! goes through it, so no call path can skip the hardening. A test in `tests/it` fails if
 //! another constructor appears.
 
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::Path;
 use std::process::Command;
@@ -79,6 +79,13 @@ pub enum GitOperation {
     CommitTree,
     /// `git checkout-index --all`: write a scratch index out, symlinks as plain files.
     CheckoutIndex,
+    /// `git config --null --path --get`: one path-valued setting of a developer's repository,
+    /// with their system and user config read too (local mode's excludes file).
+    ConfigPath,
+    /// `git config --null --bool --get`: one boolean setting of a developer's repository.
+    ConfigBool,
+    /// `git ls-files -t -z`: a developer's index with each entry's tag (`S` is skip-worktree).
+    ListIndex,
 }
 
 impl GitOperation {
@@ -107,7 +114,16 @@ impl GitOperation {
             Self::WriteTree => &["write-tree"],
             Self::CommitTree => &["commit-tree"],
             Self::CheckoutIndex => &["checkout-index", "--all"],
+            Self::ConfigPath => &["config", "--null", "--path", "--get"],
+            Self::ConfigBool => &["config", "--null", "--bool", "--get"],
+            Self::ListIndex => &["ls-files", "-t", "-z"],
         }
+    }
+
+    /// Whether the operation may read the developer's system and user config: only a setting's
+    /// lookup, and only when its [`Scope`] names the [`UserDirs`].
+    const fn reads_user_config(self) -> bool {
+        matches!(self, Self::ConfigPath | Self::ConfigBool)
     }
 
     /// `-c` settings the operation adds to [`HARDENED_CONFIG`]: a checkout writes symlinks as
@@ -121,10 +137,12 @@ impl GitOperation {
     }
 
     /// Variables the operation adds to [`HARDENED_ENV`]: a snapshot commit has a fixed author,
-    /// committer and date, so its id depends only on its tree and parent.
+    /// committer and date, so its id depends only on its tree and parent, and a diff reads every
+    /// path it is given as a literal path, so a file named `*` or `:x` names only itself.
     const fn extra_env(self) -> &'static [(&'static str, &'static str)] {
         match self {
             Self::CommitTree => &SNAPSHOT_IDENTITY,
+            Self::Diff => &[("GIT_LITERAL_PATHSPECS", "1")],
             _ => &[],
         }
     }
@@ -157,6 +175,8 @@ impl fmt::Display for GitOperation {
             Self::WriteTree => "write-tree",
             Self::CommitTree => "commit-tree",
             Self::CheckoutIndex => "checkout-index",
+            Self::ConfigPath | Self::ConfigBool => "config",
+            Self::ListIndex => "ls-files",
         };
         f.write_str(name)
     }
@@ -208,14 +228,58 @@ impl GitEnvironment {
     }
 }
 
-/// Where a git process works besides its repository: a working tree and an index file, both
-/// absent for every operation on PR objects.
+/// Where a developer's git finds their user configuration: `HOME` and `XDG_CONFIG_HOME`.
+///
+/// Local mode (02 §6) reads it for one thing, the global excludes file, so files they ignore
+/// everywhere (`.env.local`, `.idea/`) stay out of the snapshot.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserDirs {
+    home: Option<OsString>,
+    xdg_config_home: Option<OsString>,
+}
+
+impl UserDirs {
+    /// The developer's `HOME` and `XDG_CONFIG_HOME`, either possibly unset.
+    #[must_use]
+    pub const fn new(home: Option<OsString>, xdg_config_home: Option<OsString>) -> Self {
+        Self {
+            home,
+            xdg_config_home,
+        }
+    }
+
+    /// `HOME`.
+    pub(super) fn home(&self) -> Option<&OsStr> {
+        self.home.as_deref()
+    }
+
+    /// `XDG_CONFIG_HOME`, unless unset or empty, which git reads as unset.
+    pub(super) fn xdg_config_home(&self) -> Option<&OsStr> {
+        self.xdg_config_home
+            .as_deref()
+            .filter(|value| !value.is_empty())
+    }
+
+    fn variables(&self) -> impl Iterator<Item = (&'static str, &OsStr)> {
+        [
+            ("HOME", self.home.as_deref()),
+            ("XDG_CONFIG_HOME", self.xdg_config_home.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| value.map(|value| (name, value)))
+    }
+}
+
+/// Where a git process works besides its repository: a working tree, an index file and the
+/// developer's user config, all absent for every operation on PR objects.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Scope<'a> {
     /// `--work-tree`: the tree `add` reads or `checkout-index` writes.
     pub(super) work_tree: Option<&'a Path>,
     /// `GIT_INDEX_FILE`: a scratch index, never a developer's own.
     pub(super) index: Option<&'a Path>,
+    /// The developer's user config, read only by a setting's lookup.
+    pub(super) user: Option<&'a UserDirs>,
 }
 
 /// A hardened `git --git-dir <git_dir> [--work-tree <tree>] -c ... <operation>` command, with
@@ -232,6 +296,13 @@ pub(super) fn git_in(
     command.envs(operation.extra_env().iter().copied());
     if let Some(index) = scope.index {
         command.env("GIT_INDEX_FILE", index);
+    }
+    if let (Some(user), true) = (scope.user, operation.reads_user_config()) {
+        // Reading a setting runs no hook or helper; it resolves the value the developer's own
+        // git resolves, from the system, user and repository files.
+        command.env_remove("GIT_CONFIG_NOSYSTEM");
+        command.env_remove("GIT_CONFIG_GLOBAL");
+        command.envs(user.variables());
     }
     command.arg("--git-dir").arg(git_dir);
     if let Some(work_tree) = scope.work_tree {
@@ -259,11 +330,31 @@ fn harden_environment(command: &mut Command, environment: &GitEnvironment) {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::ffi::OsStr;
     use std::time::Duration;
 
     use super::*;
     use crate::process::{Limits, run};
+
+    /// Every operation.
+    const ALL: [GitOperation; 17] = [
+        GitOperation::Init,
+        GitOperation::Fetch,
+        GitOperation::VerifyCommit,
+        GitOperation::Diff,
+        GitOperation::CheckAttr,
+        GitOperation::ListTree,
+        GitOperation::ReadBlobs,
+        GitOperation::HashBlob,
+        GitOperation::RevParse,
+        GitOperation::ReadTree,
+        GitOperation::AddAll,
+        GitOperation::WriteTree,
+        GitOperation::CommitTree,
+        GitOperation::CheckoutIndex,
+        GitOperation::ConfigPath,
+        GitOperation::ConfigBool,
+        GitOperation::ListIndex,
+    ];
 
     /// The command for `operation` with no scope, as every operation on PR objects builds it.
     fn git(git_dir: &Path, environment: &GitEnvironment, operation: GitOperation) -> Command {
@@ -293,22 +384,7 @@ mod tests {
 
     #[test]
     fn every_command_carries_the_section_9_config() {
-        for operation in [
-            GitOperation::Init,
-            GitOperation::Fetch,
-            GitOperation::VerifyCommit,
-            GitOperation::Diff,
-            GitOperation::CheckAttr,
-            GitOperation::ListTree,
-            GitOperation::ReadBlobs,
-            GitOperation::HashBlob,
-            GitOperation::RevParse,
-            GitOperation::ReadTree,
-            GitOperation::AddAll,
-            GitOperation::WriteTree,
-            GitOperation::CommitTree,
-            GitOperation::CheckoutIndex,
-        ] {
+        for operation in ALL {
             let command = hardened(operation);
             let mut expected = vec![
                 "core.hooksPath=/dev/null",
@@ -408,26 +484,11 @@ mod tests {
 
     #[test]
     fn only_a_checkout_adds_config_and_it_writes_symlinks_as_files() {
-        let extras: Vec<(GitOperation, &[&str])> = [
-            GitOperation::Init,
-            GitOperation::Fetch,
-            GitOperation::VerifyCommit,
-            GitOperation::Diff,
-            GitOperation::CheckAttr,
-            GitOperation::ListTree,
-            GitOperation::ReadBlobs,
-            GitOperation::HashBlob,
-            GitOperation::RevParse,
-            GitOperation::ReadTree,
-            GitOperation::AddAll,
-            GitOperation::WriteTree,
-            GitOperation::CommitTree,
-            GitOperation::CheckoutIndex,
-        ]
-        .into_iter()
-        .map(|operation| (operation, operation.extra_config()))
-        .filter(|(_, extra)| !extra.is_empty())
-        .collect();
+        let extras: Vec<(GitOperation, &[&str])> = ALL
+            .into_iter()
+            .map(|operation| (operation, operation.extra_config()))
+            .filter(|(_, extra)| !extra.is_empty())
+            .collect();
 
         assert_eq!(
             extras,
@@ -445,6 +506,7 @@ mod tests {
             Scope {
                 work_tree: Some(Path::new("/home/dev/work")),
                 index: Some(Path::new("/scratch.git/snapshot-index")),
+                user: None,
             },
             &host(),
             GitOperation::AddAll,
@@ -499,6 +561,17 @@ mod tests {
     }
 
     #[test]
+    fn every_diff_reads_its_paths_literally() {
+        let command = hardened(GitOperation::Diff);
+
+        let envs: BTreeMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            envs.get(OsStr::new("GIT_LITERAL_PATHSPECS")),
+            Some(&Some(OsStr::new("1")))
+        );
+    }
+
+    #[test]
     fn every_diff_disables_external_diff_drivers_and_textconv() {
         let command = hardened(GitOperation::Diff);
 
@@ -516,5 +589,104 @@ mod tests {
             ),
             "a diff without these flags runs PR-controlled drivers"
         );
+    }
+
+    #[test]
+    fn each_operation_carries_its_subcommand_and_fixed_flags() {
+        let leading: Vec<(GitOperation, &[&str])> = ALL
+            .into_iter()
+            .map(|operation| (operation, operation.leading_args()))
+            .collect();
+
+        let expected: [(GitOperation, &[&str]); 17] = [
+            (GitOperation::Init, &["init", "--bare", "--quiet"]),
+            (
+                GitOperation::Fetch,
+                &[
+                    "fetch",
+                    "--quiet",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    "--no-write-fetch-head",
+                    "--no-auto-gc",
+                    "--no-auto-maintenance",
+                ],
+            ),
+            (GitOperation::VerifyCommit, &["cat-file", "-e"]),
+            (
+                GitOperation::Diff,
+                &["diff", "--no-ext-diff", "--no-textconv", "--no-color"],
+            ),
+            (GitOperation::CheckAttr, &["check-attr", "-z", "--stdin"]),
+            (GitOperation::ListTree, &["ls-tree", "-r", "-z", "-l"]),
+            (GitOperation::ReadBlobs, &["cat-file", "--batch"]),
+            (
+                GitOperation::HashBlob,
+                &["hash-object", "--no-filters", "--stdin"],
+            ),
+            (GitOperation::RevParse, &["rev-parse"]),
+            (GitOperation::ReadTree, &["read-tree"]),
+            (GitOperation::AddAll, &["add", "--all"]),
+            (GitOperation::WriteTree, &["write-tree"]),
+            (GitOperation::CommitTree, &["commit-tree"]),
+            (GitOperation::CheckoutIndex, &["checkout-index", "--all"]),
+            (
+                GitOperation::ConfigPath,
+                &["config", "--null", "--path", "--get"],
+            ),
+            (
+                GitOperation::ConfigBool,
+                &["config", "--null", "--bool", "--get"],
+            ),
+            (GitOperation::ListIndex, &["ls-files", "-t", "-z"]),
+        ];
+        assert_eq!(leading, expected);
+    }
+
+    #[test]
+    fn only_a_setting_lookup_with_user_dirs_reads_the_developer_s_config() {
+        let user = UserDirs::new(
+            Some(OsString::from("/home/dev")),
+            Some(OsString::from("/home/dev/.xdg")),
+        );
+        let scope = Scope {
+            user: Some(&user),
+            ..Scope::default()
+        };
+        let envs_of = |operation, scope| -> BTreeMap<OsString, Option<OsString>> {
+            git_in(Path::new("/repo.git"), scope, &host(), operation)
+                .get_envs()
+                .map(|(name, value)| (name.to_owned(), value.map(OsStr::to_owned)))
+                .collect()
+        };
+
+        let lookup = envs_of(GitOperation::ConfigPath, scope);
+        let other = envs_of(GitOperation::ListIndex, scope);
+        let unscoped = envs_of(GitOperation::ConfigPath, Scope::default());
+
+        for name in ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"] {
+            // After `env_clear`, a removed variable is simply absent.
+            assert!(
+                matches!(lookup.get(OsStr::new(name)), None | Some(None)),
+                "{name} is removed for the lookup"
+            );
+            assert!(
+                matches!(other.get(OsStr::new(name)), Some(Some(_))),
+                "{name} stays for every other operation"
+            );
+            assert!(
+                matches!(unscoped.get(OsStr::new(name)), Some(Some(_))),
+                "{name} stays without user dirs"
+            );
+        }
+        assert_eq!(
+            lookup.get(OsStr::new("HOME")),
+            Some(&Some(OsString::from("/home/dev")))
+        );
+        assert_eq!(
+            lookup.get(OsStr::new("XDG_CONFIG_HOME")),
+            Some(&Some(OsString::from("/home/dev/.xdg")))
+        );
+        assert_eq!(other.get(OsStr::new("HOME")), None);
     }
 }

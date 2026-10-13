@@ -149,3 +149,37 @@ fn two_unrelated_files_in_one_patch_are_refused() -> Result<(), Box<dyn Error>> 
     );
     Ok(())
 }
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_path_that_looks_like_a_pattern_names_only_its_own_file() -> Result<(), Box<dyn Error>> {
+    let fixture = fixture(&[
+        ("*", b"star\n"),
+        (":x", b"colon\n"),
+        ("other.txt", b"other\n"),
+    ])?;
+
+    let star = fixture
+        .repo
+        .file_patch(&fixture.base, &fixture.head, &["*"])?;
+    let colon = fixture
+        .repo
+        .file_patch(&fixture.base, &fixture.head, &[":x"])?;
+
+    assert!(
+        star.text.starts_with(b"diff --git a/* b/*\n"),
+        "{}",
+        String::from_utf8_lossy(&star.text)
+    );
+    assert_eq!(
+        star.hunks,
+        [span((0, 0), (1, 1))],
+        "one file, not every file"
+    );
+    assert!(
+        colon.text.starts_with(b"diff --git a/:x b/:x\n"),
+        "{}",
+        String::from_utf8_lossy(&colon.text)
+    );
+    Ok(())
+}
