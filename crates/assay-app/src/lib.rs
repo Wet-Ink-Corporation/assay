@@ -20,6 +20,7 @@ mod prompt_bundle;
 mod publish;
 mod replay;
 mod session_init;
+mod specialists;
 mod status;
 mod tiering;
 
@@ -88,6 +89,10 @@ pub use publish::{
 pub use replay::{
     BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
     ReplayRequest, Replayed, RunField, StoredBundle, replay_decision,
+};
+pub use specialists::{
+    HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport, Specialists,
+    SpecialistsRequest, run_specialists,
 };
 pub use status::{
     AppId, BundleProblem, CheckView, Detail, FetchedAt, Identities, InvalidFetchedAt,
