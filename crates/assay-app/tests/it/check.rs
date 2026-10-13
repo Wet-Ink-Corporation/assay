@@ -18,12 +18,12 @@ use crate::check_fakes::{
 };
 use crate::plan_fakes::{BASE, FakePr, HEAD};
 
-fn validator() -> Result<ContractValidator, Box<dyn Error>> {
+pub(crate) fn validator() -> Result<ContractValidator, Box<dyn Error>> {
     Ok(ContractValidator::new()?)
 }
 
 /// Checks `pr` with the `unwrap` patch, `gates` and `model`.
-fn check(
+pub(crate) fn check(
     pr: &FakePr,
     gates: &mut FakeGates,
     model: &FakeModel,

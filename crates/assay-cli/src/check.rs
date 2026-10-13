@@ -50,6 +50,7 @@ const DEFAULT_BASE: &str = "main";
 const SYSTEM_PROMPT: &str = include_str!("../../../plugin/prompts/v1/system.md");
 const COMBINED: &str = include_str!("../../../plugin/prompts/v1/combined.md");
 const COMBINED_MICRO: &str = include_str!("../../../plugin/prompts/v1/combined-micro.md");
+const VERIFIER: &str = include_str!("../../../plugin/prompts/v1/verifier.md");
 const RUBRIC: &[u8] = include_bytes!("../../../rubric/v1.toml");
 
 /// Wall-clock cap of the diff that lists the changed files.
@@ -452,6 +453,8 @@ impl Scratch {
             system: SYSTEM_PROMPT.to_owned(),
             combined: COMBINED.to_owned(),
             combined_micro: COMBINED_MICRO.to_owned(),
+            // Part of the bundle's hash, though local mode runs no verifier.
+            verifier: VERIFIER.to_owned(),
         })
         .map_err(CheckCliError::Bundle)?;
         let file = self.path("system.md");

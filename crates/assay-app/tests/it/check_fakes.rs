@@ -73,6 +73,7 @@ pub(crate) fn bundle() -> Result<PromptBundle, Box<dyn Error>> {
         system: "SYSTEM".to_owned(),
         combined: "INSTRUCTION combined".to_owned(),
         combined_micro: "INSTRUCTION combined-micro".to_owned(),
+        verifier: "INSTRUCTION verifier".to_owned(),
     })?)
 }
 

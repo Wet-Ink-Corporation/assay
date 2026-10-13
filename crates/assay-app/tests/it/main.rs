@@ -2,6 +2,7 @@
 
 mod builtins;
 mod check;
+mod check_egress;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod check_fakes;
 mod config;

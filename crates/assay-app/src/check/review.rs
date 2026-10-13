@@ -16,7 +16,9 @@ use crate::model_runner::{
 use crate::plan::EvidenceKey;
 use crate::prompt_bundle::Role;
 use crate::session_init::{CLEAN_TOOLS, InitReadError, SessionInit};
-use crate::validation::{Change, FindingRef, Inputs, SuppressRules, ValidFinding, validate};
+use crate::validation::{
+    Change, EgressScan, FindingRef, Inputs, SuppressRules, ValidFinding, validate,
+};
 
 /// The reviewer name local mode stamps on its document.
 const REVIEWER: &str = "assay-local";
@@ -45,6 +47,7 @@ pub(super) fn inputs<'a>(
     repository: &'a str,
     change: &'a Change,
     gate_findings: &'a [Finding],
+    egress: &'a EgressScan<'a>,
 ) -> Inputs<'a> {
     Inputs {
         repository,
@@ -52,6 +55,7 @@ pub(super) fn inputs<'a>(
         suppress: &NoSuppression,
         dismissals: &[],
         gate_findings,
+        egress,
     }
 }
 
@@ -157,6 +161,15 @@ impl<M: ModelRunner> Reviewer<'_, M> {
         };
         let document = serde_json::to_vec(&self.stamp(structured.into_value(), role))?;
         let validated = validate(self.validator, inputs, &[document.as_slice()]);
+        if validated.raises_egress_alarm() {
+            // As the CI review job fails on an alarm, none of this output is shown.
+            let note = format!(
+                "the egress scan found {} piece(s) of model text the snapshot does not explain; \
+                 the review's findings are withheld",
+                validated.egress.len()
+            );
+            return Ok(Reviewed::unavailable(note, cost));
+        }
         let refused = validated.transitions.iter().any(|transition| {
             matches!(transition.at, FindingRef::Document { .. })
                 && transition.code == Disposition::Schema

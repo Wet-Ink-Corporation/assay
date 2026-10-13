@@ -9,6 +9,7 @@
 
 mod gates;
 mod inputs;
+mod known;
 mod pack;
 mod ports;
 mod report;
@@ -35,9 +36,9 @@ use crate::decide::{Cited, ReadFailure, Texts, policy, read_texts};
 use crate::gate::GateRunner;
 use crate::golden::parse_rubric;
 use crate::model_runner::ModelRunner;
-use crate::plan::{self, PlanError, PlanRequest, PullRequestObjects};
+use crate::plan::{self, PlanError, PlanRequest, PullRequestObjects, TreeEntry};
 use crate::prompt_bundle::PromptBundle;
-use crate::validation::{Change, DiffPaths, FileDiff};
+use crate::validation::{Change, DiffPaths, EgressScan, FileDiff, KnownRuns};
 
 /// What a local check is asked to check.
 #[derive(Debug, Clone, Copy)]
@@ -103,7 +104,7 @@ pub enum CheckError<O, P> {
         /// Patches returned.
         returned: usize,
     },
-    /// The changed or cited files could not be read.
+    /// The changed, cited or snapshot files could not be read.
     #[error("could not read the changed files")]
     Objects(#[source] O),
     /// The objects port returned another number of blobs than entries asked for.
@@ -164,9 +165,9 @@ where
     let patches = read_patches(patches, commits, files)?;
     let ran = gates::run(&recomputed.config.plugins, runner, validator);
     let role = review::role(recomputed.tiering.tier);
-    let paths = match role {
-        Some(_) => diff_paths(objects, commits, files)?,
-        None => Vec::new(),
+    let ReviewReads { paths, snapshot } = match role {
+        Some(_) => review_reads(objects, commits, files)?,
+        None => ReviewReads::default(),
     };
     let texts = read_texts(objects, commits, files, &cite(&ran, &paths))?;
     let gates = gates::anchor(ran, &texts);
@@ -180,7 +181,10 @@ where
     let outcome = role
         .map(|role| {
             let pack = pack::context_pack(&change.diffs, &patch_texts);
-            let inputs = review::inputs(event.repo.as_str(), &change, &gates.findings);
+            let egress = EgressScan::without_token(
+                known_runs(&snapshot).with_commits([&event.base_sha, &event.head_sha]),
+            );
+            let inputs = review::inputs(event.repo.as_str(), &change, &gates.findings, &egress);
             let outcome = reviewer.review(role, &pack, &inputs)?;
             Ok((role, outcome))
         })
@@ -246,25 +250,51 @@ fn change(texts: Texts, paths: Vec<DiffPaths>, patches: Vec<FilePatch>) -> (Chan
     (change, patch_texts)
 }
 
-/// Each changed file's paths, from whether it exists at base and at head.
-fn diff_paths<O: PullRequestObjects, P>(
+/// What only a review reads.
+#[derive(Debug, Default)]
+struct ReviewReads {
+    /// Each changed file's paths.
+    paths: Vec<DiffPaths>,
+    /// The snapshot's texts, for the egress scan.
+    snapshot: Vec<Vec<u8>>,
+}
+
+/// Reads what a review needs, listing the head tree once for both.
+fn review_reads<O: PullRequestObjects, P>(
     objects: &O,
     (base, head): (&CommitId, &CommitId),
     files: &[FileChange],
+) -> Result<ReviewReads, CheckError<O::Error, P>> {
+    let listed = objects.list(head, None).map_err(CheckError::Objects)?;
+    Ok(ReviewReads {
+        paths: diff_paths(objects, base, &listed, files)?,
+        snapshot: known::snapshot_texts(objects, &listed)?,
+    })
+}
+
+/// The long runs of the snapshot's `texts`, which [`known::snapshot_texts`] already holds under
+/// [`crate::validation::MAX_INDEXED_BYTES`].
+fn known_runs(texts: &[Vec<u8>]) -> KnownRuns<'_> {
+    // `TooLarge` cannot happen while the texts are capped. Were it reached, the empty index
+    // explains nothing, so every long run is a hit: the fail-closed fallback `KnownRuns::index`
+    // documents, not a hidden failure.
+    KnownRuns::index(texts.iter().map(Vec::as_slice)).unwrap_or_default()
+}
+
+/// Each changed file's paths, from whether it exists at `base` and in the `head` listing.
+fn diff_paths<O: PullRequestObjects, P>(
+    objects: &O,
+    base: &CommitId,
+    head: &[TreeEntry],
+    files: &[FileChange],
 ) -> Result<Vec<DiffPaths>, CheckError<O::Error, P>> {
-    let listed = |commit| {
-        objects
-            .list(commit, None)
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .map(|entry| entry.path)
-                    .collect::<BTreeSet<String>>()
-            })
-            .map_err(CheckError::Objects)
-    };
-    let at_base = listed(base)?;
-    let at_head = listed(head)?;
+    let at_base: BTreeSet<String> = objects
+        .list(base, None)
+        .map_err(CheckError::Objects)?
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect();
+    let at_head: BTreeSet<&str> = head.iter().map(|entry| entry.path.as_str()).collect();
     Ok(files
         .iter()
         .map(|file| {
@@ -273,7 +303,7 @@ fn diff_paths<O: PullRequestObjects, P>(
             match (
                 &file.renamed_from,
                 at_base.contains(before),
-                at_head.contains(&file.path),
+                at_head.contains(file.path.as_str()),
             ) {
                 (Some(from), _, _) => DiffPaths::Renamed {
                     base: from.clone(),
