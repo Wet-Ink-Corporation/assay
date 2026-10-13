@@ -21,7 +21,7 @@ failures and `assay doctor`'s expiry warning link here (06 F4).
   once, before reading further into the cause.
 
 An expired or revoked token can also pass `claude auth status` and fail only on the first model
-call. Whether 2.1.296 checks the token in `auth status` is not recorded, so do not rely on it.
+call. Whether the pinned CLI checks the token in `auth status` is not recorded, so do not rely on it.
 The recorded expiry and the monthly canary are the early warnings.
 
 ## Before you start
@@ -74,4 +74,4 @@ The expiry is recorded when the token is created (05 §5) as `ASSAY_TOKEN_EXPIRE
 `ASSAY_TOKEN_EXPIRES_ON: ${{ vars.ASSAY_TOKEN_EXPIRES_ON }}`. Unset or empty, doctor prints no
 expiry line. With 31 or more days left it prints nothing, from 30 days to 1 day it prints
 `warn token-expiry: …` and still exits 0, and from the date on it prints `FAIL token-expiry: …`
-and exits 1. The weekly report's token-expiry countdown (06 §7) reads the same date.
+and exits 1.

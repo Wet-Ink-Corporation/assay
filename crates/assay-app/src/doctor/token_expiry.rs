@@ -10,14 +10,17 @@ use crate::preflight::TOKEN_ROTATION_RUNBOOK;
 /// How many days before the recorded expiry doctor starts to warn: T-30 (05 §5).
 pub const EXPIRY_WARNING_DAYS: u32 = 30;
 
-/// What doctor says about the token's recorded expiry. Each links the rotation runbook.
+/// What doctor says about the token's recorded expiry. Its message links the rotation runbook.
+///
+/// The fields are plain data; [`token_expiry_warning`] gives `ExpiresSoon` only with
+/// `days_left` from 1 to [`EXPIRY_WARNING_DAYS`], and `Expired` with `days_ago` from 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpiryWarning {
     /// The token expires within [`EXPIRY_WARNING_DAYS`] days: rotate it now.
     ExpiresSoon {
         /// The recorded expiry.
         expires_on: CalendarDate,
-        /// Days from today to the expiry, 1 to [`EXPIRY_WARNING_DAYS`].
+        /// Days from today to the expiry.
         days_left: u32,
     },
     /// The recorded expiry is today or past: the token no longer works and the LLM stage is
@@ -25,7 +28,7 @@ pub enum ExpiryWarning {
     Expired {
         /// The recorded expiry.
         expires_on: CalendarDate,
-        /// Days from the expiry to today, 0 on the day itself.
+        /// Days from the expiry to today; 0 on the day itself.
         days_ago: u32,
     },
 }
@@ -49,17 +52,34 @@ impl fmt::Display for ExpiryWarning {
                 days_left,
             } => write!(
                 f,
-                "the OAuth token expires on {expires_on}, in {days_left} days; \
-                 rotate it: {TOKEN_ROTATION_RUNBOOK}"
-            ),
+                "the OAuth token expires on {expires_on}, in {}",
+                Days(*days_left)
+            )?,
+            Self::Expired {
+                expires_on,
+                days_ago: 0,
+            } => write!(f, "the OAuth token expired today, {expires_on}")?,
             Self::Expired {
                 expires_on,
                 days_ago,
             } => write!(
                 f,
-                "the OAuth token expired on {expires_on}, {days_ago} days ago; \
-                 rotate it: {TOKEN_ROTATION_RUNBOOK}"
-            ),
+                "the OAuth token expired on {expires_on}, {} ago",
+                Days(*days_ago)
+            )?,
+        }
+        write!(f, "; rotate it: {TOKEN_ROTATION_RUNBOOK}")
+    }
+}
+
+/// A count of days, shown `1 day` or `<n> days`.
+struct Days(u32);
+
+impl fmt::Display for Days {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            1 => f.write_str("1 day"),
+            days => write!(f, "{days} days"),
         }
     }
 }

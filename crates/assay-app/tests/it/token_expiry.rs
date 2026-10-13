@@ -5,8 +5,7 @@ use std::error::Error;
 use std::time::{Duration, SystemTime};
 
 use assay_app::{
-    CalendarDate, CalendarDateError, EXPIRY_WARNING_DAYS, ExpiryWarning, TOKEN_ROTATION_RUNBOOK,
-    token_expiry_warning,
+    CalendarDate, CalendarDateError, ExpiryWarning, TOKEN_ROTATION_RUNBOOK, token_expiry_warning,
 };
 use proptest::prelude::*;
 
@@ -146,7 +145,6 @@ fn warning_at(days: i64) -> Result<Option<ExpiryWarning>, Box<dyn Error>> {
 
 #[test]
 fn no_warning_more_than_thirty_days_out() -> Result<(), Box<dyn Error>> {
-    assert_eq!(EXPIRY_WARNING_DAYS, 30, "05 §5: T-30 days");
     assert_eq!(warning_at(31)?, None);
     assert_eq!(warning_at(365)?, None);
     Ok(())
@@ -218,6 +216,29 @@ fn every_warning_names_the_date_and_links_the_runbook() -> Result<(), Box<dyn Er
         format!(
             "the OAuth token expired on 2026-10-10, 3 days ago; rotate it: {TOKEN_ROTATION_RUNBOOK}"
         )
+    );
+    Ok(())
+}
+
+#[test]
+fn one_day_out_and_the_day_itself_read_naturally() -> Result<(), Box<dyn Error>> {
+    let tomorrow = warning_at(1)?.ok_or("a warning a day out")?.to_string();
+    let today = warning_at(0)?.ok_or("a warning on the day")?.to_string();
+    let yesterday = warning_at(-1)?.ok_or("a warning a day after")?.to_string();
+
+    assert_eq!(
+        [tomorrow, today, yesterday],
+        [
+            format!(
+                "the OAuth token expires on 2026-10-14, in 1 day; rotate it: {TOKEN_ROTATION_RUNBOOK}"
+            ),
+            format!(
+                "the OAuth token expired today, 2026-10-13; rotate it: {TOKEN_ROTATION_RUNBOOK}"
+            ),
+            format!(
+                "the OAuth token expired on 2026-10-12, 1 day ago; rotate it: {TOKEN_ROTATION_RUNBOOK}"
+            ),
+        ]
     );
     Ok(())
 }

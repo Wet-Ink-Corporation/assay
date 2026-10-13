@@ -55,18 +55,23 @@ pub(crate) struct DoctorVariables {
 }
 
 /// What `doctor` found: the session checks and the token's expiry.
-pub(crate) struct Doctored {
+pub(crate) struct DoctorOutcome {
     /// The session checks.
     pub(crate) report: DoctorReport,
     /// The expiry warning, when an expiry is recorded and near or past.
     pub(crate) expiry: Option<ExpiryWarning>,
 }
 
-impl Doctored {
+impl DoctorOutcome {
     /// Whether every check passed and the token is not past its recorded expiry.
     pub(crate) fn passed(&self) -> bool {
-        self.report.passed() && !self.expiry.is_some_and(|warning| warning.is_expired())
+        self.report.passed() && !expiry_fails(self.expiry.as_ref())
     }
+}
+
+/// Whether the expiry judgement fails the run: only an expired token does; a near one warns.
+fn expiry_fails(expiry: Option<&ExpiryWarning>) -> bool {
+    expiry.is_some_and(ExpiryWarning::is_expired)
 }
 
 /// Why the checks could not be run.
@@ -157,7 +162,7 @@ impl std::error::Error for DoctorCliError {}
 pub(crate) fn run(
     mut args: impl Iterator<Item = OsString>,
     variables: DoctorVariables,
-) -> Result<Doctored, DoctorCliError> {
+) -> Result<DoctorOutcome, DoctorCliError> {
     let (Some(config), Some(program), None) = (args.next(), args.next(), args.next()) else {
         return Err(DoctorCliError::Usage);
     };
@@ -174,7 +179,7 @@ pub(crate) fn run(
             Err(_) => return Err(DoctorCliError::TokenNotUnicode),
         },
     };
-    let expiry = expiry(variables.expires_on.as_deref(), variables.now)?;
+    let expiry = judge_expiry(variables.expires_on.as_deref(), variables.now)?;
     let config: PluginsConfig = read_config(Path::new(&config))?
         .parse()
         .map_err(DoctorCliError::Config)?;
@@ -188,12 +193,12 @@ pub(crate) fn run(
     let canary = ClaudeCanary::new(program, env, &supervisor);
     let report = doctor(&canary, &mut Urandom, pinned, &assay.claude_cli_builtins)
         .map_err(DoctorCliError::Doctor)?;
-    Ok(Doctored { report, expiry })
+    Ok(DoctorOutcome { report, expiry })
 }
 
 /// The warning for the recorded expiry `expires_on` on the day of `now`; `None` when no
 /// expiry is recorded (unset or empty) or it is more than 30 days away.
-fn expiry(
+fn judge_expiry(
     expires_on: Option<&OsStr>,
     now: SystemTime,
 ) -> Result<Option<ExpiryWarning>, DoctorCliError> {
@@ -211,14 +216,14 @@ fn expiry(
 }
 
 /// Writes one line per check, `ok <check>` or `FAIL <check>: <why>`, then the expiry line.
-pub(crate) fn write_report(doctored: &Doctored, mut out: impl Write) -> io::Result<()> {
-    for result in doctored.report.results() {
+pub(crate) fn write_report(outcome: &DoctorOutcome, mut out: impl Write) -> io::Result<()> {
+    for result in outcome.report.results() {
         match &result.failure {
             None => writeln!(out, "ok {}", result.check)?,
             Some(failure) => writeln!(out, "FAIL {}: {failure}", result.check)?,
         }
     }
-    if let Some(warning) = &doctored.expiry {
+    if let Some(warning) = &outcome.expiry {
         write_expiry(warning, &mut out)?;
     }
     out.flush()
@@ -273,7 +278,65 @@ impl NonceSource for Urandom {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+
+    /// 2026-10-13, 20,739 days after the epoch.
+    fn on_2026_10_13() -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_hours(20_739 * 24)
+    }
+
+    #[test]
+    fn an_expiry_a_day_out_is_a_warning() -> Result<(), Box<dyn std::error::Error>> {
+        let judged = judge_expiry(Some(OsStr::new("2026-10-14")), on_2026_10_13())?;
+
+        assert_eq!(
+            judged,
+            Some(ExpiryWarning::ExpiresSoon {
+                expires_on: "2026-10-14".parse()?,
+                days_left: 1,
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_clock_before_the_epoch_is_refused() {
+        let before = SystemTime::UNIX_EPOCH - Duration::from_secs(1);
+
+        let judged = judge_expiry(Some(OsStr::new("2026-10-14")), before);
+
+        assert!(
+            matches!(
+                judged,
+                Err(DoctorCliError::Clock(CalendarDateError::OutOfRange))
+            ),
+            "{judged:?}"
+        );
+    }
+
+    #[test]
+    fn only_an_expired_token_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        let soon = ExpiryWarning::ExpiresSoon {
+            expires_on: "2026-11-12".parse()?,
+            days_left: 30,
+        };
+        let expired = ExpiryWarning::Expired {
+            expires_on: "2026-10-13".parse()?,
+            days_ago: 0,
+        };
+
+        assert_eq!(
+            [
+                expiry_fails(None),
+                expiry_fails(Some(&soon)),
+                expiry_fails(Some(&expired))
+            ],
+            [false, false, true]
+        );
+        Ok(())
+    }
 
     #[test]
     fn a_token_near_its_expiry_is_a_warning_line() -> Result<(), Box<dyn std::error::Error>> {

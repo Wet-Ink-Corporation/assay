@@ -51,14 +51,14 @@ fn run_doctor(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         expires_on: env::var_os(doctor::TOKEN_EXPIRES_ON),
         now: SystemTime::now(),
     };
-    let doctored = match doctor::run(args, variables) {
-        Ok(doctored) => doctored,
+    let outcome = match doctor::run(args, variables) {
+        Ok(outcome) => outcome,
         Err(error) => return report(&error),
     };
-    if let Err(error) = doctor::write_report(&doctored, io::stdout().lock()) {
+    if let Err(error) = doctor::write_report(&outcome, io::stdout().lock()) {
         return report(&error);
     }
-    if doctored.passed() {
+    if outcome.passed() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

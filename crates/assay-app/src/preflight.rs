@@ -159,16 +159,16 @@ impl<E> PreflightFailure<E> {
     }
 }
 
-/// A failed preflight: its `PreflightFailed` event and why. Its `source` is the reason.
+/// A failed preflight: its `PreflightFailed` event and why.
+///
+/// It shows only `preflight failed`; the reason, with the runbook link when there is one, is
+/// its `source` (ERR-05), so a reporter that walks the chain prints each once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreflightFailed<E>(Box<Failed<E>>);
 
-impl<E> fmt::Display for PreflightFailed<E>
-where
-    PreflightFailure<E>: fmt::Display,
-{
+impl<E> fmt::Display for PreflightFailed<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "preflight failed: {}", self.0.reason)
+        f.write_str("preflight failed")
     }
 }
 

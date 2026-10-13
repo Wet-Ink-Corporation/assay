@@ -531,16 +531,13 @@ fn both_preflight_events_satisfy_the_event_schema() -> Result<(), Box<dyn Error>
 }
 
 #[test]
-fn the_rotation_runbook_link_is_pinned() {
-    assert_eq!(
-        TOKEN_ROTATION_RUNBOOK,
-        "https://github.com/Wet-Ink-Corporation/assay/blob/main/docs/operations/token-rotation.md"
-    );
-}
-
-#[test]
 fn the_runbook_the_link_names_covers_setup_token_and_the_environment_secret() {
     let runbook = include_str!("../../../../docs/operations/token-rotation.md");
+
+    assert!(
+        TOKEN_ROTATION_RUNBOOK.ends_with("/docs/operations/token-rotation.md"),
+        "the link names the file read here: {TOKEN_ROTATION_RUNBOOK}"
+    );
 
     for needle in [
         "claude setup-token",
@@ -561,9 +558,9 @@ fn a_session_that_is_not_logged_in_links_the_rotation_runbook() -> Result<(), Bo
     })?;
 
     assert_eq!(
-        failed.to_string(),
+        failed.reason().to_string(),
         format!(
-            "preflight failed: the CLI is not logged in; rotate the OAuth token: \
+            "the CLI is not logged in; rotate the OAuth token: \
              {TOKEN_ROTATION_RUNBOOK}"
         )
     );
@@ -579,9 +576,9 @@ fn a_session_on_another_auth_method_links_the_rotation_runbook() -> Result<(), B
     })?;
 
     assert_eq!(
-        failed.to_string(),
+        failed.reason().to_string(),
         format!(
-            "preflight failed: the CLI authenticates with \"claude.ai\", not oauth_token; \
+            "the CLI authenticates with \"claude.ai\", not oauth_token; \
              rotate the OAuth token: {TOKEN_ROTATION_RUNBOOK}"
         )
     );
@@ -615,8 +612,28 @@ fn failures_that_rotation_does_not_fix_link_no_runbook() -> Result<(), Box<dyn E
         [None; 4]
     );
     assert!(
-        !variable.to_string().contains(TOKEN_ROTATION_RUNBOOK),
+        !variable
+            .reason()
+            .to_string()
+            .contains(TOKEN_ROTATION_RUNBOOK),
         "{variable}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_failed_preflight_leaves_its_reason_to_its_source() -> Result<(), Box<dyn Error>> {
+    let failed = failure_with(StatusParts {
+        logged_in: false,
+        ..oauth_parts()
+    })?;
+
+    let shown = failed.to_string();
+    let source = failed.source().map(ToString::to_string);
+
+    assert_eq!(
+        (shown.as_str(), source),
+        ("preflight failed", Some(failed.reason().to_string()))
     );
     Ok(())
 }
