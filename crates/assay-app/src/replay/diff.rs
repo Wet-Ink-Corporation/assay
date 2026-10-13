@@ -13,7 +13,8 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DecisionDiff {
     /// The offset of the first differing byte in the recorded decision's canonical encoding
-    /// (compact JSON, keys sorted); its length when the recomputed one is longer.
+    /// (compact JSON, keys sorted). When one encoding is a prefix of the other, it is the
+    /// shorter encoding's length.
     pub offset: usize,
     /// The JSON pointer of the first differing field, in key order. Only names the recomputed
     /// decision has are written: a key only the recorded one has is `*`, so nothing from the

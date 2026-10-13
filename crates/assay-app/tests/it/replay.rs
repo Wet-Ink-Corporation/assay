@@ -491,3 +491,69 @@ fn a_bundle_decided_under_another_rubric_version_is_an_error() -> Result<(), Box
     assert_matches!(outcome, Err(ReplayError::RubricVersion));
     Ok(())
 }
+
+/// Asserts that `tamper`, applied to a fresh bundle re-pointed at its result, is refused as not
+/// `assay.run-inputs/1`.
+fn assert_refused_as_shape(
+    tamper: impl FnOnce(&mut Value) -> Result<(), Box<dyn Error>>,
+) -> Result<(), Box<dyn Error>> {
+    let persisted = Persisted::new()?;
+    let bytes = tampered(&persisted, tamper)?;
+
+    let outcome = replay_repointed(&persisted, bytes)?;
+
+    assert_matches!(outcome, Err(ReplayError::Unreadable(BundleShape::Shape)));
+    Ok(())
+}
+
+/// The object at `pointer` in `bundle`.
+fn object_at<'v>(
+    bundle: &'v mut Value,
+    pointer: &str,
+) -> Result<&'v mut serde_json::Map<String, Value>, Box<dyn Error>> {
+    at(bundle, pointer)?
+        .as_object_mut()
+        .ok_or_else(|| format!("{pointer} is not an object").into())
+}
+
+#[test]
+fn a_bundle_with_an_unknown_top_level_key_is_an_error() -> Result<(), Box<dyn Error>> {
+    assert_refused_as_shape(|bundle| {
+        object_at(bundle, "")?.insert("extra".to_owned(), json!(1));
+        Ok(())
+    })
+}
+
+#[test]
+fn a_document_with_an_unknown_key_is_an_error() -> Result<(), Box<dyn Error>> {
+    assert_refused_as_shape(|bundle| {
+        object_at(bundle, "/documents/0")?.insert("extra".to_owned(), json!(1));
+        Ok(())
+    })
+}
+
+#[test]
+fn events_that_are_not_an_array_are_an_error() -> Result<(), Box<dyn Error>> {
+    assert_refused_as_shape(|bundle| {
+        *at(bundle, "/events")? = json!({});
+        Ok(())
+    })
+}
+
+#[test]
+fn a_document_from_an_unknown_job_is_an_error() -> Result<(), Box<dyn Error>> {
+    assert_refused_as_shape(|bundle| {
+        *at(bundle, "/documents/0/job")? = json!("other");
+        Ok(())
+    })
+}
+
+#[test]
+fn a_bundle_without_a_rubric_version_is_an_error() -> Result<(), Box<dyn Error>> {
+    assert_refused_as_shape(|bundle| {
+        object_at(bundle, "")?
+            .remove("rubric_version")
+            .ok_or("the bundle records a rubric version")?;
+        Ok(())
+    })
+}
