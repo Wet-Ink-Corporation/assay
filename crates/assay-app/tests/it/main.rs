@@ -22,6 +22,7 @@ mod prompt_bundle;
 mod publish;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod publish_fakes;
+mod publish_findings;
 mod publish_persist;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod publish_support;
