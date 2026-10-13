@@ -5,6 +5,7 @@
 //! model reads; the labels stay outside it). Everything past a cap, anything else and anything
 //! that is neither a directory nor a regular file is refused (wi-b5affa).
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::{fmt, mem};
 
@@ -107,7 +108,8 @@ impl EvalCase {
         &self.diff
     }
 
-    /// The digest of the case's `case.json` and `change.diff`, as read.
+    /// The digest of the case's `case.json`, `change.diff` and every `tree/` entry (path and,
+    /// for a file, its bytes), as read.
     #[must_use]
     pub const fn content(&self) -> ContentHash {
         self.content
@@ -197,6 +199,9 @@ struct CaseEntries<'a> {
     json: Option<&'a [u8]>,
     diff: Option<&'a [u8]>,
     tree: bool,
+    /// Every entry under `tree/`, by its path below the case directory: a file's bytes, or
+    /// `None` for a directory. Ordered by path, as the digest folds them.
+    tree_entries: BTreeMap<&'a str, Option<&'a [u8]>>,
 }
 
 /// Reads one split from every entry under its directory (at any depth; tree files' bytes are
@@ -284,7 +289,9 @@ fn sort_entry<'a>(entry: &'a CorpusEntry, cases: &mut BTreeMap<&'a str, CaseEntr
     match (rest, file) {
         (None, None) => true,
         (Some(TREE_DIR), None) => !mem::replace(&mut case.tree, true),
-        (Some(path), _) if path.starts_with("tree/") => true,
+        (Some(path), _) if path.starts_with("tree/") => {
+            case.tree_entries.insert(path, file).is_none()
+        }
         (Some(CASE_FILE), Some(bytes)) => case.json.replace(bytes).is_none(),
         (Some(DIFF_FILE), Some(bytes)) => case.diff.replace(bytes).is_none(),
         _ => false,
@@ -298,6 +305,26 @@ fn is_case_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+/// The digest of a case: `case.json`, `change.diff`, then every tree entry in path order. A
+/// directory is named with a trailing `/` and no content, which no file path can carry, so a
+/// directory never hashes as an empty file.
+fn digest(json: &[u8], diff: &[u8], tree: &BTreeMap<&str, Option<&[u8]>>) -> ContentHash {
+    // Only a directory's name is built; a file's path is borrowed.
+    let names: Vec<(Cow<'_, str>, &[u8])> = tree
+        .iter()
+        .map(|(path, file)| match file {
+            Some(bytes) => (Cow::Borrowed(*path), *bytes),
+            None => (Cow::Owned(format!("{path}/")), &[][..]),
+        })
+        .collect();
+    let tree = names.iter().map(|(name, bytes)| (name.as_ref(), *bytes));
+    ContentHash::of_files(
+        [(CASE_FILE, json), (DIFF_FILE, diff)]
+            .into_iter()
+            .chain(tree),
+    )
 }
 
 /// Checks and reads one case's files.
@@ -327,7 +354,7 @@ fn read_one(id: &str, entries: &CaseEntries<'_>) -> Result<EvalCase, CorpusError
         .ok_or_else(|| CorpusError::DiffNotText {
             case: id.to_owned(),
         })?;
-    let content = ContentHash::of_files([(CASE_FILE, json), (DIFF_FILE, diff.as_bytes())]);
+    let content = digest(json, diff.as_bytes(), &entries.tree_entries);
     let case = read_case(json).map_err(|problem| CorpusError::Case {
         case: id.to_owned(),
         problem,

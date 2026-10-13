@@ -583,6 +583,7 @@ fn refuses_a_repeated_case_file_rather_than_keeping_either() {
     for (path, bytes) in [
         ("a-case/case.json", DEFECT_JSON.as_bytes()),
         ("a-case/change.diff", b"other".as_slice()),
+        ("a-case/tree/src/lib.rs", b"other".as_slice()),
     ] {
         let mut entries = case_entries("a-case", QUIET_JSON, DIFF);
         entries.push(file(path, bytes));

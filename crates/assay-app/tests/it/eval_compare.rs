@@ -4,8 +4,8 @@
 use std::error::Error;
 
 use assay_app::{
-    ClassMap, CompareError, EvalCorpus, EvalReport, NoiseCheck, Split, compare, read_eval_corpus,
-    run_eval,
+    ClassMap, CompareError, CorpusEntryKind, EvalCorpus, EvalReport, NoiseCheck, Split, compare,
+    read_eval_corpus, run_eval,
 };
 
 use crate::eval_fakes::{
@@ -237,6 +237,28 @@ fn refuses_a_baseline_with_an_unscorable_run_on_a_true_negative() -> TestResult 
 fn refuses_reports_whose_case_content_changed() -> TestResult {
     let before = corpus(&[("defect", DEFECT_JSON)])?;
     let entries = case_entries("defect", DEFECT_JSON, "diff --git a/x b/x\n");
+    let after = read_eval_corpus(Split::Dev, &entries)?;
+    let baseline = evaluate(&before, Vec::new())?;
+    let candidate = evaluate(&after, Vec::new())?;
+
+    assert_eq!(
+        compare(&baseline, &candidate),
+        Err(CompareError::CaseChanged {
+            case: "defect".to_owned()
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn refuses_reports_whose_case_tree_changed() -> TestResult {
+    let before = corpus(&[("defect", DEFECT_JSON)])?;
+    let mut entries = case_entries("defect", DEFECT_JSON, DIFF);
+    for entry in &mut entries {
+        if entry.path == "defect/tree/src/lib.rs" {
+            entry.kind = CorpusEntryKind::File(b"fn moved() {}\n".to_vec());
+        }
+    }
     let after = read_eval_corpus(Split::Dev, &entries)?;
     let baseline = evaluate(&before, Vec::new())?;
     let candidate = evaluate(&after, Vec::new())?;

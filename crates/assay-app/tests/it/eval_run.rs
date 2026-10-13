@@ -590,3 +590,10 @@ fn recall_is_reported_per_authoring_model() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn a_path_field_shows_as_its_request_field_name() {
+    let names = [PathField::CorpusDir, PathField::SystemPromptFile].map(|field| field.to_string());
+
+    assert_eq!(names, ["corpus_dir", "system_prompt_file"]);
+}

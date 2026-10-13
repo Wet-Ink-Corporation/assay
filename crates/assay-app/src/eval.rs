@@ -11,6 +11,7 @@ mod ledger;
 mod report;
 mod score;
 
+use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
@@ -75,6 +76,16 @@ pub enum PathField {
     SystemPromptFile,
 }
 
+impl fmt::Display for PathField {
+    /// The field's name: `corpus_dir` or `system_prompt_file`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::CorpusDir => "corpus_dir",
+            Self::SystemPromptFile => "system_prompt_file",
+        })
+    }
+}
+
 /// Why an evaluation did not complete. Whatever was spent before it stopped is charged.
 #[derive(Debug, Error)]
 pub enum EvalError<R, L> {
@@ -82,7 +93,7 @@ pub enum EvalError<R, L> {
     #[error("the split holds no case")]
     NoCases,
     /// A request path is relative; no call was made.
-    #[error("the request's {field:?} is not an absolute path")]
+    #[error("the request's {field} is not an absolute path")]
     RelativePath {
         /// The path at fault.
         field: PathField,

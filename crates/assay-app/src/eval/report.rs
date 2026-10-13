@@ -89,8 +89,8 @@ impl CaseOutcome {
         self.source
     }
 
-    /// The digest of the case's `case.json` and `change.diff`, so two reports of the same id
-    /// can be told apart when the case changed between them.
+    /// The digest of the case's `case.json`, `change.diff` and `tree/`, so two reports of the
+    /// same id can be told apart when the case changed between them.
     #[must_use]
     pub const fn content(&self) -> ContentHash {
         self.content
@@ -350,9 +350,9 @@ const MISSED_AT_MOST: u32 = 1;
 ///
 /// The reports must cover the same split and the same cases with the same content, and the
 /// baseline must hold no unscorable run: an unscorable baseline run would loosen both the
-/// flip rule and the noise margin. The change is accepted when no defect case flips from at least 2 of 3 detected (baseline)
-/// to at most 1 of 3 (candidate), and the candidate's true-negative noise rate is at most the
-/// baseline's 95% Wilson upper bound.
+/// flip rule and the noise margin. The change is accepted when no defect case flips from at
+/// least 2 of 3 detected (baseline) to at most 1 of 3 (candidate), and the candidate's
+/// true-negative noise rate is at most the baseline's 95% Wilson upper bound.
 ///
 /// # Errors
 /// [`CompareError`] when the reports evaluated different splits, cases or case content, or
