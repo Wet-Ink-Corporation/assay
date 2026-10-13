@@ -20,6 +20,10 @@ a live call; replace them with captured transcripts when the doctor (#84) record
 | `no_structured_output.jsonl` | `Malformed`: a successful `result` without `structured_output` |
 | `error_during_execution.jsonl` | `Malformed`: an execution error |
 | `partial.jsonl` | the start of a call cut off by its timeout |
+| `verifier_confirmed.jsonl` | `Ok`, cost 0.0123: a blind verifier's `confirmed` verdict (#91) |
+| `verifier_refuted.jsonl` | `Ok`, cost 0.0234: a `refuted` verdict |
+| `verifier_unclear.jsonl` | `Ok`, cost 0.0345: an `unclear` verdict |
+| `verifier_bad_verdict.jsonl` | `Ok`, cost 0.0111: a verdict with a third key, which the verifier refuses |
 
 Session-init fixtures (#121) for `read_session_init` and the clean-init rule. `init_2_1_296.jsonl`
 is captured from a real Claude Code 2.1.296 call under the 03 §8 profile, with its working
