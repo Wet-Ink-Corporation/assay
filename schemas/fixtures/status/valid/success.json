@@ -1,0 +1,63 @@
+{
+  "schema": "assay.status/1",
+  "source": "ci",
+  "repo": "Wet-Ink-Corporation/assay",
+  "pr": 42,
+  "branch": "feature/status",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "local_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "stale": false,
+  "check": {
+    "conclusion": "success",
+    "status": "completed",
+    "url": "https://github.com/Wet-Ink-Corporation/assay/runs/9001"
+  },
+  "decision": {
+    "conclusion": "success",
+    "reasons": [],
+    "reasons_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "counts": {
+      "blocker": 1,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    "degraded": [],
+    "advisory_blockers": [
+      "00000000000000ab"
+    ]
+  },
+  "tier": "micro",
+  "gates": [
+    {
+      "plugin": "custom-lint",
+      "conclusion": "success",
+      "url": "https://github.com/Wet-Ink-Corporation/assay/runs/9102"
+    },
+    {
+      "plugin": "temper",
+      "conclusion": "success",
+      "url": "https://github.com/Wet-Ink-Corporation/assay/runs/9101"
+    }
+  ],
+  "findings": [
+    {
+      "fp": "00000000000000ab",
+      "finding_id": "00000000000000ab",
+      "severity": "blocker",
+      "class": "logic",
+      "title": "Event recorded twice",
+      "file": "src/lib.rs",
+      "line": 12,
+      "url": "https://github.com/Wet-Ink-Corporation/assay/pull/42#discussion_r501",
+      "disposition": "line-not-in-diff-moved",
+      "waivable": false
+    }
+  ],
+  "viewer": {
+    "login": "ryan-britton",
+    "is_owner": true,
+    "is_agent": false
+  },
+  "fetched_at": "2026-10-13T09:30:00Z"
+}

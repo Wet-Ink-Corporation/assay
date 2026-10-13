@@ -241,18 +241,18 @@ pub enum ReplayError<E> {
     Encode(#[source] serde_json::Error),
 }
 
-/// `assay.run-inputs/1` as replay reads it.
+/// `assay.run-inputs/1` as replay (and `assay status`) reads it.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Bundle {
+pub(crate) struct Bundle {
     #[serde(rename = "schema")]
     _schema: BundleSchema,
     run_uid: RunUid,
     evidence_key: String,
     documents: Vec<BundleDocument>,
-    inputs: DecisionInputs,
-    rubric_version: String,
-    decision: Value,
+    pub(crate) inputs: DecisionInputs,
+    pub(crate) rubric_version: String,
+    pub(crate) decision: Value,
     /// Checked to be an array, not kept: replay does not read events.
     #[serde(rename = "events")]
     _events: Vec<IgnoredAny>,
@@ -380,7 +380,7 @@ fn fetch<S: BundleSource>(source: &S, run: RunUid) -> Result<Vec<u8>, ReplayErro
 }
 
 /// Parses authenticated bytes as `assay.run-inputs/1`, refusing a repeated key.
-fn read(bytes: &[u8]) -> Result<Bundle, BundleShape> {
+pub(crate) fn read(bytes: &[u8]) -> Result<Bundle, BundleShape> {
     let value = parse_json_strict(bytes).map_err(|error| {
         let (line, column) = (error.line(), error.column());
         match error.classify() {
@@ -393,7 +393,7 @@ fn read(bytes: &[u8]) -> Result<Bundle, BundleShape> {
 }
 
 /// Where the bundle disagrees with the pointer's `run` or with itself, if anywhere.
-fn inconsistency(bundle: &Bundle, run: RunUid) -> Option<Mismatch> {
+pub(crate) fn inconsistency(bundle: &Bundle, run: RunUid) -> Option<Mismatch> {
     let recorded = bundle.run_uid;
     let field = if recorded.repo_id != run.repo_id {
         Some(RunField::RepoId)

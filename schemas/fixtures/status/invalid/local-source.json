@@ -1,0 +1,21 @@
+{
+  "schema": "assay.status/1",
+  "source": "local",
+  "repo": "Wet-Ink-Corporation/assay",
+  "pr": 42,
+  "branch": "feature/status",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "local_head_sha": null,
+  "stale": false,
+  "check": null,
+  "decision": null,
+  "tier": null,
+  "gates": [],
+  "findings": [],
+  "viewer": {
+    "login": "someone",
+    "is_owner": false,
+    "is_agent": false
+  },
+  "fetched_at": "2026-10-13T09:30:00Z"
+}

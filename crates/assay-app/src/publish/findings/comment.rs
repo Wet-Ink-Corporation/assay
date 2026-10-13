@@ -2,6 +2,8 @@
 //! by [`prose`], publisher-built permalinks and fences, the hidden fingerprint marker and the
 //! feedback footer (04 §6).
 
+pub(crate) mod read;
+
 use assay_domain::{Fingerprint, Severity};
 
 use crate::config::CommitId;

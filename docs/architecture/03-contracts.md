@@ -197,6 +197,17 @@ These streams support audit, metrics and the cost ledger (`06 §1`). They are an
 
 `{schema, run_uid, evidence_key, documents[{job: plan|gates-static|gates-lint|gates-test|review, file, sha256, text}], inputs, rubric_version, decision, events[]}`, written by `decide` as `run-inputs.json` in its own artifact (`02 §5`). `documents` holds every input document Z4 authenticated, as UTF-8 text exactly as its job published it and with the digest that job published: the plan's `run.json`, then each gate document in job and plugin order, then the review documents in the order reported (a document that is not UTF-8 is a persist failure, not an escape). `inputs` is the domain's `DecisionInputs` exactly as decided, `decision` an `assay.decision/1` document, `events` the run's events ordered by `(job, idx)`. A bundle over 96 MiB is not written (persist failure). The GitHub state snapshot (approvals, command records, eligibility lists, pusher set) is added by #58 as a new field and therefore a new version.
 
+## 6b. Status (`assay.status/1`)
+
+`assay status [--json] [--pr <n>] [--full]` (#126) renders one PR's assay state as this document, so the mod and scripts never parse check markdown, comments or `gh` output. `{schema, source: ci, repo, pr, branch, head_sha, local_head_sha, stale, check, decision, tier, gates[], findings[], weigh_in?, viewer, fetched_at}`:
+
+- `check` is the `assay-verdict` check on the PR head (`{conclusion, status, url}`), or null when there is none. Only checks whose app id is the configured App count: a same-named check of another app is ignored, and two App checks with the verdict name are refused (A-27). `gates` are the App's `assay / gate: <plugin>` checks.
+- `decision` (`{conclusion, reasons, reasons_digest, counts, degraded, advisory_blockers}`), `tier` and `weigh_in` (`{blocking, pending_triage}`) are read only from the `assay.run-inputs/1` bundle (§6a) the check's `output.text` evidence pointer names, after its sha256 matches, its run is the pointer's and its decision key is the check's; they are null while the check is open (`in_progress`, or a budget-deferred `pending`).
+- `findings` are the decision's gate and reviewer findings, one per fingerprint (`fp`, which is also the `finding_id` `/assay waive` takes) at the highest severity carrying it. `title`, `class`, `file`, `line`, `url` and, with `--full`, `body` come only from the App's own inline comment for that fingerprint (already sanitised, 05 T8); a gate finding without one is titled `<plugin>: <rule>`, cleaned as the check summary cleans it. `disposition` is the decision's last for the fingerprint. `waivable` is exactly the domain waive rule (R-08(a), #59): true when every gate finding carrying the fingerprint has a rubric-waivable (gate, rule); a reviewer finding is never waivable.
+- `viewer` is the caller's login and whether the base P10 lists name them owner or agent.
+
+Anything read that does not parse exactly is refused (wi-b5affa), except a finding comment's title, class or body, which is left out rather than guessed. Inputs are capped and refused past the cap: 1,000 check runs on the head, 1,024 App review comments, 4,096 findings, 1,024 reasons. `source: local` is reserved for the local status of the events story. The schema is `schemas/status-1.schema.json`; its golden documents (`schemas/fixtures/status/valid/`) are the mod's test fixtures.
+
 ## 7. Model runner port
 
 ```rust

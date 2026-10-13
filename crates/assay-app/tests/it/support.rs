@@ -27,6 +27,7 @@ fn contract_dir(contract: Contract) -> &'static str {
         Contract::Run => "run",
         Contract::Decision => "decision",
         Contract::Event => "event",
+        Contract::Status => "status",
     }
 }
 

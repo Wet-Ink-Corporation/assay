@@ -19,6 +19,7 @@ mod prompt_bundle;
 mod publish;
 mod replay;
 mod session_init;
+mod status;
 mod tiering;
 
 pub use doctor::{
@@ -85,6 +86,12 @@ pub use publish::{
 pub use replay::{
     BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
     ReplayRequest, Replayed, RunField, StoredBundle, replay_decision,
+};
+pub use status::{
+    AppId, BundleProblem, CheckView, Detail, Identities, MAX_CHECK_RUNS, MAX_FINDINGS, MAX_REASONS,
+    ObservedConclusion, PullSelector, PullView, ReviewCommentView, StatusError, StatusFailure,
+    StatusForge, StatusPorts, StatusReport, StatusRepository, StatusRequest, StatusStep,
+    StatusUnreadable, UserId, Viewer, status,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};

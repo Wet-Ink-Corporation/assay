@@ -35,6 +35,10 @@ mod replay_fakes;
 mod self_trust;
 mod session_init;
 mod spec;
+mod status;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod status_fakes;
+mod status_refusals;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod support;
 mod tiering;
