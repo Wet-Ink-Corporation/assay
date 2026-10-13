@@ -18,6 +18,7 @@ mod preflight;
 mod prompt_bundle;
 mod publish;
 mod session_init;
+mod specialists;
 mod tiering;
 
 pub use doctor::{
@@ -80,6 +81,10 @@ pub use publish::{
     PublishError, PublishFailure, PublishLedger, PublishOutcome, PublishPorts, Published,
     SUMMARY_MARKER, Stale, SummaryComment, Target, Unlock, Verdict, VerdictForge, Written, publish,
     publish_findings,
+};
+pub use specialists::{
+    HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport, Specialists,
+    SpecialistsRequest, run_specialists,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};

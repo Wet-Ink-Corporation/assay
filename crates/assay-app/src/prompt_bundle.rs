@@ -27,9 +27,14 @@ pub enum BundleFile {
 }
 
 impl BundleFile {
-    /// Every file, in the order the bundle hash covers them.
-    pub const ALL: [Self; 4] = [
+    /// Every file, in the order the bundle hash covers them: the system prompt, each role's
+    /// instruction in roster order, then the verifier's.
+    pub const ALL: [Self; 8] = [
         Self::System,
+        Self::Instruction(Role::Bugs),
+        Self::Instruction(Role::Security),
+        Self::Instruction(Role::Design),
+        Self::Instruction(Role::Meta),
         Self::Instruction(Role::Combined),
         Self::Instruction(Role::CombinedMicro),
         Self::Verifier,
@@ -41,6 +46,10 @@ impl BundleFile {
     pub const fn path(self) -> &'static str {
         match self {
             Self::System => "v1/system.md",
+            Self::Instruction(Role::Bugs) => "v1/bugs.md",
+            Self::Instruction(Role::Security) => "v1/security.md",
+            Self::Instruction(Role::Design) => "v1/design.md",
+            Self::Instruction(Role::Meta) => "v1/meta.md",
             Self::Instruction(Role::Combined) => "v1/combined.md",
             Self::Instruction(Role::CombinedMicro) => "v1/combined-micro.md",
             Self::Verifier => "v1/verifier.md",
@@ -54,6 +63,14 @@ impl BundleFile {
 pub struct BundleFiles {
     /// [`BundleFile::System`].
     pub system: String,
+    /// The instruction of [`Role::Bugs`].
+    pub bugs: String,
+    /// The instruction of [`Role::Security`].
+    pub security: String,
+    /// The instruction of [`Role::Design`].
+    pub design: String,
+    /// The instruction of [`Role::Meta`].
+    pub meta: String,
     /// The instruction of [`Role::Combined`].
     pub combined: String,
     /// The instruction of [`Role::CombinedMicro`].
@@ -66,6 +83,10 @@ impl BundleFiles {
     fn text(&self, file: BundleFile) -> &str {
         match file {
             BundleFile::System => &self.system,
+            BundleFile::Instruction(Role::Bugs) => &self.bugs,
+            BundleFile::Instruction(Role::Security) => &self.security,
+            BundleFile::Instruction(Role::Design) => &self.design,
+            BundleFile::Instruction(Role::Meta) => &self.meta,
             BundleFile::Instruction(Role::Combined) => &self.combined,
             BundleFile::Instruction(Role::CombinedMicro) => &self.combined_micro,
             BundleFile::Verifier => &self.verifier,
@@ -91,7 +112,8 @@ pub enum BundleFileError {
 pub struct InvalidBundle {
     file: BundleFile,
     reason: BundleFileError,
-    files: BundleFiles,
+    /// Boxed: eight texts would make every `Result` carrying the error that large.
+    files: Box<BundleFiles>,
 }
 
 impl InvalidBundle {
@@ -110,7 +132,7 @@ impl InvalidBundle {
     /// The files, as given.
     #[must_use]
     pub fn into_files(self) -> BundleFiles {
-        self.files
+        *self.files
     }
 }
 
@@ -150,7 +172,7 @@ impl PromptBundle {
             return Err(InvalidBundle {
                 file,
                 reason,
-                files,
+                files: Box::new(files),
             });
         }
         let hash = ContentHash::of_files(

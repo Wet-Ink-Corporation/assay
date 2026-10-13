@@ -32,6 +32,9 @@ mod redaction;
 mod self_trust;
 mod session_init;
 mod spec;
+mod specialists;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod specialists_fakes;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod support;
 mod tiering;

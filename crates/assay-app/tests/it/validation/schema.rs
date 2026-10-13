@@ -171,10 +171,12 @@ fn drops_findings_past_256_in_a_document_as_cap_exceeded() -> Result<(), Box<dyn
     Ok(())
 }
 
-// A role outside the roster has no severity ceiling to hold its findings to.
+// A role outside the roster has no severity ceiling to hold its findings to. The verifier writes
+// verdicts, never findings, so no findings document is accepted in its name. (Until #95 this
+// used `bugs`, which then had no instruction; it is a roster role now.)
 #[test]
 fn disposes_of_a_document_from_a_role_outside_the_roster_as_schema() -> Result<(), Box<dyn Error>> {
-    let validated = Run::default().validate(&[document_by("bugs", &[finding()])])?;
+    let validated = Run::default().validate(&[document_by("verifier", &[finding()])])?;
 
     assert_eq!(
         (validated.transitions, validated.findings.len()),
