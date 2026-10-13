@@ -346,11 +346,14 @@ fn a_panicking_runner_fails_its_role_and_nothing_more_is_started() -> Result<(),
 
 #[test]
 fn a_panic_while_others_are_in_flight_lets_them_finish() -> Result<(), Box<dyn Error>> {
-    // Bugs waits until all three have started, so security panics with bugs and design in
-    // flight.
+    // Security and design wait until all three have started, and bugs until security has
+    // ended, so security panics with bugs still in flight.
     let fake = Fake::new(
         [(Role::Security, vec![Answer::Panics])],
-        Hold::FirstUntilStarted(3),
+        Hold::FirstUntilEnded {
+            role: Role::Security,
+            started: 3,
+        },
     );
 
     let specialists = run(&fake, &FULL, Duration::ZERO)?;

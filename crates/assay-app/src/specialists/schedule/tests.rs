@@ -165,6 +165,34 @@ fn a_retry_waits_for_the_calls_in_flight_before_it_takes_less_than_its_cap() {
 }
 
 #[test]
+fn a_retry_waits_on_first_attempts_in_flight_but_not_on_another_retry() {
+    let mut schedule = Schedule::<Error>::new(&FULL);
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
+    assert_eq!(schedule.next(), Some(first(1, Role::Security)));
+    assert_eq!(schedule.next(), Some(first(2, Role::Design)));
+    schedule.settle(0, result(ModelOutcome::Malformed, 300_000));
+    schedule.settle(1, result(ModelOutcome::Malformed, 300_000));
+    // 0.60 spent and design's 0.50 reserved: 0.50 left, less than bugs' 0.60, and design's
+    // first attempt may settle low, so the retries wait for it.
+    assert_eq!(schedule.next(), None);
+    schedule.settle(2, output(200_000));
+    // 0.80 spent: bugs' retry takes its whole 0.60, leaving 0.20.
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
+
+    // Only a retry is in flight now: security's retry takes the 0.20 left instead of waiting.
+    let retry = schedule.next();
+
+    assert_eq!(
+        retry,
+        Some(Start {
+            slot: 1,
+            role: Role::Security,
+            budget: Aeu::from_micros(200_000),
+        })
+    );
+}
+
+#[test]
 fn a_retry_with_nothing_left_of_the_run_cap_leaves_the_role_malformed() {
     let mut schedule = Schedule::<Error>::new(&[Role::Combined]);
     assert_eq!(schedule.next(), Some(first(0, Role::Combined)));

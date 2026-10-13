@@ -9,6 +9,7 @@
 mod calendar;
 mod config;
 mod contract;
+mod coordinate;
 mod decide;
 mod doctor;
 mod gate;
@@ -48,6 +49,11 @@ pub use config::{
 pub use contract::{
     Contract, ContractSchemaError, ContractValidator, MAX_DOCUMENT_BYTES, ReadContractError,
     SchemaCompileError, SchemaViolation, parse_json_strict,
+};
+pub use coordinate::{
+    COORDINATION_SCHEMA, COORDINATOR_CAP, COORDINATOR_MAX_TURNS, CoordinateRequest, Coordination,
+    CoordinationRefusal, CoordinatorFailure, GroupId, MAX_COORDINATED_FINDINGS, Merged, MergedBy,
+    Ranked, coordinate, merge_mechanically,
 };
 pub use decide::{
     AdmitJob, ArtifactDocument, AuthenticatedRun, Authentication, CurrentPullRequest, DecideError,

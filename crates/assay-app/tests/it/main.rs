@@ -3,6 +3,7 @@
 mod builtins;
 mod config;
 mod contract;
+mod coordinate;
 mod decide;
 mod decide_evidence;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns

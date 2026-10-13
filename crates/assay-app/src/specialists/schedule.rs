@@ -105,6 +105,8 @@ pub(super) struct Schedule<E> {
     /// they start only once no first attempt is due.
     retries: VecDeque<usize>,
     in_flight: usize,
+    /// The first attempts among the calls in flight: only they make a retry wait (#217).
+    first_in_flight: usize,
     ledger: Ledger,
     halt: Option<Halt>,
 }
@@ -135,6 +137,7 @@ impl<E> Schedule<E> {
             due: (0..roles.len()).collect(),
             retries: VecDeque::new(),
             in_flight: 0,
+            first_in_flight: 0,
             ledger: Ledger {
                 cap,
                 spent: Aeu::ZERO,
@@ -170,6 +173,9 @@ impl<E> Schedule<E> {
         let entry = self.entries.get_mut(slot)?;
         self.ledger.reserve(budget);
         self.in_flight = self.in_flight.saturating_add(1);
+        if entry.report.attempts == 0 {
+            self.first_in_flight = self.first_in_flight.saturating_add(1);
+        }
         entry.state = State::Running;
         entry.budget = budget;
         entry.report.attempts = entry.report.attempts.saturating_add(1);
@@ -206,15 +212,16 @@ impl<E> Schedule<E> {
 
     /// Takes the next retry with its budget, the smaller of its role's cap and what is left of
     /// the run cap (as the verifier's retries, 04 §4 step 8). While the cap does not fit and
-    /// calls in flight may settle below their reservations, it waits; with nothing in flight it
+    /// first attempts in flight may settle below their reservations, it waits; otherwise it
     /// starts with what is left, and with nothing left the role fails as malformed and the next
-    /// retry is looked at.
+    /// retry is looked at. It never waits on another retry, so retries cannot serialise behind
+    /// each other's timeouts (#217): a retry behind a retry takes a smaller budget instead.
     fn next_retry(&mut self) -> Option<(usize, Aeu)> {
         while let Some(&slot) = self.retries.front() {
             let entry = self.entries.get_mut(slot)?;
             let cap = entry.role.cap();
             let left = self.ledger.left();
-            if cap > left && self.in_flight > 0 {
+            if cap > left && self.first_in_flight > 0 {
                 return None;
             }
             self.retries.pop_front();
@@ -233,6 +240,7 @@ impl<E> Schedule<E> {
     pub(super) fn refused(&mut self, slot: usize, kind: std::io::ErrorKind) {
         self.in_flight = self.in_flight.saturating_sub(1);
         if let Some(entry) = self.entries.get_mut(slot) {
+            self.first_in_flight = ended_first(self.first_in_flight, entry.report.attempts);
             self.ledger.settle(entry.budget, Aeu::ZERO);
             entry.report.attempts = entry.report.attempts.saturating_sub(1);
             entry.state = State::Done(RoleOutcome::Failed(RoleFailure::Spawn(kind)));
@@ -247,6 +255,7 @@ impl<E> Schedule<E> {
         let Some(entry) = self.entries.get_mut(slot) else {
             return;
         };
+        self.first_in_flight = ended_first(self.first_in_flight, entry.report.attempts);
         let budget = entry.budget;
         let report = &mut entry.report;
         let result = match joined {
@@ -319,6 +328,16 @@ impl<E> Schedule<E> {
             roles,
             run_cap: self.ledger.cap,
         }
+    }
+}
+
+/// The first attempts in flight once a call whose role has made `attempts` attempts ends: one
+/// fewer when it was the role's first.
+const fn ended_first(first_in_flight: usize, attempts: u8) -> usize {
+    if attempts == 1 {
+        first_in_flight.saturating_sub(1)
+    } else {
+        first_in_flight
     }
 }
 
