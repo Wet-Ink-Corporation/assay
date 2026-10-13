@@ -211,14 +211,14 @@ pub(super) fn code_block(code: &str, info: Info) -> String {
 /// A repository `owner/name` as GitHub spells them: ASCII letters, digits and `-` for the
 /// owner, plus `.` and `_` for the name, which is never `.` or `..`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Repository<'a> {
+pub(crate) struct Repository<'a> {
     owner: &'a str,
     name: &'a str,
 }
 
 impl<'a> Repository<'a> {
     /// `full_name` when it has that shape.
-    pub(super) fn parse(full_name: &'a str) -> Option<Self> {
+    pub(crate) fn parse(full_name: &'a str) -> Option<Self> {
         let (owner, name) = full_name.split_once('/')?;
         let owner_ok = valid_name(owner, |byte| byte.is_ascii_alphanumeric() || byte == b'-');
         let name_ok = valid_name(name, |byte| {

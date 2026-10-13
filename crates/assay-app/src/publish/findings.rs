@@ -19,6 +19,7 @@ use std::collections::BTreeSet;
 use assay_domain::{Fingerprint, GateReport, Side};
 use thiserror::Error;
 
+pub(crate) use self::comment::read::read_published;
 use self::gates::GateCheck;
 use super::ports::{
     CheckName, CheckStatus, CommentForge, InlineComment, PublishLedger, VerdictForge,

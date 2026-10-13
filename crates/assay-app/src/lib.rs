@@ -21,6 +21,7 @@ mod publish;
 mod replay;
 mod session_init;
 mod specialists;
+mod status;
 mod tiering;
 
 pub use calendar::{CalendarDate, CalendarDateError};
@@ -92,6 +93,12 @@ pub use replay::{
 pub use specialists::{
     HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport, Specialists,
     SpecialistsRequest, run_specialists,
+};
+pub use status::{
+    AppId, BundleProblem, CheckView, Detail, FetchedAt, Identities, InvalidFetchedAt,
+    MAX_CHECK_RUNS, MAX_FINDINGS, MAX_REASONS, ObservedConclusion, PullSelector, PullView,
+    ReviewCommentView, StatusError, StatusFailure, StatusForge, StatusPorts, StatusReport,
+    StatusRepository, StatusRequest, StatusStep, StatusUnreadable, UserId, Viewer, status,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};

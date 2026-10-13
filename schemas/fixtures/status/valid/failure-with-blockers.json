@@ -1,0 +1,88 @@
+{
+  "schema": "assay.status/1",
+  "source": "ci",
+  "repo": "Wet-Ink-Corporation/assay",
+  "pr": 42,
+  "branch": "feature/status",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "local_head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "stale": true,
+  "check": {
+    "conclusion": "failure",
+    "status": "completed",
+    "url": "https://github.com/Wet-Ink-Corporation/assay/runs/9001"
+  },
+  "decision": {
+    "conclusion": "failure",
+    "reasons": [
+      {
+        "code": "gate-failed",
+        "detail": "temper"
+      }
+    ],
+    "reasons_digest": "sha256:edfab635b96543711e1a2662a111f30252334d5a72e82c9d11bb62e35ad7e231",
+    "counts": {
+      "blocker": 3,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    "degraded": [],
+    "advisory_blockers": [
+      "00000000000000ab"
+    ]
+  },
+  "tier": "micro",
+  "gates": [
+    {
+      "plugin": "custom-lint",
+      "conclusion": "success",
+      "url": "https://github.com/Wet-Ink-Corporation/assay/runs/9102"
+    },
+    {
+      "plugin": "temper",
+      "conclusion": "failure",
+      "url": "https://github.com/Wet-Ink-Corporation/assay/runs/9101"
+    }
+  ],
+  "findings": [
+    {
+      "fp": "00000000000000a1",
+      "finding_id": "00000000000000a1",
+      "severity": "blocker",
+      "class": null,
+      "title": "temper: raised",
+      "file": null,
+      "line": null,
+      "waivable": true
+    },
+    {
+      "fp": "00000000000000a2",
+      "finding_id": "00000000000000a2",
+      "severity": "blocker",
+      "class": null,
+      "title": "temper: clippy::unwrap_used",
+      "file": null,
+      "line": null,
+      "waivable": false
+    },
+    {
+      "fp": "00000000000000ab",
+      "finding_id": "00000000000000ab",
+      "severity": "blocker",
+      "class": "logic",
+      "title": "Event recorded twice",
+      "file": "src/lib.rs",
+      "line": 12,
+      "url": "https://github.com/Wet-Ink-Corporation/assay/pull/42#discussion_r501",
+      "waivable": false,
+      "body": "The retry path records the event again\\.\n\n```rust\nrecord_event(id);\n```\n\nReact with 👍 if this finding is useful or 👎 if it is not. Fingerprint `00000000000000ab`; an eligible owner can dismiss it with `/assay dismiss 00000000000000ab <reason>`."
+    }
+  ],
+  "viewer": {
+    "login": "claude-agent",
+    "is_owner": false,
+    "is_agent": true
+  },
+  "fetched_at": "2026-10-13T09:30:00Z"
+}

@@ -20,7 +20,56 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 39] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 49] = [
+    (
+        Contract::Status,
+        "unknown-field",
+        Rejection::Violation("", "additionalProperties"),
+    ),
+    (Contract::Status, "unknown-version", Rejection::Version(2)),
+    // `ci` or the reserved `local` (#126), nothing else.
+    (
+        Contract::Status,
+        "unknown-source",
+        Rejection::Violation("/source", "enum"),
+    ),
+    // One Weigh-In state: the retired booleans cannot sit beside it.
+    (
+        Contract::Status,
+        "weigh-in-two-claims",
+        Rejection::Violation("/weigh_in", "additionalProperties"),
+    ),
+    (
+        Contract::Status,
+        "weigh-in-unknown-state",
+        Rejection::Violation("/weigh_in/state", "enum"),
+    ),
+    (
+        Contract::Status,
+        "uppercase-fp",
+        Rejection::Violation("/findings/0/fp", "pattern"),
+    ),
+    (
+        Contract::Status,
+        "over-length-title",
+        Rejection::Violation("/findings/0/title", "oneOf"),
+    ),
+    // Only a github.com page of the repository is a link the mod may open.
+    (
+        Contract::Status,
+        "off-site-check-url",
+        Rejection::Violation("/check", "oneOf"),
+    ),
+    (
+        Contract::Status,
+        "finding-without-waivable",
+        Rejection::Violation("/findings/0", "required"),
+    ),
+    (
+        Contract::Status,
+        "viewer-login-not-a-login",
+        Rejection::Violation("/viewer/login", "pattern"),
+    ),
     (
         Contract::Findings,
         "reviewer-without-role",
