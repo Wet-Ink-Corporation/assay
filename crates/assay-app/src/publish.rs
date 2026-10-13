@@ -9,18 +9,24 @@
 //! trust-path and exec-surface PRs (`failure persist-error`) and is a visible warning otherwise.
 
 mod bundle;
+mod findings;
 mod ports;
 mod render;
+mod sanitise;
 mod write;
 
 use assay_domain::{Aeu, Conclusion, ContentHash, DecisionInputs, Event, Reason, Rubric, RunUid};
 use thiserror::Error;
 
 pub use self::bundle::{BUNDLE_FILE, BundleError, MAX_BUNDLE_BYTES};
+pub use self::findings::{
+    CommentStep, FindingsError, FindingsOutcome, FindingsPublication, FindingsPublished,
+    FindingsWritten, MAX_INLINE_COMMENTS, MAX_PRIOR_COMMENTS, publish_findings,
+};
 pub use self::ports::{
     BundleStore, CheckConclusion, CheckName, CheckRun, CheckRunId, CheckState, CheckStatus,
-    CheckUpdate, CommentId, EvidenceEntry, EvidencePointer, EvidenceRecord, LlmEvidence,
-    PublishLedger, SummaryComment, VerdictForge,
+    CheckUpdate, CommentForge, CommentId, EvidenceEntry, EvidencePointer, EvidenceRecord,
+    InlineComment, LlmEvidence, PublishLedger, SummaryComment, VerdictForge,
 };
 pub use self::render::SUMMARY_MARKER;
 use self::render::{Projection, Summary};

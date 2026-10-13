@@ -73,10 +73,13 @@ pub use prompt_bundle::{
 };
 pub use publish::{
     BUNDLE_FILE, BundleError, BundleStore, CheckConclusion, CheckName, CheckRun, CheckRunId,
-    CheckState, CheckStatus, CheckUpdate, CommentId, Decided, EvidenceEntry, EvidencePointer,
-    EvidenceRecord, ForgeStep, LlmEvidence, MAX_BUNDLE_BYTES, PersistFailure, Publication,
+    CheckState, CheckStatus, CheckUpdate, CommentForge, CommentId, CommentStep, Decided,
+    EvidenceEntry, EvidencePointer, EvidenceRecord, FindingsError, FindingsOutcome,
+    FindingsPublication, FindingsPublished, FindingsWritten, ForgeStep, InlineComment, LlmEvidence,
+    MAX_BUNDLE_BYTES, MAX_INLINE_COMMENTS, MAX_PRIOR_COMMENTS, PersistFailure, Publication,
     PublishError, PublishFailure, PublishLedger, PublishOutcome, PublishPorts, Published,
     SUMMARY_MARKER, Stale, SummaryComment, Target, Unlock, Verdict, VerdictForge, Written, publish,
+    publish_findings,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};
