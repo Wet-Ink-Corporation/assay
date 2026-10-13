@@ -5,8 +5,9 @@ use std::error::Error;
 use std::path::Path;
 
 use assay_app::{
-    CaseKind, ClassMap, EVAL_MONTHLY_CAP, EVAL_ROLE, EvalError, EvalMonth, ModelOutcome,
-    ModelResult, OutputProblem, RunScore, Split, Unscorable, read_eval_corpus, run_eval,
+    CaseKind, ClassMap, EVAL_MONTHLY_CAP, EVAL_ROLE, EvalError, EvalMonth, EvalReport, EvalRequest,
+    ModelOutcome, ModelResult, OutputProblem, PathField, RunScore, Split, Unscorable,
+    read_eval_corpus, run_eval,
 };
 use assay_domain::Aeu;
 use serde_json::json;
@@ -14,7 +15,7 @@ use serde_json::json;
 use crate::check_fakes::session;
 use crate::eval_fakes::{
     Answer, CALL_COST, CORPUS_DIR, DEFECT_JSON, FakeLedger, LedgerDown, QUIET_JSON, ScriptedModel,
-    corpus, ended, hit, quiet, ran, request, stray, today,
+    Unreachable, corpus, ended, hit, quiet, ran, request, stray, today,
 };
 use crate::specialists_fakes::bundle;
 
@@ -178,7 +179,6 @@ fn first_score(answers: Vec<Answer>) -> Result<RunScore, Box<dyn Error>> {
 fn each_way_a_call_can_end_unscored_is_named() -> TestResult {
     let malformed = || Answer::Ran(ended(ModelOutcome::Malformed));
     let cases = [
-        (vec![Answer::Fails], Unscorable::CallFailed),
         (vec![malformed(), malformed()], Unscorable::Malformed),
         (
             vec![Answer::Ran(ended(ModelOutcome::BudgetExhausted))],
@@ -191,10 +191,6 @@ fn each_way_a_call_can_end_unscored_is_named() -> TestResult {
         (
             vec![Answer::Ran(ended(ModelOutcome::Timeout))],
             Unscorable::Timeout,
-        ),
-        (
-            vec![Answer::Ran(ended(ModelOutcome::QuotaExhausted))],
-            Unscorable::QuotaExhausted,
         ),
         (
             vec![Answer::Ran(ran(json!({"verdict": "ok"})))],
@@ -235,39 +231,137 @@ fn an_unconfined_session_is_not_scored_even_when_it_found_the_defect() -> TestRe
     Ok(())
 }
 
-#[test]
-fn a_failed_call_is_charged_its_cap() -> TestResult {
+/// What a one-case evaluation came to: its result, the ledger's charges and the call count.
+type Evaluated = (
+    Result<EvalReport, EvalError<Unreachable, LedgerDown>>,
+    Vec<Aeu>,
+    usize,
+);
+
+/// Runs a one-case evaluation of `off-by-one` against `answers`.
+fn evaluate_one(answers: Vec<Answer>) -> Result<Evaluated, Box<dyn Error>> {
     let corpus = corpus(&[("off-by-one", DEFECT_JSON)])?;
     let (bundle, map) = (bundle()?, ClassMap::identity());
-    let model = ScriptedModel::new([Answer::Fails]);
+    let model = ScriptedModel::new(answers);
     let mut ledger = FakeLedger::default();
 
-    run_eval(
+    let result = run_eval(
         &model,
         &mut ledger,
         &request(&corpus, &bundle, &map, today()?),
-    )?;
+    );
 
-    let charged: Vec<Aeu> = ledger.charges.iter().map(|(_, cost)| *cost).collect();
-    assert_eq!(charged, [EVAL_ROLE.cap(), CALL_COST, CALL_COST]);
+    let charged = ledger.charges.iter().map(|(_, cost)| *cost).collect();
+    Ok((result, charged, model.calls().len()))
+}
+
+#[test]
+fn a_failed_call_is_charged_its_cap_and_stops_the_evaluation() -> TestResult {
+    let (result, charged, calls) = evaluate_one(vec![Answer::Fails])?;
+
+    assert!(
+        matches!(
+            result,
+            Err(EvalError::Runner { ref case, source: Unreachable }) if case == "off-by-one"
+        ),
+        "{result:?}"
+    );
+    assert_eq!((charged, calls), (vec![EVAL_ROLE.cap()], 1));
     Ok(())
 }
 
 #[test]
-fn a_retry_that_fails_is_charged_the_first_cost_and_the_cap() -> TestResult {
+fn a_retry_that_fails_is_charged_the_first_cost_and_the_cap_and_stops() -> TestResult {
+    let answers = vec![Answer::Ran(ended(ModelOutcome::Malformed)), Answer::Fails];
+
+    let (result, charged, calls) = evaluate_one(answers)?;
+
+    assert!(
+        matches!(
+            result,
+            Err(EvalError::Runner {
+                source: Unreachable,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        (charged, calls),
+        (vec![CALL_COST.saturating_add(EVAL_ROLE.cap())], 2)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_quota_exhausted_call_is_charged_and_stops_the_evaluation() -> TestResult {
+    let answers = vec![
+        hit(),
+        Answer::Ran(ended(ModelOutcome::QuotaExhausted)),
+        hit(),
+    ];
+
+    let (result, charged, calls) = evaluate_one(answers)?;
+
+    assert!(
+        matches!(result, Err(EvalError::QuotaExhausted { ref case }) if case == "off-by-one"),
+        "{result:?}"
+    );
+    assert_eq!((charged, calls), (vec![CALL_COST, CALL_COST], 2));
+    Ok(())
+}
+
+#[test]
+fn refuses_a_relative_corpus_dir_before_any_call() -> TestResult {
     let corpus = corpus(&[("off-by-one", DEFECT_JSON)])?;
     let (bundle, map) = (bundle()?, ClassMap::identity());
-    let model = ScriptedModel::new([Answer::Ran(ended(ModelOutcome::Malformed)), Answer::Fails]);
+    let model = ScriptedModel::new([]);
     let mut ledger = FakeLedger::default();
+    let request = EvalRequest {
+        corpus_dir: Path::new("corpus/dev"),
+        ..request(&corpus, &bundle, &map, today()?)
+    };
 
-    run_eval(
-        &model,
-        &mut ledger,
-        &request(&corpus, &bundle, &map, today()?),
-    )?;
+    let result = run_eval(&model, &mut ledger, &request);
 
-    let first = ledger.charges.first().map(|(_, cost)| *cost);
-    assert_eq!(first, Some(CALL_COST.saturating_add(EVAL_ROLE.cap())));
+    assert!(
+        matches!(
+            result,
+            Err(EvalError::RelativePath {
+                field: PathField::CorpusDir
+            })
+        ),
+        "{result:?}"
+    );
+    assert!(
+        model.calls().is_empty() && ledger.charges.is_empty(),
+        "nothing ran"
+    );
+    Ok(())
+}
+
+#[test]
+fn refuses_a_relative_system_prompt_file_before_any_call() -> TestResult {
+    let corpus = corpus(&[("off-by-one", DEFECT_JSON)])?;
+    let (bundle, map) = (bundle()?, ClassMap::identity());
+    let model = ScriptedModel::new([]);
+    let request = EvalRequest {
+        system_prompt_file: Path::new("system.md"),
+        ..request(&corpus, &bundle, &map, today()?)
+    };
+
+    let result = run_eval(&model, &mut FakeLedger::default(), &request);
+
+    assert!(
+        matches!(
+            result,
+            Err(EvalError::RelativePath {
+                field: PathField::SystemPromptFile
+            })
+        ),
+        "{result:?}"
+    );
+    assert!(model.calls().is_empty(), "no call may start");
     Ok(())
 }
 

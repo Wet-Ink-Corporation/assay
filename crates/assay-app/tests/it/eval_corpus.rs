@@ -577,3 +577,24 @@ fn the_repository_dev_split_holds_its_seed_case() -> TestResult {
     assert_eq!(hunk.first(), NonZeroU64::new(8).ok_or("zero")?);
     Ok(())
 }
+
+#[test]
+fn refuses_a_repeated_case_file_rather_than_keeping_either() {
+    for (path, bytes) in [
+        ("a-case/case.json", DEFECT_JSON.as_bytes()),
+        ("a-case/change.diff", b"other".as_slice()),
+    ] {
+        let mut entries = case_entries("a-case", QUIET_JSON, DIFF);
+        entries.push(file(path, bytes));
+
+        let result = read(&entries);
+
+        assert_eq!(
+            result,
+            Err(CorpusError::UnexpectedEntry {
+                path: path.to_owned()
+            }),
+            "{path}"
+        );
+    }
+}

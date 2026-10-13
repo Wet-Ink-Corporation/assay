@@ -139,6 +139,11 @@ pub(crate) fn hit() -> Answer {
     Answer::Ran(ran(output(&[finding("src/lib.rs", 42, "logic")])))
 }
 
+/// An answer whose call timed out, which cannot be scored.
+pub(crate) fn timed_out() -> Answer {
+    Answer::Ran(ended(ModelOutcome::Timeout))
+}
+
 /// An answer that reports nothing.
 pub(crate) fn quiet() -> Answer {
     Answer::Ran(ran(output(&[])))

@@ -36,8 +36,6 @@ pub enum RunScore {
 /// Why a run could not be scored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unscorable {
-    /// The runner could not make or supervise the call.
-    CallFailed,
     /// The session was not confined to `Read`, `Grep` and `Glob`, or its init was unreadable.
     Unconfined,
     /// The output was malformed, also on the retry.
@@ -48,8 +46,6 @@ pub enum Unscorable {
     TurnsExhausted,
     /// The call timed out.
     Timeout,
-    /// The subscription's usage limit refused the call.
-    QuotaExhausted,
     /// The structured output could not be read.
     Output(OutputProblem),
 }
@@ -69,6 +65,7 @@ pub struct CaseOutcome {
     pub(crate) id: String,
     pub(crate) authoring_model: AuthoringModel,
     pub(crate) source: CaseSource,
+    pub(crate) content: ContentHash,
     pub(crate) kind: CaseKind,
     pub(crate) runs: [RunScore; EVAL_RUNS],
 }
@@ -90,6 +87,13 @@ impl CaseOutcome {
     #[must_use]
     pub const fn source(&self) -> CaseSource {
         self.source
+    }
+
+    /// The digest of the case's `case.json` and `change.diff`, so two reports of the same id
+    /// can be told apart when the case changed between them.
+    #[must_use]
+    pub const fn content(&self) -> ContentHash {
+        self.content
     }
 
     /// Whether the case has something to find.
@@ -321,6 +325,19 @@ pub enum CompareError {
         /// The first id only one report holds.
         case: String,
     },
+    /// The case `case` has other `case.json` or `change.diff` content in each report.
+    #[error("case {case:?} changed between the reports")]
+    CaseChanged {
+        /// The case id.
+        case: String,
+    },
+    /// A baseline run of `case` (the first in id order) could not be scored, so the baseline
+    /// cannot anchor a flip or a noise margin; re-run it (fail closed, wi-b5affa).
+    #[error("the baseline holds an unscorable run on case {case:?}")]
+    BaselineUnscorable {
+        /// The case id.
+        case: String,
+    },
 }
 
 /// Detections a baseline case needs to count as detected: at least 2 of 3.
@@ -331,17 +348,19 @@ const MISSED_AT_MOST: u32 = 1;
 
 /// Applies 04 §8's accept rule to `candidate` against `baseline`.
 ///
-/// The change is accepted when no defect case flips from at least 2 of 3 detected (baseline)
+/// The reports must cover the same split and the same cases with the same content, and the
+/// baseline must hold no unscorable run: an unscorable baseline run would loosen both the
+/// flip rule and the noise margin. The change is accepted when no defect case flips from at least 2 of 3 detected (baseline)
 /// to at most 1 of 3 (candidate), and the candidate's true-negative noise rate is at most the
 /// baseline's 95% Wilson upper bound.
 ///
 /// # Errors
-/// [`CompareError`] when the reports evaluated different splits or cases.
+/// [`CompareError`] when the reports evaluated different splits, cases or case content, or
+/// the baseline holds an unscorable run.
 pub fn compare(baseline: &EvalReport, candidate: &EvalReport) -> Result<Acceptance, CompareError> {
     if baseline.split != candidate.split {
         return Err(CompareError::SplitDiffers);
     }
-    let mut flips = Vec::new();
     let mut pairs = baseline.cases.iter().zip(&candidate.cases);
     if let Some((before, after)) = pairs.find(|(before, after)| before.id != after.id) {
         let case = before.id.as_str().min(after.id.as_str());
@@ -355,14 +374,34 @@ pub fn compare(baseline: &EvalReport, candidate: &EvalReport) -> Result<Acceptan
         });
     }
     for (before, after) in baseline.cases.iter().zip(&candidate.cases) {
-        let flipped = before.kind == CaseKind::Defect
-            && before.detected() >= DETECTED_AT_LEAST
-            && after.detected() <= MISSED_AT_MOST;
-        if flipped {
-            // The acceptance outlives neither report but owns its list of ids.
-            flips.push(after.id.clone());
+        if before.content != after.content {
+            return Err(CompareError::CaseChanged {
+                case: before.id.clone(),
+            });
         }
     }
+    let unscorable = baseline.cases.iter().find(|case| {
+        case.runs
+            .iter()
+            .any(|run| matches!(run, RunScore::Unscorable(_)))
+    });
+    if let Some(case) = unscorable {
+        return Err(CompareError::BaselineUnscorable {
+            case: case.id.clone(),
+        });
+    }
+    let flips = baseline
+        .cases
+        .iter()
+        .zip(&candidate.cases)
+        .filter(|(before, after)| {
+            before.kind == CaseKind::Defect
+                && before.detected() >= DETECTED_AT_LEAST
+                && after.detected() <= MISSED_AT_MOST
+        })
+        // The acceptance is returned apart from both reports, so it owns the flipped ids.
+        .map(|(_, after)| after.id.clone())
+        .collect();
     let baseline_noise = baseline.noise();
     let candidate_noise = candidate.noise();
     let noise = match (baseline_noise.wilson_upper(), candidate_noise.rate()) {

@@ -235,8 +235,14 @@ pub(crate) fn read_case(json: &[u8]) -> Result<CaseFile, CaseProblem> {
             return Err(CaseProblem::LabelsOnTrueNegative);
         }
         CaseSource::TrueNegative | CaseSource::Injection => {}
-        _ if document.labels.is_empty() => return Err(CaseProblem::NoLabels),
-        _ => {}
+        CaseSource::RealDefect
+        | CaseSource::Mutation
+        | CaseSource::Rebase
+        | CaseSource::CrossFile => {
+            if document.labels.is_empty() {
+                return Err(CaseProblem::NoLabels);
+            }
+        }
     }
     let labels = document
         .labels

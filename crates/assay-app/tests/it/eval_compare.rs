@@ -10,7 +10,7 @@ use assay_app::{
 
 use crate::eval_fakes::{
     Answer, DEFECT_JSON, DIFF, FakeLedger, QUIET_JSON, ScriptedModel, case_entries, corpus, hit,
-    quiet, request, stray, today,
+    quiet, request, stray, timed_out, today,
 };
 use crate::specialists_fakes::bundle;
 
@@ -199,6 +199,53 @@ fn refuses_reports_over_different_splits() -> TestResult {
     assert_eq!(
         compare(&baseline, &candidate),
         Err(CompareError::SplitDiffers)
+    );
+    Ok(())
+}
+
+#[test]
+fn refuses_a_baseline_with_an_unscorable_run_on_a_defect_case() -> TestResult {
+    let corpus = pair()?;
+    let baseline = evaluate(&corpus, answers([quiet; 3], [timed_out, quiet, quiet]))?;
+    let candidate = evaluate(&corpus, answers([quiet; 3], [quiet; 3]))?;
+
+    assert_eq!(
+        compare(&baseline, &candidate),
+        Err(CompareError::BaselineUnscorable {
+            case: "defect".to_owned()
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn refuses_a_baseline_with_an_unscorable_run_on_a_true_negative() -> TestResult {
+    let corpus = pair()?;
+    let baseline = evaluate(&corpus, answers([quiet, timed_out, quiet], [hit; 3]))?;
+    let candidate = evaluate(&corpus, answers([stray; 3], [hit; 3]))?;
+
+    assert_eq!(
+        compare(&baseline, &candidate),
+        Err(CompareError::BaselineUnscorable {
+            case: "clean".to_owned()
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn refuses_reports_whose_case_content_changed() -> TestResult {
+    let before = corpus(&[("defect", DEFECT_JSON)])?;
+    let entries = case_entries("defect", DEFECT_JSON, "diff --git a/x b/x\n");
+    let after = read_eval_corpus(Split::Dev, &entries)?;
+    let baseline = evaluate(&before, Vec::new())?;
+    let candidate = evaluate(&after, Vec::new())?;
+
+    assert_eq!(
+        compare(&baseline, &candidate),
+        Err(CompareError::CaseChanged {
+            case: "defect".to_owned()
+        })
     );
     Ok(())
 }

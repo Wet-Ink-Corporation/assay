@@ -6,8 +6,9 @@
 //! that is neither a directory nor a regular file is refused (wi-b5affa).
 
 use std::collections::BTreeMap;
-use std::fmt;
+use std::{fmt, mem};
 
+use assay_domain::ContentHash;
 use thiserror::Error;
 
 use super::case::{AuthoringModel, CaseProblem, CaseSource, Label, read_case};
@@ -72,6 +73,7 @@ pub struct EvalCase {
     source: CaseSource,
     labels: Vec<Label>,
     diff: String,
+    content: ContentHash,
 }
 
 impl EvalCase {
@@ -103,6 +105,12 @@ impl EvalCase {
     #[must_use]
     pub fn diff(&self) -> &str {
         &self.diff
+    }
+
+    /// The digest of the case's `case.json` and `change.diff`, as read.
+    #[must_use]
+    pub const fn content(&self) -> ContentHash {
+        self.content
     }
 }
 
@@ -246,17 +254,18 @@ pub fn read_eval_corpus(split: Split, entries: &[CorpusEntry]) -> Result<EvalCor
     Ok(EvalCorpus { split, cases })
 }
 
-/// Files `entry` under its case; `false` when it does not belong in a split.
+/// Files `entry` under its case; `false` when it does not belong in a split or repeats a case
+/// file. Linear in the path's length.
 fn sort_entry<'a>(entry: &'a CorpusEntry, cases: &mut BTreeMap<&'a str, CaseEntries<'a>>) -> bool {
-    let mut segments = entry.path.split('/');
-    let Some(id) = segments.next() else {
-        return false;
+    let (id, rest) = match entry.path.split_once('/') {
+        Some((id, rest)) => (id, Some(rest)),
+        None => (entry.path.as_str(), None),
     };
-    let rest: Vec<&str> = segments.collect();
-    if rest
-        .iter()
-        .any(|segment| matches!(*segment, "" | "." | ".."))
-    {
+    let plain = |path: &str| {
+        path.split('/')
+            .all(|segment| !matches!(segment, "" | "." | ".."))
+    };
+    if !rest.is_none_or(plain) {
         return false;
     }
     let file = match &entry.kind {
@@ -264,27 +273,20 @@ fn sort_entry<'a>(entry: &'a CorpusEntry, cases: &mut BTreeMap<&'a str, CaseEntr
         CorpusEntryKind::Directory => None,
         CorpusEntryKind::Other => return false,
     };
-    if id == README && rest.is_empty() {
+    if id == README && rest.is_none() {
         return file.is_some();
     }
     if !is_case_id(id) {
         return false;
     }
     let case = cases.entry(id).or_default();
-    match (rest.as_slice(), file) {
-        ([], None) | ([TREE_DIR, _, ..], _) => true,
-        ([TREE_DIR], None) => {
-            case.tree = true;
-            true
-        }
-        ([CASE_FILE], Some(bytes)) => {
-            case.json = Some(bytes);
-            true
-        }
-        ([DIFF_FILE], Some(bytes)) => {
-            case.diff = Some(bytes);
-            true
-        }
+    // A repeated case file or tree is refused, never kept in place of the first.
+    match (rest, file) {
+        (None, None) => true,
+        (Some(TREE_DIR), None) => !mem::replace(&mut case.tree, true),
+        (Some(path), _) if path.starts_with("tree/") => true,
+        (Some(CASE_FILE), Some(bytes)) => case.json.replace(bytes).is_none(),
+        (Some(DIFF_FILE), Some(bytes)) => case.diff.replace(bytes).is_none(),
         _ => false,
     }
 }
@@ -325,6 +327,7 @@ fn read_one(id: &str, entries: &CaseEntries<'_>) -> Result<EvalCase, CorpusError
         .ok_or_else(|| CorpusError::DiffNotText {
             case: id.to_owned(),
         })?;
+    let content = ContentHash::of_files([(CASE_FILE, json), (DIFF_FILE, diff.as_bytes())]);
     let case = read_case(json).map_err(|problem| CorpusError::Case {
         case: id.to_owned(),
         problem,
@@ -335,5 +338,6 @@ fn read_one(id: &str, entries: &CaseEntries<'_>) -> Result<EvalCase, CorpusError
         source: case.source,
         labels: case.labels,
         diff: diff.to_owned(),
+        content,
     })
 }

@@ -78,8 +78,8 @@ pub use eval::{
     ClassMap, CompareError, CorpusError, EVAL_MONTHLY_CAP, EVAL_ROLE, EVAL_RUNS, EvalCase,
     EvalCorpus, EvalError, EvalLedger, EvalMonth, EvalReport, EvalRequest, LINE_WINDOW, Label,
     MAX_AUTHORING_MODEL_BYTES, MAX_CASE_BYTES, MAX_CASE_ID_BYTES, MAX_EVAL_CASES, MAX_EVAL_ENTRIES,
-    MAX_LABEL_PATH_BYTES, MAX_LABELS, MAX_RUN_FINDINGS, NoiseCheck, OutputProblem, Proportion,
-    RunScore, Split, Unscorable, WILSON_Z, compare, read_eval_corpus, run_eval,
+    MAX_LABEL_PATH_BYTES, MAX_LABELS, MAX_RUN_FINDINGS, NoiseCheck, OutputProblem, PathField,
+    Proportion, RunScore, Split, Unscorable, WILSON_Z, compare, read_eval_corpus, run_eval,
 };
 pub use gate::{
     BuildJob, Conclusion, GateDocument, GateError, GateJob, GateOutcome, GateReport, GateRun,
