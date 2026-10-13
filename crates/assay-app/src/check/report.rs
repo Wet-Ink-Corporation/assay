@@ -5,8 +5,8 @@
 //! describes and [`ContractValidator`](crate::ContractValidator) refuses for every contract, and
 //! it says `advisory: true`: CI never reads it (R-10, P9).
 
-use assay_domain::{Aeu, Decision, Finding, Tier};
-use serde::{Serialize, Serializer};
+use assay_domain::{Aeu, Decision, Finding, Fingerprint, Tier};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::gates::LocalGate;
 use super::review::{LocalRole, Reviewed, Stage};
@@ -20,8 +20,7 @@ pub(super) const SCHEMA: &str = "assay.local-check/1";
 const BANNER: &str = "assay check --local: advisory, CI never reads this report";
 
 /// How the local review went.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewStatus {
     /// The tier has no LLM stage.
     NotRun,
@@ -34,6 +33,54 @@ pub enum ReviewStatus {
     Unavailable,
 }
 
+impl ReviewStatus {
+    /// Every status.
+    const ALL: [Self; 4] = [
+        Self::NotRun,
+        Self::Completed,
+        Self::Degraded,
+        Self::Unavailable,
+    ];
+
+    /// The status as the report and the terminal write it (`not-run`).
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NotRun => "not-run",
+            Self::Completed => "completed",
+            Self::Degraded => "degraded",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+impl Serialize for ReviewStatus {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.code())
+    }
+}
+
+impl<'de> Deserialize<'de> for ReviewStatus {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let code = String::deserialize(deserializer)?;
+        Self::ALL
+            .into_iter()
+            .find(|status| status.code() == code)
+            .ok_or_else(|| serde::de::Error::custom("not a review status"))
+    }
+}
+
+/// A finding as the report keeps it: its fingerprint (03 §3, as validation or the gate's
+/// anchoring computed it), then the finding's own fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalFinding {
+    /// Its fingerprint.
+    pub fp: Fingerprint,
+    /// The finding.
+    #[serde(flatten)]
+    pub finding: Finding,
+}
+
 /// The local review as the report shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalReview {
@@ -43,8 +90,8 @@ pub struct LocalReview {
     pub role: Option<Role>,
     /// Why it did not complete, or what validation refused, in assay's words.
     pub note: Option<String>,
-    /// The findings that survived validation; their free text is the model's.
-    pub findings: Vec<Finding>,
+    /// The findings that survived validation, fingerprinted; their free text is the model's.
+    pub findings: Vec<LocalFinding>,
     /// What the attempts cost; a call whose cost is unknown is charged its cap.
     pub cost: Aeu,
 }
@@ -56,7 +103,7 @@ struct ShownReview<'r> {
     role: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<&'r str>,
-    findings: &'r [Finding],
+    findings: &'r [LocalFinding],
     cost: String,
 }
 
@@ -148,7 +195,7 @@ impl LocalReport {
         for gate in &self.gates {
             let mut line = [
                 "  ",
-                &clean(&gate.outcome),
+                &clean(gate.outcome.as_str()),
                 " ",
                 &clean(&gate.name),
                 " (",
@@ -163,11 +210,11 @@ impl LocalReport {
             lines.extend(
                 gate.findings
                     .iter()
-                    .map(|finding| finding_line("    ", finding)),
+                    .map(|shown| finding_line("    ", &shown.finding)),
             );
         }
         let review = &self.review;
-        let mut line = ["review: ", status_code(review.status)].concat();
+        let mut line = ["review: ", review.status.code()].concat();
         if let Some(role) = review.role {
             line.extend([" (", role.code(), ", ", &review.cost.to_string(), " AEU)"]);
         }
@@ -179,7 +226,7 @@ impl LocalReport {
             review
                 .findings
                 .iter()
-                .map(|finding| finding_line("  ", finding)),
+                .map(|shown| finding_line("  ", &shown.finding)),
         );
         lines.push(["decision: ", self.decision.conclusion.code()].concat());
         for reason in &self.decision.reasons {
@@ -209,7 +256,13 @@ pub(super) fn review(reviewed: Option<(LocalRole, Reviewed)>) -> LocalReview {
     let (status, findings) = match reviewed.stage {
         Stage::Completed(valid) => (
             ReviewStatus::Completed,
-            valid.into_iter().map(|valid| valid.finding).collect(),
+            valid
+                .into_iter()
+                .map(|valid| LocalFinding {
+                    fp: valid.fingerprint,
+                    finding: valid.finding,
+                })
+                .collect(),
         ),
         Stage::Degraded(_) => (ReviewStatus::Degraded, Vec::new()),
         Stage::Unavailable => (ReviewStatus::Unavailable, Vec::new()),
@@ -236,13 +289,4 @@ fn finding_line(indent: &str, finding: &Finding) -> String {
         &clean(&finding.title),
     ]
     .concat()
-}
-
-const fn status_code(status: ReviewStatus) -> &'static str {
-    match status {
-        ReviewStatus::NotRun => "not-run",
-        ReviewStatus::Completed => "completed",
-        ReviewStatus::Degraded => "degraded",
-        ReviewStatus::Unavailable => "unavailable",
-    }
 }

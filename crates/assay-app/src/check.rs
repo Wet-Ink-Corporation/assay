@@ -7,36 +7,44 @@
 //! name, which [`ContractValidator`] refuses for every contract, so no CI reader can accept it.
 //! Local mode is never a trust anchor.
 
+mod events;
 mod gates;
 mod inputs;
 mod known;
+mod outcome;
 mod pack;
 mod ports;
 mod report;
 mod review;
+mod stored;
 
 use std::collections::BTreeSet;
 use std::convert::Infallible;
 use std::path::Path;
 use std::time::Duration;
 
-use assay_domain::{FileChange, Side, decide};
+use assay_domain::{EventPayload, FileChange, Side, decide};
 use thiserror::Error;
 
+use self::events::{EventFailure, Job, Recorder};
 pub use self::gates::LocalGate;
 use self::gates::Ran;
 use self::inputs::Facts;
+pub use self::outcome::{GateErrorText, InvalidOutcome, LocalOutcome};
 pub use self::pack::{MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES};
 pub use self::ports::{ChangePatches, FilePatch, PatchBudget};
-pub use self::report::{LocalReport, LocalReview, ReviewStatus};
-use self::review::Reviewer;
+pub use self::report::{LocalFinding, LocalReport, LocalReview, ReviewStatus};
+use self::review::{LocalRole, Reviewed, Reviewer};
+pub use self::stored::LocalReportError;
+pub(crate) use self::stored::{StoredFinding, StoredGate, StoredReport, read as read_report};
 use crate::config::CommitId;
 use crate::contract::ContractValidator;
 use crate::decide::{Cited, ReadFailure, Texts, policy, read_texts};
+use crate::events::EventSink;
 use crate::gate::GateRunner;
 use crate::golden::parse_rubric;
 use crate::model_runner::ModelRunner;
-use crate::plan::{self, PlanError, PlanRequest, PullRequestObjects, TreeEntry};
+use crate::plan::{self, PlanError, PlanRequest, PullRequestObjects, Recomputed, TreeEntry};
 use crate::prompt_bundle::PromptBundle;
 use crate::validation::{Change, DiffPaths, EgressScan, FileDiff, KnownRuns};
 
@@ -70,7 +78,7 @@ pub struct ReviewSetup<'a> {
 
 /// The ports a local check runs through.
 #[derive(Debug)]
-pub struct CheckPorts<'p, O, P, G, M> {
+pub struct CheckPorts<'p, O, P, G, M, E> {
     /// The snapshot's and base's objects.
     pub objects: &'p O,
     /// The change's diff.
@@ -79,11 +87,13 @@ pub struct CheckPorts<'p, O, P, G, M> {
     pub gates: &'p mut G,
     /// The model (the logged-in interactive CLI in production).
     pub model: &'p M,
+    /// Where the run's `assay.event/1` stream goes ([`NoEvents`](crate::NoEvents) for none).
+    pub events: &'p mut E,
 }
 
 /// Why no local report could be built. Every variant stops the check.
 #[derive(Debug, Error)]
-pub enum CheckError<O, P> {
+pub enum CheckError<O, P, E> {
     /// The rubric file does not parse.
     #[error("the rubric does not parse (line {line})")]
     Rubric {
@@ -118,9 +128,24 @@ pub enum CheckError<O, P> {
     /// The review's document could not be encoded.
     #[error("could not encode the review's findings document")]
     Encode(#[source] serde_json::Error),
+    /// An event could not be appended to the stream.
+    #[error("could not append to the event stream")]
+    Events(#[source] E),
+    /// The clock read a time before 1970 or after 9999, which no event can be stamped with.
+    #[error("the clock reads a time outside 1970 to 9999")]
+    Clock,
 }
 
-impl<O, P> From<ReadFailure<O>> for CheckError<O, P> {
+impl<O, P, E> From<EventFailure<E>> for CheckError<O, P, E> {
+    fn from(failure: EventFailure<E>) -> Self {
+        match failure {
+            EventFailure::Sink(source) => Self::Events(source),
+            EventFailure::Clock => Self::Clock,
+        }
+    }
+}
+
+impl<O, P, E> From<ReadFailure<O>> for CheckError<O, P, E> {
     fn from(failure: ReadFailure<O>) -> Self {
         match failure {
             ReadFailure::Objects(source) => Self::Objects(source),
@@ -137,32 +162,36 @@ impl<O, P> From<ReadFailure<O>> for CheckError<O, P> {
 ///
 /// # Errors
 ///
-/// [`CheckError`]: the rubric does not parse, `plan` refused the change, or the diff or the
-/// changed files could not be read. A gate or model that fails is an outcome in the report, not
-/// an error.
-pub fn check_local<O, P, G, M>(
+/// [`CheckError`]: the rubric does not parse, `plan` refused the change, the diff or the
+/// changed files could not be read, or an event could not be recorded. A gate or model that
+/// fails is an outcome in the report, not an error.
+pub fn check_local<O, P, G, M, E>(
     request: &CheckRequest<'_>,
-    ports: CheckPorts<'_, O, P, G, M>,
+    ports: CheckPorts<'_, O, P, G, M, E>,
     validator: &ContractValidator,
-) -> Result<LocalReport, CheckError<O::Error, P::Error>>
+) -> Result<LocalReport, LocalCheckError<O, P, E>>
 where
     O: PullRequestObjects,
     P: ChangePatches,
     G: GateRunner,
     M: ModelRunner,
+    E: EventSink,
 {
     let CheckPorts {
         objects,
         patches,
         gates: runner,
         model,
+        events,
     } = ports;
     let rubric = parse_rubric(request.rubric).map_err(|line| CheckError::Rubric { line })?;
     let event = &request.plan.pull_request;
     let commits = (&event.base_sha, &event.head_sha);
     let recomputed = plan::recompute(request.plan, objects).map_err(CheckError::Plan)?;
+    let mut recorder = Recorder::new(events, recomputed.run_key.to_string(), request.plan.run_uid);
+    recorder.emit(Job::Plan, EventPayload::PlanComputed {})?;
     let files = &recomputed.files;
-    let ran = gates::run(&recomputed.config.plugins, runner, validator);
+    let ran = gates::run(&recomputed.config.plugins, runner, validator, &mut recorder)?;
     let role = review::role(recomputed.tiering.tier);
     let reads = match role {
         Some(_) => review_reads(objects, patches, commits, files)?,
@@ -177,27 +206,23 @@ where
         validator,
         run_key: recomputed.run_key,
     };
-    let outcome = role
-        .map(|role| {
+    let outcome = match role {
+        Some(role) => {
             let pack = pack::context_pack(&change.diffs, &patch_texts);
             let egress = EgressScan::without_token(
                 known_runs(&reads.snapshot).with_commits([commits.0, commits.1]),
             );
             let inputs = review::inputs(event.repo.as_str(), &change, &gates.findings, &egress);
-            let outcome = reviewer.review(role, &pack, &inputs)?;
-            Ok((role, outcome))
-        })
-        .transpose()
-        .map_err(CheckError::Encode)?;
-    let facts = Facts {
-        tree: request.tree,
-        run_key: recomputed.run_key,
-        policy: policy(recomputed.config.plugins.assay()),
-        base_ref: event.base_ref.as_str(),
-        tiering: &recomputed.tiering,
-        plugins: &recomputed.config.plugins,
+            let outcome = recorded(&mut recorder, role, || {
+                reviewer.review(role, &pack, &inputs)
+            })?;
+            Some((role, outcome))
+        }
+        None => None,
     };
+    let facts = facts(request, &recomputed);
     let decision = decide(&rubric, &facts.inputs(gates.reports, outcome.as_ref()));
+    recorder.emit(Job::Decide, EventPayload::DecisionMade {})?;
     Ok(LocalReport {
         schema: report::SCHEMA,
         advisory: true,
@@ -211,13 +236,49 @@ where
     })
 }
 
+/// What [`check_local`] returns when the check cannot run with these ports.
+type LocalCheckError<O, P, E> = CheckError<
+    <O as PullRequestObjects>::Error,
+    <P as ChangePatches>::Error,
+    <E as EventSink>::Error,
+>;
+
+/// `role`'s review by `review`, its start and end recorded in the `review` stream, each
+/// stamped with the clock reading its duration uses.
+fn recorded<S: EventSink, O, P>(
+    recorder: &mut Recorder<'_, S>,
+    role: LocalRole,
+    review: impl FnOnce() -> Result<Reviewed, serde_json::Error>,
+) -> Result<Reviewed, CheckError<O, P, S::Error>> {
+    let started = recorder.now();
+    recorder.emit_at(Job::Review, review::started(role), started)?;
+    let outcome = review().map_err(CheckError::Encode)?;
+    let ended = recorder.now();
+    let elapsed = events::millis_since(started, ended);
+    recorder.emit_all_at(Job::Review, review::ended(role, &outcome, elapsed), ended)?;
+    Ok(outcome)
+}
+
+/// The facts the local decision is taken on: the request's tree and base, and what `plan`
+/// recomputed.
+fn facts<'a>(request: &'a CheckRequest<'_>, recomputed: &'a Recomputed) -> Facts<'a> {
+    Facts {
+        tree: request.tree,
+        run_key: recomputed.run_key,
+        policy: policy(recomputed.config.plugins.assay()),
+        base_ref: request.plan.pull_request.base_ref.as_str(),
+        tiering: &recomputed.tiering,
+        plugins: &recomputed.config.plugins,
+    }
+}
+
 /// The patch of each of `files`, with at most the pack's diff cap of text, refusing a reply
 /// that is not one patch per file.
-fn read_patches<P: ChangePatches, O>(
+fn read_patches<P: ChangePatches, O, E>(
     patches: &P,
     (base, head): (&CommitId, &CommitId),
     files: &[FileChange],
-) -> Result<Vec<FilePatch>, CheckError<O, P::Error>> {
+) -> Result<Vec<FilePatch>, CheckError<O, P::Error, E>> {
     let read = patches
         .patches((base, head), files, PatchBudget::new(MAX_DIFF_BYTES))
         .map_err(CheckError::Patches)?;
@@ -266,12 +327,12 @@ struct ReviewReads {
 }
 
 /// Reads what a review needs, listing the head tree once for the paths and the snapshot.
-fn review_reads<O: PullRequestObjects, P: ChangePatches>(
+fn review_reads<O: PullRequestObjects, P: ChangePatches, E>(
     objects: &O,
     patches: &P,
     commits: (&CommitId, &CommitId),
     files: &[FileChange],
-) -> Result<ReviewReads, CheckError<O::Error, P::Error>> {
+) -> Result<ReviewReads, CheckError<O::Error, P::Error, E>> {
     let patches = read_patches(patches, commits, files)?;
     let listed = objects.list(commits.1, None).map_err(CheckError::Objects)?;
     Ok(ReviewReads {
@@ -291,12 +352,12 @@ fn known_runs(texts: &[Vec<u8>]) -> KnownRuns<'_> {
 }
 
 /// Each changed file's paths, from whether it exists at `base` and in the `head` listing.
-fn diff_paths<O: PullRequestObjects, P>(
+fn diff_paths<O: PullRequestObjects, P, E>(
     objects: &O,
     base: &CommitId,
     head: &[TreeEntry],
     files: &[FileChange],
-) -> Result<Vec<DiffPaths>, CheckError<O::Error, P>> {
+) -> Result<Vec<DiffPaths>, CheckError<O::Error, P, E>> {
     let at_base: BTreeSet<String> = objects
         .list(base, None)
         .map_err(CheckError::Objects)?

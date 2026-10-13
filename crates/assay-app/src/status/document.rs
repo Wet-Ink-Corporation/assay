@@ -10,6 +10,7 @@ use super::ports::{ObservedConclusion, PullView, Viewer};
 use super::verdict::{Check, Observed};
 use super::{MAX_REASONS, StatusError, StatusRequest, StatusUnreadable};
 use crate::CommitId;
+use crate::check::StoredFinding;
 use crate::publish::{CheckStatus, clean, is_hidden};
 
 /// The longest GitHub login, before a `[bot]` suffix.
@@ -45,7 +46,7 @@ struct CheckEntry {
 }
 
 #[derive(Debug, Serialize)]
-struct DecisionEntry {
+pub(super) struct DecisionEntry {
     conclusion: &'static str,
     reasons: Vec<ReasonEntry>,
     reasons_digest: String,
@@ -76,7 +77,7 @@ struct GateEntry {
 }
 
 #[derive(Debug, Serialize)]
-struct FindingEntry {
+pub(super) struct FindingEntry {
     fp: String,
     finding_id: String,
     severity: &'static str,
@@ -135,7 +136,10 @@ impl<'a> Document<'a> {
         let local_head_sha = request.local_head.map(CommitId::as_str);
         let (decision, tier, weigh_in) = match &observed.decided {
             Some(decided) => (
-                Some(decision(&decided.decision)?),
+                Some(
+                    decision(&decided.decision)
+                        .map_err(|over| StatusError::TooManyReasons { count: over.count })?,
+                ),
                 Some(decided.inputs.pr.tier.code()),
                 weigh_in(decided.inputs.weigh_in),
             ),
@@ -222,42 +226,51 @@ impl<'a> Document<'a> {
     }
 
     fn decision_lines(&self, lines: &mut Vec<String>) {
-        let Some(decision) = &self.decision else {
-            lines.push("Decision: none".to_owned());
-            return;
-        };
-        lines.push(format!(
-            "Decision: {} (tier {})",
-            decision.conclusion,
-            self.tier.unwrap_or("-")
-        ));
-        lines.extend(decision.reasons.iter().map(|reason| match &reason.fp {
-            Some(fp) => format!("  reason {}: {} ({fp})", reason.code, reason.detail),
-            None => format!("  reason {}: {}", reason.code, reason.detail),
-        }));
-        let counts = decision.counts;
-        lines.push(format!(
-            "  counts: {} blocker, {} major, {} minor, {} nit",
-            counts.blocker, counts.major, counts.minor, counts.nit
-        ));
-        lines.extend(
-            decision
-                .degraded
-                .iter()
-                .map(|degraded| format!("  degraded {}: {}", degraded.role, degraded.reason)),
-        );
-        lines.extend(
-            decision
-                .advisory_blockers
-                .iter()
-                .map(|fp| format!("  advisory blocker {fp}")),
-        );
-        lines.push(format!("  reasons digest: {}", decision.reasons_digest));
+        decision_lines(lines, self.decision.as_ref(), self.tier);
     }
 }
 
+/// The decision's lines, or `Decision: none`.
+pub(super) fn decision_lines(
+    lines: &mut Vec<String>,
+    decision: Option<&DecisionEntry>,
+    tier: Option<&str>,
+) {
+    let Some(decision) = decision else {
+        lines.push("Decision: none".to_owned());
+        return;
+    };
+    lines.push(format!(
+        "Decision: {} (tier {})",
+        decision.conclusion,
+        tier.unwrap_or("-")
+    ));
+    lines.extend(decision.reasons.iter().map(|reason| match &reason.fp {
+        Some(fp) => format!("  reason {}: {} ({fp})", reason.code, reason.detail),
+        None => format!("  reason {}: {}", reason.code, reason.detail),
+    }));
+    let counts = decision.counts;
+    lines.push(format!(
+        "  counts: {} blocker, {} major, {} minor, {} nit",
+        counts.blocker, counts.major, counts.minor, counts.nit
+    ));
+    lines.extend(
+        decision
+            .degraded
+            .iter()
+            .map(|degraded| format!("  degraded {}: {}", degraded.role, degraded.reason)),
+    );
+    lines.extend(
+        decision
+            .advisory_blockers
+            .iter()
+            .map(|fp| format!("  advisory blocker {fp}")),
+    );
+    lines.push(format!("  reasons digest: {}", decision.reasons_digest));
+}
+
 /// `Name:`, or `Name: none` for an empty list.
-fn heading(name: &str, empty: bool) -> String {
+pub(super) fn heading(name: &str, empty: bool) -> String {
     if empty {
         format!("{name}: none")
     } else {
@@ -267,7 +280,7 @@ fn heading(name: &str, empty: bool) -> String {
 
 /// One finding on one line: fingerprint, severity, whether it is waivable, then what was
 /// published (class, place, title) where it was. The title is cleaned onto one line.
-fn finding_line(finding: &FindingEntry) -> String {
+pub(super) fn finding_line(finding: &FindingEntry) -> String {
     let mut parts = vec![
         "  ".to_owned() + finding.fp.as_str(),
         finding.severity.to_owned(),
@@ -317,12 +330,19 @@ fn check_entry(check: Check) -> CheckEntry {
     }
 }
 
+/// More reasons or degraded roles than [`MAX_REASONS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TooManyReasons {
+    /// The larger of the two counts.
+    pub(super) count: usize,
+}
+
 /// The decision as published: reason details and degraded roles cleaned as the summary cleans
 /// them; refused past [`MAX_REASONS`].
-fn decision<E, B>(decision: &Decision) -> Result<DecisionEntry, StatusError<E, B>> {
+pub(super) fn decision(decision: &Decision) -> Result<DecisionEntry, TooManyReasons> {
     let count = decision.reasons.len().max(decision.degraded.len());
     if count > MAX_REASONS {
-        return Err(StatusError::TooManyReasons { count });
+        return Err(TooManyReasons { count });
     }
     Ok(DecisionEntry {
         conclusion: decision.conclusion.code(),
@@ -361,6 +381,28 @@ fn weigh_in(weigh_in: WeighIn) -> Option<WeighInEntry> {
             Some(WeighInEntry {
                 state: weigh_in.code(),
             })
+        }
+    }
+}
+
+impl FindingEntry {
+    /// A local finding: its fingerprint, severity and class, with its title and file cleaned
+    /// onto one line as the terminal report shows them. Never waivable: there is no PR.
+    pub(super) fn local(finding: &StoredFinding) -> Self {
+        let fp = finding.fp.to_string();
+        Self {
+            // The id `/assay waive` takes is the fingerprint: the document carries both fields.
+            finding_id: fp.clone(),
+            fp,
+            severity: finding.severity.code(),
+            class: Some(finding.class.code()),
+            title: Some(clean(&finding.title)),
+            file: Some(clean(&finding.file)),
+            line: Some(finding.line),
+            url: None,
+            disposition: None,
+            waivable: false,
+            body: None,
         }
     }
 }

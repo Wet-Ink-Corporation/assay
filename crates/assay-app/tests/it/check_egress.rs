@@ -1,11 +1,12 @@
 //! `check_local`'s egress scan: model text is scanned as Z4 scans it, with no token and the
 //! snapshot's files and the run's commits as what explains a long run (03 §3, #87, wi-b5affa).
 
+use std::convert::Infallible;
 use std::error::Error;
 
 use std::assert_matches;
 
-use assay_app::{CheckError, CheckPorts, LocalReport, ReviewStatus, check_local};
+use assay_app::{CheckError, CheckPorts, LocalReport, NoEvents, ReviewStatus, check_local};
 use serde_json::Value;
 
 use crate::check::{check, validator};
@@ -68,7 +69,7 @@ fn the_snapshot_commit_is_explained() -> Result<(), Box<dyn Error>> {
 }
 
 /// What `check_local` returns over the fakes.
-type Checked = Result<LocalReport, CheckError<FakeError, FakeError>>;
+type Checked = Result<LocalReport, CheckError<FakeError, FakeError, Infallible>>;
 
 /// Checks [`dirty_tree`] plus an unchanged `src/names.rs` that cannot be read, or comes back
 /// one blob short.
@@ -90,6 +91,7 @@ fn check_with_unreadable_names(short: bool) -> Result<Checked, Box<dyn Error>> {
         patches: &FakePatches::lib(),
         gates: &mut FakeGates::passing(),
         model: &FakeModel::finding(&[]),
+        events: &mut NoEvents,
     };
     Ok(check_local(&setup.request(), ports, &validator()?))
 }

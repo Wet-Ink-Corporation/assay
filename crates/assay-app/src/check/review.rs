@@ -6,11 +6,13 @@
 //! decision reports those roles missing.
 
 use assay_domain::{
-    Aeu, CallFailure, Disposition, Finding, FindingsSchema, RequiredRole, SourceKind, Tier,
+    Aeu, CallFailure, Disposition, EventPayload, Finding, FindingsSchema, RequiredRole, SourceKind,
+    SpecialistRun, Tier,
 };
 use serde_json::{Map, Value, json};
 
 use super::ReviewSetup;
+use super::events::aeu_number;
 use crate::contract::{Contract, ContractValidator};
 use crate::model_runner::{
     ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, RetryError, run_with_retry,
@@ -109,14 +111,17 @@ pub(super) struct Reviewed {
     pub(super) note: Option<String>,
     /// Every attempt's cost; a call whose cost is unknown is charged its cap.
     pub(super) cost: Aeu,
+    /// Validation's `FindingDisposed` events, in order; none unless the review completed.
+    pub(super) disposed: Vec<EventPayload>,
 }
 
 impl Reviewed {
-    fn unavailable(note: String, cost: Aeu) -> Self {
+    const fn unavailable(note: String, cost: Aeu) -> Self {
         Self {
             stage: Stage::Unavailable,
             note: Some(note),
             cost,
+            disposed: Vec::new(),
         }
     }
 
@@ -125,7 +130,62 @@ impl Reviewed {
             stage: Stage::Degraded(failure),
             note: Some(format!("the review degraded: {}", failure.code())),
             cost,
+            disposed: Vec::new(),
         }
+    }
+}
+
+/// The stage the review's `StageDegraded` events name.
+const REVIEW_STAGE: &str = "review";
+
+/// The `SpecialistStarted` of `role`'s call.
+pub(super) fn started(role: LocalRole) -> EventPayload {
+    EventPayload::SpecialistStarted(specialist(role, None, None))
+}
+
+/// How `role`'s call ended (`SpecialistFinished`, `SpecialistBudgetExhausted` or
+/// `SpecialistFailed`, with a `StageDegraded` unless it completed), then each disposition
+/// validation made and a `FindingRaised` per finding it kept, in order.
+pub(super) fn ended(role: LocalRole, reviewed: &Reviewed, duration_ms: u64) -> Vec<EventPayload> {
+    let run = specialist(role, aeu_number(reviewed.cost), Some(duration_ms));
+    let degraded = |reason: &str| EventPayload::StageDegraded {
+        stage: REVIEW_STAGE.to_owned(),
+        reason: reason.to_owned(),
+    };
+    match &reviewed.stage {
+        Stage::Completed(kept) => [EventPayload::SpecialistFinished(run)]
+            .into_iter()
+            // The stream owns its copy of each disposition, which holds no text.
+            .chain(reviewed.disposed.iter().cloned())
+            .chain(kept.iter().map(|_| EventPayload::FindingRaised {}))
+            .collect(),
+        Stage::Degraded(CallFailure::Cap) => vec![
+            EventPayload::SpecialistBudgetExhausted(run),
+            degraded(CallFailure::Cap.code()),
+        ],
+        Stage::Degraded(failure) => vec![
+            EventPayload::SpecialistFailed(run),
+            degraded(failure.code()),
+        ],
+        Stage::Unavailable => vec![
+            EventPayload::SpecialistFailed(run),
+            degraded(CallFailure::Unavailable.code()),
+        ],
+    }
+}
+
+/// `role`'s call as an event's data; local mode reports no model, tokens, turns or stop reason.
+fn specialist(role: LocalRole, cost_aeu: Option<f64>, duration_ms: Option<u64>) -> SpecialistRun {
+    SpecialistRun {
+        role: role.bundle().code().to_owned(),
+        model: None,
+        input_tokens: None,
+        output_tokens: None,
+        cache_read_tokens: None,
+        cost_aeu,
+        duration_ms,
+        turns: None,
+        stop_reason: None,
     }
 }
 
@@ -198,6 +258,7 @@ impl<M: ModelRunner> Reviewer<'_, M> {
                 && transition.code == Disposition::Schema
         });
         Ok(Reviewed {
+            disposed: validated.events().collect(),
             stage: Stage::Completed(validated.findings),
             note: refused.then(|| "the model's document failed the findings schema".to_owned()),
             cost,

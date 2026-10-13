@@ -13,6 +13,7 @@ mod contract;
 mod coordinate;
 mod decide;
 mod doctor;
+mod events;
 mod gate;
 mod golden;
 mod model_runner;
@@ -44,9 +45,9 @@ pub use session_init::{
 };
 
 pub use check::{
-    ChangePatches, CheckError, CheckPorts, CheckRequest, FilePatch, LocalGate, LocalReport,
-    LocalReview, MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES, PatchBudget, ReviewSetup, ReviewStatus,
-    check_local,
+    ChangePatches, CheckError, CheckPorts, CheckRequest, FilePatch, GateErrorText, InvalidOutcome,
+    LocalFinding, LocalGate, LocalOutcome, LocalReport, LocalReportError, LocalReview,
+    MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES, PatchBudget, ReviewSetup, ReviewStatus, check_local,
 };
 pub use config::{
     Adapter, Argv, AssaySettings, BuiltinAllowlist, BuiltinKind, BuiltinsError, CommitId,
@@ -72,6 +73,7 @@ pub use decide::{
     PullRequestState, Refusal, Reported, ReportedGate, ReviewJob, RunArtifacts, Snapshot,
     StateStep, TierDegrade, Unreadable, UpstreamJob, authenticate,
 };
+pub use events::{EventSink, NoEvents};
 pub use gate::{
     BuildJob, Conclusion, GateDocument, GateError, GateJob, GateOutcome, GateReport, GateRun,
     GateRunner, Termination, account_for_required, run_gates,
@@ -122,9 +124,10 @@ pub use specialists::{
 };
 pub use status::{
     AppId, BundleProblem, CheckView, Detail, FetchedAt, Identities, InvalidFetchedAt,
-    MAX_CHECK_RUNS, MAX_FINDINGS, MAX_REASONS, ObservedConclusion, PullSelector, PullView,
-    ReviewCommentView, StatusError, StatusFailure, StatusForge, StatusPorts, StatusReport,
-    StatusRepository, StatusRequest, StatusStep, StatusUnreadable, UserId, Viewer, status,
+    LocalStatusError, LocalStatusRequest, MAX_CHECK_RUNS, MAX_FINDINGS, MAX_REASONS,
+    ObservedConclusion, PullSelector, PullView, ReviewCommentView, StatusError, StatusFailure,
+    StatusForge, StatusPorts, StatusReport, StatusRepository, StatusRequest, StatusStep,
+    StatusUnreadable, StoredLocalReport, UserId, Viewer, is_tree_id, local_status, status,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};

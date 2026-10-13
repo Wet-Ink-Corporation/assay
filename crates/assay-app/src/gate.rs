@@ -9,6 +9,7 @@
 mod job;
 
 use std::borrow::Cow;
+use std::convert::Infallible;
 
 use serde_json::Value;
 use thiserror::Error;
@@ -182,31 +183,89 @@ pub fn run_gates<R: GateRunner>(
     runner: &mut R,
     validator: &ContractValidator,
 ) -> Vec<GateReport> {
-    config
+    let Ok(reports) = run_observed(config, runner, validator, &mut Unobserved(job));
+    reports
+}
+
+/// What sees each gate of one job start and end: local mode streams them as events (#130).
+pub(crate) trait GateObserver {
+    /// Why the observer could not take a gate; the job stops at once.
+    type Error;
+
+    /// The job whose gates it sees.
+    fn job(&self) -> GateJob;
+
+    /// `plugin` is about to run in the job.
+    fn started(&mut self, plugin: &Plugin) -> Result<(), Self::Error>;
+
+    /// The gate of `report` ended; `exit` is its process's exit code, when it exited by itself.
+    fn ended(&mut self, report: &GateReport, exit: Option<i32>) -> Result<(), Self::Error>;
+}
+
+/// No observer of the job's gates.
+struct Unobserved(GateJob);
+
+impl GateObserver for Unobserved {
+    type Error = Infallible;
+
+    fn job(&self) -> GateJob {
+        self.0
+    }
+
+    fn started(&mut self, _plugin: &Plugin) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn ended(&mut self, _report: &GateReport, _exit: Option<i32>) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+/// [`run_gates`] for the observer's job, telling `observer` as each gate starts and ends. A
+/// failing observer stops the job before the next gate starts.
+pub(crate) fn run_observed<R: GateRunner, O: GateObserver>(
+    config: &PluginsConfig,
+    runner: &mut R,
+    validator: &ContractValidator,
+    observer: &mut O,
+) -> Result<Vec<GateReport>, O::Error> {
+    let job = observer.job();
+    let mut reports = Vec::new();
+    for plugin in config
         .plugins()
         .iter()
         .filter(|plugin| scheduled(plugin, job))
-        .map(|plugin| {
-            let classified = runner
-                .run(plugin, job)
-                .map_err(|error| Rejected::because(R::gate_error(&error), error.to_string()))
-                .and_then(|run| classify(plugin.name(), run, validator));
-            let (outcome, document, cause) = match classified {
-                Ok((conclusion, document)) => {
-                    (GateOutcome::Concluded(conclusion), Some(document), None)
-                }
-                Err(rejected) => (GateOutcome::Error(rejected.error), None, rejected.cause),
-            };
-            GateReport {
-                plugin: plugin.name().clone(),
-                job,
-                required: plugin.required(),
-                outcome,
-                document,
-                cause,
+    {
+        observer.started(plugin)?;
+        let run = runner.run(plugin, job);
+        let exit = match &run {
+            Ok(GateRun {
+                termination: Termination::Exited(code),
+                ..
+            }) => Some(*code),
+            Ok(_) | Err(_) => None,
+        };
+        let classified = run
+            .map_err(|error| Rejected::because(R::gate_error(&error), error.to_string()))
+            .and_then(|run| classify(plugin.name(), run, validator));
+        let (outcome, document, cause) = match classified {
+            Ok((conclusion, document)) => {
+                (GateOutcome::Concluded(conclusion), Some(document), None)
             }
-        })
-        .collect()
+            Err(rejected) => (GateOutcome::Error(rejected.error), None, rejected.cause),
+        };
+        let report = GateReport {
+            plugin: plugin.name().clone(),
+            job,
+            required: plugin.required(),
+            outcome,
+            document,
+            cause,
+        };
+        observer.ended(&report, exit)?;
+        reports.push(report);
+    }
+    Ok(reports)
 }
 
 /// Appends `gate-error:skipped` for every required plugin scheduled for `job` that has no report

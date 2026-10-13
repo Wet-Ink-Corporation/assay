@@ -3,9 +3,17 @@
 
 use std::fmt;
 use std::str::FromStr;
+use std::time::SystemTime;
+
+use crate::calendar::{CalendarDate, CalendarDateError};
 
 /// The longest fraction of a second accepted, in digits (nanoseconds).
 const MAX_FRACTION_DIGITS: usize = 9;
+
+/// Seconds in a UTC day, an hour and a minute (no leap seconds, as Unix time counts).
+const SECONDS_PER_DAY: u64 = 86_400;
+const SECONDS_PER_HOUR: u64 = 3_600;
+const SECONDS_PER_MINUTE: u64 = 60;
 
 /// An RFC 3339 date-time in UTC, as `status` writes `fetched_at` (`2026-10-13T09:30:00Z`).
 ///
@@ -20,6 +28,33 @@ impl FetchedAt {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// `time` written in UTC to the millisecond (`2026-10-13T09:30:00.123Z`): how the CLI
+    /// stamps `fetched_at` and each event's `ts`.
+    ///
+    /// # Errors
+    ///
+    /// [`CalendarDateError::OutOfRange`] when `time` is before 1970-01-01 or after 9999-12-31.
+    pub fn from_system_time(time: SystemTime) -> Result<Self, CalendarDateError> {
+        let date = CalendarDate::from_system_time(time)?;
+        let since = time
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_before| CalendarDateError::OutOfRange)?;
+        let of_day = since.as_secs() % SECONDS_PER_DAY;
+        let hour = of_day / SECONDS_PER_HOUR;
+        let minute = of_day % SECONDS_PER_HOUR / SECONDS_PER_MINUTE;
+        let second = of_day % SECONDS_PER_MINUTE;
+        let millis = since.subsec_millis();
+        Ok(Self(format!(
+            "{date}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z"
+        )))
+    }
+}
+
+impl From<FetchedAt> for String {
+    fn from(at: FetchedAt) -> Self {
+        at.0
     }
 }
 
@@ -110,5 +145,71 @@ fn days_in(year: u32, month: u32) -> Option<u32> {
         2 if leap => Some(29),
         2 => Some(28),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use super::FetchedAt;
+    use crate::CalendarDateError;
+
+    #[test]
+    fn a_clock_reading_is_written_in_utc_to_the_millisecond() {
+        let time = SystemTime::UNIX_EPOCH + Duration::from_millis(1_791_883_800_123);
+
+        let fetched = FetchedAt::from_system_time(time);
+
+        assert_eq!(
+            fetched.as_ref().map(FetchedAt::as_str),
+            Ok("2026-10-13T09:30:00.123Z")
+        );
+    }
+
+    #[test]
+    fn the_epoch_and_the_last_millisecond_of_9999_are_written() {
+        let last = SystemTime::UNIX_EPOCH + Duration::from_millis(253_402_300_799_999);
+
+        let written = [SystemTime::UNIX_EPOCH, last]
+            .map(|time| FetchedAt::from_system_time(time).map(|at| at.as_str().to_owned()));
+
+        assert_eq!(
+            written,
+            [
+                Ok("1970-01-01T00:00:00.000Z".to_owned()),
+                Ok("9999-12-31T23:59:59.999Z".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reading_outside_the_calendar_is_refused() {
+        let before = SystemTime::UNIX_EPOCH - Duration::from_millis(1);
+        let after = SystemTime::UNIX_EPOCH + Duration::from_hours(70_389_528);
+
+        let refused = [before, after].map(FetchedAt::from_system_time);
+
+        assert_eq!(
+            refused,
+            [
+                Err(CalendarDateError::OutOfRange),
+                Err(CalendarDateError::OutOfRange)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_written_reading_reads_back() {
+        let time = SystemTime::UNIX_EPOCH + Duration::from_millis(951_782_400_007);
+
+        let written = FetchedAt::from_system_time(time).map(|at| at.as_str().parse::<FetchedAt>());
+
+        assert_eq!(
+            written
+                .as_ref()
+                .map(|read| read.as_ref().map(FetchedAt::as_str)),
+            Ok(Ok("2000-02-29T00:00:00.007Z"))
+        );
     }
 }

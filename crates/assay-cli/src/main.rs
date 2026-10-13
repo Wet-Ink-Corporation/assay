@@ -6,17 +6,20 @@
 //! 03 §8 (#121), and `assay check --local`, the advisory check of a working tree (02 §6, #107).
 //! `assay status [--json] [--pr <n>] [--full]` (#126) checks its arguments and
 //! then stops with exit 2: its GitHub adapter is #53's, and [`assay_cli::run_status`] wires it
-//! once that exists. With no arguments it exits successfully without doing anything.
+//! once that exists. `assay status [--json] --local` (#130) shows the local check's result.
+//! With no arguments it exits successfully without doing anything.
 
 mod check;
 mod doctor;
 mod self_gate;
+mod status_local;
 
 use std::env;
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::SystemTime;
 
+use assay_cli::{Format, StatusCommand};
 use assay_domain::GateConclusion;
 
 /// Exit code of a usage error or a gate error (03 §2: 2 and above).
@@ -34,8 +37,11 @@ fn main() -> ExitCode {
         return run_check(args);
     }
     if command == "status" {
-        return match assay_cli::StatusArgs::parse(args) {
-            Ok(_) => report(&"status: the GitHub adapter it reads through is not built yet (#53)"),
+        return match StatusCommand::parse(args) {
+            Ok(StatusCommand::Local(format)) => run_local_status(format),
+            Ok(StatusCommand::Pull(_)) => {
+                report(&"status: the GitHub adapter it reads through is not built yet (#53)")
+            }
             Err(usage) => report(&usage),
         };
     }
@@ -82,17 +88,18 @@ fn run_doctor(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
 /// check cannot run.
 fn run_check(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let variables = check::CheckVariables {
-        cwd: env::current_dir(),
-        path: env::var_os("PATH"),
-        home: env::var_os("HOME"),
-        xdg_config_home: env::var_os("XDG_CONFIG_HOME"),
+        tree: tree_variables(),
         vars: env::vars_os().collect(),
     };
     let checked = match check::run(args, variables) {
         Ok(checked) => checked,
         Err(error) => return report(&error),
     };
-    if let Err(error) = checked.write(io::stdout().lock()) {
+    let written = match checked.report_to {
+        check::ReportTo::Stdout => checked.write(io::stdout().lock()),
+        check::ReportTo::Stderr => checked.write(io::stderr().lock()),
+    };
+    if let Err(error) = written {
         return report(&error);
     }
     if let Some(left) = &checked.scratch_left {
@@ -102,6 +109,36 @@ fn run_check(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+/// `assay status --local`: exit 0 when the status is written, 2 when it cannot be.
+fn run_local_status(format: Format) -> ExitCode {
+    let shown = match status_local::run(tree_variables()) {
+        Ok(shown) => shown,
+        Err(error) => return report(&error),
+    };
+    let bytes = match format {
+        Format::Json => shown.report.json(),
+        Format::Text => shown.report.text().as_bytes(),
+    };
+    let mut out = io::stdout().lock();
+    if let Err(error) = out.write_all(bytes).and_then(|()| out.flush()) {
+        return report(&error);
+    }
+    match &shown.scratch_left {
+        Some(left) => report(left),
+        None => ExitCode::SUCCESS,
+    }
+}
+
+/// The environment that opens the working tree (`check --local`, `status --local`).
+fn tree_variables() -> check::TreeVariables {
+    check::TreeVariables {
+        cwd: env::current_dir(),
+        path: env::var_os("PATH"),
+        home: env::var_os("HOME"),
+        xdg_config_home: env::var_os("XDG_CONFIG_HOME"),
     }
 }
 

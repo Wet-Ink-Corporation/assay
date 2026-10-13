@@ -2,17 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:assay:schema:status:1",
   "title": "assay.status/1",
-  "description": "A PR's assay state as `assay status --json` renders it (docs/architecture/03-contracts.md §6b): the App's verdict check, the decision its evidence pointer names, the per-gate checks, the decision's findings and the viewer. Every text is one assay already published, sanitised (04 §6, T8); nothing is raw model text. Unknown fields are rejected.",
+  "description": "A PR's assay state as `assay status --json` renders it (docs/architecture/03-contracts.md §6b): the App's verdict check, the decision its evidence pointer names, the per-gate checks, the decision's findings and the viewer. Every text is one assay already published, sanitised (04 §6, T8); nothing is raw model text. With `source: local` (`assay status --json --local`, #130) it is instead the advisory local check of the working tree: no PR, no App check, no viewer, nothing waivable, and finding text cleaned onto one line as the terminal report shows it. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema", "source", "repo", "pr", "branch", "head_sha", "local_head_sha", "stale", "check",
-    "decision", "tier", "gates", "findings", "viewer", "fetched_at"
+    "schema", "source", "local_head_sha", "stale", "check", "decision", "tier", "gates",
+    "findings", "fetched_at"
   ],
+  "allOf": [{ "$ref": "#/$defs/whenCi" }, { "$ref": "#/$defs/whenLocal" }],
   "properties": {
     "schema": { "const": "assay.status/1" },
     "source": {
-      "description": "Where the state was read: `ci`, the published verdict. `local` is reserved for the local-run events story; `assay status` writes only `ci` until it lands.",
+      "description": "Where the state was read: `ci`, the published verdict; `local`, the advisory result of `assay check --local` (02 §6), which CI never reads.",
       "enum": ["ci", "local"]
     },
     "repo": {
@@ -35,17 +36,25 @@
       "description": "The local checkout's HEAD, or null when there is none.",
       "oneOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }]
     },
+    "tree": {
+      "description": "Local only: the tree fingerprint (02 §6) the local result is about, or null when there is none.",
+      "oneOf": [{ "$ref": "#/$defs/tree" }, { "type": "null" }]
+    },
+    "local_tree": {
+      "description": "Local only: the working tree's fingerprint when the state was read.",
+      "$ref": "#/$defs/tree"
+    },
     "stale": {
-      "description": "Whether the local HEAD is known and differs from `head_sha`.",
+      "description": "`ci`: whether the local HEAD is known and differs from `head_sha`. `local`: whether there is a local result and its `tree` differs from `local_tree`.",
       "type": "boolean"
     },
     "check": {
-      "description": "The `assay-verdict` App's verdict check on `head_sha`, or null when it has none yet. A same-named check from any other app is ignored.",
+      "description": "The `assay-verdict` App's verdict check on `head_sha`, or null when it has none yet. A same-named check from any other app is ignored. `local`: the local result as a check would show it (no `url`), or null when there is no local result.",
       "oneOf": [
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["conclusion", "status", "url"],
+          "required": ["conclusion", "status"],
           "properties": {
             "conclusion": { "$ref": "#/$defs/checkConclusion" },
             "status": { "enum": ["queued", "in_progress", "completed"] },
@@ -56,7 +65,7 @@
       ]
     },
     "decision": {
-      "description": "The decision the check's evidence pointer names (assay.decision/1, 03 §5). Null only when there is none to read: no App verdict check, a check carrying `open`'s `pending:<run>:<seq>` stamp (a run in progress), or a decided check whose run persisted no bundle. A completed `pending` verdict, such as a budget deferral, carries its decision.",
+      "description": "The decision the check's evidence pointer names (assay.decision/1, 03 §5). Null only when there is none to read: no App verdict check, a check carrying `open`'s `pending:<run>:<seq>` stamp (a run in progress), or a decided check whose run persisted no bundle. A decided `pending` verdict (its check stays `in_progress`), such as a budget deferral, carries its decision. `local`: the local decision, null when there is no local result.",
       "oneOf": [
         {
           "type": "object",
@@ -190,7 +199,7 @@
       }
     },
     "weigh_in": {
-      "description": "What the required Weigh-In gate reported, as the domain's code (03 §2.2, 04 §9): `clear` (nothing blocks), `open-blocking` (an open blocking item), `pending-triage` (items awaiting triage) or `no-evidence` (no evidence for the change; the decision fails on it). Absent when the gate is not required or there is no decision.",
+      "description": "What the required Weigh-In gate reported, as the domain's code (03 §2.2, 04 §9): `clear` (nothing blocks), `open-blocking` (an open blocking item), `pending-triage` (items awaiting triage) or `no-evidence` (no evidence for the change; the decision fails on it). Absent when the gate is not required or there is no decision, and always for `local`: Weigh-In does not run locally, so a required one shows as the decision's `weigh-in-no-evidence` reason.",
       "type": "object",
       "additionalProperties": false,
       "required": ["state"],
@@ -225,6 +234,51 @@
   },
   "$defs": {
     "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "tree": {
+      "description": "A git tree id: SHA-1 or SHA-256, lowercase hex.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$"
+    },
+    "whenCi": {
+      "if": { "properties": { "source": { "const": "ci" } } },
+      "then": {
+        "required": ["repo", "pr", "branch", "head_sha", "viewer"],
+        "properties": {
+          "tree": false,
+          "local_tree": false,
+          "check": { "oneOf": [{ "type": "object", "required": ["url"] }, { "type": "null" }] }
+        }
+      }
+    },
+    "whenLocal": {
+      "if": { "properties": { "source": { "const": "local" } } },
+      "then": {
+        "required": ["tree", "local_tree"],
+        "properties": {
+          "repo": false,
+          "pr": false,
+          "branch": false,
+          "head_sha": false,
+          "viewer": false,
+          "weigh_in": false,
+          "aeu": false,
+          "check": {
+            "oneOf": [{ "type": "object", "properties": { "url": false } }, { "type": "null" }]
+          },
+          "gates": { "items": { "properties": { "url": false } } },
+          "findings": {
+            "items": {
+              "properties": {
+                "url": false,
+                "disposition": false,
+                "body": false,
+                "waivable": { "const": false }
+              }
+            }
+          }
+        }
+      }
+    },
     "count": { "type": "integer", "minimum": 0 },
     "fp": {
       "description": "Finding fingerprint computed by Z4: 16 lowercase hex digits (03 §3).",

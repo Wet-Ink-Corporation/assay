@@ -14,6 +14,7 @@
 mod document;
 mod fetched_at;
 mod findings;
+mod local;
 mod ports;
 mod verdict;
 
@@ -24,6 +25,9 @@ use assay_domain::Rubric;
 use thiserror::Error;
 
 pub use self::fetched_at::{FetchedAt, InvalidFetchedAt};
+pub use self::local::{
+    LocalStatusError, LocalStatusRequest, StoredLocalReport, is_tree_id, local_status,
+};
 pub use self::ports::{
     AppId, CheckView, ObservedConclusion, PullView, ReviewCommentView, StatusForge, UserId, Viewer,
 };
