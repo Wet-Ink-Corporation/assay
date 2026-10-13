@@ -20,3 +20,4 @@ mod tiering;
 mod tiering_edges;
 mod tiering_properties;
 mod vocabulary;
+mod waivable;

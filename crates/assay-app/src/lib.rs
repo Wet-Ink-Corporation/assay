@@ -7,6 +7,7 @@
 //! (`docs/architecture/03-contracts.md`). Base configuration is parsed into [`PluginsConfig`].
 
 mod calendar;
+mod check;
 mod config;
 mod contract;
 mod coordinate;
@@ -22,6 +23,7 @@ mod publish;
 mod replay;
 mod session_init;
 mod specialists;
+mod status;
 mod tiering;
 
 pub use calendar::{CalendarDate, CalendarDateError};
@@ -39,6 +41,11 @@ pub use session_init::{
     allowlist_drift, check_init,
 };
 
+pub use check::{
+    ChangePatches, CheckError, CheckPorts, CheckRequest, FilePatch, LocalGate, LocalReport,
+    LocalReview, MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES, PatchBudget, ReviewSetup, ReviewStatus,
+    check_local,
+};
 pub use config::{
     Adapter, Argv, AssaySettings, BuiltinAllowlist, BuiltinKind, BuiltinsError, CommitId,
     ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion, GateName, GlobsConfigError,
@@ -98,6 +105,12 @@ pub use replay::{
 pub use specialists::{
     HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport, Specialists,
     SpecialistsRequest, run_specialists,
+};
+pub use status::{
+    AppId, BundleProblem, CheckView, Detail, FetchedAt, Identities, InvalidFetchedAt,
+    MAX_CHECK_RUNS, MAX_FINDINGS, MAX_REASONS, ObservedConclusion, PullSelector, PullView,
+    ReviewCommentView, StatusError, StatusFailure, StatusForge, StatusPorts, StatusReport,
+    StatusRepository, StatusRequest, StatusStep, StatusUnreadable, UserId, Viewer, status,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};

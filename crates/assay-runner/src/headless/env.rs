@@ -31,15 +31,17 @@ const RESERVED_PREFIXES: [&str; 3] = ["LD_", "DYLD_", "NODE_"];
 
 /// The environment a `claude -p` call starts with; nothing is inherited.
 ///
-/// The call sees the OAuth token, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` and the variables passed
-/// with [`pass`](Self::pass) (such as `HOME` and `PATH`), and nothing else. API keys, auth tokens,
+/// The call sees the OAuth token (none for [`logged_in`](Self::logged_in)),
+/// `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` and the variables passed with [`pass`](Self::pass)
+/// (such as `HOME` and `PATH`), and nothing else. API keys, auth tokens,
 /// cloud-provider variables (the preflight's [`is_provider_variable`]) and code-injecting ones
 /// (`NODE_*`, `LD_*`, `DYLD_*`) cannot be passed, so they are unset by construction.
 ///
 /// `Debug` shows variable names only: the token and the values may be secrets.
 #[derive(Clone)]
 pub struct HeadlessEnv {
-    oauth_token: String,
+    /// `None` for the developer's stored interactive login (local mode).
+    oauth_token: Option<String>,
     passed: Vec<(String, OsString)>,
 }
 
@@ -65,7 +67,18 @@ impl HeadlessEnv {
     #[must_use]
     pub fn new(oauth_token: impl Into<String>) -> Self {
         Self {
-            oauth_token: oauth_token.into(),
+            oauth_token: Some(oauth_token.into()),
+            passed: Vec::new(),
+        }
+    }
+
+    /// An environment with no token at all, so the CLI uses the login stored by an interactive
+    /// `claude` session (local mode, `docs/architecture/02-architecture.md` §6). The CLI finds
+    /// that login under `HOME`, which the caller passes.
+    #[must_use]
+    pub const fn logged_in() -> Self {
+        Self {
+            oauth_token: None,
             passed: Vec::new(),
         }
     }
@@ -103,8 +116,10 @@ impl HeadlessEnv {
         command
             .env_clear()
             .envs(self.passed.iter().map(|(name, value)| (name, value)))
-            .env(OAUTH_TOKEN, &self.oauth_token)
             .env(SUBPROCESS_ENV_SCRUB, "1");
+        if let Some(token) = &self.oauth_token {
+            command.env(OAUTH_TOKEN, token);
+        }
     }
 }
 

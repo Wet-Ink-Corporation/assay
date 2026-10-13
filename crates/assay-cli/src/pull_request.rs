@@ -1,11 +1,15 @@
 //! `assay-forge`'s object-only repository, lent to the `plan` use case as the PR's objects
-//! (`assay_app::PullRequestObjects`).
+//! (`assay_app::PullRequestObjects`) and to `check_local` as the change's patches
+//! (`assay_app::ChangePatches`).
 
 use std::error::Error;
 use std::fmt;
 use std::time::Duration;
 
-use assay_app::{ChangedFiles, CommitId, EntryKind, PullRequestObjects, TreeEntry};
+use assay_app::{
+    ChangePatches, ChangedFiles, CommitId, EntryKind, FilePatch, Hunk, LineSpan, PatchBudget,
+    PullRequestObjects, TreeEntry,
+};
 use assay_domain::{FileChange, FileKind, Lines};
 use assay_forge::git::{
     self, ChangeListing, ChangedFile, CommitSha, GitError, LineCount, ObjectRepo, ParseShaError,
@@ -136,6 +140,59 @@ impl PullRequestObjects for ForgePullRequest<'_> {
             })
             .collect();
         Ok(self.repo.read_blobs(&blobs, self.limits)?)
+    }
+}
+
+impl ChangePatches for ForgePullRequest<'_> {
+    type Error = ForgeObjectsError;
+
+    /// One `git diff -M --unified=3 base...head` per file, over its path and, for a rename,
+    /// its base path too. The text is read as UTF-8 with any invalid byte replaced: it is
+    /// context for the model, while the hunks are git's own line numbers. Each text passes
+    /// through `budget` before the next diff runs, so at most the budget's bytes of text, plus
+    /// one diff, are held.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeObjectsError`] when a diff cannot run or does not read as one file's patch.
+    fn patches(
+        &self,
+        (base, head): (&CommitId, &CommitId),
+        files: &[FileChange],
+        mut budget: PatchBudget,
+    ) -> Result<Vec<FilePatch>, ForgeObjectsError> {
+        let (base, head) = (sha(base)?, sha(head)?);
+        files
+            .iter()
+            .map(|file| {
+                let paths: Vec<&str> = file
+                    .renamed_from
+                    .as_deref()
+                    .into_iter()
+                    .chain([file.path.as_str()])
+                    .collect();
+                let patch = self.repo.file_patch(&base, &head, &paths)?;
+                let text = String::from_utf8_lossy(&patch.text).into_owned();
+                Ok(FilePatch {
+                    text: budget.keep(text),
+                    hunks: patch
+                        .hunks
+                        .into_iter()
+                        .map(|hunk| Hunk {
+                            base: span(hunk.base),
+                            head: span(hunk.head),
+                        })
+                        .collect(),
+                })
+            })
+            .collect()
+    }
+}
+
+const fn span(range: git::LineRange) -> LineSpan {
+    LineSpan {
+        start: range.start,
+        count: range.count,
     }
 }
 

@@ -151,7 +151,7 @@ pub(crate) fn write(work: &Path, path: &str, contents: &[u8]) -> Result<(), Box<
     Ok(())
 }
 
-fn commit(work: &Path, message: &str) -> Result<CommitSha, Box<dyn Error>> {
+pub(crate) fn commit(work: &Path, message: &str) -> Result<CommitSha, Box<dyn Error>> {
     plain_git(work, &["add", "--all"])?;
     plain_git(work, &["commit", "--quiet", "--allow-empty", "-m", message])?;
     let sha = plain_git(work, &["rev-parse", "HEAD"])?;

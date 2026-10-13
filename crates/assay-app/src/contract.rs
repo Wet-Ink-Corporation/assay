@@ -53,11 +53,19 @@ pub enum Contract {
     Decision,
     /// `assay.event/1`: one line of a job's event stream (03 §6).
     Event,
+    /// `assay.status/1`: a PR's assay state as `assay status --json` renders it (03 §6b).
+    Status,
 }
 
 impl Contract {
     /// Every contract.
-    pub const ALL: [Self; 4] = [Self::Findings, Self::Run, Self::Decision, Self::Event];
+    pub const ALL: [Self; 5] = [
+        Self::Findings,
+        Self::Run,
+        Self::Decision,
+        Self::Event,
+        Self::Status,
+    ];
 
     /// The contract's name without its version, as it appears before the `/` of the `schema`
     /// field (`assay.findings`).
@@ -68,16 +76,18 @@ impl Contract {
             Self::Run => "assay.run",
             Self::Decision => "assay.decision",
             Self::Event => "assay.event",
+            Self::Status => "assay.status",
         }
     }
 
     /// The embedded JSON Schema of the supported version.
-    const fn schema_text(self) -> &'static str {
+    pub(crate) const fn schema_text(self) -> &'static str {
         match self {
             Self::Findings => include_str!("../../../schemas/findings-1.schema.json"),
             Self::Run => include_str!("../../../schemas/run-1.schema.json"),
             Self::Decision => include_str!("../../../schemas/decision-1.schema.json"),
             Self::Event => include_str!("../../../schemas/event-1.schema.json"),
+            Self::Status => include_str!("../../../schemas/status-1.schema.json"),
         }
     }
 }
@@ -96,6 +106,7 @@ pub struct ContractValidator {
     run: Compiled,
     decision: Compiled,
     event: Compiled,
+    status: Compiled,
 }
 
 /// One contract's compiled schema and the property names it declares, the only object keys a
@@ -119,6 +130,7 @@ impl ContractValidator {
             run: compile(Contract::Run)?,
             decision: compile(Contract::Decision)?,
             event: compile(Contract::Event)?,
+            status: compile(Contract::Status)?,
         })
     }
 
@@ -191,6 +203,7 @@ impl ContractValidator {
             Contract::Run => &self.run,
             Contract::Decision => &self.decision,
             Contract::Event => &self.event,
+            Contract::Status => &self.status,
         }
     }
 }
@@ -246,7 +259,7 @@ pub enum ReadContractError {
     },
     /// The document is not JSON, or one of its objects repeats a key. The parser's message
     /// never names the key.
-    #[error("{contract} document is not JSON")]
+    #[error("{contract} document is not JSON, or an object in it repeats a key")]
     Malformed {
         /// The contract the caller expected.
         contract: Contract,

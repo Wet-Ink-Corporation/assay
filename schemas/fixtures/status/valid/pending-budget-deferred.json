@@ -1,0 +1,42 @@
+{
+  "schema": "assay.status/1",
+  "source": "ci",
+  "repo": "Wet-Ink-Corporation/assay",
+  "pr": 42,
+  "branch": "feature/status",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "local_head_sha": null,
+  "stale": false,
+  "check": {
+    "conclusion": null,
+    "status": "in_progress",
+    "url": "https://github.com/Wet-Ink-Corporation/assay/runs/9001"
+  },
+  "decision": {
+    "conclusion": "pending",
+    "reasons": [
+      {
+        "code": "budget-deferred",
+        "detail": "requeued 0 of 3 times"
+      }
+    ],
+    "reasons_digest": "sha256:ab60963112e40bec2b8fcd6c5c6970d3a93d64968fce1754d512ab6b8e767e1d",
+    "counts": {
+      "blocker": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    "degraded": [],
+    "advisory_blockers": []
+  },
+  "tier": "micro",
+  "gates": [],
+  "findings": [],
+  "viewer": {
+    "login": "someone",
+    "is_owner": false,
+    "is_agent": false
+  },
+  "fetched_at": "2026-10-13T09:30:00Z"
+}
