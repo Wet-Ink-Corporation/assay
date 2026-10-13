@@ -103,6 +103,7 @@ pub(crate) fn bundle() -> Result<PromptBundle, Box<dyn Error>> {
         combined: "COMBINED".to_owned(),
         combined_micro: "MICRO".to_owned(),
         verifier: "VERIFIER".to_owned(),
+        coordinator: "COORDINATOR".to_owned(),
     })?)
 }
 

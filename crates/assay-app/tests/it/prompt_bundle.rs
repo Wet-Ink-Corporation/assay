@@ -7,7 +7,9 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 
-use assay_app::{BundleFile, BundleFileError, BundleFiles, PromptBundle, Role};
+use assay_app::{
+    BundleFile, BundleFileError, BundleFiles, COORDINATOR_MAX_TURNS, PromptBundle, Role,
+};
 use assay_domain::{ContentHash, RequiredRole, Severity, VerifierVerdict};
 
 fn prompts_dir() -> PathBuf {
@@ -29,6 +31,7 @@ fn v1_files() -> Result<BundleFiles, Box<dyn Error>> {
         combined: read(BundleFile::Instruction(Role::Combined))?,
         combined_micro: read(BundleFile::Instruction(Role::CombinedMicro))?,
         verifier: read(BundleFile::Verifier)?,
+        coordinator: read(BundleFile::Coordinator)?,
     })
 }
 
@@ -42,6 +45,7 @@ fn small_files() -> BundleFiles {
         combined: "COMBINED".to_owned(),
         combined_micro: "MICRO".to_owned(),
         verifier: "VERIFIER".to_owned(),
+        coordinator: "COORDINATOR".to_owned(),
     }
 }
 
@@ -56,6 +60,7 @@ fn with_char_changed(mut files: BundleFiles, file: BundleFile, char_index: usize
         BundleFile::Instruction(Role::Combined) => &mut files.combined,
         BundleFile::Instruction(Role::CombinedMicro) => &mut files.combined_micro,
         BundleFile::Verifier => &mut files.verifier,
+        BundleFile::Coordinator => &mut files.coordinator,
     };
     *text = text
         .chars()
@@ -248,6 +253,35 @@ fn the_verifier_is_sent_its_own_instruction() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn an_empty_coordinator_instruction_is_refused_by_name() -> Result<(), Box<dyn Error>> {
+    let files = BundleFiles {
+        coordinator: String::new(),
+        ..small_files()
+    };
+
+    let refused = PromptBundle::new(files);
+
+    let error = refused
+        .err()
+        .ok_or("an empty coordinator instruction was accepted")?;
+    assert_eq!(
+        (error.file(), error.reason()),
+        (BundleFile::Coordinator, BundleFileError::Empty)
+    );
+    Ok(())
+}
+
+#[test]
+fn the_coordinator_is_sent_its_own_instruction() -> Result<(), Box<dyn Error>> {
+    let bundle = PromptBundle::new(small_files())?;
+
+    let instruction = bundle.coordinator_instruction();
+
+    assert_eq!(instruction, "COORDINATOR");
+    Ok(())
+}
+
+#[test]
 fn a_nul_byte_is_refused_by_name() -> Result<(), Box<dyn Error>> {
     let files = BundleFiles {
         system: "SYS\0TEM".to_owned(),
@@ -277,6 +311,7 @@ fn the_bundle_hash_is_the_content_hash_of_its_files_under_their_paths() -> Resul
         ("v1/combined.md", files.combined.as_bytes()),
         ("v1/combined-micro.md", files.combined_micro.as_bytes()),
         ("v1/verifier.md", files.verifier.as_bytes()),
+        ("v1/coordinator.md", files.coordinator.as_bytes()),
     ]);
 
     let bundle = PromptBundle::new(files)?;
@@ -426,6 +461,33 @@ fn the_v1_verifier_instruction_names_every_verdict() -> Result<(), Box<dyn Error
     for verdict in VerifierVerdict::ALL {
         let code = format!("`{}`", verdict.code());
         assert!(instruction.contains(&code), "verifier.md lacks {code}");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_v1_coordinator_instruction_states_its_turns_and_what_it_may_not_do()
+-> Result<(), Box<dyn Error>> {
+    let bundle = PromptBundle::new(v1_files()?)?;
+
+    let instruction = bundle.coordinator_instruction();
+
+    assert_eq!(
+        instruction.lines().next(),
+        Some("## Your role: coordinator")
+    );
+    let phrases = [
+        format!("{COORDINATOR_MAX_TURNS} turns"),
+        "`groups`".to_owned(),
+        "`duplicates`".to_owned(),
+        "`noise`".to_owned(),
+        "not a findings document".to_owned(),
+    ];
+    for phrase in &phrases {
+        assert!(
+            instruction.contains(phrase.as_str()),
+            "coordinator.md lacks {phrase:?}"
+        );
     }
     Ok(())
 }

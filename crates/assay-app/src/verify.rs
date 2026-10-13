@@ -151,6 +151,7 @@ pub struct VerifyRequest<'a> {
 ///     combined: "combined".to_owned(),
 ///     combined_micro: "micro".to_owned(),
 ///     verifier: "verifier".to_owned(),
+///     coordinator: "coordinator".to_owned(),
 /// })?;
 ///
 /// let verified = verify(&Refuting, VerifyRequest {

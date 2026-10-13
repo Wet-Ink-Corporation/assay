@@ -24,12 +24,16 @@ pub enum BundleFile {
     /// The verifier is not a [`Role`]: it writes verdicts, never findings, so validation must
     /// not accept a findings document in its name.
     Verifier,
+    /// The coordinator's instruction, sent after the findings it groups (04 §3, §4 step 7).
+    /// Like the verifier it is not a [`Role`]: it answers with groups of finding ids, never
+    /// findings of its own.
+    Coordinator,
 }
 
 impl BundleFile {
     /// Every file, in the order the bundle hash covers them: the system prompt, each role's
-    /// instruction in roster order, then the verifier's.
-    pub const ALL: [Self; 8] = [
+    /// instruction in roster order, then the verifier's, then the coordinator's.
+    pub const ALL: [Self; 9] = [
         Self::System,
         Self::Instruction(Role::Bugs),
         Self::Instruction(Role::Security),
@@ -38,6 +42,7 @@ impl BundleFile {
         Self::Instruction(Role::Combined),
         Self::Instruction(Role::CombinedMicro),
         Self::Verifier,
+        Self::Coordinator,
     ];
 
     /// The file's path relative to `plugin/prompts/`, starting with the bundle version. The
@@ -53,6 +58,7 @@ impl BundleFile {
             Self::Instruction(Role::Combined) => "v1/combined.md",
             Self::Instruction(Role::CombinedMicro) => "v1/combined-micro.md",
             Self::Verifier => "v1/verifier.md",
+            Self::Coordinator => "v1/coordinator.md",
         }
     }
 }
@@ -77,6 +83,8 @@ pub struct BundleFiles {
     pub combined_micro: String,
     /// [`BundleFile::Verifier`].
     pub verifier: String,
+    /// [`BundleFile::Coordinator`].
+    pub coordinator: String,
 }
 
 impl BundleFiles {
@@ -90,6 +98,7 @@ impl BundleFiles {
             BundleFile::Instruction(Role::Combined) => &self.combined,
             BundleFile::Instruction(Role::CombinedMicro) => &self.combined_micro,
             BundleFile::Verifier => &self.verifier,
+            BundleFile::Coordinator => &self.coordinator,
         }
     }
 }
@@ -112,7 +121,7 @@ pub enum BundleFileError {
 pub struct InvalidBundle {
     file: BundleFile,
     reason: BundleFileError,
-    /// Boxed: eight texts would make every `Result` carrying the error that large.
+    /// Boxed: nine texts would make every `Result` carrying the error that large.
     files: Box<BundleFiles>,
 }
 
@@ -204,6 +213,12 @@ impl PromptBundle {
     #[must_use]
     pub fn verifier_instruction(&self) -> &str {
         self.files.text(BundleFile::Verifier)
+    }
+
+    /// The coordinator's instruction, sent after the findings it groups (04 §4 step 7).
+    #[must_use]
+    pub fn coordinator_instruction(&self) -> &str {
+        self.files.text(BundleFile::Coordinator)
     }
 
     /// The user prompt of a call in `role`: the context pack first, then a blank line, then the

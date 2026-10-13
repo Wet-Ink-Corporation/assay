@@ -51,6 +51,7 @@ const SYSTEM_PROMPT: &str = include_str!("../../../plugin/prompts/v1/system.md")
 const COMBINED: &str = include_str!("../../../plugin/prompts/v1/combined.md");
 const COMBINED_MICRO: &str = include_str!("../../../plugin/prompts/v1/combined-micro.md");
 const VERIFIER: &str = include_str!("../../../plugin/prompts/v1/verifier.md");
+const COORDINATOR: &str = include_str!("../../../plugin/prompts/v1/coordinator.md");
 const BUGS: &str = include_str!("../../../plugin/prompts/v1/bugs.md");
 const SECURITY: &str = include_str!("../../../plugin/prompts/v1/security.md");
 const DESIGN: &str = include_str!("../../../plugin/prompts/v1/design.md");
@@ -493,8 +494,8 @@ impl Scratch {
     fn bundle(&self) -> Result<(PromptBundle, PathBuf), CheckCliError> {
         let bundle = PromptBundle::new(BundleFiles {
             system: SYSTEM_PROMPT.to_owned(),
-            // The specialists' and verifier's instructions are part of the bundle's hash, though
-            // local mode runs neither.
+            // The specialists', verifier's and coordinator's instructions are part of the bundle's
+            // hash, though local mode runs none of them.
             bugs: BUGS.to_owned(),
             security: SECURITY.to_owned(),
             design: DESIGN.to_owned(),
@@ -502,6 +503,7 @@ impl Scratch {
             combined: COMBINED.to_owned(),
             combined_micro: COMBINED_MICRO.to_owned(),
             verifier: VERIFIER.to_owned(),
+            coordinator: COORDINATOR.to_owned(),
         })
         .map_err(CheckCliError::Bundle)?;
         let file = self.path("system.md");
