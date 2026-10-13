@@ -9,9 +9,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use assay_app::{
-    BundleFiles, Change, ContractValidator, DiffPaths, FileDiff, Hunk, Inputs, LineSpan,
-    PromptBundle, SuppressRules, ValidFinding, VerdictTally, Verification, VerifiedFinding,
-    VerifierStatus, VerifierTier, VerifyRequest, validate, verify,
+    BundleFiles, Change, ContractValidator, DiffPaths, EgressScan, FileDiff, Hunk, Inputs,
+    KnownRuns, LineSpan, PromptBundle, SuppressRules, ValidFinding, VerdictTally, Verification,
+    VerifiedFinding, VerifierStatus, VerifierTier, VerifyRequest, validate, verify,
 };
 use assay_domain::{
     Aeu, CallFailure, Disposition, Event, EventPayload, EventSchema, Finding, RunUid, Severity,
@@ -68,12 +68,16 @@ fn validated_major() -> Result<Vec<ValidFinding>, Box<dyn Error>> {
         }]
     })
     .to_string();
+    let egress = EgressScan::without_token(KnownRuns::index(
+        change.head_files.values().map(String::as_bytes),
+    )?);
     let inputs = Inputs {
         repository: REPOSITORY,
         change: &change,
         suppress: &NoRules,
         dismissals: &[],
         gate_findings: &[],
+        egress: &egress,
     };
     let validated = validate(&ContractValidator::new()?, &inputs, &[document.as_bytes()]);
     Ok(validated.findings)
