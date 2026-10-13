@@ -125,6 +125,10 @@ pub(crate) struct FakeRevisions {
     files: BTreeMap<(Revision, String), (EntryKind, Vec<u8>)>,
     /// When set, listing this path fails.
     pub(crate) failing: Option<String>,
+    /// When set, listing this side's whole tree fails.
+    pub(crate) failing_tree: Option<Revision>,
+    /// When set, reading the blob listed at this path fails.
+    pub(crate) failing_read: Option<String>,
 }
 
 /// Why the fake would not answer.
@@ -144,6 +148,9 @@ impl RevisionFiles for FakeRevisions {
 
     fn list(&self, revision: Revision, path: Option<&str>) -> Result<Vec<TreeEntry>, FakeError> {
         if path.is_some() && self.failing.as_deref() == path {
+            return Err(FakeError);
+        }
+        if path.is_none() && self.failing_tree == Some(revision) {
             return Err(FakeError);
         }
         let within = |name: &str| match path {
@@ -172,6 +179,9 @@ impl RevisionFiles for FakeRevisions {
         entries
             .iter()
             .map(|entry| {
+                if self.failing_read.as_deref() == Some(entry.path.as_str()) {
+                    return Err(FakeError);
+                }
                 self.files
                     .values()
                     .find(|(_, bytes)| object_id(bytes) == entry.object)

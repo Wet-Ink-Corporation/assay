@@ -76,7 +76,7 @@ impl Spot {
 }
 
 /// `line` trimmed and clipped, or `None` when nothing is left to quote.
-fn line_evidence(line: &str) -> Option<String> {
+pub(super) fn line_evidence(line: &str) -> Option<String> {
     let trimmed = line.trim();
     (!trimmed.is_empty()).then(|| clip(trimmed, EVIDENCE_CHARS))
 }

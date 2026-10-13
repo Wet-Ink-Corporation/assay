@@ -11,6 +11,7 @@ mod temper_blind;
 mod temper_config;
 mod temper_exception;
 mod temper_inventory;
+mod temper_lint;
 mod temper_manifest;
 #[cfg(test)]
 mod temper_support;

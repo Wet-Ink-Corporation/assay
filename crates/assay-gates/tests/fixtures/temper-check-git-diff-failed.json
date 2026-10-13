@@ -1,0 +1,54 @@
+{
+  "temper_findings": 1,
+  "at": "2026-10-13T02:53:47.670Z",
+  "commit": "c0ffee0000000000000000000000000000000002",
+  "toolchain": "1.98.1",
+  "host": "x86_64-unknown-linux-gnu",
+  "sources": [
+    "clippy",
+    "rustdoc",
+    "scan"
+  ],
+  "workspace_root": ".",
+  "crates": [
+    {
+      "name": "fixture",
+      "dir": ".",
+      "lints_inherited": true,
+      "charter": false
+    }
+  ],
+  "findings": [
+    {
+      "tool": "clippy",
+      "lint": "clippy::unwrap_used",
+      "crate": "fixture",
+      "file": "src/legacy.rs",
+      "line": 2,
+      "end_line": 2,
+      "column": 5,
+      "message": "used `unwrap()` on an `Option` value",
+      "rules": [
+        "H-02"
+      ],
+      "severity": "must"
+    }
+  ],
+  "errors": [],
+  "ratchet": {
+    "ok": true,
+    "mode": "totals",
+    "base": null,
+    "new_code": [],
+    "increases": [],
+    "fixed": [],
+    "fixed_count": 0,
+    "legacy_total": 1,
+    "baseline_total": 1,
+    "raised": [],
+    "errors": [],
+    "notes": [
+      "git diff against 5e1f0b9c2d3a failed: fatal: index file corrupt; only the totals were compared"
+    ]
+  }
+}
