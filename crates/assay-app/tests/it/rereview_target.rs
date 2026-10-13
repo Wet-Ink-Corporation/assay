@@ -9,9 +9,9 @@ use std::fmt;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    Ancestry, CarriedFinding, CarriedParts, Carry, CarryReset, CommitId, Cumulative, HistoryStep,
-    Increment, MAX_RANGE_DIFF_BYTES, PriorHistory, RangeDiffCommits, RangeDiffListing,
-    ReviewTarget, TargetRequest, review_target,
+    Ancestry, CarriedFinding, CarriedParts, Carry, CarryReset, CommitId, Cumulative, Increment,
+    MAX_RANGE_DIFF_BYTES, PriorHistory, RangeDiffCommits, RangeDiffListing, ReviewTarget,
+    TargetRequest, review_target,
 };
 use assay_domain::{Class, Severity};
 
@@ -96,7 +96,7 @@ fn commit(digit: char) -> Result<CommitId, Box<dyn Error>> {
 }
 
 /// `review_target` for base `b`, head `d` and, if given, previous head `c`.
-fn target(history: &History, previous: bool) -> Result<ReviewTarget, Box<dyn Error>> {
+fn target(history: &History, previous: bool) -> Result<ReviewTarget<Broken>, Box<dyn Error>> {
     let (base, head, prior) = (commit('b')?, commit('d')?, commit('c')?);
     let request = TargetRequest {
         base: &base,
@@ -127,9 +127,9 @@ fn the_first_review_marks_nothing_carries_nothing_and_reads_no_history()
     let target = target(&history, false)?;
 
     assert_eq!(
-        (target.increment, target.carry),
+        (target.increment(), target.carry()),
         (
-            Increment::Cumulative(Cumulative::FirstReview),
+            &Increment::Cumulative(Cumulative::FirstReview),
             Carry::FirstReview
         )
     );
@@ -147,10 +147,10 @@ fn a_push_on_top_marks_the_range_diff_and_keeps_the_carry_over() -> Result<(), B
     let target = target(&history, true)?;
 
     assert_eq!(
-        since(&target.increment),
+        since(target.increment()),
         Some(('c', "1:  abc1234 = 1:  def5678 subject\n"))
     );
-    assert_eq!(target.carry, Carry::Kept);
+    assert_eq!(target.carry(), Carry::Kept);
     assert_eq!(
         history.calls.borrow().as_slice(),
         [
@@ -179,10 +179,10 @@ fn a_force_push_marks_the_range_diff_and_resets_the_carry_over() -> Result<(), B
     let target = target(&history, true)?;
 
     assert_eq!(
-        since(&target.increment),
+        since(target.increment()),
         Some(('c', "1:  abc1234 = 1:  def5678 subject\n"))
     );
-    assert_eq!(target.carry, Carry::Reset(CarryReset::Rewritten));
+    assert_eq!(target.carry(), Carry::Reset(CarryReset::Rewritten));
     Ok(())
 }
 
@@ -197,9 +197,9 @@ fn an_unreachable_previous_head_reviews_cumulatively_and_resets_without_a_range_
     let target = target(&history, true)?;
 
     assert_eq!(
-        (target.increment, target.carry),
+        (target.increment(), target.carry()),
         (
-            Increment::Cumulative(Cumulative::Unreachable),
+            &Increment::Cumulative(Cumulative::Unreachable),
             Carry::Reset(CarryReset::Unreachable)
         )
     );
@@ -219,8 +219,8 @@ fn a_range_diff_past_the_adapters_limit_leaves_the_target_unmarked_and_the_carry
     let target = target(&history, true)?;
 
     assert_eq!(
-        (target.increment, target.carry),
-        (Increment::Cumulative(Cumulative::TooLarge), Carry::Kept)
+        (target.increment(), target.carry()),
+        (&Increment::Cumulative(Cumulative::Unavailable), Carry::Kept)
     );
     Ok(())
 }
@@ -239,10 +239,13 @@ fn a_range_diff_at_the_cap_is_marked_and_one_byte_more_is_not() -> Result<(), Bo
     let (at_cap, over) = (target(&at_cap, true)?, target(&over, true)?);
 
     assert_eq!(
-        since(&at_cap.increment).map(|(_, text)| text.len()),
+        since(at_cap.increment()).map(|(_, text)| text.len()),
         Some(MAX_RANGE_DIFF_BYTES)
     );
-    assert_eq!(over.increment, Increment::Cumulative(Cumulative::TooLarge));
+    assert_eq!(
+        over.increment(),
+        &Increment::Cumulative(Cumulative::Unavailable)
+    );
     Ok(())
 }
 
@@ -256,8 +259,8 @@ fn a_range_diff_that_is_not_utf8_leaves_the_target_unmarked() -> Result<(), Box<
     let target = target(&history, true)?;
 
     assert_eq!(
-        (target.increment, target.carry),
-        (Increment::Cumulative(Cumulative::NotText), Carry::Kept)
+        (target.increment(), target.carry()),
+        (&Increment::Cumulative(Cumulative::Unavailable), Carry::Kept)
     );
     Ok(())
 }
@@ -280,29 +283,73 @@ fn a_failed_ancestry_read_is_an_error_naming_it() -> Result<(), Box<dyn Error>> 
     );
 
     let error = failed.err().ok_or("a broken history was read")?;
-    assert_eq!((error.step, error.source), (HistoryStep::Ancestry, Broken));
+    assert_eq!(error.source, Broken);
     Ok(())
 }
 
 #[test]
-fn a_failed_range_diff_is_an_error_naming_it() -> Result<(), Box<dyn Error>> {
+fn a_failed_range_diff_leaves_the_target_unmarked_and_keeps_the_carry_over()
+-> Result<(), Box<dyn Error>> {
     let history = History {
         range_diff: Err(Broken),
         ..History::new(Ancestry::Ancestor, RangeDiffListing::TooLarge)
     };
-    let (base, head, prior) = (commit('b')?, commit('d')?, commit('c')?);
 
-    let failed = review_target(
-        &TargetRequest {
-            base: &base,
-            head: &head,
-            previous: Some(&prior),
-        },
-        &history,
+    let target = target(&history, true)?;
+
+    assert_eq!(
+        (
+            target.increment(),
+            target.carry(),
+            target.range_diff_failure()
+        ),
+        (
+            &Increment::Cumulative(Cumulative::Unavailable),
+            Carry::Kept,
+            Some(&Broken)
+        )
     );
+    Ok(())
+}
 
-    let error = failed.err().ok_or("a broken range-diff was read")?;
-    assert_eq!((error.step, error.source), (HistoryStep::RangeDiff, Broken));
+#[test]
+fn a_failed_range_diff_after_a_force_push_still_resets_the_carry_over() -> Result<(), Box<dyn Error>>
+{
+    let history = History {
+        range_diff: Err(Broken),
+        ..History::new(Ancestry::Rewritten, RangeDiffListing::TooLarge)
+    };
+
+    let target = target(&history, true)?;
+
+    assert_eq!(
+        (target.increment(), target.carry()),
+        (
+            &Increment::Cumulative(Cumulative::Unavailable),
+            Carry::Reset(CarryReset::Rewritten)
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn a_range_diff_too_slow_to_finish_leaves_the_target_unmarked() -> Result<(), Box<dyn Error>> {
+    let history = History::new(Ancestry::Ancestor, RangeDiffListing::TooSlow);
+
+    let target = target(&history, true)?;
+
+    assert_eq!(
+        (
+            target.increment(),
+            target.carry(),
+            target.range_diff_failure()
+        ),
+        (
+            &Increment::Cumulative(Cumulative::Unavailable),
+            Carry::Kept,
+            None
+        )
+    );
     Ok(())
 }
 
@@ -325,19 +372,16 @@ fn open(n: usize) -> Result<CarriedFinding, Box<dyn Error>> {
 
 #[test]
 fn only_a_kept_carry_over_carries_the_open_findings() -> Result<(), Box<dyn Error>> {
-    let with = |carry| ReviewTarget {
-        increment: Increment::Cumulative(Cumulative::Unreachable),
-        carry,
-    };
-
     let mut carried = Vec::new();
-    for carry in [
-        Carry::Kept,
-        Carry::FirstReview,
-        Carry::Reset(CarryReset::Rewritten),
-        Carry::Reset(CarryReset::Unreachable),
+    for (ancestry, previous) in [
+        (Ancestry::Ancestor, true),
+        (Ancestry::Ancestor, false),
+        (Ancestry::Rewritten, true),
+        (Ancestry::Unreachable, true),
     ] {
-        carried.push(with(carry).carried(vec![open(0)?, open(1)?]).len());
+        let history = History::new(ancestry, RangeDiffListing::TooLarge);
+        let target = target(&history, previous)?;
+        carried.push(target.carried(vec![open(0)?, open(1)?]).len());
     }
 
     assert_eq!(carried, [2, 0, 0, 0]);

@@ -20,7 +20,7 @@ pub use carried::{
 };
 pub use settle::{CarriedOutcome, CarriedState, NotReverified, settle_carried};
 pub use target::{
-    Ancestry, Carry, CarryReset, Cumulative, HistoryStep, Increment, MAX_RANGE_DIFF_BYTES,
-    PriorHistory, RangeDiff, RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError,
-    TargetRequest, review_target,
+    Ancestry, Carry, CarryReset, Cumulative, Increment, MAX_RANGE_DIFF_BYTES, PriorHistory,
+    RangeDiff, RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError, TargetRequest,
+    review_target,
 };

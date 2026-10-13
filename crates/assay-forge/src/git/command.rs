@@ -70,6 +70,8 @@ pub enum GitOperation {
     IsAncestor,
     /// `git range-diff`, with notes, external diff drivers and textconv disabled.
     RangeDiff,
+    /// `git rev-list --count`: how many commits a range holds.
+    RevListCount,
     /// `git rev-parse`: a revision's commit, or a path inside a developer's repository (local
     /// mode, 02 §6).
     RevParse,
@@ -120,6 +122,7 @@ impl GitOperation {
                 "--no-ext-diff",
                 "--no-textconv",
             ],
+            Self::RevListCount => &["rev-list", "--count"],
             Self::RevParse => &["rev-parse"],
             Self::ReadTree => &["read-tree"],
             Self::AddAll => &["add", "--all"],
@@ -183,6 +186,7 @@ impl fmt::Display for GitOperation {
             Self::HashBlob => "hash-object",
             Self::IsAncestor => "merge-base --is-ancestor",
             Self::RangeDiff => "range-diff",
+            Self::RevListCount => "rev-list --count",
             Self::RevParse => "rev-parse",
             Self::ReadTree => "read-tree",
             Self::AddAll => "add",
@@ -350,7 +354,7 @@ mod tests {
     use crate::process::{Limits, run};
 
     /// Every operation.
-    const ALL: [GitOperation; 19] = [
+    const ALL: [GitOperation; 20] = [
         GitOperation::Init,
         GitOperation::Fetch,
         GitOperation::VerifyCommit,
@@ -361,6 +365,7 @@ mod tests {
         GitOperation::HashBlob,
         GitOperation::IsAncestor,
         GitOperation::RangeDiff,
+        GitOperation::RevListCount,
         GitOperation::RevParse,
         GitOperation::ReadTree,
         GitOperation::AddAll,
@@ -614,7 +619,7 @@ mod tests {
             .map(|operation| (operation, operation.leading_args()))
             .collect();
 
-        let expected: [(GitOperation, &[&str]); 19] = [
+        let expected: [(GitOperation, &[&str]); 20] = [
             (GitOperation::Init, &["init", "--bare", "--quiet"]),
             (
                 GitOperation::Fetch,
@@ -651,6 +656,7 @@ mod tests {
                     "--no-textconv",
                 ],
             ),
+            (GitOperation::RevListCount, &["rev-list", "--count"]),
             (GitOperation::RevParse, &["rev-parse"]),
             (GitOperation::ReadTree, &["read-tree"]),
             (GitOperation::AddAll, &["add", "--all"]),

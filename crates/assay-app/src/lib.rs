@@ -100,9 +100,9 @@ pub use replay::{
 pub use rereview::{
     Ancestry, CarriedAnchor, CarriedField, CarriedFinding, CarriedOutcome, CarriedParts,
     CarriedProblem, CarriedRefusal, CarriedState, Carry, CarryRefused, CarryReset, Cumulative,
-    HistoryStep, Increment, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, MAX_RANGE_DIFF_BYTES,
-    NotReverified, PriorHistory, RangeDiff, RangeDiffCommits, RangeDiffListing, ReviewTarget,
-    TargetError, TargetRequest, read_carried, recheck_anchors, review_target, settle_carried,
+    Increment, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, MAX_RANGE_DIFF_BYTES, NotReverified,
+    PriorHistory, RangeDiff, RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError,
+    TargetRequest, read_carried, recheck_anchors, review_target, settle_carried,
 };
 pub use specialists::{
     HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport, Specialists,

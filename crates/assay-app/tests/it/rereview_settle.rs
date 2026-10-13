@@ -7,12 +7,14 @@ use std::collections::BTreeMap;
 use std::error::Error;
 
 use assay_app::{
-    CarriedOutcome, CarriedState, Change, ModelOutcome, NotReverified, Verification, VerifierTier,
-    recheck_anchors, settle_carried, verify,
+    CarriedOutcome, CarriedState, Change, ClaimRef, ModelOutcome, NotReverified, Verification,
+    VerifierTier, recheck_anchors, settle_carried, verify,
 };
 use assay_domain::{Severity, VerifierVerdict};
 
-use crate::verify_fakes::{Scripted, Unreachable, bundle, carried, request_carrying, verdict};
+use crate::verify_fakes::{
+    Scripted, Unreachable, bundle, carried, finding, request_carrying, verdict,
+};
 
 /// `(severity, verdict, state)` of each outcome.
 fn shown(outcomes: &[CarriedOutcome]) -> Vec<(Severity, Option<VerifierVerdict>, CarriedState)> {
@@ -33,7 +35,7 @@ fn settled(
         .collect::<Result<Vec<_>, _>>()?;
     let bundle = bundle()?;
     let verification = verify(runner, request_carrying(tier, &[], &carried, &bundle));
-    Ok((settle_carried(&carried, &verification), verification))
+    Ok((settle_carried(&carried, &[], &verification), verification))
 }
 
 #[test]
@@ -131,7 +133,7 @@ fn a_carried_finding_the_verification_does_not_cover_is_not_re_verified()
     let (_, verification) = settled(VerifierTier::Micro, 0, &runner)?;
     let carried = [carried(0, Severity::Major)?];
 
-    let outcomes = settle_carried(&carried, &verification);
+    let outcomes = settle_carried(&carried, &[], &verification);
 
     assert_eq!(
         shown(&outcomes),
@@ -166,7 +168,7 @@ fn micro_keeps_a_carried_finding_whose_anchor_is_present_open_and_advisory()
         &runner,
         request_carrying(VerifierTier::Micro, &[], &rechecked, &bundle),
     );
-    let outcomes = settle_carried(&rechecked, &verification);
+    let outcomes = settle_carried(&rechecked, &[], &verification);
 
     assert_eq!(runner.call_count(), 0);
     assert_eq!(
@@ -194,7 +196,7 @@ fn micro_marks_a_carried_finding_whose_anchor_is_gone_as_needing_re_verification
         &runner,
         request_carrying(VerifierTier::Micro, &[], &rechecked, &bundle),
     );
-    let outcomes = settle_carried(&rechecked, &verification);
+    let outcomes = settle_carried(&rechecked, &[], &verification);
 
     assert_eq!(
         shown(&outcomes),
@@ -239,12 +241,135 @@ fn a_carried_finding_whose_anchor_is_gone_still_goes_to_the_verifier_in_lite()
         &runner,
         request_carrying(VerifierTier::Lite, &[], &rechecked, &bundle),
     );
-    let outcomes = settle_carried(&rechecked, &verification);
+    let outcomes = settle_carried(&rechecked, &[], &verification);
 
     assert_eq!(runner.call_count(), 1);
     assert_eq!(
         outcomes.first().map(|outcome| outcome.verdict),
         Some(Some(VerifierVerdict::Refuted))
+    );
+    Ok(())
+}
+
+/// Review F1: a carried finding refuted while this run raised and confirmed the same
+/// fingerprint is not resolved; the fresh finding owns it.
+#[test]
+fn a_carried_finding_this_run_raised_and_confirmed_again_is_not_resolved()
+-> Result<(), Box<dyn Error>> {
+    let carried = [carried(0, Severity::Blocker)?];
+    let mut fresh = finding(0, Severity::Blocker)?;
+    fresh.fingerprint = carried[0].fp();
+    let raised = [fresh];
+    let bundle = bundle()?;
+    let runner = Scripted::answering([
+        (verdict("refuted", "looks fixed"), 1),
+        (verdict("confirmed", "still unguarded"), 1),
+    ]);
+
+    let verification = verify(
+        &runner,
+        request_carrying(VerifierTier::Full, &raised, &carried, &bundle),
+    );
+    let outcomes = settle_carried(&carried, &raised, &verification);
+
+    assert_eq!(
+        outcomes.first().map(|outcome| &outcome.state),
+        Some(&CarriedState::Raised)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_carried_finding_this_run_raised_below_the_verifier_is_not_resolved()
+-> Result<(), Box<dyn Error>> {
+    let carried = [carried(0, Severity::Blocker)?];
+    let mut fresh = finding(0, Severity::Minor)?;
+    fresh.fingerprint = carried[0].fp();
+    let raised = [fresh];
+    let bundle = bundle()?;
+    let runner = Scripted::answering([(verdict("refuted", "looks fixed"), 1)]);
+
+    let verification = verify(
+        &runner,
+        request_carrying(VerifierTier::Lite, &raised, &carried, &bundle),
+    );
+    let outcomes = settle_carried(&carried, &raised, &verification);
+
+    assert_eq!(
+        outcomes.first().map(|outcome| &outcome.state),
+        Some(&CarriedState::Raised)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_carried_finding_refuted_both_carried_and_raised_is_resolved() -> Result<(), Box<dyn Error>> {
+    let carried = [carried(0, Severity::Blocker)?];
+    let mut fresh = finding(0, Severity::Blocker)?;
+    fresh.fingerprint = carried[0].fp();
+    let raised = [fresh];
+    let bundle = bundle()?;
+    let runner = Scripted::answering([
+        (verdict("refuted", "the guard is in"), 1),
+        (verdict("refuted", "the guard is in"), 1),
+    ]);
+
+    let verification = verify(
+        &runner,
+        request_carrying(VerifierTier::Full, &raised, &carried, &bundle),
+    );
+    let outcomes = settle_carried(&carried, &raised, &verification);
+
+    assert!(
+        matches!(
+            outcomes.first().map(|outcome| &outcome.state),
+            Some(CarriedState::Resolved { .. })
+        ),
+        "{outcomes:?}"
+    );
+    Ok(())
+}
+
+/// Review F3: results are paired by the claim they name, not by position.
+#[test]
+fn a_verification_whose_entries_name_other_claims_settles_nothing() -> Result<(), Box<dyn Error>> {
+    let runner = Scripted::answering([
+        (verdict("refuted", "gone"), 1),
+        (verdict("refuted", "gone"), 1),
+    ]);
+    let (_, mut verification) = settled(VerifierTier::Lite, 2, &runner)?;
+    verification.carried.reverse();
+    let carried = [
+        carried(0, Severity::Blocker)?,
+        carried(1, Severity::Blocker)?,
+    ];
+
+    let outcomes = settle_carried(&carried, &[], &verification);
+
+    let states: Vec<&CarriedState> = outcomes.iter().map(|outcome| &outcome.state).collect();
+    let failed = CarriedState::NotReverified(NotReverified::VerifierFailed);
+    assert_eq!(states, [&failed, &failed]);
+    assert_eq!(
+        verification.carried.first().map(|found| found.at),
+        Some(ClaimRef::Carried(1))
+    );
+    Ok(())
+}
+
+#[test]
+fn a_verification_of_another_length_settles_nothing() -> Result<(), Box<dyn Error>> {
+    let runner = Scripted::answering([
+        (verdict("refuted", "gone"), 1),
+        (verdict("refuted", "gone"), 1),
+    ]);
+    let (_, verification) = settled(VerifierTier::Lite, 2, &runner)?;
+    let carried = [carried(0, Severity::Blocker)?];
+
+    let outcomes = settle_carried(&carried, &[], &verification);
+
+    assert_eq!(
+        outcomes.first().map(|outcome| &outcome.state),
+        Some(&CarriedState::NotReverified(NotReverified::VerifierFailed))
     );
     Ok(())
 }

@@ -1,6 +1,6 @@
 //! What a re-review reviews and what it carries (`docs/architecture/04-pipeline.md` §7): the
 //! target is always the full cumulative diff; the increment since the last completed run is
-//! marked from `git range-diff` when the previous head is reachable, and the findings it left
+//! marked from `git range-diff` from the pinned base when the previous head is reachable, and the findings it left
 //! open are carried only while that head is an ancestor of head.
 
 use std::fmt;
@@ -30,8 +30,9 @@ pub trait PriorHistory {
     /// bytes.
     ///
     /// # Errors
-    /// [`Self::Error`] when git cannot run or fails; output past `limit` is
-    /// [`RangeDiffListing::TooLarge`], not an error.
+    /// [`Self::Error`] when git cannot run or fails; output past `limit` or too many commits
+    /// is [`RangeDiffListing::TooLarge`], and a timeout [`RangeDiffListing::TooSlow`], not
+    /// errors.
     fn range_diff(
         &self,
         commits: RangeDiffCommits<'_>,
@@ -66,8 +67,11 @@ pub enum Ancestry {
 pub enum RangeDiffListing {
     /// Its output, within the limit.
     Listed(Vec<u8>),
-    /// Its output was longer than the limit and was not kept.
+    /// It compared too many commits, or its output was longer than the limit, and was not
+    /// kept.
     TooLarge,
+    /// It did not finish within its time limit.
+    TooSlow,
 }
 
 /// The run being planned: its pinned SHAs and the head of the PR's last completed run.
@@ -127,10 +131,9 @@ pub enum Cumulative {
     FirstReview,
     /// The previous head cannot be reached, for example after a force-push dropped it.
     Unreachable,
-    /// The range-diff is longer than [`MAX_RANGE_DIFF_BYTES`].
-    TooLarge,
-    /// The range-diff is not UTF-8.
-    NotText,
+    /// The range-diff could not mark it: it failed, ran too long, compared too many commits,
+    /// printed more than [`MAX_RANGE_DIFF_BYTES`] or is not UTF-8.
+    Unavailable,
 }
 
 /// Whether the findings the last completed run left open are carried into this one.
@@ -153,16 +156,36 @@ pub enum CarryReset {
     Unreachable,
 }
 
-/// What this run reviews and carries.
+/// What this run reviews and carries. `E` is the history port's error, kept when the
+/// range-diff failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReviewTarget {
-    /// How the increment is marked in the cumulative target.
-    pub increment: Increment,
-    /// Whether the last run's open findings are carried.
-    pub carry: Carry,
+pub struct ReviewTarget<E> {
+    increment: Increment,
+    carry: Carry,
+    range_diff_failure: Option<E>,
 }
 
-impl ReviewTarget {
+impl<E> ReviewTarget<E> {
+    /// How the increment is marked in the cumulative target.
+    #[must_use]
+    pub const fn increment(&self) -> &Increment {
+        &self.increment
+    }
+
+    /// Whether the last run's open findings are carried.
+    #[must_use]
+    pub const fn carry(&self) -> Carry {
+        self.carry
+    }
+
+    /// Why the range-diff failed, when it did: the increment is then
+    /// [`Cumulative::Unavailable`]. The caller decides whether the error also aborts the job
+    /// (the forge's `ProcessError::Kill` does: a process group may still be running).
+    #[must_use]
+    pub const fn range_diff_failure(&self) -> Option<&E> {
+        self.range_diff_failure.as_ref()
+    }
+
     /// The findings this run carries: all of `open` when [`Carry::Kept`], otherwise none.
     #[must_use]
     pub fn carried(&self, open: Vec<CarriedFinding>) -> Vec<CarriedFinding> {
@@ -173,21 +196,10 @@ impl ReviewTarget {
     }
 }
 
-/// The [`PriorHistory`] call that failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum HistoryStep {
-    /// [`PriorHistory::ancestry`].
-    Ancestry,
-    /// [`PriorHistory::range_diff`].
-    RangeDiff,
-}
-
-/// The history could not be read, so neither the increment nor the carry-over is known.
+/// How the previous head stands to head could not be read, so the carry-over is not known.
 #[derive(Debug, Error)]
-#[error("could not read the PR's history ({step:?})")]
+#[error("could not read how the previous head stands to head")]
 pub struct TargetError<E> {
-    /// The call that failed.
-    pub step: HistoryStep,
     /// Why.
     #[source]
     pub source: E,
@@ -198,26 +210,26 @@ pub struct TargetError<E> {
 ///
 /// With no completed run nothing is marked or carried and `history` is not read. An unreachable
 /// previous head marks nothing and resets the carry-over. A reachable one is range-diffed
-/// against head from the base; the carry-over is kept only when it is an ancestor of head.
+/// against head from the pinned base; the carry-over is kept only when it is an ancestor of
+/// head. The range-diff only marks: when it fails, is too large, too slow or not UTF-8 the
+/// increment is [`Cumulative::Unavailable`] and the carry decision stands.
 ///
 /// # Errors
-/// [`TargetError`] naming the [`HistoryStep`] whose call failed.
+/// [`TargetError`] when the ancestry could not be read.
 pub fn review_target<H: PriorHistory>(
     request: &TargetRequest<'_>,
     history: &H,
-) -> Result<ReviewTarget, TargetError<H::Error>> {
+) -> Result<ReviewTarget<H::Error>, TargetError<H::Error>> {
     let Some(previous) = request.previous else {
         return Ok(ReviewTarget {
             increment: Increment::Cumulative(Cumulative::FirstReview),
             carry: Carry::FirstReview,
+            range_diff_failure: None,
         });
     };
     let ancestry = history
         .ancestry(previous, request.head)
-        .map_err(|source| TargetError {
-            step: HistoryStep::Ancestry,
-            source,
-        })?;
+        .map_err(|source| TargetError { source })?;
     let carry = match ancestry {
         Ancestry::Ancestor => Carry::Kept,
         Ancestry::Rewritten => Carry::Reset(CarryReset::Rewritten),
@@ -225,23 +237,32 @@ pub fn review_target<H: PriorHistory>(
             return Ok(ReviewTarget {
                 increment: Increment::Cumulative(Cumulative::Unreachable),
                 carry: Carry::Reset(CarryReset::Unreachable),
+                range_diff_failure: None,
             });
         }
     };
-    let listing = history
-        .range_diff(
-            RangeDiffCommits {
-                base: request.base,
-                previous,
-                head: request.head,
-            },
-            MAX_RANGE_DIFF_BYTES,
-        )
-        .map_err(|source| TargetError {
-            step: HistoryStep::RangeDiff,
-            source,
-        })?;
-    let increment = match listing {
+    let commits = RangeDiffCommits {
+        base: request.base,
+        previous,
+        head: request.head,
+    };
+    let (increment, range_diff_failure) = match history.range_diff(commits, MAX_RANGE_DIFF_BYTES) {
+        Ok(listing) => (marked(previous, listing), None),
+        Err(failure) => (
+            Increment::Cumulative(Cumulative::Unavailable),
+            Some(failure),
+        ),
+    };
+    Ok(ReviewTarget {
+        increment,
+        carry,
+        range_diff_failure,
+    })
+}
+
+/// The increment `listing` marks from `previous`: unmarked unless it is UTF-8 within the cap.
+fn marked(previous: &CommitId, listing: RangeDiffListing) -> Increment {
+    match listing {
         RangeDiffListing::Listed(bytes) if bytes.len() <= MAX_RANGE_DIFF_BYTES => {
             match String::from_utf8(bytes) {
                 Ok(text) => Increment::Since {
@@ -249,12 +270,11 @@ pub fn review_target<H: PriorHistory>(
                     previous: previous.clone(),
                     range_diff: RangeDiff(text),
                 },
-                Err(_not_utf8) => Increment::Cumulative(Cumulative::NotText),
+                Err(_not_utf8) => Increment::Cumulative(Cumulative::Unavailable),
             }
         }
-        RangeDiffListing::Listed(_) | RangeDiffListing::TooLarge => {
-            Increment::Cumulative(Cumulative::TooLarge)
+        RangeDiffListing::Listed(_) | RangeDiffListing::TooLarge | RangeDiffListing::TooSlow => {
+            Increment::Cumulative(Cumulative::Unavailable)
         }
-    };
-    Ok(ReviewTarget { increment, carry })
+    }
 }

@@ -3,12 +3,14 @@
 //! repositories with a push on top, a force-push and an unreachable previous head.
 
 use std::error::Error;
+use std::time::Duration;
 
 use assay_forge::git::{
-    Ancestry, CommitSha, GitError, GitOperation, RangeDiffCommits, RangeDiffOutcome,
+    Ancestry, CommitSha, GitError, GitOperation, MAX_RANGE_DIFF_COMMITS, RANGE_DIFF_TIMEOUT,
+    RangeDiffCommits, RangeDiffOutcome,
 };
 
-use crate::support::{Forced, fixture, forced_fixture};
+use crate::support::{Fixture, Forced, fixture, forced_fixture, long_fixture};
 
 #[test]
 fn a_previous_head_the_push_built_on_is_an_ancestor() -> Result<(), Box<dyn Error>> {
@@ -88,7 +90,9 @@ fn the_range_diff_of_a_force_push_pairs_the_old_and_new_commits() -> Result<(), 
     let forced = forced_fixture()?;
     let fixture = &forced.fixture;
 
-    let outcome = fixture.repo.range_diff(commits(&forced), 64 * 1024)?;
+    let outcome = fixture
+        .repo
+        .range_diff(commits(&forced), 64 * 1024, RANGE_DIFF_TIMEOUT)?;
 
     let RangeDiffOutcome::Listed(bytes) = outcome else {
         return Err("a small range-diff was refused".into());
@@ -111,8 +115,122 @@ fn a_range_diff_past_the_limit_is_too_large() -> Result<(), Box<dyn Error>> {
     let forced = forced_fixture()?;
     let fixture = &forced.fixture;
 
-    let outcome = fixture.repo.range_diff(commits(&forced), 8)?;
+    let outcome = fixture
+        .repo
+        .range_diff(commits(&forced), 8, RANGE_DIFF_TIMEOUT)?;
 
     assert_eq!(outcome, RangeDiffOutcome::TooLarge);
     Ok(())
+}
+
+/// Review F2 (H-13): range-diff runs within its own cap, and running past it is not an error.
+#[test]
+fn a_range_diff_past_its_timeout_is_too_slow() -> Result<(), Box<dyn Error>> {
+    let forced = forced_fixture()?;
+
+    let outcome = forced
+        .fixture
+        .repo
+        .range_diff(commits(&forced), 64 * 1024, Duration::ZERO)?;
+
+    assert_eq!(outcome, RangeDiffOutcome::TooSlow);
+    Ok(())
+}
+
+/// Review F4: only a missing commit is unreachable; a repository that cannot be read is an error.
+#[test]
+fn a_broken_object_store_is_an_error_not_unreachable() -> Result<(), Box<dyn Error>> {
+    let fixture = fixture(&[("src/lib.rs", b"pub fn one() -> u8 {\n    2\n}\n")])?;
+    std::fs::remove_dir_all(fixture.git_dir().join("objects"))?;
+
+    let ancestry = fixture.repo.ancestry(&fixture.base, &fixture.head);
+
+    assert!(
+        matches!(
+            ancestry,
+            Err(GitError::Failed {
+                operation: GitOperation::RevParse,
+                ..
+            })
+        ),
+        "{ancestry:?}"
+    );
+    Ok(())
+}
+
+/// Review F5: the limit admits output of exactly its length.
+#[test]
+fn a_range_diff_at_its_output_length_is_listed_and_one_byte_less_is_too_large()
+-> Result<(), Box<dyn Error>> {
+    let forced = forced_fixture()?;
+    let repo = &forced.fixture.repo;
+    let RangeDiffOutcome::Listed(bytes) =
+        repo.range_diff(commits(&forced), 64 * 1024, RANGE_DIFF_TIMEOUT)?
+    else {
+        return Err("a small range-diff was refused".into());
+    };
+    let length = bytes.len();
+
+    let at = repo.range_diff(commits(&forced), length, RANGE_DIFF_TIMEOUT)?;
+    let under = repo.range_diff(commits(&forced), length - 1, RANGE_DIFF_TIMEOUT)?;
+
+    assert_eq!(at, RangeDiffOutcome::Listed(bytes));
+    assert_eq!(under, RangeDiffOutcome::TooLarge);
+    Ok(())
+}
+
+#[test]
+fn a_range_diff_from_a_missing_base_is_an_error() -> Result<(), Box<dyn Error>> {
+    let forced = forced_fixture()?;
+    let missing: CommitSha = "1111111111111111111111111111111111111111".parse()?;
+
+    let outcome = forced.fixture.repo.range_diff(
+        RangeDiffCommits {
+            base: &missing,
+            ..commits(&forced)
+        },
+        64 * 1024,
+        RANGE_DIFF_TIMEOUT,
+    );
+
+    assert!(
+        matches!(
+            outcome,
+            Err(GitError::Failed {
+                operation: GitOperation::RevListCount,
+                ..
+            })
+        ),
+        "{outcome:?}"
+    );
+    Ok(())
+}
+
+/// Review F2 (H-13): each side's commits are counted first, and past the cap range-diff does
+/// not run.
+#[test]
+fn a_side_at_the_commit_cap_is_range_diffed_and_one_more_is_too_large() -> Result<(), Box<dyn Error>>
+{
+    let at_cap = long_fixture(MAX_RANGE_DIFF_COMMITS)?;
+    let over = long_fixture(MAX_RANGE_DIFF_COMMITS + 1)?;
+
+    let listed = at_cap
+        .repo
+        .range_diff(from_base(&at_cap), 1 << 20, RANGE_DIFF_TIMEOUT)?;
+    let refused = over
+        .repo
+        .range_diff(from_base(&over), 1 << 20, RANGE_DIFF_TIMEOUT)?;
+
+    assert!(matches!(listed, RangeDiffOutcome::Listed(_)), "{listed:?}");
+    assert_eq!(refused, RangeDiffOutcome::TooLarge);
+    Ok(())
+}
+
+/// A range-diff of everything the fixture's head adds, against nothing added before.
+fn from_base(fixture: &Fixture) -> RangeDiffCommits<'_> {
+    RangeDiffCommits {
+        base: &fixture.base,
+        previous: &fixture.base,
+        head: &fixture.head,
+    }
 }

@@ -1,11 +1,14 @@
 //! What becomes of each carried finding once the verifier has run
 //! (`docs/architecture/04-pipeline.md` §6, §7).
 
+use std::collections::BTreeSet;
+
 use assay_domain::{Fingerprint, Severity, VerifierVerdict};
 
 use super::carried::{CarriedAnchor, CarriedFinding};
 use crate::publish::resolution_note;
-use crate::verify::{Verification, VerifiedFinding, VerifierStatus};
+use crate::validation::ValidFinding;
+use crate::verify::{ClaimRef, Verification, VerifiedFinding, VerifierStatus};
 
 /// A carried finding after this run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +38,9 @@ pub enum CarriedState {
     },
     /// Confirmed or unclear at head: it stays open at its new severity.
     Open,
+    /// Refuted as carried, but this run raised the same fingerprint again and did not refute
+    /// it there: the fresh finding stands, so the thread is not resolved.
+    Raised,
     /// Not re-verified this run: it stays open as of its last verification and its thread is
     /// left open.
     NotReverified(NotReverified),
@@ -67,21 +73,41 @@ impl NotReverified {
     }
 }
 
-/// Settles each of `carried` from `verification`, `verify`'s result for them, in order.
+/// Settles each of `carried` from `verification`, `verify`'s result for them and for `raised`,
+/// this run's validated findings, in order.
 ///
-/// Only a `refuted` verdict resolves a carried finding (04 §6, §7); `micro` never does. A
-/// carried finding `verification` has no entry for is [`NotReverified::VerifierFailed`], as is
-/// one the verifier failed on.
+/// Only a `refuted` verdict resolves a carried finding (04 §6, §7), and never one whose
+/// fingerprint this run raised again without refuting it there ([`CarriedState::Raised`]);
+/// `micro` never resolves. Results are paired by the claim they name: when `verification` does
+/// not hold exactly one entry per carried finding, each naming its own position, nothing is
+/// settled from it and every carried finding is [`NotReverified::VerifierFailed`].
 #[must_use]
 pub fn settle_carried<E>(
     carried: &[CarriedFinding],
+    raised: &[ValidFinding],
     verification: &Verification<E>,
 ) -> Vec<CarriedOutcome> {
+    let paired = verification.carried.len() == carried.len()
+        && verification
+            .carried
+            .iter()
+            .enumerate()
+            .all(|(index, verified)| verified.at == ClaimRef::Carried(index));
+    let standing = standing(raised, verification);
     carried
         .iter()
         .enumerate()
-        .map(|(index, finding)| match verification.carried.get(index) {
-            Some(verified) => settle(finding, verified),
+        .map(|(index, finding)| (finding, verification.carried.get(index).filter(|_| paired)))
+        .map(|(finding, verified)| match verified {
+            Some(verified) => {
+                let mut outcome = settle(finding, verified);
+                if matches!(outcome.state, CarriedState::Resolved { .. })
+                    && standing.contains(&finding.fp())
+                {
+                    outcome.state = CarriedState::Raised;
+                }
+                outcome
+            }
             None => CarriedOutcome {
                 fp: finding.fp(),
                 raised: finding.severity(),
@@ -90,6 +116,25 @@ pub fn settle_carried<E>(
                 state: CarriedState::NotReverified(NotReverified::VerifierFailed),
             },
         })
+        .collect()
+}
+
+/// The fingerprints this run raised and did not refute: every raised finding except one whose
+/// own result, found at its position and naming it, is `refuted`. Linear in `raised`, then
+/// one set lookup per carried finding.
+fn standing<E>(raised: &[ValidFinding], verification: &Verification<E>) -> BTreeSet<Fingerprint> {
+    raised
+        .iter()
+        .enumerate()
+        .filter(|(index, found)| {
+            verification
+                .findings
+                .get(*index)
+                .filter(|verified| verified.at == ClaimRef::Raised(found.at))
+                .and_then(VerifiedFinding::verdict)
+                != Some(VerifierVerdict::Refuted)
+        })
+        .map(|(_, found)| found.fingerprint)
         .collect()
 }
 

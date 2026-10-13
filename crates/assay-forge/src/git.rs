@@ -63,7 +63,9 @@ pub use changes::{ChangeListing, ChangedFile};
 pub use command::{GitEnvironment, GitOperation, UserDirs};
 pub use copy::{CopiedSymlink, CopyError, ManifestCopy};
 pub use glob::GlobError;
-pub use history::{Ancestry, RangeDiffCommits, RangeDiffOutcome};
+pub use history::{
+    Ancestry, MAX_RANGE_DIFF_COMMITS, RANGE_DIFF_TIMEOUT, RangeDiffCommits, RangeDiffOutcome,
+};
 pub use numstat::{DiffOutcome, FileChange, LineCount};
 pub use patch::{FilePatch, HunkSpan, LineRange};
 pub use repository::{GitLimits, ObjectRepo};
