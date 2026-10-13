@@ -4,7 +4,9 @@
 //! Commands so far: `assay self-gate <corpus-dir> <rubric-file>`, the `assay-self` exec gate
 //! (02 §7, `05` T16), `assay doctor <plugins-toml> <claude-program>`, the session checks of
 //! 03 §8 (#121), and `assay check --local`, the advisory check of a working tree (02 §6, #107).
-//! With no arguments it exits successfully without doing anything.
+//! `assay status [--json] [--pr <n>] [--full]` (#126) checks its arguments and
+//! then stops with exit 2: its GitHub adapter is #53's, and [`assay_cli::run_status`] wires it
+//! once that exists. With no arguments it exits successfully without doing anything.
 
 mod check;
 mod doctor;
@@ -30,6 +32,12 @@ fn main() -> ExitCode {
     }
     if command == "check" {
         return run_check(args);
+    }
+    if command == "status" {
+        return match assay_cli::StatusArgs::parse(args) {
+            Ok(_) => report(&"status: the GitHub adapter it reads through is not built yet (#53)"),
+            Err(usage) => report(&usage),
+        };
     }
     if command != "self-gate" {
         return report(&self_gate::SelfGateError::Usage);

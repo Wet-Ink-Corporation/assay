@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:assay:schema:status:1",
+  "title": "assay.status/1",
+  "description": "A PR's assay state as `assay status --json` renders it (docs/architecture/03-contracts.md §6b): the App's verdict check, the decision its evidence pointer names, the per-gate checks, the decision's findings and the viewer. Every text is one assay already published, sanitised (04 §6, T8); nothing is raw model text. Unknown fields are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "source", "repo", "pr", "branch", "head_sha", "local_head_sha", "stale", "check",
+    "decision", "tier", "gates", "findings", "viewer", "fetched_at"
+  ],
+  "properties": {
+    "schema": { "const": "assay.status/1" },
+    "source": {
+      "description": "Where the state was read: `ci`, the published verdict. `local` is reserved for the local-run events story; `assay status` writes only `ci` until it lands.",
+      "enum": ["ci", "local"]
+    },
+    "repo": {
+      "description": "The repository, `owner/name`.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9-]{1,100}/[A-Za-z0-9._-]{1,100}$"
+    },
+    "pr": { "type": "integer", "minimum": 1 },
+    "branch": {
+      "description": "The PR's head branch.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "head_sha": {
+      "description": "The PR's head commit, the commit the checks are read on.",
+      "$ref": "#/$defs/sha"
+    },
+    "local_head_sha": {
+      "description": "The local checkout's HEAD, or null when there is none.",
+      "oneOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }]
+    },
+    "stale": {
+      "description": "Whether the local HEAD is known and differs from `head_sha`.",
+      "type": "boolean"
+    },
+    "check": {
+      "description": "The `assay-verdict` App's verdict check on `head_sha`, or null when it has none yet. A same-named check from any other app is ignored.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["conclusion", "status", "url"],
+          "properties": {
+            "conclusion": { "$ref": "#/$defs/checkConclusion" },
+            "status": { "enum": ["queued", "in_progress", "completed"] },
+            "url": { "$ref": "#/$defs/url" }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "decision": {
+      "description": "The decision the check's evidence pointer names (assay.decision/1, 03 §5). Null only when there is none to read: no App verdict check, a check carrying `open`'s `pending:<run>:<seq>` stamp (a run in progress), or a decided check whose run persisted no bundle. A completed `pending` verdict, such as a budget deferral, carries its decision.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "conclusion", "reasons", "reasons_digest", "counts", "degraded", "advisory_blockers"
+          ],
+          "properties": {
+            "conclusion": { "enum": ["success", "failure", "neutral", "pending"] },
+            "reasons": {
+              "type": "array",
+              "maxItems": 1024,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["code", "detail"],
+                "properties": {
+                  "code": { "$ref": "#/$defs/reasonCode" },
+                  "detail": { "$ref": "#/$defs/item" },
+                  "fp": { "$ref": "#/$defs/fp" }
+                }
+              }
+            },
+            "reasons_digest": {
+              "description": "The digest `/assay override` quotes (04 §5).",
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "counts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["blocker", "major", "minor", "nit"],
+              "properties": {
+                "blocker": { "$ref": "#/$defs/count" },
+                "major": { "$ref": "#/$defs/count" },
+                "minor": { "$ref": "#/$defs/count" },
+                "nit": { "$ref": "#/$defs/count" }
+              }
+            },
+            "degraded": {
+              "type": "array",
+              "maxItems": 1024,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["role", "reason"],
+                "properties": {
+                  "role": { "$ref": "#/$defs/item" },
+                  "reason": { "$ref": "#/$defs/item" }
+                }
+              }
+            },
+            "advisory_blockers": {
+              "type": "array",
+              "maxItems": 4096,
+              "items": { "$ref": "#/$defs/fp" }
+            }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "tier": {
+      "description": "The decision's tier (04 §2.3), or null without a decision.",
+      "oneOf": [
+        { "enum": ["needs-split", "trivial", "full", "lite", "micro"] },
+        { "type": "null" }
+      ]
+    },
+    "gates": {
+      "description": "The App's `assay / gate: <plugin>` checks on `head_sha`, by plugin name.",
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["plugin", "conclusion"],
+        "properties": {
+          "plugin": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+          "conclusion": { "$ref": "#/$defs/checkConclusion" },
+          "url": { "$ref": "#/$defs/url" }
+        }
+      }
+    },
+    "findings": {
+      "description": "The decision's gate and reviewer findings, one per fingerprint, gate findings first. Text comes only from the App's published inline comment for the fingerprint; it is null when none was published.",
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "fp", "finding_id", "severity", "class", "title", "file", "line", "waivable"
+        ],
+        "properties": {
+          "fp": { "$ref": "#/$defs/fp" },
+          "finding_id": {
+            "description": "The id `/assay waive <finding-id>` takes: the fingerprint.",
+            "$ref": "#/$defs/fp"
+          },
+          "severity": { "enum": ["blocker", "major", "minor", "nit"] },
+          "class": {
+            "oneOf": [
+              {
+                "enum": [
+                  "logic", "error-handling", "concurrency", "resource", "security",
+                  "api-design", "layering", "tests", "docs", "compliance", "deps"
+                ]
+              },
+              { "type": "null" }
+            ]
+          },
+          "title": {
+            "description": "The published title, as escaped for GitHub (04 §6).",
+            "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }]
+          },
+          "file": { "oneOf": [{ "$ref": "#/$defs/item" }, { "type": "null" }] },
+          "line": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+          "url": { "$ref": "#/$defs/url" },
+          "disposition": { "$ref": "#/$defs/dispositionCode" },
+          "waivable": {
+            "description": "Whether `/assay waive` may clear it: R-08(a) and #59, exactly as decide applies a waiver.",
+            "type": "boolean"
+          },
+          "body": {
+            "description": "With `--full`: the rest of the published comment, as escaped for GitHub.",
+            "type": "string",
+            "maxLength": 16384
+          }
+        }
+      }
+    },
+    "weigh_in": {
+      "description": "What the required Weigh-In gate reported, as the domain's code (03 §2.2, 04 §9): `clear` (nothing blocks), `open-blocking` (an open blocking item), `pending-triage` (items awaiting triage) or `no-evidence` (no evidence for the change; the decision fails on it). Absent when the gate is not required or there is no decision.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "enum": ["clear", "open-blocking", "pending-triage", "no-evidence"] }
+      }
+    },
+    "aeu": {
+      "description": "Reserved: what the run's LLM stage cost. Not emitted until a contract carries it.",
+      "type": "number",
+      "minimum": 0
+    },
+    "viewer": {
+      "description": "The `gh` user running the command, checked against the base P10 owner set and `.assay/agents` by numeric id. Informational only (#137): decide-only re-checks every action.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["login", "is_owner", "is_agent"],
+      "properties": {
+        "login": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\\[bot\\])?$"
+        },
+        "is_owner": { "type": "boolean" },
+        "is_agent": { "type": "boolean" }
+      }
+    },
+    "fetched_at": {
+      "description": "When the state was read: an RFC 3339 date-time; `assay status` writes UTC with a `Z`.",
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "count": { "type": "integer", "minimum": 0 },
+    "fp": {
+      "description": "Finding fingerprint computed by Z4: 16 lowercase hex digits (03 §3).",
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "item": {
+      "description": "One published list item: control and format characters replaced, at most 200 characters and a closing ellipsis.",
+      "type": "string",
+      "maxLength": 201
+    },
+    "url": {
+      "description": "A github.com page of the repository.",
+      "type": "string",
+      "pattern": "^https://github\\.com/[A-Za-z0-9-]{1,100}/[A-Za-z0-9._-]{1,100}/[!#-;=?-\\[\\]_a-z~]*$",
+      "maxLength": 2048
+    },
+    "checkConclusion": {
+      "description": "GitHub's check conclusion, or null before the check completes.",
+      "oneOf": [
+        {
+          "enum": [
+            "success", "failure", "neutral", "cancelled", "skipped", "timed_out",
+            "action_required", "stale"
+          ]
+        },
+        { "type": "null" }
+      ]
+    },
+    "reasonCode": {
+      "enum": [
+        "gate-failed", "gate-error", "gate-skipped", "blocker-verified", "majors-over-threshold",
+        "weigh-in-open-blocking", "weigh-in-no-evidence", "weigh-in-pending-triage", "needs-split",
+        "infra-llm-unavailable", "llm-degraded", "required-role-degraded", "trust-path-unapproved",
+        "plan-mismatch", "publish-error", "persist-error", "bundle-expired", "override",
+        "budget-deferred", "slot-busy", "base-not-protected", "ambiguous-head", "re-deciding"
+      ]
+    },
+    "dispositionCode": {
+      "enum": [
+        "schema", "evidence-missing", "line-not-in-diff-moved", "duplicate", "duplicate-of-gate",
+        "suppressed-by-rule", "dismissed-by-owner", "waived-by-owner",
+        "verifier-rejected-downgraded", "cap-exceeded", "pre-existing", "injection-suspect",
+        "no-trigger"
+      ]
+    }
+  }
+}

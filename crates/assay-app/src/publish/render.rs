@@ -2,6 +2,8 @@
 //! and digests `decide` computed, with every other string inside one fenced block per list, so
 //! nothing a PR or a model wrote renders as Markdown.
 
+pub(crate) mod read;
+
 use assay_domain::{Aeu, Conclusion, Counts, DegradedRole, PrClass, Reason, Tier};
 
 use super::ports::EvidenceEntry;
@@ -221,7 +223,7 @@ const FORMAT: [(char, char); 21] = [
 ];
 
 /// Whether `c` renders as something other than itself: a control or a format character.
-pub(super) fn is_hidden(c: char) -> bool {
+pub(crate) fn is_hidden(c: char) -> bool {
     c.is_control()
         || FORMAT
             .iter()

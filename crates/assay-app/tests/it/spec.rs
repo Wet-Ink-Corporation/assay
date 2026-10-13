@@ -122,3 +122,25 @@ fn run_and_event_schemas_define_the_same_run_uid() -> Result<(), Box<dyn Error>>
     assert_eq!(in_run, in_event);
     Ok(())
 }
+
+#[test]
+fn status_vocabularies_are_the_decisions_and_the_domains() -> Result<(), Box<dyn Error>> {
+    let status = schema("status-1")?;
+    let decision = schema("decision-1")?;
+    let domain: BTreeSet<String> = Disposition::ALL
+        .iter()
+        .map(|disposition| disposition.code().to_owned())
+        .collect();
+
+    assert_eq!(
+        enum_at(&status, "/$defs/reasonCode/enum")?,
+        enum_at(&decision, "/$defs/reasonCode/enum")?,
+        "reason codes, 03 §5"
+    );
+    assert_eq!(
+        enum_at(&status, "/$defs/dispositionCode/enum")?,
+        domain,
+        "disposition codes, 03 §5"
+    );
+    Ok(())
+}

@@ -19,6 +19,7 @@ use assay_domain::{Aeu, Conclusion, ContentHash, DecisionInputs, Event, Reason, 
 use thiserror::Error;
 
 pub use self::bundle::{BUNDLE_FILE, BundleError, MAX_BUNDLE_BYTES};
+pub(crate) use self::findings::read_published;
 pub use self::findings::{
     CommentStep, FindingsError, FindingsOutcome, FindingsPublication, FindingsPublished,
     FindingsWritten, MAX_INLINE_COMMENTS, MAX_PRIOR_COMMENTS, publish_findings,
@@ -29,8 +30,10 @@ pub use self::ports::{
     InlineComment, LlmEvidence, PublishLedger, SummaryComment, VerdictForge,
 };
 pub use self::render::SUMMARY_MARKER;
-pub(crate) use self::render::clean;
+pub(crate) use self::render::read::read_text;
 use self::render::{Projection, Summary};
+pub(crate) use self::render::{clean, is_hidden};
+pub(crate) use self::sanitise::Repository;
 use self::write::Pending;
 use crate::config::Sha256Digest;
 use crate::decide::{AuthenticatedRun, Refusal};
