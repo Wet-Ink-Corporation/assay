@@ -2,6 +2,7 @@
 //! `claude`: `Replay` reads recorded streams, and `ClaudeHeadless` runs a stand-in script.
 
 mod canary;
+mod coordinate;
 mod headless;
 mod init;
 mod replay;

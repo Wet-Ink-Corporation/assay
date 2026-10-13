@@ -96,6 +96,7 @@ fn verify_with(transcripts: &[&str]) -> Result<Verification<ReplayError>, Box<dy
         combined_micro: "MICRO".to_owned(),
         verifier: "VERIFIER".to_owned(),
         verifier_carried: "VERIFIER-CARRIED".to_owned(),
+        coordinator: "COORDINATOR".to_owned(),
     })?;
     let recordings = transcripts
         .iter()

@@ -71,8 +71,9 @@ pub struct SpecialistsRequest<'a> {
 ///
 /// Each role makes one call with its own turn limit and cap, retried once if its output is
 /// malformed (03 §7). Retries queue behind every first attempt, and a retry's budget is the
-/// smaller of its role's cap and what is left of the run cap (waiting, while calls are in
-/// flight, for them to settle below their reservations); with nothing left, the role is
+/// smaller of its role's cap and what is left of the run cap (waiting, while first attempts are
+/// in flight, for them to settle below their reservations, but never on another retry); with
+/// nothing left, the role is
 /// [`Failed`](RoleOutcome::Failed) as malformed without a second call. So no call is given a
 /// budget past the run cap, and a retry never costs a role still due its room. A call that
 /// reports quota exhausted or a `rejected` or `allowed_warning` rate limit pauses the stage,
@@ -129,6 +130,7 @@ pub struct SpecialistsRequest<'a> {
 ///     combined_micro: text("micro"),
 ///     verifier: text("verifier"),
 ///     verifier_carried: text("verifier-carried"),
+///     coordinator: text("coordinator"),
 /// })?;
 /// let roles = [RequiredRole::Bugs, RequiredRole::Security, RequiredRole::Design];
 ///

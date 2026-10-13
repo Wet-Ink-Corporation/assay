@@ -105,6 +105,7 @@ pub(crate) fn bundle() -> Result<PromptBundle, Box<dyn Error>> {
         combined_micro: "MICRO".to_owned(),
         verifier: "VERIFIER".to_owned(),
         verifier_carried: "VERIFIER-CARRIED".to_owned(),
+        coordinator: "COORDINATOR".to_owned(),
     })?)
 }
 

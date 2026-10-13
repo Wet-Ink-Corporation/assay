@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9ffb33893d214396ae520f7746b524c476f30fe6fd68a67ffafe0e1dfd4c60c5 # shrinks to answer = Object {"groups": Array [Object {"duplicates": Array [Object {"id": Number(5), "of": Number(0)}], "findings": Array [Number(0), Number(1), Number(2), Number(3), Number(4)]}], "noise": Array []}

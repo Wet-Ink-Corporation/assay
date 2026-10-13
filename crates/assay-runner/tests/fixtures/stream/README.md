@@ -24,6 +24,8 @@ a live call; replace them with captured transcripts when the doctor (#84) record
 | `verifier_refuted.jsonl` | `Ok`, cost 0.0234: a `refuted` verdict |
 | `verifier_unclear.jsonl` | `Ok`, cost 0.0345: an `unclear` verdict |
 | `verifier_bad_verdict.jsonl` | `Ok`, cost 0.0111: a verdict with a third key, which the verifier refuses |
+| `coordinator_grouped.jsonl` | `Ok`, cost 0.0456: a coordinator answer putting findings 1 and 0 in one group (#96) |
+| `coordinator_missing.jsonl` | `Ok`, cost 0.0321: a coordinator answer leaving finding 1 out of every group, which the coordinator refuses |
 
 Session-init fixtures (#121) for `read_session_init` and the clean-init rule. `init_2_1_296.jsonl`
 is captured from a real Claude Code 2.1.296 call under the 03 §8 profile, with its working

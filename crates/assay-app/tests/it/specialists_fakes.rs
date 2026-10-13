@@ -57,6 +57,9 @@ pub(crate) enum Hold {
     Never,
     /// The `bugs` call waits until this many calls have started; the others answer at once.
     FirstUntilStarted(usize),
+    /// The `bugs` call waits until a call for `role` has ended; every other call waits until
+    /// `started` calls have started.
+    FirstUntilEnded { role: Role, started: usize },
     /// Every call waits until this many calls have been in flight at once, or `total` calls
     /// have started. Both only grow, so a released call stays released.
     UntilInFlight { in_flight: usize, total: usize },
@@ -139,6 +142,16 @@ impl Fake {
         match self.hold {
             Hold::Never => true,
             Hold::FirstUntilStarted(started) => role != Role::Bugs || seen.started >= started,
+            Hold::FirstUntilEnded {
+                role: ended,
+                started,
+            } => {
+                if role == Role::Bugs {
+                    seen.steps.contains(&Step::End(ended))
+                } else {
+                    seen.started >= started
+                }
+            }
             Hold::UntilInFlight { in_flight, total } => {
                 seen.peak >= in_flight || seen.started >= total
             }
@@ -218,6 +231,7 @@ pub(crate) fn bundle() -> Result<PromptBundle, Box<dyn Error>> {
         combined_micro: instruction(Role::CombinedMicro).to_owned(),
         verifier: "VERIFIER".to_owned(),
         verifier_carried: "VERIFIER-CARRIED".to_owned(),
+        coordinator: "COORDINATOR".to_owned(),
     })?)
 }
 
