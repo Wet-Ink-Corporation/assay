@@ -1,0 +1,69 @@
+{
+  "temper_findings": 1,
+  "at": "2026-10-13T02:53:47.670Z",
+  "commit": "d44a0ad35cf3043fb8e937e22263d093e681fc7b",
+  "toolchain": "1.98.1",
+  "host": "x86_64-unknown-linux-gnu",
+  "sources": [
+    "clippy",
+    "rustdoc",
+    "scan"
+  ],
+  "workspace_root": ".",
+  "crates": [
+    {
+      "name": "assay-app",
+      "dir": "crates/assay-app",
+      "lints_inherited": true,
+      "charter": true
+    },
+    {
+      "name": "assay-cli",
+      "dir": "crates/assay-cli",
+      "lints_inherited": true,
+      "charter": true
+    },
+    {
+      "name": "assay-domain",
+      "dir": "crates/assay-domain",
+      "lints_inherited": true,
+      "charter": true
+    },
+    {
+      "name": "assay-forge",
+      "dir": "crates/assay-forge",
+      "lints_inherited": true,
+      "charter": true
+    },
+    {
+      "name": "assay-gates",
+      "dir": "crates/assay-gates",
+      "lints_inherited": true,
+      "charter": true
+    },
+    {
+      "name": "assay-runner",
+      "dir": "crates/assay-runner",
+      "lints_inherited": true,
+      "charter": true
+    }
+  ],
+  "findings": [],
+  "errors": [],
+  "ratchet": {
+    "ok": true,
+    "mode": "strict",
+    "base": null,
+    "new_code": [],
+    "increases": [],
+    "fixed": [],
+    "fixed_count": 0,
+    "legacy_total": 0,
+    "baseline_total": 0,
+    "raised": [],
+    "errors": [],
+    "notes": [
+      "no baseline: zero findings required"
+    ]
+  }
+}

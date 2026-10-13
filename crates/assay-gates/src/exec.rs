@@ -231,7 +231,7 @@ impl<S> ExecAdapter<S> {
 
 /// `program` as the process should be started: a path with a directory part is taken relative
 /// to the checkout, a bare name is left for the `PATH` lookup.
-fn resolve(checkout: &Path, program: &str) -> PathBuf {
+pub(crate) fn resolve(checkout: &Path, program: &str) -> PathBuf {
     let path = Path::new(program);
     if path.is_relative() && path.components().nth(1).is_some() {
         checkout.join(path)
@@ -246,7 +246,7 @@ fn resolve(checkout: &Path, program: &str) -> PathBuf {
 /// process group gone, so only a process that left the group (`setsid`) could swap the file in
 /// between; the read stays capped, but a FIFO swapped in could block the open. Closing that
 /// window needs `O_NOFOLLOW | O_NONBLOCK`, which std cannot name without `libc` (H-16).
-fn read_document(path: &Path, cap: u64) -> io::Result<GateDocument> {
+pub(crate) fn read_document(path: &Path, cap: u64) -> io::Result<GateDocument> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(GateDocument::Missing),
