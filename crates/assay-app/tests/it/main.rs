@@ -34,3 +34,6 @@ mod spec;
 mod support;
 mod tiering;
 mod validation;
+mod verify;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod verify_fakes;

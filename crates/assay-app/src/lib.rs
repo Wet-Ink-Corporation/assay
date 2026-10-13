@@ -80,3 +80,10 @@ pub use validation::{
     Change, DiffPaths, FileDiff, FindingRef, Hunk, Inputs, LineSpan, Placement, SuppressRules,
     Transition, ValidFinding, Validated, validate,
 };
+
+mod verify;
+pub use verify::{
+    Judgement, MAX_REASON_CHARS, REJECT_RATE_MIN_RUNS, RejectRate, UnsupportedTier, VERDICT_SCHEMA,
+    VERIFIER_CAP, VERIFIER_MAX_TURNS, VerdictReason, VerdictTally, Verification, VerifiedFinding,
+    VerifierFailure, VerifierStatus, VerifierTier, VerifyRequest, verify,
+};
