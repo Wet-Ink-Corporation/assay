@@ -409,6 +409,56 @@ fn rejects_steps_on_an_adapter_that_does_not_run_them() {
     );
 }
 
+/// A temper plugin with one step `tests` of `job` running `cmd` (a TOML array).
+fn temper_step(job: &str, cmd: &str) -> String {
+    with_plugin(&format!(
+        "name = \"temper\"\nadapter = \"builtin:temper\"\npin = \"git:{GIT}\"\nrequired = true\n\n[[plugin.step]]\nname = \"tests\"\njob = \"{job}\"\ncmd = {cmd}\ntimeout_s = 1500"
+    ))
+}
+
+#[test]
+fn rejects_a_step_that_lets_zero_tests_pass() {
+    let weakened = [
+        "--no-tests=pass",
+        "--no-tests=warn",
+        "--no-tests",
+        "--no-tests=",
+        "--no-tests=FAIL",
+    ];
+    for job in ["test", "lint"] {
+        for arg in weakened {
+            let cmd = format!("[\"cargo\", \"nextest\", \"run\", \"--no-tests=fail\", \"{arg}\"]");
+
+            let parsed = parse(&temper_step(job, &cmd));
+
+            assert!(
+                matches!(&parsed, Err(ConfigError::NoTests { gate, arg: given }) if gate == "temper.tests" && given == arg),
+                "{job} {arg}: {parsed:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn accepts_a_step_whose_zero_tests_fail() -> Result<(), Box<dyn Error>> {
+    let cmd = "[\"cargo\", \"nextest\", \"run\", \"--workspace\", \"--no-tests=fail\"]";
+
+    let config = parse(&temper_step("test", cmd))?;
+
+    let Some(Adapter::Temper { steps, .. }) = config.plugins().first().map(Plugin::adapter) else {
+        return Err("a temper plugin expected".into());
+    };
+    let commands: Vec<Vec<&str>> = steps
+        .iter()
+        .map(|step| step.command().iter().collect())
+        .collect();
+    assert_eq!(
+        commands,
+        [["cargo", "nextest", "run", "--workspace", "--no-tests=fail"]]
+    );
+    Ok(())
+}
+
 #[test]
 fn rejects_an_unknown_adapter() {
     let text = with_plugin(&format!(

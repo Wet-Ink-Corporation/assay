@@ -357,13 +357,28 @@ impl Step {
     fn from_dto(plugin: &str, dto: StepDto) -> Result<Self, ConfigError> {
         let name = GateName::new(dto.name).map_err(|name| ConfigError::Name { name })?;
         let gate = format!("{plugin}.{name}");
+        let command = argv_of(&gate, dto.cmd)?;
+        if let Some(arg) = command.args().iter().find(|arg| lets_zero_tests_pass(arg)) {
+            return Err(ConfigError::NoTests {
+                // The error owns its copy of the refused argument; the command is dropped.
+                arg: arg.clone(),
+                gate,
+            });
+        }
         Ok(Self {
             job: job_of(&gate, dto.job)?,
-            command: argv_of(&gate, dto.cmd)?,
+            command,
             timeout: timeout(&gate, dto.timeout_s)?,
             name,
         })
     }
+}
+
+/// Whether `arg` sets nextest's `--no-tests` to anything but exactly `fail`: `--no-tests=pass`,
+/// `=warn`, an empty or differently cased value, or the bare flag, whose value is the next
+/// argument. Refused rather than modelled, so a declared step can never let zero tests pass.
+fn lets_zero_tests_pass(arg: &str) -> bool {
+    arg != "--no-tests=fail" && (arg == "--no-tests" || arg.starts_with("--no-tests="))
 }
 
 fn pin(gate: &str, pin: Option<String>) -> Result<Pin, ConfigError> {
