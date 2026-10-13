@@ -1,16 +1,25 @@
 #!/bin/sh
 # A stand-in for `claude` in the ClaudeHeadless tests: it records how it was started, prints a
-# recorded stream and, when asked, hangs. Its inputs arrive as environment variables passed
-# through HeadlessEnv, since the runner clears the rest:
-#   FAKE_RECORD  directory to write its pid, argv (NUL-separated), stdin, cwd and env into
-#   FAKE_STREAM  stream-json file to print on stdout
+# recorded stream (or, for `--version` and `auth status`, a recorded status) and, when asked,
+# hangs. Its inputs arrive as environment variables passed through HeadlessEnv, since the runner
+# clears the rest:
+#   FAKE_RECORD  directory to write its pid, argv (NUL-separated), stdin, cwd and env into; a
+#                status command's records end in `.version` or `.auth`
+#   FAKE_STREAM  stream-json file to print on stdout for a model call
+#   FAKE_VERSION file to print for `claude --version`
+#   FAKE_AUTH    file to print for `claude auth status`
 #   FAKE_HANG    when 1, wait after printing until killed (keeping its pid)
-echo $$ > "$FAKE_RECORD/pid"
-for arg in "$@"; do printf '%s\0' "$arg"; done > "$FAKE_RECORD/argv"
-/bin/cat > "$FAKE_RECORD/stdin"
-pwd -P > "$FAKE_RECORD/cwd"
-/usr/bin/env > "$FAKE_RECORD/env"
-/bin/cat "$FAKE_STREAM"
+case "$*" in
+  --version) mode=.version; out="$FAKE_VERSION" ;;
+  "auth status") mode=.auth; out="$FAKE_AUTH" ;;
+  *) mode=; out="$FAKE_STREAM" ;;
+esac
+echo $$ > "$FAKE_RECORD/pid$mode"
+for arg in "$@"; do printf '%s\0' "$arg"; done > "$FAKE_RECORD/argv$mode"
+/bin/cat > "$FAKE_RECORD/stdin$mode"
+pwd -P > "$FAKE_RECORD/cwd$mode"
+/usr/bin/env > "$FAKE_RECORD/env$mode"
+/bin/cat "$out"
 if [ "${FAKE_HANG:-}" = 1 ]; then
   exec /bin/sleep 600
 fi

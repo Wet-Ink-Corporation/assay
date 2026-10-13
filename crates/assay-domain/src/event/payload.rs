@@ -67,9 +67,10 @@ closed_enum! {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Preflight {
-    /// How the CLI authenticated.
+    /// How the CLI authenticated (`claude auth status`'s `authMethod`), or `unknown` when the
+    /// preflight failed before reading it.
     pub auth_method: String,
-    /// The CLI version found.
+    /// The CLI version found, or `unknown` when the preflight failed before reading it.
     pub cli_version: String,
     /// Whether the `system/init` message was clean: no MCP server, the three read-only tools,
     /// and only built-in plugins, skills and agents on the allowlist pinned next to the CLI

@@ -18,6 +18,7 @@ mod package_set;
 mod plan;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod plan_fakes;
+mod preflight;
 mod prompt_bundle;
 mod publish;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
