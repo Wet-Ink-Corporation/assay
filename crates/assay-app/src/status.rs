@@ -1,6 +1,6 @@
 //! `assay status` (#126, `docs/architecture/03-contracts.md` §6b): a PR's assay state as one
 //! versioned contract, `assay.status/1`, so the mod and scripts never parse check markdown, PR
-//! comments or `gh` output (ADR-23's mod rules, #125).
+//! comments or `gh` output (ADR-25's mod rules, #125).
 //!
 //! It reads GitHub through one narrow port, [`StatusForge`], and the run's evidence bundle
 //! through [`BundleSource`]. Only the configured App's checks count: a same-named check from
