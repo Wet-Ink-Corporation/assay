@@ -16,6 +16,7 @@ mod model_runner;
 mod plan;
 mod prompt_bundle;
 mod publish;
+mod replay;
 mod session_init;
 mod tiering;
 
@@ -71,6 +72,10 @@ pub use publish::{
     EvidenceRecord, ForgeStep, LlmEvidence, MAX_BUNDLE_BYTES, PersistFailure, Publication,
     PublishError, PublishFailure, PublishLedger, PublishOutcome, PublishPorts, Published,
     SUMMARY_MARKER, Stale, SummaryComment, Target, Unlock, Verdict, VerdictForge, Written, publish,
+};
+pub use replay::{
+    BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
+    ReplayRequest, Replayed, RunField, StoredBundle, replay_decision,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};
