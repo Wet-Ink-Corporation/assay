@@ -9,7 +9,7 @@
 //! is the catch-all, so what is not provably the tree's own text is a hit (wi-b5affa).
 
 mod encoding;
-mod latin;
+mod lookalikes;
 mod views;
 mod windows;
 
@@ -32,22 +32,26 @@ const WINDOW: usize = 12;
 /// (wi-b5affa: refused by construction, not modelled script by script).
 const WILDCARD: u8 = b'*';
 
-/// The fewest ASCII symbols a normalised window holding a wildcard needs to match. Folded
-/// symbols are one of 36, so a chance match of six is 36^-6 (about 5e-10) per token window
-/// compared; a lookalike attack must then replace more than half of every twelve characters,
-/// while respelling the capitals of a base64 token leaves about 58% of them ASCII.
-const MIN_KNOWN: usize = 6;
+/// The fewest known symbols a normalised window holding a wildcard needs to match. Folded
+/// symbols are one of 36, so a chance match of seven is 36^-7 (about 1e-11) per token window
+/// compared, which keeps false rotation alarms rare in mixed-script prose. Lookalikes the
+/// generated table reads are known symbols, so only characters no table reads (CJK, `ß`, an
+/// unread confusable) are wildcards: an attacker must find five unread characters in every
+/// twelve to escape.
+const MIN_KNOWN: usize = 7;
 
-/// The fewest hex symbols a hex-view window holding a wildcard needs: hex is one of 16, so eight
-/// give the same odds as [`MIN_KNOWN`] (16^-8 is about 2e-10).
-const MIN_KNOWN_HEX: usize = 8;
+/// The fewest hex symbols a hex-view window holding a wildcard needs: hex is one of 16, so nine
+/// give about the same odds as [`MIN_KNOWN`] (16^-9 is about 1.5e-11).
+const MIN_KNOWN_HEX: usize = 9;
 
 /// The fewest characters of a run that must occur in the tree or base `REVIEW.md` (03 §3).
 const MIN_UNEXPLAINED_RUN: usize = 20;
 
-/// The most bytes [`EgressToken::new`] accepts: the token is the owner's secret, but its
-/// windows are built once per byte, so their number is bounded too (H-13).
-pub const MAX_TOKEN_BYTES: usize = 1024;
+/// The most bytes [`EgressToken::new`] accepts; a real token is about 108.
+///
+/// The token is the owner's secret, but its windows are built once per byte and each wildcard
+/// window may be compared with all of them, so their number is bounded too (H-13).
+pub const MAX_TOKEN_BYTES: usize = 256;
 
 /// The most bytes [`KnownRuns::index`] reads, summed over its texts; the decide job's budget for
 /// a tree's evidence reads is the same (`MAX_EVIDENCE_BYTES`).
@@ -355,11 +359,16 @@ fn symbol_of(c: char) -> Option<u8> {
     }
 }
 
-/// `text` as a reader sees it, for the scan: the screen's fold (invisible characters dropped,
-/// lowercase, lookalike letters read as Latin), then precomposed Latin letters read as their
-/// base ASCII letter and superscript and subscript digits as ASCII digits.
+/// `text` as a reader sees it, for the scan: invisible characters dropped, every character the
+/// generated table reads as an ASCII letter or digit read as it (before and after lowercasing,
+/// so a capital whose lowercase is listed is read too), and lowercase.
 fn fold(text: &str) -> String {
-    screen::fold(text).chars().map(latin::fold_char).collect()
+    text.chars()
+        .filter(|&c| !screen::is_invisible(c))
+        .map(lookalikes::read)
+        .flat_map(char::to_lowercase)
+        .map(lookalikes::read)
+        .collect()
 }
 
 /// The runs of `text` of at least [`MIN_UNEXPLAINED_RUN`] characters. A run is a maximal
@@ -437,13 +446,13 @@ mod tests {
     }
 
     #[test]
-    fn needs_eight_hex_symbols_in_a_hex_window_holding_lookalikes() {
+    fn needs_nine_hex_symbols_in_a_hex_window_holding_lookalikes() {
         // `sk-ant` is `736b2d616e74`; `\u{4e2d}` is a wildcard where a hex digit was.
         let token = EgressToken::new("sk-ant-oat01-secretsecret").expect("long enough");
+        let nine = "\\x7\u{4e2d}\\x6\u{4e2d}\\x2\u{4e2d}\\x61\\x6e\\x74";
         let eight = "\\x7\u{4e2d}\\x6\u{4e2d}\\x2\u{4e2d}\\x6\u{4e2d}\\x6e\\x74";
-        let seven = "\\x7\u{4e2d}\\x6\u{4e2d}\\x2\u{4e2d}\\x6\u{4e2d}\\x6\u{4e2d}\\x74";
 
-        assert_eq!((token.is_in(eight), token.is_in(seven)), (true, false));
+        assert_eq!((token.is_in(nine), token.is_in(eight)), (true, false));
     }
 
     #[test]

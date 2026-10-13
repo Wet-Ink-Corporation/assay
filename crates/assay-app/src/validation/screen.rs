@@ -316,7 +316,7 @@ fn is_imperative(text: &str) -> bool {
 
 /// `text` as a reader sees it: invisible characters dropped, lowercase, and Cyrillic, Greek
 /// and fullwidth letters that look like Latin ones read as those.
-pub(super) fn fold(text: &str) -> String {
+fn fold(text: &str) -> String {
     text.chars()
         .filter(|&c| !is_invisible(c))
         .flat_map(char::to_lowercase)

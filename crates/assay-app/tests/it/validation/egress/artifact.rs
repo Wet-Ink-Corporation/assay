@@ -120,11 +120,11 @@ fn passes_token_shaped_runs_found_in_the_tree_and_digests() -> Result<(), Box<dy
 }
 
 #[test]
-fn flags_a_lookalike_alphanumeric_in_an_artifact() {
+fn flags_a_letter_like_symbol_no_table_reads_in_an_artifact() {
     let scan = EgressScan::without_token(KnownRuns::default());
 
     assert_eq!(
-        scan.scan_artifact(r#"{"note": "\ud835\udc33"}"#.as_bytes()),
+        scan.scan_artifact(r#"{"note": "\u2473"}"#.as_bytes()),
         Some(EgressKind::Obfuscated)
     );
 }

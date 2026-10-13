@@ -50,10 +50,10 @@ fn fullwidth_digit(c: char) -> Option<char> {
 }
 
 #[test]
-fn flags_the_token_in_mathematical_letters() -> Result<(), Box<dyn Error>> {
+fn reads_the_token_in_mathematical_letters() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         kind_of(&respelled(mathematical_bold))?,
-        Some(EgressKind::Obfuscated)
+        Some(EgressKind::Token)
     );
     Ok(())
 }
@@ -68,10 +68,10 @@ fn reads_fullwidth_digits_as_ascii_ones() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn flags_a_lookalike_alphanumeric_from_each_refused_block() -> Result<(), Box<dyn Error>> {
-    // Mathematical, circled, squared, superscript and subscript letters, small capital and a
-    // non-ASCII digit.
-    let lookalikes = ["𝐳", "①", "🄰", "ⁿ", "ₐ", "ᴀ", "٣"];
+fn flags_letter_like_symbols_and_numerics_no_table_reads() -> Result<(), Box<dyn Error>> {
+    // A fraction, a circled twenty, a Roman numeral, a mathematical Greek capital: numeric or
+    // letter-like symbols no table reads as one ASCII letter or digit.
+    let lookalikes = ["\u{bd}", "\u{2473}", "\u{216b}", "\u{1d6aa}"];
     let findings: Vec<_> = lookalikes
         .iter()
         .map(|c| finding_with(json!({ "body": format!("see {c} here") })))
@@ -227,15 +227,34 @@ fn passes_a_cjk_paragraph() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn needs_six_ascii_symbols_in_a_window_holding_lookalikes() -> Result<(), Box<dyn Error>> {
+fn needs_seven_ascii_symbols_in_a_window_holding_lookalikes() -> Result<(), Box<dyn Error>> {
     // The token's first twelve normalised symbols are `skantoat01zq`; `\u{4e2d}` stands for any
-    // character no fold reads back.
+    // character no table reads as ASCII.
+    let seven = "s\u{4e2d}a\u{4e2d}t\u{4e2d}a\u{4e2d}0\u{4e2d}zq";
     let six = "s\u{4e2d}a\u{4e2d}t\u{4e2d}a\u{4e2d}0\u{4e2d}z\u{4e2d}";
-    let five = "s\u{4e2d}a\u{4e2d}t\u{4e2d}a\u{4e2d}0\u{4e2d}\u{4e2d}\u{4e2d}";
 
     assert_eq!(
-        (kind_of(six)?, kind_of(five)?),
+        (kind_of(seven)?, kind_of(six)?),
         (Some(EgressKind::Token), None)
     );
+    Ok(())
+}
+
+/// Each ASCII letter's stroked or barred Latin form (none for `m`, `w` and `x`).
+fn stroked(c: char) -> Option<char> {
+    let lower = "\u{2c65}\u{180}\u{23c}\u{111}\u{247}\u{a799}\u{1e5}\u{127}\u{268}\u{249}\u{a741}\u{142}m\u{a7a5}\u{f8}\u{a751}\u{a757}\u{24d}\u{a7a9}\u{167}\u{289}\u{a75f}wx\u{24f}\u{1b6}";
+    let index =
+        usize::try_from(u32::from(c.to_ascii_lowercase()).checked_sub(u32::from('a'))?).ok()?;
+    let form = lower.chars().nth(index).filter(|form| !form.is_ascii())?;
+    if c.is_ascii_uppercase() {
+        form.to_uppercase().next()
+    } else {
+        Some(form)
+    }
+}
+
+#[test]
+fn reads_the_token_in_stroked_latin_letters() -> Result<(), Box<dyn Error>> {
+    assert_eq!(kind_of(&respelled(stroked))?, Some(EgressKind::Token));
     Ok(())
 }

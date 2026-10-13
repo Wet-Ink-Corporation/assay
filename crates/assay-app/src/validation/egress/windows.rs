@@ -49,7 +49,7 @@ impl TokenWindows {
     /// window's symbol at its position.
     ///
     /// Cost: per text window, one hash lookup without wildcards; with them, a check of 12
-    /// symbols against each token window sharing its first known symbol at that position, at
+    /// symbols against each token window sharing its rarest known symbol at that position, at
     /// most every token window (bounded by the token's byte cap), so O(n × windows × 12).
     pub(super) fn matched_in(&self, view: &[u8], min_known: usize) -> bool {
         view.array_windows::<WINDOW>()
@@ -64,11 +64,12 @@ impl TokenWindows {
         if known < min_known {
             return false;
         }
+        // The shortest list of a known symbol at its position: every match is on it.
         let Some(candidates) = window
             .iter()
             .enumerate()
-            .find_map(|(position, &byte)| Some(slot(position, symbol(byte)?)))
-            .and_then(|at| self.by_symbol.get(at))
+            .filter_map(|(position, &byte)| self.by_symbol.get(slot(position, symbol(byte)?)))
+            .min_by_key(|list| list.len())
         else {
             return false;
         };
@@ -108,14 +109,14 @@ mod tests {
 
     #[test]
     fn matches_a_window_exactly_or_with_enough_known_symbols() {
-        let (exact, six_known, five_known) = (
+        let (exact, seven_known, six_known) = (
             b"skantoat01zq".as_slice(),
+            b"s*a*t*a*0*zq".as_slice(),
             b"s*a*t*a*0*z*".as_slice(),
-            b"s*a*t*a*0***".as_slice(),
         );
 
         assert_eq!(
-            [exact, six_known, five_known].map(|view| windows().matched_in(view, 6)),
+            [exact, seven_known, six_known].map(|view| windows().matched_in(view, 7)),
             [true, true, false]
         );
     }
@@ -123,7 +124,7 @@ mod tests {
     #[test]
     fn refuses_a_wildcard_window_whose_known_symbols_disagree() {
         assert!(
-            !windows().matched_in(b"s*a*t*a*0*y*", 6),
+            !windows().matched_in(b"s*a*t*a*0*yq", 7),
             "y is not the token's z"
         );
     }

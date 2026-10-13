@@ -74,25 +74,22 @@ fn decimal_reference(text: &str) -> Option<(u8, &str)> {
     Some((byte, after.strip_prefix(';').unwrap_or(after)))
 }
 
-/// Whether `c` is drawn like an ASCII letter or digit from a block that normalisation drops
-/// rather than reads back: Mathematical Alphanumeric Symbols, Enclosed Alphanumerics and their
-/// supplement, superscript and subscript letters, small capitals and modifier letters, or any
-/// other non-ASCII numeric character. Such text is refused, not mapped (wi-b5affa).
-/// Superscript and subscript digits are read as ASCII digits instead; letters of other scripts
-/// are wildcards in the token windows rather than refusals.
+/// Whether `c` is a numeric character or one from a block of letter-like symbols
+/// (Mathematical Alphanumeric Symbols, Enclosed Alphanumerics and their supplement,
+/// superscripts and subscripts, small capitals and modifier letters) that the generated table
+/// does not read as an ASCII letter or digit: `½`, `⑳`, `Ⅻ`, a mathematical Greek letter. Such
+/// text is refused, not modelled (wi-b5affa). What the table reads (`𝐀`, `①`, `²`, `ᴀ`, `٣`)
+/// is a known symbol instead, and any other letter a wildcard.
 pub(super) fn is_obfuscated(c: char) -> bool {
-    if super::latin::script_digit(c).is_some() {
-        // Read as an ASCII digit (`O(n²)`), not refused.
-        return false;
-    }
-    matches!(
+    let letter_like = matches!(
         c,
         '\u{1d400}'..='\u{1d7ff}'
             | '\u{2460}'..='\u{24ff}'
             | '\u{1f100}'..='\u{1f1ff}'
             | '\u{2070}'..='\u{209f}'
             | '\u{1d00}'..='\u{1dbf}'
-    ) || (c.is_numeric() && !c.is_ascii_digit())
+    );
+    !c.is_ascii() && (letter_like || c.is_numeric()) && super::lookalikes::ascii_of(c).is_none()
 }
 
 /// A document whose escapes could not be read back, so what it spells is unknown.
@@ -249,13 +246,31 @@ mod tests {
     }
 
     #[test]
-    fn refuses_lookalikes_but_not_letters_of_other_scripts_or_raised_digits() {
-        let refused = ['𝐀', '𝐳', '𝟗', '①', '🄰', 'ⁿ', 'ₐ', 'ᴀ', 'ᵃ', '٣', '５', '½'];
-        let read = ['a', 'é', 'ạ', 'ß', 'ł', 'ж', 'Ω', '中', '7', '²', '⁴', '₄'];
+    fn refuses_only_letter_like_symbols_and_numerics_the_table_cannot_read() {
+        let refused = ['\u{bd}', '\u{2473}', '\u{216b}', '\u{1d6aa}', '\u{bc}'];
+        let read = [
+            'a',
+            '\u{e9}',
+            '\u{1ea1}',
+            '\u{df}',
+            '\u{142}',
+            '\u{436}',
+            '\u{3a9}',
+            '\u{4e2d}',
+            '7',
+            '\u{b2}',
+            '\u{2074}',
+            '\u{2084}',
+            '\u{1d400}',
+            '\u{2460}',
+            '\u{663}',
+            '\u{ff10}',
+            '\u{1d00}',
+        ];
 
         assert_eq!(
             (refused.map(is_obfuscated), read.map(is_obfuscated)),
-            ([true; 12], [false; 12])
+            ([true; 5], [false; 17])
         );
     }
 }
