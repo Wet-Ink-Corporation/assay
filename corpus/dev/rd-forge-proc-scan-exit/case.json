@@ -1,0 +1,19 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-forge/src/process.rs",
+      "start_line": 381,
+      "end_line": 394,
+      "class": "error-handling"
+    },
+    {
+      "file": "crates/assay-forge/src/process.rs",
+      "start_line": 157,
+      "end_line": 160,
+      "class": "logic"
+    }
+  ]
+}

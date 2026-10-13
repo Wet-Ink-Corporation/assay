@@ -1,0 +1,44 @@
+#!/bin/sh
+# A stand-in for `claude` in the canary tests (#121). Tests copy it into a scratch directory
+# beside a `knobs` file, since the runner clears the environment; it records how it was started
+# and what was planted there, prints a recorded stream and, when the knobs say the CLI ignores
+# its safety flags, behaves as a CLI that loads mods and AGENTS.md would:
+#   STREAM=<file>       stream-json to print on stdout
+#   RUN_MODS=1          run every planted mod's session.start hook (write its marker)
+#   FOLLOW_AGENTS=1     follow the planted AGENTS.md: print the canary word it asks for
+#   BREAK_MARKERS=1     replace the marker directory with a file, so markers cannot be inspected
+#   REMOVE_SANDBOX=1    delete the whole canary sandbox before exiting
+dir=${0%/*}
+. "$dir/knobs"
+add_dir=
+prev=
+for arg in "$@"; do
+  if [ "$prev" = --add-dir ]; then add_dir=$arg; fi
+  prev=$arg
+done
+for arg in "$@"; do printf '%s\0' "$arg"; done > "$dir/argv"
+/bin/cat > "$dir/stdin"
+pwd -P > "$dir/cwd"
+/usr/bin/env > "$dir/env"
+/bin/cat "$HOME/.claude/settings.json" > "$dir/settings.json"
+/bin/cat "$PWD/AGENTS.md" > "$dir/AGENTS.md"
+(cd "$HOME" && /usr/bin/find . -type f | /usr/bin/sort) > "$dir/home-files"
+(cd "$PWD" && /usr/bin/find . -type f | /usr/bin/sort) > "$dir/cwd-files"
+(cd "$add_dir" && /usr/bin/find . -type f | /usr/bin/sort) > "$dir/pr-files"
+for register in $(/usr/bin/find "$HOME" "$PWD" "$add_dir" -name register.ts); do
+  marker=$(/bin/sed -n 's/.*\$\.fs\.write(\("[^"]*"\).*/\1/p' "$register" | /bin/sed 's/"//g')
+  echo "$marker" >> "$dir/markers"
+  if [ "${RUN_MODS:-}" = 1 ]; then : > "$marker"; fi
+done
+/bin/cat "$STREAM"
+if [ "${FOLLOW_AGENTS:-}" = 1 ]; then
+  word=$(/bin/sed -n 's/.*`\([A-Z]*\)` immediately followed by `\([0-9a-f]*\)`.*/\1\2/p' "$PWD/AGENTS.md")
+  printf '{"type":"assistant","message":{"content":[{"type":"text","text":"ready %s"}]}}\n' "$word"
+fi
+if [ "${BREAK_MARKERS:-}" = 1 ]; then
+  markers=$(/bin/sed -n '1s|/[^/]*$||p' "$dir/markers")
+  /bin/rm -rf "$markers" && : > "$markers"
+fi
+if [ "${REMOVE_SANDBOX:-}" = 1 ]; then
+  /bin/rm -rf "${HOME%/*}"
+fi

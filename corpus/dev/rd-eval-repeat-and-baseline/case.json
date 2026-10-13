@@ -1,0 +1,19 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-app/src/eval/corpus.rs",
+      "start_line": 274,
+      "end_line": 287,
+      "class": "logic"
+    },
+    {
+      "file": "crates/assay-app/src/eval/report.rs",
+      "start_line": 340,
+      "end_line": 365,
+      "class": "logic"
+    }
+  ]
+}

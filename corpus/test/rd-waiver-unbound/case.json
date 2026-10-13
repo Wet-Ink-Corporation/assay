@@ -1,0 +1,25 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-domain/src/decide/rules.rs",
+      "start_line": 65,
+      "end_line": 90,
+      "class": "security"
+    },
+    {
+      "file": "crates/assay-domain/src/decide/rules.rs",
+      "start_line": 119,
+      "end_line": 127,
+      "class": "logic"
+    },
+    {
+      "file": "crates/assay-domain/src/decide.rs",
+      "start_line": 110,
+      "end_line": 118,
+      "class": "logic"
+    }
+  ]
+}

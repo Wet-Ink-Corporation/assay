@@ -1,0 +1,25 @@
+[package]
+name = "assay-cli"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "assay"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+assay-app = { workspace = true }
+assay-domain = { workspace = true }
+assay-forge = { workspace = true }
+assay-gates = { workspace = true }
+assay-runner = { workspace = true }
+# Writes the `assay-self` gate's document (#76); pre-approved, a dev-dependency before.
+serde_json = { workspace = true }
+# `assay check --local`'s scratch directory and atomic report write (#107); pre-approved, a
+# dev-dependency before.
+tempfile = { workspace = true }

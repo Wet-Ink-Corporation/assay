@@ -1,0 +1,25 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-gates/src/temper/ratchet.rs",
+      "start_line": 225,
+      "end_line": 230,
+      "class": "logic"
+    },
+    {
+      "file": "crates/assay-gates/src/temper/lint_findings.rs",
+      "start_line": 42,
+      "end_line": 59,
+      "class": "resource"
+    },
+    {
+      "file": "crates/assay-gates/src/temper/lint.rs",
+      "start_line": 195,
+      "end_line": 206,
+      "class": "security"
+    }
+  ]
+}

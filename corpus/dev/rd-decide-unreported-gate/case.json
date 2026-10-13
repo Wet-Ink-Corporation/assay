@@ -1,0 +1,25 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-app/src/decide/gates.rs",
+      "start_line": 95,
+      "end_line": 97,
+      "class": "security"
+    },
+    {
+      "file": "crates/assay-app/src/decide/gates.rs",
+      "start_line": 175,
+      "end_line": 181,
+      "class": "security"
+    },
+    {
+      "file": "crates/assay-app/src/decide/recompute.rs",
+      "start_line": 134,
+      "end_line": 152,
+      "class": "logic"
+    }
+  ]
+}

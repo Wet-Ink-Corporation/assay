@@ -1,0 +1,1517 @@
+diff --git a/crates/assay-app/AGENTS.md b/crates/assay-app/AGENTS.md
+index ba46f04..009b549 100644
+--- a/crates/assay-app/AGENTS.md
++++ b/crates/assay-app/AGENTS.md
+@@ -27,13 +27,14 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
+ - The reviewer prompt bundle (04 §3, `src/prompt_bundle.rs`): `PromptBundle` (`new`, `hash`, `system_prompt`, `instruction`, `user_prompt`) over `BundleFiles` read by the caller from the paths `BundleFile::path` names under `plugin/prompts/`, refused with `InvalidBundle` (`BundleFileError::{Empty, Nul}`); `Role` (`Combined`, `CombinedMicro`) with the roster's `max_turns`, `cap` and `severity_ceiling`.
+ 
+ - The `assay-self` gate's replay (02 §7, 05 T16, `src/golden.rs`): `replay_golden(&GoldenReplay, Source) -> FindingsDocument` over `GoldenReplay` (`corpus_dir`, `entries: &[CorpusEntry]` with `CorpusEntryKind::{File, Directory, Other}`, `rubric_path`, `rubric` bytes) and `SELF_GATE` (`"assay-self"`). The caller reads the files.
+-- Mechanical validation (04 §4 steps 1 to 6, ADR-08, `src/validation.rs`): `validate(&ContractValidator, &Inputs, &[&[u8]]) -> Validated`, over `Inputs` (repository, `Change` with `FileDiff`, `DiffPaths`, `Hunk`, `LineSpan`; the `SuppressRules` trait; domain `Dismissal`s; gate `Finding`s, Z4 only), giving `ValidFinding`s (relocated finding, `file_at_head`, `enclosing_symbol`, `occurrence_index`, `fingerprint`, `Placement`, `previously_dismissed`) and `Transition`s (`FindingRef`, disposition, `from`/`to`; `event()` is its `FindingDisposed`), with `injection_suspects`, `raises_injection_warning` and `events`.
++- Mechanical validation (04 §4 steps 1 to 6, ADR-08, `src/validation.rs`): `validate(&ContractValidator, &Inputs, &[&[u8]]) -> Validated`, over `Inputs` (repository, `Change` with `FileDiff`, `DiffPaths`, `Hunk`, `LineSpan`; the `SuppressRules` trait; domain `Dismissal`s; gate `Finding`s, Z4 only), giving `ValidFinding`s (relocated finding, `file_at_head`, `enclosing_symbol`, `occurrence_index`, `fingerprint`, `Placement`, `previously_dismissed`) and `Transition`s (`FindingRef`, disposition, `from`/`to`; `event()` is its `FindingDisposed`), with `injection_suspects`, `raises_injection_warning` and `events`. The free-text egress scan (03 §3, 05 T2, T8, §5, #87, `src/validation/egress.rs`) is `Inputs::egress`, an `EgressScan` (`with_token(&EgressToken, KnownRuns)` in Z3, `without_token(KnownRuns)` in Z4, `scan_artifact(bytes) -> Option<EgressKind>` for what the review job uploads) over `EgressToken` (`new`, refused with `EgressTokenError::{TooShort, TooLong}` under 12 normalised characters or over `MAX_TOKEN_BYTES` (1,024)) and `KnownRuns` (`index(texts)`, the PR tree's files and base `REVIEW.md`, refused with `KnownRunsError::TooLarge` past `MAX_INDEXED_BYTES` (64 MiB); `Default` explains nothing); its hits are `Validated::egress` (`EgressHit { at, field: FreeTextField, kind: EgressKind::{Token, UnexplainedRun, TokenShaped} }`) and `raises_egress_alarm()`, which fails the `review` job and flags the token for rotation.
+ - The `decide` input authentication (Z4, 02 §1 and §4, `src/decide.rs`, #56): `authenticate(&DecideRequest, &DecidePorts, &ContractValidator) -> Result<Authentication, DecideFailure>`. `DecideRequest` is the `PlanRequest` the run was planned from plus each upstream job's result (`JobResult`, `UpstreamJob`) and outputs: `PlanJob` (the plan artifact's name and the digest of its `run.json`), `GateJobOutputs` of `ReportedGate`s (`Reported::Concluded { conclusion, document }` or `Reported::Error`), `AdmitJob` with its `TierDegrade`, and `ReviewJob` with `ArtifactDocument`s. `DecidePorts { objects, state, artifacts }` borrows `PullRequestObjects` (`plan`'s), `PullRequestState` (`current` giving `CurrentPullRequest`, `pulls_on_head` giving `PullOnHead`s, `newer_run`) and `RunArtifacts` (`fetch(artifact, file, limit) -> Fetched::{Found, Missing, TooLarge}`). `Authentication` is `Superseded(Moved)`, `YieldToNewer`, `Refused(Refusal)` (`reason()`, a domain `Reason` coded `gate-error` or `plan-mismatch`; `Unreadable`, `OutputsProblem`, `PlanMismatch`, `PlanRefusal`) or `Authenticated(AuthenticatedRun)` (`run_key`, `artifact_names`, `tiering`, `tier` after an accepted degrade, `policy`, `open_prs_on_head`, `gates`, `gate_findings`, `review_documents`, and `pull_request(Snapshot)` for rubric v1). `MAX_FETCHED_BYTES` (64 MiB per run), `MAX_REVIEW_DOCUMENTS` (64), and the evidence bounds `MAX_EVIDENCE_FILES` (1,000), `MAX_EVIDENCE_BYTES` (64 MiB) and `MAX_SYMBOL_BYTES` (256). `Sha256Digest::of(bytes)` is a document's digest as jobs publish it.
+ - `decide`'s publication (S8, S9, 02 §5, 04 §6, `src/publish.rs`, #57): `publish(&Publication, &PublishPorts) -> Result<Published, PublishError>`. `Publication { target: Target { run_uid, pull_request, default_branch }, verdict }` with `Verdict::{Silent, Refused(&Refusal), Decided(Decided { run, rubric, inputs, events, cost })}`. `PublishPorts { forge, ledger, bundles }` borrows `VerdictForge` (`find_check`, `update_check`, `find_summary`, `create_summary`, `update_summary`, over `CheckName` (`for_base`), `CheckRun`, `CheckRunId`, `CheckStatus`, `CheckUpdate`, `CheckState`, `CheckConclusion`, `SummaryComment`, `CommentId`), `PublishLedger` (`acquire` the per-head lock, giving a `Lease` or `None` when held, `release`, `record_evidence(&EvidenceEntry)` with `EvidencePointer`, `EvidenceRecord` and `LlmEvidence`) and `BundleStore` (`upload(artifact, file, bytes)`, which succeeds without writing when the file already holds exactly those bytes, so a republish after `open` re-stamps the check still persists, and refuses other bytes for an existing file). `Published` is `Nothing`, `Unchanged`, `Yielded { stale: Stale::{Foreign, Moved}, unlock }` or `Written(Written { state, persist: Option<PersistFailure>, unlock: Unlock })`. The bundle is `assay.run-inputs/1` (`schemas/run-inputs-1.schema.json`) in `BUNDLE_FILE` (`run-inputs.json`), at most `MAX_BUNDLE_BYTES` (96 MiB); the summary comment carries `SUMMARY_MARKER`.
+ 
+ ## Invariants
+ - Ports speak domain types; no adapter type crosses a port signature (ARC-03).
+ - `validate` is pure, total and deterministic, so Z3 and Z4 run one function and, without gate findings, agree exactly; each file is indexed once per call. Every input ends kept or dropped by exactly one dropping disposition; non-dropping ones (`line-not-in-diff-moved`, `pre-existing`, `cap-exceeded` with `from`/`to`, `no-trigger`) are recorded as they apply. A document's findings past the 256th are dropped before step 2 as `cap-exceeded` without `from`/`to` (each costs a search of its file; wi-641e1a); with `from`/`to`, `cap-exceeded` is the role's severity ceiling and does not drop. A document whose `source.role` is not in the roster is `schema`; the role ceiling holds only if `source.role` is stamped by the runner, never by the model (the runner's charge, tracked as an issue); `rule` over 128 bytes and `group_hint` over 100 characters are `schema`. Evidence needs 12 non-whitespace characters after normalisation, summed across wildcard pieces, else `evidence-missing`. A kept finding's `line` is a line where its normalised evidence starts (nearest to the cited line, the earlier on a tie, spanning at most 50 lines); its `side` is explicit (base for a deleted file); its `evidence`, and an interaction's `caller.evidence`, are replaced by the tree's own lines they matched (cut to 400 characters), so the quotes the model wrote never reach the output; the fingerprint, and the occurrence index (earlier matches of those lines in the same function), are computed over those lines, so every quote of one line gets one fingerprint. Only an interaction may carry a `caller`; on any other finding it is `schema`. The other free-text fields remain model text: the screen is a heuristic, and neutralising them at publish time is a separate backstop (tracked as an issue). An `end_line` past the file or outside the hunk holding `line` is dropped and the finding goes to the summary. Step 4 applies the role's severity ceiling (`cap-exceeded`), then requires a trigger with an alphanumeric character other than an invisible one from `major` up (`no-trigger`). Every free-text field, `rule`, and an interaction's caller evidence as the model wrote it are injection-screened; the tree's lines that replace `evidence` and `caller.evidence` are repository content, published as code, and are not (wi-d4735c). The screen refuses rather than models (wi-b5affa): wherever it cannot be sure how GitHub renders text, it reads it as prose and flags it. Precondition: each free-text field is published as its own markdown block, so no markup from one field or from the publisher's template continues into another; the publisher owns that (#175), and the screen's reading of a field holds only under it. CRLF is read as LF; a carriage return that remains flags the field outright (`Html`). Only a plain field has anything removed as code: one with no `|` (tables), no whitespace other than ASCII space, tab and line feed, and no line beginning with a container marker (`>`, `-`, `*`, `+`, `N.`, `N)`); any other field is screened whole as prose. In a plain field it removes only closed fences (within three spaces of indent, a backtick fence's info string without a backtick) whose info string is empty or a single word of `[a-z0-9_+-]` on an allowlist of inert languages (`rust`, `rs`, `toml`, `json`, `yaml`, `yml`, `text`, `txt`, `plain`, `sh`, `bash`, `shell`, `console`, `diff`, `patch`, `sql`, `c`, `cpp`, `go`, `python`, `py`, `js`, `ts`, `javascript`, `typescript`, `html`, `xml`, `ini`, `makefile`, `dockerfile`; ASCII case-insensitive); any other closed fence (mermaid, math, an unknown or encoded word, extra words) and an unclosed fence keep their lines raw as prose, with no code span stripped, and code spans only from a paragraph every backtick run of which pairs within its own line (a line is blank only if it holds nothing but spaces and tabs); everything else is prose. Text is lowercased ASCII-only for the link checks, so no non-ASCII letter folds into an ASCII one (U+212A). Every URL is judged on the longest extent a renderer could read, ending only at an ASCII space or control: a written-out one also at `<` (GFM autolink), which may point to the allowlist (an authority of `[a-z0-9.-]` only) or the repository and is foreign if it holds a non-ASCII character or is cut by a character other than `)` or `>`; a markdown link destination also at an unbalanced `)` (or the closing `>` of an angled one), which must be an ASCII, absolute `https` URL into the repository after `.`/`..` resolution of the whole destination, with no `%` or `\` in its path and no `&` anywhere. A backtick anywhere between `](` and the link's closing `)`, title included, flags the text, as do `]:` anywhere in the text, code spans included (definitions are parsed before spans), TeX's `\href` and `\url` anywhere (math renders them as links), reference links, character references (`&#…`, `&name;`), an email address (GFM makes it a `mailto:` link), a reference into another repository (`owner/name#digits` or `owner/name@` and 7 to 40 hex digits, unless `owner/name` is the repository; `user@` and 7 to 40 hex digits, a commit in that user's fork, unless `user` is the repository's owner; ASCII case-insensitive) and an `@` followed by a name character unless an ASCII letter or digit precedes it. A suggestion fence is found inside any number of containers, and a fence line whose info string holds `&` or `\` counts as one. The link scan is forward-only and each URL is capped at 2048 characters. Evidence search tries one start per kept line, so it is linear in the file plus the evidence length per line, and each file is searched once per distinct normalised evidence. The enclosing-function pass finds each line's opener by binary search. The enclosing symbol is an indentation heuristic over formatted Rust: deterministic, not a parser. Nothing in it quotes model text.
++- The egress scan runs first on every finding of a schema-valid document, past the 256 cap included, before step 1's shape checks and before step 2 replaces `evidence` and `caller.evidence`; a hit drops the finding as `injection-suspect` and records one `EgressHit` (its first field, in `FreeTextField` order). It reads every field the reviewer wrote (`title`, `body`, `fix`, `trigger`, `evidence`, `expected_behavior`, `group_hint`, `rule`, an interaction's caller evidence). The token is encoded, the text never decoded: text is folded as the screen folds it (invisibles dropped, lookalike and fullwidth letters read as Latin, lowercase) and reduced to ASCII letters and digits, and any 12-character window of the token, of its base64 (whole groups starting at each of its first three bytes, so every alignment; the alphabets differ only in what normalisation strips) or of its hex is a `Token` hit. A run of 20 or more characters (Unicode alphanumerics and invisible characters, so a zero-width character cannot cut one) that is not, whole, a run of the indexed texts is `UnexplainedRun` (wi-b5affa: what is not provably the tree's own text is a hit; a prefix of a longer identifier is not explained). Z4 holds no token, so it applies the run rule only, and Z3 can drop more than Z4; Z3 and Z4 agree exactly when given equal scans. `scan_artifact` reads the bytes as text and, when they are JSON, every key and string decoded, for the token windows, a private key header, `sk-ant-` in any ASCII case, and AWS key ids and mixed runs of 32 or more characters (not 40 or 64 lowercase hex) the index does not hold; it skips the run rule, since artifacts carry digests assay stamps. Cost: one pass and one hash lookup per position or run, linear in the text; the index is linear in its input, refused before reading the text that crosses its cap, and holds borrowed runs only.
+ - `replay_golden` is pure and total: it parses the rubric (TOML) and each case's `inputs.json` (`DecisionInputs` through serde only, so new fields need no change here), decides, writes the decision as pretty JSON plus a newline and compares bytes. The conclusion is `pass` exactly when there is no finding; every problem is a `blocker` finding in path order (`golden-mismatch` at the first differing line of the recorded file, `golden-inputs-invalid`, `golden-case-incomplete`, `golden-unexpected-entry` outside the allowlist of a root `README.md` and case directories holding a regular `inputs.json` and `decision.json` once each, `golden-corpus-empty`, and `golden-rubric-invalid` alone when the rubric does not parse). Each allowlisted entry counts once: a repeated `README.md`, case directory or case file is `golden-unexpected-entry`. Titles carry only the path reduced to `[A-Za-z0-9_:-./]`; bodies are fixed text; evidence is the recorded line, trimmed and clipped to 400 characters, or, when there is none, the path reduced as in the title.
+ - A session init is clean only when its CLI version equals the pin, it has no MCP server, its tools are exactly `Glob`, `Grep`, `Read` (each once), every plugin is a built-in (`path` `builtin`, `source` `<name>@builtin`), and every plugin, skill and agent is on the allowlist, none listed twice (#121). Built-ins are allowlisted, not absent. `doctor` fails closed: an unreadable init fails the checks that read it (the mod canary judges the markers first, so a mod that ran is reported anyway), a canary that planted nothing fails the mod canary, and a call that did not answer fails the AGENTS.md canary. The AGENTS.md canary fails on the joined word in any ASCII case anywhere in the transcript, and on the nonce alone in any JSON message but a `user` one (tool results quote the planted files).
+ - A contract document is accepted only at a supported version and only if it satisfies that version's schema; unknown fields, unknown versions, over-length text, documents over `MAX_DOCUMENT_BYTES` and repeated object keys are rejected, never repaired (03 preamble).
+@@ -93,5 +94,6 @@ Integration tests in `tests/it/` drive use cases against in-memory fakes of the
+ | 2026-10-12 | `decide` review round 1 (#56): the cited line's normalised content is stored once per file, so per-finding work no longer grows with the line (5,000 findings on a 2 MiB line ran past 300 s); function names over 256 bytes leave their file unindexed (fail closed). A degrade from an `admit` that did not succeed is `plan-mismatch`, as this charter said; the test that pinned it as ignored now pins the refusal. A successful gates job that leaves out a scheduled plugin is refused (`OutputsProblem::MissingPlugin`) rather than read as skipped; a skipped `review` job reporting documents is refused (a failed one is not: its outputs are still written by trusted steps, and the rubric's LLM-stage rules judge it). An executable file is already `EntryKind::File` (the adapters map mode `100755` to it). | H-12, H-13, H-16, wi-b5affa | #56 review round 1 |
+ | 2026-10-12 | `decide`'s publication (#57) is a use case over three narrow ports (`VerdictForge`, `PublishLedger`, `BundleStore`) holding only the calls it makes; the full `Forge` and `Ledger` are #53's and #70's, which can implement these. The binary subcommand is #60's. Two-way defaults recorded by the owner's coordinator: the bundle is a new contract `assay.run-inputs/1`, one JSON file the decide job hashes itself (a zip's digest depends on the zipper), carrying `DecisionInputs` with the GitHub state snapshot left to #58; a refused run persists no bundle (nothing authenticated to keep); `review_documents()` keeps its signature, with each review file's name and digest kept beside it in `AuthenticatedRun`'s private record. Fail-closed readings, open to the owner: the bundle is persisted before the check is written so the check can carry `persist-error`; a release failure is reported with the outcome; the summary comment found is the App's own (`find_summary` must return only App-authored comments). | ARC-03, H-13, H-16, wi-b5affa | #57 |
+ | 2026-10-12 | The `assay-self` replay (#76) lives here: the domain may not parse JSON or TOML, and the app may not read files, so the binary reads the corpus and this module judges it. It writes decisions exactly as `assay-domain`'s golden test does, which `the_recorded_corpus_replays_clean` pins. Fail-closed readings (wi-b5affa): an empty corpus, an incomplete case, any entry outside the allowlist and a repeated file fail the gate. | ARC-02, ARC-03, wi-b5affa | #76 |
++| 2026-10-13 | Free-text egress scan (#87) composes with #86's validation rather than running beside it: one pure `validate` still serves Z3 and Z4, so `Inputs` gains `egress` and `Validated` gains `egress` (workspace-internal API change). The screen's `has_token` is shared with the artifact scan (`token_shaped`, which also flags `sk-ant-`). No new dependency: base64 and hex are encoded here in a few lines. Two-way defaults recorded for the owner (wi-b5affa): "occurs in the tree" is whole-run equality, not substring; every reviewer-written field is scanned, not only the five 03 §3 names; the index cap is 64 MiB (as `MAX_EVIDENCE_BYTES`) and past it the caller fails closed; a run cited from a commit SHA or permalink is a hit. Two schema tests' cap inputs became short words (expectations unchanged), since a 128-character run is now an egress hit. Folds #180. | ARC-02, H-13, H-16, wi-b5affa | #87; Weigh-In defaults, owner may reopen |
+ | 2026-10-12 | Clean init with built-in mods (#121): the allowlist is parsed here with the rest of `plugins.toml` and is refused without `claude_cli`, whose built-ins it lists; the init rule and the doctor checks are pure functions here, and the stream-json reader and the canary's file work are `assay-runner`'s (a `CanaryProbe` port, no file I/O here). The canary nonce reuses `NonceSource`. Fail-closed readings (wi-b5affa), open to the owner: an absent allowlist admits no built-in; drift fails in both directions (an allowlisted built-in the CLI no longer loads fails too); tools are compared as a set but a repeated tool is unclean; the CLI version is part of the clean-init rule. Nothing quadratic: every list is capped at 256 and checked through `BTreeSet`s. Review round 1: the nonce alone in a model-written message fails the AGENTS.md canary (two-way default: a model that saw the instruction and wrote part of it is not trusted to have ignored it); the markers are judged before the init; `parse_json_strict` exposes the contract reader's repeated-key parse so the runner's init reader shares it. | ARC-02, ARC-03, H-13, wi-b5affa | #121; Weigh-In defaults, owner may reopen |
+ | 2026-10-11 | `ContractValidator` is a value built once by the composition root, not a lazily initialised static: no hidden global state, and the fallible compile step surfaces as a typed error. | OWN-11, ERR-01 | Story #47 |
+diff --git a/crates/assay-app/src/lib.rs b/crates/assay-app/src/lib.rs
+index 874696e..81d2f4f 100644
+--- a/crates/assay-app/src/lib.rs
++++ b/crates/assay-app/src/lib.rs
+@@ -77,6 +77,8 @@ pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_tru
+ 
+ mod validation;
+ pub use validation::{
+-    Change, DiffPaths, FileDiff, FindingRef, Hunk, Inputs, LineSpan, Placement, SuppressRules,
+-    Transition, ValidFinding, Validated, validate,
++    Change, DiffPaths, EgressHit, EgressKind, EgressScan, EgressToken, EgressTokenError, FileDiff,
++    FindingRef, FreeTextField, Hunk, Inputs, KnownRuns, KnownRunsError, LineSpan,
++    MAX_INDEXED_BYTES, MAX_TOKEN_BYTES, Placement, SuppressRules, Transition, ValidFinding,
++    Validated, validate,
+ };
+diff --git a/crates/assay-app/src/validation.rs b/crates/assay-app/src/validation.rs
+index 81db078..44b5479 100644
+--- a/crates/assay-app/src/validation.rs
++++ b/crates/assay-app/src/validation.rs
+@@ -7,6 +7,7 @@
+ 
+ mod anchor;
+ mod change;
++mod egress;
+ mod evidence;
+ mod index;
+ mod screen;
+@@ -21,6 +22,10 @@ use assay_domain::{
+ };
+ 
+ pub use change::{Change, DiffPaths, FileDiff, Hunk, LineSpan};
++pub use egress::{
++    EgressHit, EgressKind, EgressScan, EgressToken, EgressTokenError, FreeTextField, KnownRuns,
++    KnownRunsError, MAX_INDEXED_BYTES, MAX_TOKEN_BYTES,
++};
+ pub(crate) use symbol::enclosing_functions;
+ 
+ use crate::contract::{Contract, ContractValidator};
+@@ -57,6 +62,8 @@ pub struct Inputs<'a> {
+     pub dismissals: &'a [Dismissal<'a>],
+     /// Gate findings, in Z4 only; Z3 runs before the gates finish and passes none (04 §1).
+     pub gate_findings: &'a [Finding],
++    /// The free-text egress scan (03 §3): with the token in Z3, without it in Z4.
++    pub egress: &'a EgressScan<'a>,
+ }
+ 
+ impl fmt::Debug for Inputs<'_> {
+@@ -66,6 +73,7 @@ impl fmt::Debug for Inputs<'_> {
+             .field("change", &self.change)
+             .field("dismissals", &self.dismissals)
+             .field("gate_findings", &self.gate_findings)
++            .field("egress", &self.egress)
+             .finish_non_exhaustive()
+     }
+ }
+@@ -162,6 +170,9 @@ pub struct Validated {
+     pub findings: Vec<ValidFinding>,
+     /// Every transition, in the order applied; a dropped finding's last one drops it.
+     pub transitions: Vec<Transition>,
++    /// The findings the egress scan dropped, in input order; each is also an
++    /// `injection-suspect` transition.
++    pub egress: Vec<EgressHit>,
+ }
+ 
+ impl Validated {
+@@ -180,6 +191,13 @@ impl Validated {
+         self.injection_suspects() >= INJECTION_WARNING_AT
+     }
+ 
++    /// Whether the egress scan hit anything (03 §3): the `review` job then fails and the OAuth
++    /// token is flagged for rotation, whatever else the run found.
++    #[must_use]
++    pub fn raises_egress_alarm(&self) -> bool {
++        !self.egress.is_empty()
++    }
++
+     /// One `FindingDisposed` event per transition, in order.
+     pub fn events(&self) -> impl Iterator<Item = EventPayload> + '_ {
+         self.transitions.iter().map(Transition::event)
+@@ -202,7 +220,9 @@ impl Validated {
+ /// ```
+ /// use std::collections::BTreeMap;
+ ///
+-/// use assay_app::{Change, ContractValidator, Inputs, Placement, SuppressRules, validate};
++/// use assay_app::{
++///     Change, ContractValidator, EgressScan, Inputs, KnownRuns, Placement, SuppressRules, validate,
++/// };
+ /// use assay_domain::Finding;
+ ///
+ /// struct NoRules;
+@@ -219,12 +239,15 @@ impl Validated {
+ ///     head_files: BTreeMap::from([("src/lib.rs".to_owned(), lib.to_owned())]),
+ ///     ..Change::default()
+ /// };
++/// // Z4 holds no OAuth token; Z3 passes it with `EgressScan::with_token`.
++/// let egress = EgressScan::without_token(KnownRuns::index([lib.as_bytes()])?);
+ /// let inputs = Inputs {
+ ///     repository: "owner/repo",
+ ///     change: &change,
+ ///     suppress: &NoRules,
+ ///     dismissals: &[],
+ ///     gate_findings: &[],
++///     egress: &egress,
+ /// };
+ /// let document = br#"{"schema": "assay.findings/1",
+ ///     "source": {"kind": "reviewer", "name": "claude", "version": "v", "role": "combined",
+@@ -252,6 +275,11 @@ pub fn validate(
+             Ok((ceiling, findings)) => {
+                 for (index, finding) in findings.into_iter().enumerate() {
+                     let at = FindingRef::Finding { document, index };
++                    // Before the cap: the scan is linear in the text, and a finding past the
++                    // cap was still written, and uploaded, by the model.
++                    if run.drops_for_egress(at, &finding) {
++                        continue;
++                    }
+                     if index < MAX_FINDINGS_PER_DOCUMENT {
+                         run.check(at, finding, ceiling);
+                     } else {
+diff --git a/crates/assay-app/src/validation/egress.rs b/crates/assay-app/src/validation/egress.rs
+new file mode 100644
+index 0000000..a248b81
+--- /dev/null
++++ b/crates/assay-app/src/validation/egress.rs
+@@ -0,0 +1,442 @@
++//! The free-text egress scan (03 §3, 05 T2, T8 and §5): a steered model needs no network to
++//! leak the OAuth token, only a finding someone reads. Every field a reviewer wrote is scanned
++//! for the token and its common encodings, and for long runs that nothing in the tree explains;
++//! any hit drops the finding as `injection-suspect`, fails the `review` job and flags the token
++//! for rotation. Uploaded artifacts are scanned for token-shaped strings.
++//!
++//! The token is encoded and the text normalised, never the text decoded: that is linear and
++//! needs no parser of the encodings. Where an encoding is not covered, the unexplained-run rule
++//! is the catch-all, so what is not provably the tree's own text is a hit (wi-b5affa).
++
++mod encoding;
++
++use std::collections::HashSet;
++use std::fmt;
++
++use assay_domain::Finding;
++use serde_json::Value;
++use thiserror::Error;
++
++use super::FindingRef;
++use super::screen;
++use crate::contract::parse_json_strict;
++
++/// How many normalised characters of the token a window holds (03 §3: at least 12). A longer
++/// match holds a window of this length, so only this length is looked for.
++const WINDOW: usize = 12;
++
++/// The fewest characters of a run that must occur in the tree or base `REVIEW.md` (03 §3).
++const MIN_UNEXPLAINED_RUN: usize = 20;
++
++/// The most bytes [`EgressToken::new`] accepts: the token is the owner's secret, but its
++/// windows are built once per byte, so their number is bounded too (H-13).
++pub const MAX_TOKEN_BYTES: usize = 1024;
++
++/// The most bytes [`KnownRuns::index`] reads, summed over its texts; the decide job's budget for
++/// a tree's evidence reads is the same (`MAX_EVIDENCE_BYTES`).
++pub const MAX_INDEXED_BYTES: usize = 64 * 1024 * 1024;
++
++/// What the egress scan found. Each names a category, never the text.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum EgressKind {
++    /// Twelve or more normalised characters of the token, of its base64 (at any of the three
++    /// alignments, in either alphabet) or of its hex (in either case).
++    Token,
++    /// A run of 20 or more alphanumeric (or invisible) characters found in neither the tree nor
++    /// base `REVIEW.md`.
++    UnexplainedRun,
++    /// In an artifact: a token-shaped string the tree does not explain (a credential prefix, a
++    /// private key header, an AWS access key id, or a long run mixing letters and digits that
++    /// is not a hex digest).
++    TokenShaped,
++}
++
++/// A field of a finding that the reviewer wrote.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum FreeTextField {
++    /// `title`.
++    Title,
++    /// `body`.
++    Body,
++    /// `fix`.
++    Fix,
++    /// `trigger`.
++    Trigger,
++    /// `evidence`, as the reviewer quoted it.
++    Evidence,
++    /// `expected_behavior`.
++    ExpectedBehavior,
++    /// `group_hint`.
++    GroupHint,
++    /// `rule`.
++    Rule,
++    /// An interaction's `caller.evidence`, as the reviewer quoted it.
++    CallerEvidence,
++}
++
++/// One finding the egress scan dropped: the first field it hit in, and what it found.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub struct EgressHit {
++    /// The finding.
++    pub at: FindingRef,
++    /// The first field, in [`FreeTextField`] order, that holds a hit.
++    pub field: FreeTextField,
++    /// What that field holds.
++    pub kind: EgressKind,
++}
++
++/// The token could not be scanned for.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
++pub enum EgressTokenError {
++    /// Normalised, the token has fewer characters than one window.
++    #[error("the token has fewer than {min} alphanumeric characters")]
++    TooShort {
++        /// The fewest it needs.
++        min: usize,
++    },
++    /// The token is longer than [`MAX_TOKEN_BYTES`].
++    #[error("the token is longer than {max} bytes")]
++    TooLong {
++        /// The most it may hold.
++        max: usize,
++    },
++}
++
++/// The tree's texts could not be indexed.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
++pub enum KnownRunsError {
++    /// The texts hold more than [`MAX_INDEXED_BYTES`] together; none past the cap was read.
++    #[error("the tree holds more than {limit} bytes to index")]
++    TooLarge {
++        /// The cap.
++        limit: usize,
++    },
++}
++
++/// The OAuth token, held as the windows the scan looks for. Z3 holds it; Z4 does not (05 §4).
++pub struct EgressToken {
++    /// Every window of the token's normalised forms: plain, base64 at three alignments, hex.
++    windows: HashSet<[u8; WINDOW]>,
++}
++
++impl fmt::Debug for EgressToken {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("EgressToken").finish_non_exhaustive()
++    }
++}
++
++impl EgressToken {
++    /// The windows of `token` and of its base64 and hex encodings.
++    ///
++    /// Base64 is taken over the token starting at each of its first three bytes, so it is found
++    /// wherever it falls in a three-byte group of a longer encoded text.
++    ///
++    /// # Errors
++    ///
++    /// [`EgressTokenError::TooLong`] past [`MAX_TOKEN_BYTES`], and
++    /// [`EgressTokenError::TooShort`] when fewer than 12 alphanumeric characters remain once
++    /// normalised: such a token could not be told apart from ordinary text.
++    pub fn new(token: &str) -> Result<Self, EgressTokenError> {
++        if token.len() > MAX_TOKEN_BYTES {
++            return Err(EgressTokenError::TooLong {
++                max: MAX_TOKEN_BYTES,
++            });
++        }
++        let plain = normalise(token);
++        if plain.len() < WINDOW {
++            return Err(EgressTokenError::TooShort { min: WINDOW });
++        }
++        let bytes = token.as_bytes();
++        let mut forms = vec![plain, encoding::hex(bytes).into_bytes()];
++        forms.extend(
++            (0..3)
++                .filter_map(|skip| bytes.get(skip..))
++                .map(|from| normalise(&encoding::base64_whole_groups(from))),
++        );
++        let windows = forms
++            .iter()
++            .flat_map(|form| form.array_windows::<WINDOW>().copied())
++            .collect();
++        Ok(Self { windows })
++    }
++
++    /// Whether normalised text holds one of the token's windows.
++    fn is_in(&self, normalised: &[u8]) -> bool {
++        normalised
++            .array_windows::<WINDOW>()
++            .any(|window| self.windows.contains(window))
++    }
++}
++
++/// The runs of 20 or more characters in the PR tree and base `REVIEW.md`.
++///
++/// They are what a finding may quote at length. A run is found by whole-run equality, so a part
++/// of a longer identifier is not explained by it (the stricter reading, and linear).
++#[derive(Default)]
++pub struct KnownRuns<'t> {
++    runs: HashSet<&'t str>,
++}
++
++impl fmt::Debug for KnownRuns<'_> {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("KnownRuns")
++            .field("runs", &self.runs.len())
++            .finish()
++    }
++}
++
++impl<'t> KnownRuns<'t> {
++    /// Indexes the long runs of `texts`: every file of the PR tree the caller read, and base
++    /// `REVIEW.md`. Bytes that are not UTF-8 end a run. Leaving a text out only makes more runs
++    /// unexplained, so the caller may skip binary files. [`KnownRuns::default`] explains nothing.
++    ///
++    /// Cost: linear in the bytes read, which stop at [`MAX_INDEXED_BYTES`].
++    ///
++    /// # Errors
++    ///
++    /// [`KnownRunsError::TooLarge`] when the texts hold more than [`MAX_INDEXED_BYTES`]
++    /// together, before the text that crosses the cap is read. The caller then has no index and
++    /// fails closed: it fails the job, or scans with [`KnownRuns::default`].
++    pub fn index(texts: impl IntoIterator<Item = &'t [u8]>) -> Result<Self, KnownRunsError> {
++        let mut runs = HashSet::new();
++        let mut indexed: usize = 0;
++        for text in texts {
++            indexed = indexed
++                .checked_add(text.len())
++                .filter(|&total| total <= MAX_INDEXED_BYTES)
++                .ok_or(KnownRunsError::TooLarge {
++                    limit: MAX_INDEXED_BYTES,
++                })?;
++            for chunk in text.utf8_chunks() {
++                runs.extend(long_runs(chunk.valid()));
++            }
++        }
++        Ok(Self { runs })
++    }
++
++    fn explains(&self, run: &str) -> bool {
++        self.runs.contains(run)
++    }
++}
++
++/// What the egress scan compares model text with: the token when the zone holds it, and the
++/// runs the tree explains.
++#[derive(Debug)]
++pub struct EgressScan<'t> {
++    token: Option<&'t EgressToken>,
++    known: KnownRuns<'t>,
++}
++
++impl<'t> EgressScan<'t> {
++    /// The scan Z3 runs: for the token and its encodings, and for unexplained runs.
++    #[must_use]
++    pub const fn with_token(token: &'t EgressToken, known: KnownRuns<'t>) -> Self {
++        Self {
++            token: Some(token),
++            known,
++        }
++    }
++
++    /// The scan Z4 runs: it holds no token (05 §4), so only for unexplained runs, which an
++    /// encoding of the token of 20 or more characters is.
++    #[must_use]
++    pub const fn without_token(known: KnownRuns<'t>) -> Self {
++        Self { token: None, known }
++    }
++
++    /// Scans an artifact before the review job uploads it (05 §5): its bytes as text and, if it
++    /// is JSON, every key and string decoded, so escapes cannot split a token. The run rule is
++    /// not applied: artifacts carry digests and keys that assay stamps itself.
++    ///
++    /// Cost: linear in `artifact`, plus one parse.
++    #[must_use]
++    pub fn scan_artifact(&self, artifact: &[u8]) -> Option<EgressKind> {
++        let raw = String::from_utf8_lossy(artifact);
++        let parsed = parse_json_strict(artifact);
++        let decoded = match &parsed {
++            Ok(value) => json_strings(value),
++            // Not JSON: there are no strings to decode, and the raw text is scanned regardless.
++            Err(_) => Vec::new(),
++        };
++        [raw.as_ref()]
++            .into_iter()
++            .chain(decoded)
++            .find_map(|text| self.artifact_text(text))
++    }
++
++    /// The first field of `finding` the reviewer wrote that holds a hit, and what it holds.
++    pub(super) fn scan_finding(&self, finding: &Finding) -> Option<(FreeTextField, EgressKind)> {
++        model_text(finding).find_map(|(field, text)| Some((field, self.scan_text(text)?)))
++    }
++
++    fn scan_text(&self, text: &str) -> Option<EgressKind> {
++        if self.holds_token(text) {
++            Some(EgressKind::Token)
++        } else if long_runs(text).any(|run| !self.known.explains(run)) {
++            Some(EgressKind::UnexplainedRun)
++        } else {
++            None
++        }
++    }
++
++    fn artifact_text(&self, text: &str) -> Option<EgressKind> {
++        if self.holds_token(text) {
++            Some(EgressKind::Token)
++        } else if screen::token_shaped(text, |run| self.known.explains(run)) {
++            Some(EgressKind::TokenShaped)
++        } else {
++            None
++        }
++    }
++
++    fn holds_token(&self, text: &str) -> bool {
++        self.token
++            .is_some_and(|token| token.is_in(&normalise(text)))
++    }
++}
++
++/// `text` as the token windows are compared with it: folded as a reader sees it (invisible
++/// characters dropped, lowercase, lookalike letters read as Latin), then only ASCII letters
++/// and digits kept. Separators, case, and the difference between the two base64 alphabets are
++/// gone.
++fn normalise(text: &str) -> Vec<u8> {
++    screen::fold(text)
++        .bytes()
++        .filter(u8::is_ascii_alphanumeric)
++        .collect()
++}
++
++/// The runs of `text` of at least [`MIN_UNEXPLAINED_RUN`] characters. A run is a maximal
++/// sequence of alphanumeric characters (any script) and invisible ones, so a zero-width
++/// character cannot cut a long run into short ones.
++fn long_runs(text: &str) -> impl Iterator<Item = &str> {
++    text.split(|c: char| !(c.is_alphanumeric() || screen::is_invisible(c)))
++        // A run has at least as many bytes as characters: the byte test skips counting short ones.
++        .filter(|run| run.len() >= MIN_UNEXPLAINED_RUN)
++        .filter(|run| run.chars().count() >= MIN_UNEXPLAINED_RUN)
++}
++
++/// Every field of `finding` the reviewer wrote, with its name. `evidence` and `caller.evidence`
++/// are read as written: the scan runs before step 2 replaces them with the tree's lines.
++fn model_text(finding: &Finding) -> impl Iterator<Item = (FreeTextField, &str)> {
++    [
++        (FreeTextField::Title, Some(finding.title.as_str())),
++        (FreeTextField::Body, Some(finding.body.as_str())),
++        (FreeTextField::Fix, finding.fix.as_deref()),
++        (FreeTextField::Trigger, finding.trigger.as_deref()),
++        (FreeTextField::Evidence, Some(finding.evidence.as_str())),
++        (
++            FreeTextField::ExpectedBehavior,
++            finding.expected_behavior.as_deref(),
++        ),
++        (FreeTextField::GroupHint, finding.group_hint.as_deref()),
++        (FreeTextField::Rule, finding.rule.as_deref()),
++        (
++            FreeTextField::CallerEvidence,
++            finding
++                .caller
++                .as_ref()
++                .map(|caller| caller.evidence.as_str()),
++        ),
++    ]
++    .into_iter()
++    .filter_map(|(field, text)| Some((field, text?)))
++}
++
++/// Every object key and string in `value`, walked with an explicit stack.
++fn json_strings(value: &Value) -> Vec<&str> {
++    let mut strings = Vec::new();
++    let mut pending = vec![value];
++    while let Some(value) = pending.pop() {
++        match value {
++            Value::String(text) => strings.push(text.as_str()),
++            Value::Array(items) => pending.extend(items),
++            Value::Object(fields) => {
++                for (key, field) in fields {
++                    strings.push(key.as_str());
++                    pending.push(field);
++                }
++            }
++            Value::Null | Value::Bool(_) | Value::Number(_) => {}
++        }
++    }
++    strings
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{
++        EgressToken, EgressTokenError, KnownRuns, KnownRunsError, MAX_INDEXED_BYTES,
++        MAX_TOKEN_BYTES,
++    };
++
++    #[test]
++    fn refuses_a_token_of_eleven_normalised_characters_and_takes_twelve() {
++        let eleven = EgressToken::new("ab-cd-ef-gh-ijk").map(|_| ());
++        let twelve = EgressToken::new("ab-cd-ef-gh-ijkl").map(|_| ());
++
++        assert_eq!(
++            (eleven, twelve),
++            (Err(EgressTokenError::TooShort { min: 12 }), Ok(()))
++        );
++    }
++
++    #[test]
++    fn refuses_a_token_past_its_byte_cap() {
++        let at_cap = "a".repeat(MAX_TOKEN_BYTES);
++        let past_cap = "a".repeat(MAX_TOKEN_BYTES + 1);
++
++        assert_eq!(
++            (
++                EgressToken::new(&at_cap).map(|_| ()),
++                EgressToken::new(&past_cap).map(|_| ())
++            ),
++            (
++                Ok(()),
++                Err(EgressTokenError::TooLong {
++                    max: MAX_TOKEN_BYTES
++                })
++            )
++        );
++    }
++
++    #[test]
++    fn never_shows_the_token_in_debug_output() {
++        let token = EgressToken::new("sk-ant-oat01-secretsecret").expect("long enough");
++
++        assert_eq!(format!("{token:?}"), "EgressToken { .. }");
++    }
++
++    #[test]
++    fn indexes_up_to_its_byte_cap_and_refuses_past_it() {
++        // One shared mebibyte of spaces, passed as many texts: no run, no extra memory.
++        let mebibyte = vec![b' '; 1024 * 1024];
++        let at_cap = vec![mebibyte.as_slice(); MAX_INDEXED_BYTES / mebibyte.len()];
++        let past_cap = at_cap.iter().copied().chain([b" ".as_slice()]);
++
++        assert_eq!(
++            (
++                KnownRuns::index(at_cap.iter().copied()).map(|known| known.runs.len()),
++                KnownRuns::index(past_cap).map(|known| known.runs.len())
++            ),
++            (
++                Ok(0),
++                Err(KnownRunsError::TooLarge {
++                    limit: MAX_INDEXED_BYTES
++                })
++            )
++        );
++    }
++
++    #[test]
++    fn ends_runs_at_bytes_that_are_not_utf8() {
++        let text = b"abcdefghij\xffklmnopqrst abcdefghijklmnopqrstu".as_slice();
++
++        let known = KnownRuns::index([text]).expect("far below the cap");
++
++        assert_eq!(
++            known.runs.into_iter().collect::<Vec<_>>(),
++            ["abcdefghijklmnopqrstu"]
++        );
++    }
++}
+diff --git a/crates/assay-app/src/validation/egress/encoding.rs b/crates/assay-app/src/validation/egress/encoding.rs
+new file mode 100644
+index 0000000..cd0e873
+--- /dev/null
++++ b/crates/assay-app/src/validation/egress/encoding.rs
+@@ -0,0 +1,76 @@
++//! The encodings of the token the egress scan looks for: base64 and hex, written out here
++//! rather than taken from a crate, since only the encoding direction is needed.
++
++/// The standard base64 alphabet (RFC 4648 §4). The URL-safe one differs only in `+` and `/`,
++/// which normalisation strips, so one alphabet covers both.
++const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
++
++/// Lowercase hex digits.
++const HEX: &[u8; 16] = b"0123456789abcdef";
++
++/// The base64 of `bytes`' whole three-byte groups: the characters that depend on `bytes` alone
++/// when they start a group. A trailing partial group is left out, since its last character
++/// depends on whatever follows.
++pub(super) fn base64_whole_groups(bytes: &[u8]) -> String {
++    let (groups, _partial) = bytes.as_chunks::<3>();
++    let mut encoded = String::with_capacity(groups.len().saturating_mul(4));
++    for &[a, b, c] in groups {
++        let sextets = [
++            a >> 2,
++            (a & 0b11) << 4 | b >> 4,
++            (b & 0b1111) << 2 | c >> 6,
++            c & 0b11_1111,
++        ];
++        // Each sextet is below 64, so every lookup succeeds.
++        encoded.extend(
++            sextets
++                .iter()
++                .filter_map(|&sextet| BASE64.get(usize::from(sextet)))
++                .map(|&symbol| char::from(symbol)),
++        );
++    }
++    encoded
++}
++
++/// `bytes` in lowercase hex.
++pub(super) fn hex(bytes: &[u8]) -> String {
++    bytes
++        .iter()
++        .flat_map(|&byte| [byte >> 4, byte & 0b1111])
++        // Each nibble is below 16, so every lookup succeeds.
++        .filter_map(|nibble| HEX.get(usize::from(nibble)))
++        .map(|&digit| char::from(digit))
++        .collect()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{base64_whole_groups, hex};
++
++    #[test]
++    fn encodes_whole_groups_as_rfc_4648_does() {
++        // RFC 4648 §10 test vectors whose length is a multiple of three.
++        assert_eq!(
++            ["", "foo", "foobar"].map(|text| base64_whole_groups(text.as_bytes())),
++            ["", "Zm9v", "Zm9vYmFy"]
++        );
++    }
++
++    #[test]
++    fn leaves_out_a_trailing_partial_group() {
++        assert_eq!(
++            ["fo", "foob", "fooba"].map(|text| base64_whole_groups(text.as_bytes())),
++            ["", "Zm9v", "Zm9v"]
++        );
++    }
++
++    #[test]
++    fn uses_both_symbols_past_the_alphanumerics() {
++        assert_eq!(base64_whole_groups(&[0xfb, 0xff, 0xbf]), "+/+/");
++    }
++
++    #[test]
++    fn writes_lowercase_hex() {
++        assert_eq!(hex(&[0x00, 0x7e, 0xab, 0xff]), "007eabff");
++    }
++}
+diff --git a/crates/assay-app/src/validation/screen.rs b/crates/assay-app/src/validation/screen.rs
+index 8dfcd1e..b073604 100644
+--- a/crates/assay-app/src/validation/screen.rs
++++ b/crates/assay-app/src/validation/screen.rs
+@@ -43,6 +43,10 @@ const PROMPT_WINDOW: usize = 4;
+ /// The shortest alphanumeric run with letters and digits that reads as a token or key.
+ const TOKEN_RUN: usize = 32;
+ 
++/// How Anthropic API keys and OAuth tokens begin (`sk-ant-api03-`, `sk-ant-oat01-`); the rest of
++/// one holds `-` and `_`, so it need not form one long run.
++const CREDENTIAL_PREFIX: &[u8] = b"sk-ant-";
++
+ /// The lengths of a hex SHA-1 and SHA-256 digest: commit and content ids, not secrets.
+ const DIGEST_LENGTHS: [usize; 2] = [40, 64];
+ 
+@@ -58,7 +62,8 @@ pub(super) enum Suspicion {
+     Html,
+     /// An `@mention` outside code.
+     Mention,
+-    /// A fenced block with the `suggestion` info string.
++    /// A fenced block whose info string is `suggestion`, or holds a `&` or `\` that could
++    /// spell it.
+     SuggestionFence,
+     /// A string shaped like a token or key.
+     TokenShaped,
+@@ -246,13 +251,23 @@ fn has_suggestion_fence(text: &str) -> bool {
+     })
+ }
+ 
+-/// Whether `text` holds a token-shaped string: a private key header, an AWS access key id, or
+-/// an alphanumeric run of at least [`TOKEN_RUN`] characters mixing letters and digits.
++/// Whether `text` holds a token-shaped string (see [`token_shaped`]).
+ fn has_token(text: &str) -> bool {
++    token_shaped(text, |_| false)
++}
++
++/// Whether `text` holds a token-shaped string: a private key header, the [`CREDENTIAL_PREFIX`]
++/// in any ASCII case, or an AWS access key id or an ASCII alphanumeric run of at least
++/// [`TOKEN_RUN`] characters mixing letters and digits that is not `explained`.
++pub(super) fn token_shaped(text: &str, explained: impl Fn(&str) -> bool) -> bool {
+     text.contains("PRIVATE KEY-----")
++        || text
++            .as_bytes()
++            .windows(CREDENTIAL_PREFIX.len())
++            .any(|window| window.eq_ignore_ascii_case(CREDENTIAL_PREFIX))
+         || text
+             .split(|c: char| !c.is_ascii_alphanumeric())
+-            .any(|run| is_long_mixed(run) || is_aws_key_id(run))
++            .any(|run| (is_long_mixed(run) || is_aws_key_id(run)) && !explained(run))
+ }
+ 
+ /// Whether `run` is long and mixes letters and digits, and is not a lowercase hex digest.
+@@ -301,7 +316,7 @@ fn is_imperative(text: &str) -> bool {
+ 
+ /// `text` as a reader sees it: invisible characters dropped, lowercase, and Cyrillic, Greek
+ /// and fullwidth letters that look like Latin ones read as those.
+-fn fold(text: &str) -> String {
++pub(super) fn fold(text: &str) -> String {
+     text.chars()
+         .filter(|&c| !is_invisible(c))
+         .flat_map(char::to_lowercase)
+@@ -387,22 +402,22 @@ mod tests {
+         assert_eq!(texts.map(screened), [None; 4]);
+     }
+ 
+-    // Round 4 (wi-b5affa): where the screen cannot be sure how GitHub renders text, it reads
+-    // it as prose and flags it.
++    // wi-b5affa: where the screen cannot be sure how GitHub renders text, it reads it as
++    // prose and flags it.
+     #[test]
+     fn flags_urls_holding_characters_github_may_not_end_them_at() {
+         let texts = [
+-            // B1: U+3000 is whitespace to Rust, not to a link destination.
++            // U+3000 is whitespace to Rust, not to a link destination.
+             "[x](https://github.com/wet-ink-corporation/assay/\u{3000}/../../../evil/repo)",
+             "See https://github.com/wet-ink-corporation/assay/\u{a0}/../../../evil/repo now.",
+             "See https://docs.rs/\u{e9}t\u{e9}.",
+-            // B2: character references decode inside a destination.
++            // Character references decode inside a destination.
+             "[x](https://github.com/wet-ink-corporation/assay/&#46;&#46;/&#46;&#46;/&#46;&#46;/e)",
+-            // B3: a definition inside a container.
++            // A definition inside a container.
+             "> [x]: //evil.example\n\nSee [x].",
+-            // B6: a backtick in the title, which a later backtick could pair with.
++            // A backtick in the title, which a later backtick could pair with.
+             "[x](https://github.com/wet-ink-corporation/assay \"`\")<img src=x> `",
+-            // m3: GFM links an email address as `mailto:`.
++            // GFM links an email address as `mailto:`.
+             "Contact me at dev@example.com.",
+         ];
+ 
+@@ -411,13 +426,13 @@ mod tests {
+ 
+     #[test]
+     fn reads_a_paragraph_whose_backticks_do_not_pair_per_line_as_prose() {
+-        // B4: GitHub pairs the first two backticks across the line break.
++        // GitHub pairs the first two backticks across the line break.
+         assert_eq!(screened("`x\n` <img src=x> `y`"), Some(Suspicion::Html));
+     }
+ 
+     #[test]
+     fn keeps_fences_as_prose_when_a_container_could_close_them() {
+-        // B5: the list item ends at the unindented line, closing its fence before the tag.
++        // The list item ends at the unindented line, closing its fence before the tag.
+         assert_eq!(
+             screened("* a\n  ```\n<img src=x>\n  ```"),
+             Some(Suspicion::Html)
+@@ -426,7 +441,6 @@ mod tests {
+ 
+     #[test]
+     fn flags_character_references_and_mentions_after_punctuation() {
+-        // B7.
+         let texts = [
+             "Thanks &#64;owner.",
+             "See &lt;b&gt;.",
+@@ -449,17 +463,16 @@ mod tests {
+ 
+     #[test]
+     fn flags_a_suggestion_fence_inside_containers() {
+-        // m2.
+         assert_eq!(
+             screened("> - ```suggestion\n>   x\n> ```"),
+             Some(Suspicion::SuggestionFence)
+         );
+     }
+ 
+-    // Round 5: a field that is not plain is read entirely as prose.
++    // A field that is not plain is read entirely as prose.
+     #[test]
+     fn reads_table_cells_as_prose() {
+-        // F1: GitHub splits a table row at `|` before pairing backticks.
++        // GitHub splits a table row at `|` before pairing backticks.
+         let texts = [
+             "| `a | <img src=x> | b` |\n|---|---|---|",
+             "| `a | @owner | b` |\n|---|---|---|",
+@@ -480,7 +493,7 @@ mod tests {
+ 
+     #[test]
+     fn flags_a_lone_carriage_return() {
+-        // F2: `lines()` does not split at a lone CR; GitHub does.
++        // `lines()` does not split at a lone CR; GitHub does.
+         let texts = [
+             "```suggestion\rx\r```",
+             "~~~\rcode\r~~~\r<img src=x>",
+@@ -497,7 +510,7 @@ mod tests {
+ 
+     #[test]
+     fn reads_lines_of_other_whitespace_as_prose() {
+-        // F3: a line of NBSP or U+3000 is not blank to GitHub, so the paragraph goes on.
++        // A line of NBSP or U+3000 is not blank to GitHub, so the paragraph goes on.
+         let texts = [
+             "`a\n\u{a0}\n` <img src=x> `",
+             "`a\n\u{3000}\n` <img src=x> `",
+@@ -508,7 +521,7 @@ mod tests {
+ 
+     #[test]
+     fn flags_references_into_other_repositories() {
+-        // F4: GitHub links `owner/name#1` and `owner/name@sha`.
++        // GitHub links `owner/name#1` and `owner/name@sha`.
+         let texts = [
+             "Fixed in other/repo#12.",
+             "See other/repo@abc1234.",
+@@ -524,7 +537,7 @@ mod tests {
+ 
+     #[test]
+     fn flags_a_reference_definition_whose_backticks_pair_as_spans() {
+-        // Round 6 F1: definitions are parsed before code spans, so spans cannot hide `]:`.
++        // Definitions are parsed before code spans, so spans cannot hide `]:`.
+         let texts = [
+             "Short finding text.\n\n[a`]: //evil.example \"`\"\nSee [a`] for details.",
+             "Short finding text.\n\n[a\nb`]: //evil.example \"`\"\nSee [a\nb`] for details.",
+@@ -537,7 +550,7 @@ mod tests {
+ 
+     #[test]
+     fn flags_a_commit_in_another_users_fork() {
+-        // Round 6 F2: GitHub links `user@sha` to the commit in that user's fork.
++        // GitHub links `user@sha` to the commit in that user's fork.
+         let texts = [
+             "See evil@a5c3785ed8d6a35868bc169f07e40e889087fd2e",
+             "See (evil@a5c3785) here.",
+@@ -553,7 +566,7 @@ mod tests {
+ 
+     #[test]
+     fn flags_a_repository_url_holding_a_kelvin_sign() {
+-        // Round 7 F1: full lowercasing maps U+212A to ASCII `k`, hiding the non-ASCII URL.
++        // Full lowercasing maps U+212A to ASCII `k`, hiding the non-ASCII URL.
+         let texts = [
+             "See https://github.com/wet-ink-corporation/assay/blob/main/\u{212a}.rs here.",
+             "See [it](https://github.com/wet-ink-corporation/assay/\u{212a}) here.",
+@@ -564,7 +577,7 @@ mod tests {
+ 
+     #[test]
+     fn removes_only_fences_of_allowlisted_inert_languages() {
+-        // Round 8: an info string off the allowlist, encoded or with extra words, is prose.
++        // An info string off the allowlist, encoded or with extra words, is prose.
+         let texts = [
+             "```&#109;ermaid\ngraph TD\nA[\"<img src=x>\"]\n```",
+             "```rust ignore\n<img src=x>\n```",
+@@ -593,16 +606,24 @@ mod tests {
+ 
+         assert_eq!(
+             (
+-                screened("```&#115;uggestion\nfoo();\n```").is_some(),
++                screened("```&#115;uggestion\nfoo();\n```"),
+                 encoded.map(has_suggestion_fence)
+             ),
+-            (true, [true, true, false])
++            (Some(Suspicion::Html), [true, true, false])
++        );
++    }
++
++    #[test]
++    fn flags_a_tilde_fence_whose_info_string_escapes_suggestion() {
++        assert_eq!(
++            screened("~~~ \\suggestion\nfoo();\n~~~"),
++            Some(Suspicion::SuggestionFence)
+         );
+     }
+ 
+     #[test]
+     fn keeps_an_unclosed_fence_raw() {
+-        // Round 8 F2: spans inside an unclosed fence are not stripped.
++        // Spans inside an unclosed fence are not stripped.
+         assert_eq!(
+             screened("~~~mermaid\nA[\"`<img src=x>`\"]"),
+             Some(Suspicion::Html)
+@@ -611,7 +632,7 @@ mod tests {
+ 
+     #[test]
+     fn reads_fences_github_renders_live_as_prose() {
+-        // Round 7 F2: mermaid, math, geojson, topojson and stl fences are rendered, not shown.
++        // Mermaid, math, geojson, topojson and stl fences are rendered, not shown.
+         let texts = [
+             "```mermaid\ngraph TD\nA[\"<img src=x>\"]\n```",
+             "```MATH\n<img src=x>\n```",
+@@ -636,7 +657,7 @@ mod tests {
+ 
+     #[test]
+     fn flags_tex_link_commands_even_in_code() {
+-        // Round 7 F2: math renders `\href` and `\url` as links.
++        // Math renders `\href` and `\url` as links.
+         let texts = [
+             "Use $\\href{https://docs.rs/x}{x}$ here.",
+             "Use `\\URL{https://docs.rs/x}` here.",
+@@ -647,7 +668,7 @@ mod tests {
+ 
+     #[test]
+     fn flags_an_authority_with_characters_a_host_cannot_have() {
+-        // F5: browsers read `\` as `/`, so the host here is `evil.example`.
++        // Browsers read `\` as `/`, so the host here is `evil.example`.
+         let texts = [
+             "See https://evil.example\\.docs.rs/x.",
+             "See https://evil.example%2f.docs.rs/x.",
+@@ -725,6 +746,13 @@ mod tests {
+         assert_eq!(texts.map(screened), [Some(Suspicion::TokenShaped); 3]);
+     }
+ 
++    #[test]
++    fn flags_the_anthropic_credential_prefix_in_any_case() {
++        let texts = ["key sk-ant-api03-x_y", "SK-Ant-oat01-x"];
++
++        assert_eq!(texts.map(screened), [Some(Suspicion::TokenShaped); 2]);
++    }
++
+     #[test]
+     fn passes_long_identifiers_without_digits() {
+         assert_eq!(
+diff --git a/crates/assay-app/src/validation/steps.rs b/crates/assay-app/src/validation/steps.rs
+index 51220a4..bea6fe7 100644
+--- a/crates/assay-app/src/validation/steps.rs
++++ b/crates/assay-app/src/validation/steps.rs
+@@ -6,7 +6,9 @@ use assay_domain::{
+ 
+ use super::anchor::{Anchored, anchor};
+ use super::index::Files;
+-use super::{FindingRef, Inputs, Placement, Transition, ValidFinding, Validated, screen};
++use super::{
++    EgressHit, FindingRef, Inputs, Placement, Transition, ValidFinding, Validated, screen,
++};
+ 
+ /// How many lines apart a reviewer finding may be from a gate finding of the same class in the
+ /// same file and still duplicate it (04 §1).
+@@ -36,6 +38,7 @@ impl<'s, 'c> Run<'s, 'c> {
+             validated: Validated {
+                 findings: Vec::new(),
+                 transitions: Vec::new(),
++                egress: Vec::new(),
+             },
+         }
+     }
+@@ -45,6 +48,17 @@ impl<'s, 'c> Run<'s, 'c> {
+         self.validated.transitions.push(Transition::of(at, code));
+     }
+ 
++    /// The egress scan (03 §3) of one schema-valid finding, before any other step reads it:
++    /// `true` when it hit, recorded as an [`EgressHit`] and an `injection-suspect` drop.
++    pub(super) fn drops_for_egress(&mut self, at: FindingRef, finding: &Finding) -> bool {
++        let Some((field, kind)) = self.inputs.egress.scan_finding(finding) else {
++            return false;
++        };
++        self.validated.egress.push(EgressHit { at, field, kind });
++        self.reject(at, Disposition::InjectionSuspect);
++        true
++    }
++
+     /// Validates one schema-valid finding from a role whose findings may be at most `ceiling`.
+     pub(super) fn check(&mut self, at: FindingRef, finding: Finding, ceiling: Severity) {
+         let mut steps = Steps {
+diff --git a/crates/assay-app/tests/it/validation.rs b/crates/assay-app/tests/it/validation.rs
+index 2ffa5cf..d67ed68 100644
+--- a/crates/assay-app/tests/it/validation.rs
++++ b/crates/assay-app/tests/it/validation.rs
+@@ -1,5 +1,6 @@
+ //! Mechanical validation of reviewer findings, 04 §4 steps 1 to 6 (`assay_app::validate`).
+ 
++mod egress;
+ mod evidence;
+ #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+ mod fixture;
+diff --git a/crates/assay-app/tests/it/validation/egress.rs b/crates/assay-app/tests/it/validation/egress.rs
+new file mode 100644
+index 0000000..e120680
+--- /dev/null
++++ b/crates/assay-app/tests/it/validation/egress.rs
+@@ -0,0 +1,367 @@
++//! The free-text egress scan (03 §3, 05 T2 and T8): a finding holding the OAuth token, an
++//! encoding of it, or a long run found in neither the tree nor base `REVIEW.md` is dropped as
++//! `injection-suspect` and raises the egress alarm.
++
++use std::error::Error;
++
++use assay_app::{
++    EgressHit, EgressKind, EgressScan, EgressToken, FindingRef, FreeTextField, KnownRuns, Validated,
++};
++use assay_domain::Disposition;
++use serde_json::{Value, json};
++
++use super::fixture::{Run, document, finding, finding_with};
++
++/// A fake OAuth token: its `~`, `?` and `>` make its base64 hold `+` and `/` (`-` and `_` in
++/// the URL-safe alphabet).
++const TOKEN: &str = "sk-ant-oat01-Zq3Lw9_Xv2Rt~~~Hp8NcYb4?MdKs7Ue1Ja6Gf0Ti5Wo>>?";
++
++/// `TOKEN` behind 0, 1 and 2 bytes of other text, base64-encoded and cut into groups of 16 so
++/// no run reaches 20 characters: only the token windows can catch them.
++const BASE64_AT_EACH_ALIGNMENT: [&str; 3] = [
++    "c2stYW50LW9hdDAx LVpxM0x3OV9YdjJS dH5+fkhwOE5jWWI0 P01kS3M3VWUxSmE2 R2YwVGk1V28+Pj8h",
++    "YXNrLWFudC1vYXQw MS1acTNMdzlfWHYy UnR+fn5IcDhOY1li ND9NZEtzN1VlMUph NkdmMFRpNVdvPj4/ IQ==",
++    "YWJzay1hbnQtb2F0 MDEtWnEzTHc5X1h2 MlJ0fn5+SHA4TmNZ YjQ/TWRLczdVZTFK YTZHZjBUaTVXbz4+ PyE=",
++];
++
++/// `TOKEN` behind one byte, in the URL-safe alphabet, cut as above.
++const BASE64_URL_SAFE: &str =
++    "YXNrLWFudC1vYXQw MS1acTNMdzlfWHYy UnR-fn5IcDhOY1li ND9NZEtzN1VlMUph NkdmMFRpNVdvPj4_";
++
++/// `TOKEN` in lowercase and uppercase hex, cut as above.
++const HEX: [&str; 2] = [
++    "736b2d616e742d6f 617430312d5a7133 4c77395f58763252 747e7e7e4870384e 635962343f4d644b",
++    "736B2D616E742D6F 617430312D5A7133 4C77395F58763252 747E7E7E4870384E 635962343F4D644B",
++];
++
++fn token() -> Result<EgressToken, Box<dyn Error>> {
++    Ok(EgressToken::new(TOKEN)?)
++}
++
++/// Validates `findings` in one document, holding the token as Z3 does.
++fn z3(findings: &[Value]) -> Result<Validated, Box<dyn Error>> {
++    let run = Run {
++        token: Some(token()?),
++        ..Run::default()
++    };
++    Ok(run.validate(&[document(findings)])?)
++}
++
++/// Validates `findings` in one document without the token, as Z4 does.
++fn z4(findings: &[Value]) -> Result<Validated, Box<dyn Error>> {
++    Ok(Run::default().validate(&[document(findings)])?)
++}
++
++/// The egress kind of a finding whose body is `body`, in Z3.
++fn kind_of(body: &str) -> Result<Option<EgressKind>, Box<dyn Error>> {
++    let validated = z3(&[finding_with(json!({ "body": body }))])?;
++    Ok(validated.egress.first().map(|hit| hit.kind))
++}
++
++const FIRST: FindingRef = FindingRef::Finding {
++    document: 0,
++    index: 0,
++};
++
++#[test]
++fn drops_a_finding_holding_the_plain_token_and_raises_the_alarm() -> Result<(), Box<dyn Error>> {
++    let leaking = finding_with(json!({ "body": format!("The key is {TOKEN} here.") }));
++
++    let validated = z3(&[leaking, finding()])?;
++
++    let codes: Vec<_> = validated.transitions.iter().map(|t| t.code).collect();
++    assert_eq!(
++        (
++            codes,
++            validated.findings.len(),
++            validated.raises_egress_alarm(),
++            validated.egress
++        ),
++        (
++            vec![Disposition::InjectionSuspect],
++            1,
++            true,
++            vec![EgressHit {
++                at: FIRST,
++                field: FreeTextField::Body,
++                kind: EgressKind::Token,
++            }]
++        )
++    );
++    Ok(())
++}
++
++#[test]
++fn raises_no_alarm_for_clean_findings() -> Result<(), Box<dyn Error>> {
++    let validated = z3(&[finding()])?;
++
++    assert_eq!(
++        (validated.egress, validated.findings.len()),
++        (Vec::new(), 1)
++    );
++    Ok(())
++}
++
++#[test]
++fn catches_the_token_respelled_with_other_separators_and_case() -> Result<(), Box<dyn Error>> {
++    assert_eq!(
++        kind_of("SK ANT OAT01 zQ3lW9.xV2rT")?,
++        Some(EgressKind::Token)
++    );
++    Ok(())
++}
++
++#[test]
++fn catches_twelve_normalised_characters_of_the_token_but_not_eleven() -> Result<(), Box<dyn Error>>
++{
++    // `Zq3Lw9_Xv2Rt` normalises to 11 characters; the token's next one is `h`.
++    let eleven = "see Zq3Lw9_Xv2Rt.";
++    let twelve = "see Zq3Lw9_Xv2Rt~~~H.";
++
++    assert_eq!(
++        (kind_of(eleven)?, kind_of(twelve)?),
++        (None, Some(EgressKind::Token))
++    );
++    Ok(())
++}
++
++#[test]
++fn catches_base64_of_the_token_at_each_alignment_and_in_either_alphabet()
++-> Result<(), Box<dyn Error>> {
++    let mut encodings = BASE64_AT_EACH_ALIGNMENT.to_vec();
++    encodings.push(BASE64_URL_SAFE);
++
++    let kinds = encodings
++        .into_iter()
++        .map(kind_of)
++        .collect::<Result<Vec<_>, _>>()?;
++
++    assert_eq!(kinds, vec![Some(EgressKind::Token); 4]);
++    Ok(())
++}
++
++#[test]
++fn catches_hex_of_the_token_in_either_case() -> Result<(), Box<dyn Error>> {
++    let kinds = HEX
++        .into_iter()
++        .map(kind_of)
++        .collect::<Result<Vec<_>, _>>()?;
++
++    assert_eq!(kinds, vec![Some(EgressKind::Token); 2]);
++    Ok(())
++}
++
++#[test]
++fn scans_every_field_the_model_wrote() -> Result<(), Box<dyn Error>> {
++    let fields = [
++        ("title", FreeTextField::Title),
++        ("body", FreeTextField::Body),
++        ("fix", FreeTextField::Fix),
++        ("trigger", FreeTextField::Trigger),
++        ("evidence", FreeTextField::Evidence),
++        ("expected_behavior", FreeTextField::ExpectedBehavior),
++        ("group_hint", FreeTextField::GroupHint),
++        ("rule", FreeTextField::Rule),
++    ];
++    let mut leaking: Vec<_> = fields
++        .iter()
++        .map(|(field, _)| finding_with(json!({ *field: TOKEN })))
++        .collect();
++    leaking.push(finding_with(json!({
++        "introduced_by": "interaction",
++        "caller": { "file": "src/lib.rs", "line": 2, "evidence": TOKEN },
++    })));
++
++    let validated = z3(&leaking)?;
++
++    let scanned: Vec<_> = validated.egress.iter().map(|hit| hit.field).collect();
++    let mut expected: Vec<_> = fields.iter().map(|(_, field)| *field).collect();
++    expected.push(FreeTextField::CallerEvidence);
++    assert_eq!(scanned, expected);
++    Ok(())
++}
++
++#[test]
++fn scans_a_finding_before_its_evidence_is_located() -> Result<(), Box<dyn Error>> {
++    let unlocated = finding_with(json!({ "evidence": format!("absent_function({TOKEN});") }));
++
++    let validated = z3(&[unlocated])?;
++
++    let codes: Vec<_> = validated.transitions.iter().map(|t| t.code).collect();
++    assert_eq!(
++        (codes, validated.raises_egress_alarm()),
++        (vec![Disposition::InjectionSuspect], true)
++    );
++    Ok(())
++}
++
++#[test]
++fn scans_findings_past_the_documents_cap() -> Result<(), Box<dyn Error>> {
++    let mut findings = vec![finding(); 256];
++    findings.push(finding_with(json!({ "body": TOKEN })));
++
++    let validated = z3(&findings)?;
++
++    assert_eq!(
++        (
++            validated.transitions.last().map(|t| (t.at, t.code)),
++            validated.egress.first().map(|hit| hit.at)
++        ),
++        (
++            Some((
++                FindingRef::Finding {
++                    document: 0,
++                    index: 256
++                },
++                Disposition::InjectionSuspect
++            )),
++            Some(FindingRef::Finding {
++                document: 0,
++                index: 256
++            })
++        )
++    );
++    Ok(())
++}
++
++#[test]
++fn passes_long_identifiers_found_in_the_tree_or_base_review_md() -> Result<(), Box<dyn Error>> {
++    let mut run = Run {
++        review_md: "Name types like `ReviewerDocumentsAreScreened`.".to_owned(),
++        ..Run::default()
++    };
++    run.change.head_files.insert(
++        "src/names.rs".to_owned(),
++        "pub struct EvidenceRelocationOutcome42;\n".to_owned(),
++    );
++    let citing = finding_with(json!({
++        "body": "`EvidenceRelocationOutcome42` and `ReviewerDocumentsAreScreened` disagree.",
++    }));
++
++    let validated = run.validate(&[document(&[citing])])?;
++
++    assert_eq!(
++        (validated.findings.len(), validated.egress),
++        (1, Vec::new())
++    );
++    Ok(())
++}
++
++#[test]
++fn flags_a_run_of_twenty_unexplained_characters_but_not_nineteen() -> Result<(), Box<dyn Error>> {
++    let nineteen = finding_with(json!({ "body": "see Abcdefghij123456789 here" }));
++    let twenty = finding_with(json!({ "body": "see Abcdefghij1234567890 here" }));
++
++    let validated = z4(&[nineteen, twenty])?;
++
++    assert_eq!(
++        validated.egress,
++        vec![EgressHit {
++            at: FindingRef::Finding {
++                document: 0,
++                index: 1
++            },
++            field: FreeTextField::Body,
++            kind: EgressKind::UnexplainedRun,
++        }]
++    );
++    Ok(())
++}
++
++#[test]
++fn reads_an_invisible_character_as_part_of_a_run() -> Result<(), Box<dyn Error>> {
++    // Ten letters, a zero-width space, ten letters: one run of 21 characters, not two of ten.
++    let joined = finding_with(json!({ "body": "see abcdefghij\u{200b}klmnopqrst here" }));
++
++    let validated = z4(&[joined])?;
++
++    assert_eq!(
++        validated.egress.first().map(|hit| hit.kind),
++        Some(EgressKind::UnexplainedRun)
++    );
++    Ok(())
++}
++
++#[test]
++fn flags_an_encoded_token_as_an_unexplained_run_without_the_token() -> Result<(), Box<dyn Error>> {
++    let encoded = finding_with(json!({
++        "body": "c2stYW50LW9hdDAxLVpxM0x3OV9YdjJSdH5+fkhwOE5jWWI0P01kS3M3VWUxSmE2R2YwVGk1V28+Pj8h",
++    }));
++
++    let validated = z4(&[encoded])?;
++
++    assert_eq!(
++        validated.egress.first().map(|hit| hit.kind),
++        Some(EgressKind::UnexplainedRun)
++    );
++    Ok(())
++}
++
++/// Scans `artifact` as the review job does before uploading it, holding the token.
++fn artifact_kind(artifact: &str, tree: &[&str]) -> Result<Option<EgressKind>, Box<dyn Error>> {
++    let token = token()?;
++    let known = KnownRuns::index(tree.iter().map(|text| text.as_bytes()))?;
++    Ok(EgressScan::with_token(&token, known).scan_artifact(artifact.as_bytes()))
++}
++
++#[test]
++fn passes_a_clean_artifact() -> Result<(), Box<dyn Error>> {
++    let clean = String::from_utf8(document(&[finding()]))?;
++
++    assert_eq!(artifact_kind(&clean, &[])?, None);
++    Ok(())
++}
++
++#[test]
++fn flags_the_token_in_an_artifact_even_behind_json_escapes() -> Result<(), Box<dyn Error>> {
++    let plain = format!(r#"{{"note": "{TOKEN}"}}"#);
++    // Every fifth character escaped, so no twelve-character window survives in the raw bytes.
++    let escaped: String = TOKEN
++        .chars()
++        .enumerate()
++        .map(|(at, c)| {
++            if at % 5 == 0 {
++                format!("\\u{:04x}", u32::from(c))
++            } else {
++                c.to_string()
++            }
++        })
++        .collect();
++    let escaped = format!(r#"{{"note": "{escaped}"}}"#);
++
++    assert_eq!(
++        (artifact_kind(&plain, &[])?, artifact_kind(&escaped, &[])?),
++        (Some(EgressKind::Token), Some(EgressKind::Token))
++    );
++    Ok(())
++}
++
++#[test]
++fn flags_token_shaped_strings_in_an_artifact_without_the_token() {
++    let shaped = [
++        "the credential sk-ant-api03-short",
++        "-----BEGIN OPENSSH PRIVATE KEY-----",
++        "ghp_0123456789abcdefghijABCDEFGHIJ0123456789",
++    ];
++    let known = KnownRuns::default();
++    let scan = EgressScan::without_token(known);
++
++    let kinds = shaped.map(|text| scan.scan_artifact(text.as_bytes()));
++
++    assert_eq!(kinds, [Some(EgressKind::TokenShaped); 3]);
++}
++
++#[test]
++fn passes_token_shaped_runs_found_in_the_tree_and_digests() -> Result<(), Box<dyn Error>> {
++    let quoted = "const VECTOR: &str = \"0123456789abcdefghijABCDEFGHIJ0123456789\";";
++    let digest = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
++
++    assert_eq!(
++        (
++            artifact_kind(quoted, &[quoted])?,
++            artifact_kind(digest, &[])?
++        ),
++        (None, None)
++    );
++    Ok(())
++}
+diff --git a/crates/assay-app/tests/it/validation/fixture.rs b/crates/assay-app/tests/it/validation/fixture.rs
+index 2a2d7b3..a550846 100644
+--- a/crates/assay-app/tests/it/validation/fixture.rs
++++ b/crates/assay-app/tests/it/validation/fixture.rs
+@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
+ use std::sync::LazyLock;
+ 
+ use assay_app::{
+-    Change, ContractSchemaError, ContractValidator, DiffPaths, FileDiff, Hunk, Inputs, LineSpan,
+-    SuppressRules, Validated, validate,
++    Change, ContractSchemaError, ContractValidator, DiffPaths, EgressScan, EgressToken, FileDiff,
++    Hunk, Inputs, KnownRuns, KnownRunsError, LineSpan, SuppressRules, Validated, validate,
+ };
+ use assay_domain::{Dismissal, Finding};
+ use serde_json::{Value, json};
+@@ -128,6 +128,10 @@ pub(crate) struct Run<'a> {
+     pub(crate) suppress: &'a dyn SuppressRules,
+     pub(crate) dismissals: Vec<Dismissal<'a>>,
+     pub(crate) gate_findings: Vec<Finding>,
++    /// The OAuth token, as Z3 holds it; Z4 holds none (05 §4).
++    pub(crate) token: Option<EgressToken>,
++    /// Base `REVIEW.md`, whose long runs explain a finding's as the tree's do (03 §3).
++    pub(crate) review_md: String,
+ }
+ 
+ impl Default for Run<'_> {
+@@ -137,27 +141,51 @@ impl Default for Run<'_> {
+             suppress: &NoRules,
+             dismissals: Vec::new(),
+             gate_findings: Vec::new(),
++            token: None,
++            review_md: String::new(),
+         }
+     }
+ }
+ 
++/// Why a run could not validate: a fixture defect, never an outcome under test.
++#[derive(Debug, thiserror::Error)]
++pub(crate) enum RunError {
++    /// The embedded schemas do not compile.
++    #[error(transparent)]
++    Schema(#[from] &'static ContractSchemaError),
++    /// The run's tree is past the egress index cap.
++    #[error(transparent)]
++    Index(#[from] KnownRunsError),
++}
++
+ /// One validator for every test: compiling the schemas dominates a property test's run time.
+ static VALIDATOR: LazyLock<Result<ContractValidator, ContractSchemaError>> =
+     LazyLock::new(ContractValidator::new);
+ 
+ impl Run<'_> {
+     /// Validates `documents` in this run.
+-    pub(crate) fn validate(
+-        &self,
+-        documents: &[Vec<u8>],
+-    ) -> Result<Validated, &'static ContractSchemaError> {
++    pub(crate) fn validate(&self, documents: &[Vec<u8>]) -> Result<Validated, RunError> {
+         let validator = VALIDATOR.as_ref()?;
++        // The tree is every file of the change at either end, and base REVIEW.md.
++        let tree = self
++            .change
++            .head_files
++            .values()
++            .chain(self.change.base_files.values())
++            .chain([&self.review_md])
++            .map(String::as_bytes);
++        let known = KnownRuns::index(tree)?;
++        let egress = match &self.token {
++            Some(token) => EgressScan::with_token(token, known),
++            None => EgressScan::without_token(known),
++        };
+         let inputs = Inputs {
+             repository: REPOSITORY,
+             change: &self.change,
+             suppress: self.suppress,
+             dismissals: &self.dismissals,
+             gate_findings: &self.gate_findings,
++            egress: &egress,
+         };
+         let documents: Vec<&[u8]> = documents.iter().map(Vec::as_slice).collect();
+         Ok(validate(validator, &inputs, &documents))
+@@ -165,6 +193,6 @@ impl Run<'_> {
+ }
+ 
+ /// Validates `findings` in one document against the default run.
+-pub(crate) fn validate_one(findings: &[Value]) -> Result<Validated, &'static ContractSchemaError> {
++pub(crate) fn validate_one(findings: &[Value]) -> Result<Validated, RunError> {
+     Run::default().validate(&[document(findings)])
+ }
+diff --git a/crates/assay-app/tests/it/validation/properties.rs b/crates/assay-app/tests/it/validation/properties.rs
+index a9b23aa..b360872 100644
+--- a/crates/assay-app/tests/it/validation/properties.rs
++++ b/crates/assay-app/tests/it/validation/properties.rs
+@@ -1,12 +1,12 @@
+ //! Properties over generated findings: determinism, relocation onto matching lines only, and
+ //! that every finding ends kept or dropped exactly once.
+ 
+-use assay_app::{ContractSchemaError, FindingRef, Validated};
++use assay_app::{FindingRef, Validated};
+ use assay_domain::{Disposition, Side, normalise};
+ use proptest::prelude::*;
+ use serde_json::{Value, json};
+ 
+-use super::fixture::{LIB_AT_BASE, LIB_AT_HEAD, Run, document, finding_with};
++use super::fixture::{LIB_AT_BASE, LIB_AT_HEAD, Run, RunError, document, finding_with};
+ 
+ /// Dispositions that drop a finding; the others keep it.
+ const DROPPING: [Disposition; 7] = [
+@@ -59,7 +59,7 @@ fn generated_finding() -> impl Strategy<Value = Value> {
+         )
+ }
+ 
+-fn validated(findings: &[Value]) -> Result<Validated, &'static ContractSchemaError> {
++fn validated(findings: &[Value]) -> Result<Validated, RunError> {
+     Run::default().validate(&[document(findings)])
+ }
+ 
+diff --git a/crates/assay-app/tests/it/validation/schema.rs b/crates/assay-app/tests/it/validation/schema.rs
+index 919884c..d204afd 100644
+--- a/crates/assay-app/tests/it/validation/schema.rs
++++ b/crates/assay-app/tests/it/validation/schema.rs
+@@ -122,12 +122,13 @@ fn codes_with(changes: serde_json::Value) -> Result<Vec<Disposition>, Box<dyn Er
+     Ok(validated.transitions.iter().map(|t| t.code).collect())
+ }
+ 
+-// wi-641e1a: the schema leaves `rule` and `group_hint` unbounded; validation caps them.
++// wi-641e1a: the schema leaves `rule` and `group_hint` unbounded; validation caps them. The
++// texts are cut into short words: a run of 20 characters the tree lacks is an egress hit.
+ #[test]
+ fn rejects_a_rule_over_128_bytes_and_keeps_one_at_the_cap() -> Result<(), Box<dyn Error>> {
+     let (over, at) = (
+-        codes_with(json!({ "rule": "R".repeat(129) }))?,
+-        codes_with(json!({ "rule": "R".repeat(128) }))?,
++        codes_with(json!({ "rule": format!("{}R", "R-".repeat(64)) }))?,
++        codes_with(json!({ "rule": "R-".repeat(64) }))?,
+     );
+ 
+     assert_eq!((over, at), (vec![Disposition::Schema], vec![]));
+@@ -137,8 +138,8 @@ fn rejects_a_rule_over_128_bytes_and_keeps_one_at_the_cap() -> Result<(), Box<dy
+ #[test]
+ fn rejects_a_group_hint_over_100_characters() -> Result<(), Box<dyn Error>> {
+     let (over, at) = (
+-        codes_with(json!({ "group_hint": "\u{e9}".repeat(101) }))?,
+-        codes_with(json!({ "group_hint": "\u{e9}".repeat(100) }))?,
++        codes_with(json!({ "group_hint": format!("{}\u{e9}", "\u{e9} ".repeat(50)) }))?,
++        codes_with(json!({ "group_hint": "\u{e9} ".repeat(50) }))?,
+     );
+ 
+     assert_eq!((over, at), (vec![Disposition::Schema], vec![]));

@@ -1,0 +1,31 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-domain/src/tiering/lists.rs",
+      "start_line": 185,
+      "end_line": 187,
+      "class": "security"
+    },
+    {
+      "file": "crates/assay-domain/src/tiering.rs",
+      "start_line": 296,
+      "end_line": 303,
+      "class": "security"
+    },
+    {
+      "file": "crates/assay-domain/src/tiering.rs",
+      "start_line": 323,
+      "end_line": 333,
+      "class": "logic"
+    },
+    {
+      "file": "crates/assay-domain/src/tiering/glob.rs",
+      "start_line": 153,
+      "end_line": 162,
+      "class": "logic"
+    }
+  ]
+}

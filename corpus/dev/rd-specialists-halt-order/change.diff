@@ -1,0 +1,1702 @@
+diff --git a/crates/assay-app/AGENTS.md b/crates/assay-app/AGENTS.md
+index c568ea5..ca793c2 100644
+--- a/crates/assay-app/AGENTS.md
++++ b/crates/assay-app/AGENTS.md
+@@ -27,7 +27,8 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
+ - The `GateRunner` port (`run(&mut self, &Plugin, GateJob) -> Result<GateRun, Self::Error>`, and the provided `gate_error(&Self::Error) -> GateError`, `NotRun` unless the runner names another, #66), `GateRun`, `Termination`, `GateDocument`, `GateJob`, `BuildJob`, and the use-case functions `run_gates` and `account_for_required`, which produce `GateReport`s with a `GateOutcome` (`Concluded(Conclusion)` or `Error(GateError)`) (`src/gate.rs`).
+ - The `ModelRunner` port (03 §7, `src/model_runner.rs`): `run(&self, &ModelCall) -> Result<ModelResult, Self::Error>`, with `ModelCall`, `Prompt` (`InvalidPrompt`, `PromptError`), `ModelResult` (outcome, cost in `Aeu`, rate limits, the call's `system/init` as read), `ModelOutcome` (`Ok(Structured)`, `BudgetExhausted`, `TurnsExhausted`, `Timeout`, `QuotaExhausted`, `Malformed`), `RateLimitObserved` (whose status is the domain's `RateLimitStatus`); and the retry policy `run_with_retry` (`ModelAttempts`, `RetryError`).
+ - The reviewer prompt bundle (04 §3, `src/prompt_bundle.rs`): `PromptBundle` (`new`, `hash`, `system_prompt`, `instruction`, `user_prompt`, `verifier_instruction`, `carried_verifier_instruction`, `coordinator_instruction`) over `BundleFiles` read by the caller from the paths `BundleFile::path` names under `plugin/prompts/` (`BundleFile::Verifier` is `v1/verifier.md`, `BundleFile::CarriedVerifier`, 04 §7's "is this defect still present at head?", is `v1/verifier-carried.md`, and `BundleFile::Coordinator` `v1/coordinator.md`), refused with `InvalidBundle` (`BundleFileError::{Empty, Nul}`); `Role` (`Bugs`, `Security`, `Design`, `Meta`, `Combined`, `CombinedMicro`, in roster order; `From<RequiredRole>` and back) with the roster's `max_turns`, `cap`, `severity_ceiling` and `sees_intent` (`design` and `meta` only, 04 §3 "Blindness"). The verifier is not a `Role`: it writes verdicts, never findings, so validation never accepts a findings document in its name.
+-- The specialists' fan-out (S4, 04 §3, 06 §1-§2, #95, `src/specialists.rs`): `run_specialists(&R, SpecialistsRequest) -> Result<Specialists<R::Error>, InvalidPrompt>` with `R: ModelRunner + Sync`, `R::Error: Send`; `InvalidPrompt` only before any call (the pack starts with `-` or holds NUL). `SpecialistsRequest` (`roles: &[RequiredRole]` from the plan, run once each in roster order; `context_pack`; `intent`, the envelope already built, sent to `design` and `meta` only, between the pack and the instruction; `bundle`; `json_schema`; `system_prompt_file`; `add_dir`; `timeout`; `head_start`, `HEAD_START` = 20 s in production); `Specialists` (`roles: Vec<RoleReport>` in roster order, `run_cap`; `cost()`, `completed_roles()`); `RoleReport` (`role`, `outcome`, `attempts`, `cost`, `rate_limits`, `init` of the last attempt that returned); `RoleOutcome` (`Completed(Structured)` with `source.role` stamped to the role that ran (#173), `Failed(RoleFailure::{Call(CallFailure), Runner, Spawn(io::ErrorKind), Panicked})` with `reason()`, `Skipped(Halt::{RunCap, RateLimited, Panicked})`); `MAX_MODEL_PROCESSES` (4). Invariants: never more than 4 calls in flight; the first role's call goes alone until the head start passes or it ends; every worker is a named scoped thread (`thread::Builder::spawn_scoped`) joined by the coordinator, which waits on a board (`Mutex<Vec<slot>>` and `Condvar`) that each worker posts to from a drop guard, so a panicking runner still posts and is joined (`Panicked`, charged at its cap, nothing more starts); a thread the OS refuses is `Spawn`, not charged. The run cap is the sum of the roles' caps; a role's first call starts only when `spent + reserved + cap <= run cap` (each call in flight reserves its budget until it settles at its real cost, or its budget when unknown), and when the next role does not fit with nothing in flight every role not yet started is `Skipped(RunCap)`. Only `Malformed` is retried, once, behind every first attempt (so a retry never takes a role's room), with a budget of `min(role cap, run cap - spent - reserved)`: while the cap does not fit and first attempts are in flight it waits for them to settle (never for another retry, #217), and with nothing left the role is `Failed(Call(Malformed))` after one attempt. No call's budget passes the run cap. `QuotaExhausted` or any kept rate-limit event (`rejected`, `allowed_warning`) pauses the stage (`RateLimited`): nothing more starts, and a retry not yet made leaves its role `Failed(Call(Malformed))`. Each call is bounded by `timeout`, enforced by the runner. Worst case: 6 roles × 2 attempts within the run cap; prompts copy the pack once per role, and each call is moved into its thread and handed back on join, so a retry reuses it.
++- The specialists' fan-out (S4, 04 §3, 06 §1-§2, #95, `src/specialists.rs`): `run_specialists(&R, SpecialistsRequest) -> Result<Specialists<R::Error>, InvalidPrompt>` with `R: ModelRunner + Sync`, `R::Error: Send`; `InvalidPrompt` only before any call (the pack starts with `-` or holds NUL). `SpecialistsRequest` (`roles: &[RequiredRole]` from the plan, run once each in roster order; `context_pack`; `intent`, the envelope already built, sent to `design` and `meta` only, between the pack and the instruction; `bundle`; `json_schema`; `system_prompt_file`; `add_dir`; `timeout`; `head_start`, `HEAD_START` = 20 s in production); `Specialists` (`roles: Vec<RoleReport>` in roster order, `run_cap`, `halt: Option<Halt>`, why the stage stopped starting calls; `cost()`, `completed_roles()`); `RoleReport` (`role`, `outcome`, `attempts`, `cost`, `rate_limits`, `init` of the last attempt that returned); `RoleOutcome` (`Completed(Structured)` with `source.role` stamped to the role that ran (#173), `Failed(RoleFailure::{Call(CallFailure), Runner, Spawn(io::ErrorKind), Panicked})` with `reason()`, `Skipped(Halt::{RunCap, RateLimited, Panicked})`); `MAX_MODEL_PROCESSES` (4). Invariants: never more than 4 calls in flight; the first role's call goes alone until the head start passes or it ends; every worker is a named scoped thread (`thread::Builder::spawn_scoped`) joined by the coordinator, which waits on a board (`Mutex<Vec<slot>>` and `Condvar`) that each worker posts to from a drop guard, so a panicking runner still posts and is joined (`Panicked`, charged at its cap, nothing more starts); a thread the OS refuses is `Spawn`, not charged. The run cap is the sum of the roles' caps; a role's first call starts only when `spent + reserved + cap <= run cap` (each call in flight reserves its budget until it settles at its real cost, or its budget when unknown), and when the next role does not fit with nothing in flight every role not yet started is `Skipped(RunCap)`. Only `Malformed` is retried, once, behind every first attempt (so a retry never takes a role's room), with a budget of `min(role cap, run cap - spent - reserved)`: while the cap does not fit and first attempts are in flight it waits for them to settle (never for another retry, #217), and with nothing left the role is `Failed(Call(Malformed))` after one attempt. No call's budget passes the run cap. `QuotaExhausted` or any kept rate-limit event (`rejected`, `allowed_warning`) pauses the stage (`RateLimited`): nothing more starts, and a retry not yet made leaves its role `Failed(Call(Malformed))`. Each call is bounded by `timeout`, enforced by the runner. Worst case: 6 roles × 2 attempts within the run cap; prompts copy the pack once per role, and each call is moved into its thread and handed back on join, so a retry reuses it.
++- Sharding by dependency cluster (04 §3, #98, `src/shard.rs`, `src/specialists/sharded.rs`): `shard(&[ShardFile], &[Import]) -> Result<Sharding, ShardError>` over `ShardFile { path, pack_bytes }` and `Import { importer, imported }` (the caller reads the import edges from the head tree); `Sharding` (`shards()`, one to `MAX_SHARDS` = 3, `count() -> ShardCount`); `Shard` (`files()` changed, in input order; `importers()` unchanged, sorted; `pack_bytes()`; `is_overfull()`); `ShardCount` (`new` for 1 to 3, `ONE`, `get`); `full_run_cap(roles, ShardCount)`, per shard the distinct roles' caps plus `COORDINATOR_CAP` and the full verifier budget ($2.30, $2.60 with `meta`), times the count ($6.90, $7.80). `ShardError` (`NoFiles`, `TooManyFiles` past `MAX_SHARD_FILES` = 3,000, `TooManyImports` past `MAX_IMPORTS` = 65,536, `RepeatedFile`) refuses before any work. A pack within `MAX_DIFF_BYTES` is one shard; a larger one is clustered with union-find (union by size, path halving, no recursion) and packed first-fit decreasing into at most 3 shards, the lightest taking a cluster that fits none once three are open (overfull). Worst case: O((F + E) α) for the clusters, O(C log C) to sort them, O(3C) to pack, O(F log F + E log E) to list; no loop over pairs. `run_shards(&R, &ShardsRequest) -> Result<ShardedSpecialists<R::Error>, ShardsError>`: `ShardsRequest` is `SpecialistsRequest` with `packs: &[String]` (1 to 3) for `context_pack`; every shard's prompts are checked before any call (`ShardsError::{Count, Prompt { shard, source }}`); shards run one after another through the fan-out, each under its own run cap, so never more than 4 calls in flight; a shard halted by `RateLimited` or `Panicked` skips every later shard (each role `Skipped` for that halt), one halted by `RunCap` does not. `ShardedSpecialists` (`shards: Vec<Specialists>`; `cost()`, `completed_roles()` = completed on every shard, `run_cap()` summed).
+ - The coordinator (S5, 04 §3 "Coordinator", §4 step 7, #96, `src/coordinate.rs`): `coordinate(&impl ModelRunner, CoordinateRequest) -> Coordination<E>`, total, for `full`; `merge_mechanically(&[ValidFinding]) -> Coordination<E>` for `lite` and `micro` (`NotNeeded`). `CoordinateRequest` (`findings: &[ValidFinding]`, `bundle`, `system_prompt_file`, `add_dir`, `timeout`); `Coordination` (`ranked: Vec<Ranked>` in rank order, `merged: Vec<Merged>` in input order, `merged_by: MergedBy::{Coordinator, Mechanical}`, `failure: Option<CoordinatorFailure<E>>`, `attempts`, `cost`, `rate_limits`, `refusals: Vec<CoordinationRefusal>`; `outcome() -> SupportOutcome` for `decide`, `events()`); `Ranked` (`index` into the findings given, `group: GroupId`, `placement`); `Merged` (`index`, `into`); `GroupId` (`Display` `g<n>`, numbered in rank order); `CoordinatorFailure` (`Call(CallFailure)`, `Runner(E)`, `TooMany { findings }`, with `reason()`: `unavailable` for a runner error, `cap` for too many); `CoordinationRefusal` (`Shape`, `UnknownFinding`, `Repeated`, `Missing`, `EmptyGroup`, `MixedClasses`, `SeveralMajors`, `DuplicateOutsideGroup`, `DuplicateElsewhere`, `DuplicateTooSevere`, `DuplicateOtherClass`, `DuplicateOtherKind`, `DuplicateApart`, `DuplicateOutranks`, `NoiseTooSevere`, `NoiseMerged`); `COORDINATION_SCHEMA`, `COORDINATOR_MAX_TURNS` (10), `COORDINATOR_CAP` ($0.30), `MAX_COORDINATED_FINDINGS` (64). Invariants: every finding given ends exactly once, ranked or merged; a merge (`may_absorb`) needs the same file and side, a severity no higher than the keeper's, and never puts a new finding under a pre-existing one; findings of one fingerprint are merged mechanically before any call, and only those merges may absorb a `major` or `blocker`; a coordinator duplicate must also be below `major`, of the keeper's `class` and `kind`, on overlapping lines; a coordinator group holds at most one `major` or `blocker`, so the coordinator can never lower rule 7's distinct-major count; the reader maps ids to positions as it reads, so the accepted plan needs no lookup; the coordinator sees only `{id, class, severity, confidence, pre_existing, file (at head), line, title, evidence, trigger, group_hint}` of at most 64 distinct findings, and answers in ids only, read strictly (wi-b5affa): one refusal variant per rule, a refused or malformed answer retried once, then the mechanical merge with the failure kept. The stage spends at most `COORDINATOR_CAP`, retries included, each attempt getting what is left; nothing left is `cap`; a runner error is charged at the attempt's budget. Rank: noise last, then severity, then confidence, then the coordinator's order (input order when mechanical); a group's findings share a `class`; noise moves only a `minor` or `nit` to the summary. Events: a `FindingDisposed` `duplicate` per merge, then `CoordinatorFinished` or `StageDegraded{stage: coordinator}`. Worst case: O(n log n) in the findings, and reading the answer is linear in the smaller of the answer and the findings shown (each accepted id marks one finding).
+ - The blind verifier (04 §3, §4 step 8, §7, #91, #97, `src/verify.rs`): `verify(&impl ModelRunner, VerifyRequest) -> Verification<E>`, total. `VerifyRequest` (`tier: VerifierTier`, `repository`, `findings: &[ValidFinding]`, `carried: &[CarriedFinding]`, `bundle`, `system_prompt_file`, `add_dir`, `timeout`); `VerifierTier` (`Full`, `Lite`, `Micro`; `calls`; `budget`, the stage total of `VERIFIER_CAP` per call; `TryFrom<Tier>`, refusing `trivial` and `needs-split` with `UnsupportedTier`); `CarriedFinding` (re-review's, below); `ClaimRef` (`Raised(FindingRef)`, `Carried(usize)`); `Verification` (`findings: Vec<VerifiedFinding>` and `carried` in input order, `failure: Option<VerifierFailure<E>>`, `attempts`, `cost`, `rate_limits`, `refusals: Vec<VerdictRefusal>`; `outcome() -> SupportOutcome` for `decide`, `events()`); `VerifiedFinding` (`at: ClaimRef`, `raised`, `severity`, `status: VerifierStatus`, `verdict()`); `VerifierStatus` (`Judged(Judgement)`, `NotCandidate`, `NoVerifier`, `OverCap`, `Unverified`); `Judgement` (`verdict`, `reason: VerdictReason`); `VerifierFailure` (`Call { at, reason: CallFailure }`, `Runner { at, source }`); `VERDICT_SCHEMA`, `MAX_REASON_CHARS` (200), `VERIFIER_MAX_TURNS` (8), `VERIFIER_CAP` ($0.08). The live reject rate (QA-12): `VerdictTally::of(&[Event])` (`confirmed`, `refuted`, `unclear`, `runs`; `reject_rate() -> RejectRate::{TooFewRuns, Within, Below, Above}`, 10 % to 60 % inclusive over at least `REJECT_RATE_MIN_RUNS` = 20 runs, in integers). Invariants: this run's findings reach the verifier only Z3-validated; carried findings are the caller's, taken from findings already published and read as untrusted text by `read_carried` (re-review owns their provenance and trust, #212 F1). Each call's user prompt is one JSON object of exactly `{file (at head), line, class, claim (the title), trigger}`, a blank line, then the verifier instruction (for a carried claim the carried-verifier instruction), never `body`, `fix`, `evidence` or the rest. Every carried finding is a candidate and is judged first, by severity then in order; then this run's findings of at least `major`, blockers first, then by confidence, then in order; at most `VerifierTier::calls` in all (5 in `full`, 3 in `lite`, none in `micro`). A carried claim is the same five-field object, followed by the carried-verifier instruction. The stage spends at most `VerifierTier::budget` ($0.40 full, $0.24 lite), retries included: each attempt's budget is the smaller of `VERIFIER_CAP` and what is left, and nothing left stops the stage as `cap` before any call. A verdict is read strictly (wi-b5affa): an object of exactly `verdict` (one of the three codes, exact case) and `reason` (printable ASCII, not blank, at most 200 characters, clear of the injection screen of validation step 5); anything else, like a `Malformed` outcome, is retried once and is then `malformed`; each refused verdict's `VerdictRefusal` is kept. `confirmed` keeps the severity, `refuted` lowers it to `minor` with the reason attached (`FindingDisposed` `verifier-rejected-downgraded`), `unclear` lowers it one level; each verdict emits `FindingVerified`. The first call that ends without a verdict stops the stage: `outcome()` is `Failed` with the `CallFailure` (`cap`, `turns`, `timeout`, `unavailable` for quota or a runner error, `malformed`), a `StageDegraded` event names it, verdicts already given stand, every candidate within the cap not yet judged is `Unverified`, shown at most `major` (06 §6), and a candidate past the cap stays `OverCap` at its severity. A runner error is charged at the attempt's budget.
+ 
+@@ -129,3 +130,4 @@ Integration tests in `tests/it/` drive use cases against in-memory fakes of the
+ | 2026-10-13 | Coordinator (#96): `coordinator.md` joins bundle v1 (no release has used it), so `BundleFile` gains `Coordinator` and `BundleFiles` a field (workspace-internal API change). Defaults where 03 and 04 are silent, each for the owner to confirm: (1) the coordinator answers in finding ids only and never drops, rewords or re-rates a finding, so nothing it writes is published and the injection screen has nothing to read; (2) "what not to flag" moves only a `minor` or `nit` to the summary, because 03 §5 has no disposition for a coordinator drop and a model-driven drop would let a hostile pack suppress a blocker; (3) `group_id` is `g<n>` by rank, distinct by construction; a group must share one `class` and hold at most one `major` or `blocker`, and a coordinator duplicate must be below `major` (only fingerprint merges absorb a major), so the coordinator can never lower rule 7's distinct-major count nor hide a major from publication and the verifier (review round 1 of PR #221, F1 and F4); (4) a run with more than 64 distinct findings makes no call and degrades the coordinator as `cap` (no `CallFailure` code fits better without a contract change). The reviewer notes that rule 8b's remedy cannot heal this: `/assay retry` re-runs at 1.5× the cap but the 64-finding limit stays, so only `/assay override llm` clears it; left as the default for the owner (Weigh-In 1); (5) the ≤ 8 inline cap stays with publication (#88), which reads the coordinator's rank. Tests: the bundle enumerations and hash test grew by the new file; the `a_panic_while_others_are_in_flight_lets_them_finish` hold now keeps `bugs` until security has ended (#217 R2-F2), its expectations unchanged. No new dependency. | wi-b5affa, H-13, H-16 | #96; owner to confirm |
+ | 2026-10-13 | Re-review (#99, folding #212 F1-F4), conservative defaults for the owner to confirm (Weigh-In): (1) `refuted` on a carried finding resolves its thread with a note, as 04 §6 says for a defect gone at head, and the finding is still recorded at `minor` as 04 §4 step 8 says for any refutation, so nothing is dropped and nothing blocks; (2) the carried question is a new bundle file, `v1/verifier-carried.md` (bundle v1 is unreleased), so `BundleFiles` gains `verifier_carried` and the bundle-hash test's file list grows by it; `a_carried_claim_is_the_same_blind_five_fields` now expects the carried instruction (#212 asked for it) and is renamed to say so; (3) carried findings stay caller-supplied: `assay.run-inputs/1` records the decision inputs' fingerprints but not the published findings' text, so persisting the carry set across runs is a contract change left to the owner, and until then the caller builds `CarriedParts` from App-authored records; (4) `RangeDiff` carries commit messages (intent), so it is for the intent envelope only, and #85 decides how blind roles see the increment; (5) a history read that fails is an error, not a reset, since a reset would drop carried findings unjudged; (6) one refused carried finding refuses the whole set (wi-b5affa). `CarriedFinding` moves from `verify` to `rereview` with private fields and a checking constructor (workspace-internal API change); `ClaimRef::Carried` becomes a tuple (#212 F4); `VerifierTier::calls` and `budget` read one `const fn` and are no longer `const` (#212 F3). | wi-b5affa, API-03, H-12, H-16 | #99; Weigh-In defaults, owner may reopen |
+ | 2026-10-13 | Re-review round 1 (#99, PR #222 review F1-F10): (F1) settling takes this run's `raised` findings, and a carried fingerprint refuted as carried but raised again and not refuted is `CarriedState::Raised`, not resolved; (F2) a range-diff failure, `TooLarge` or `TooSlow` no longer fails the target: it is `Cumulative::Unavailable` with the failure kept, and the carry decision from ancestry stands (this narrows Weigh-In (5) to the ancestry read); `HistoryStep` goes, since only ancestry can fail the target (F10 superseded); (F3) verification entries pair by claim and length; (F6) anchor searches are memoised by normalised evidence; (F8) `ReviewTarget`'s fields are private behind accessors (workspace-internal API change); (F9) 04 §7 now says range-diff is taken from the pinned base, the simpler of the two options, since the target is `base...head` from that pin and merge-bases per head would add two git calls for the same increment on an unrebased PR. Weigh-In (6) stays: one refused carried finding refuses the set. The reviewer's point stands for the owner: a refusal is deterministic, so a set holding one bad record is refused again on every run until that record leaves it. | wi-b5affa, H-13, API-03, H-16 | #99; Weigh-In defaults, owner may reopen |
++| 2026-10-13 | Sharding (#98): clustering is a pure function over the caller's file sizes and import edges, because reading imports means parsing Rust, which this crate does not do (wi-b5affa); the review job (#85) supplies the edges and builds one pack per shard. `run_shards` runs shards sequentially over the existing fan-out; `run_specialists` is split into a private `Prepared` so every shard's prompts are checked before any call, and `Specialists` gains `halt` (workspace-internal API change). Defaults where 04 is silent, each for the owner to confirm: (1) only `full` shards (04 §3 scales the `full` cap; `lite` and `micro` keep one capped pack); (2) past 3 shards a cluster joins the lightest shard, which is overfull and withholds what does not fit, rather than refusing the run (coverage is never below one pack's); (3) a pack within 120 KiB is never clustered; (4) `run.json` `shards` stays `plan`'s one shard (03 §4); (5) a role counts as completed only if it completed on every shard, and a quota pause or panic skips the later shards while a run-cap halt does not. Also folds #223's pre-existing `Workers::settle` gap: a posted slot with no handle is settled as refused, so the fan-out cannot wait forever. | wi-b5affa, ARC-03, H-13 | #98 |
+diff --git a/crates/assay-app/src/lib.rs b/crates/assay-app/src/lib.rs
+index b8feae5..76eca2e 100644
+--- a/crates/assay-app/src/lib.rs
++++ b/crates/assay-app/src/lib.rs
+@@ -23,6 +23,7 @@ mod publish;
+ mod replay;
+ mod rereview;
+ mod session_init;
++mod shard;
+ mod specialists;
+ mod status;
+ mod tiering;
+@@ -110,9 +111,14 @@ pub use rereview::{
+     PriorHistory, RangeDiff, RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError,
+     TargetRequest, read_carried, recheck_anchors, review_target, settle_carried,
+ };
++pub use shard::{
++    Import, MAX_IMPORTS, MAX_SHARD_FILES, MAX_SHARDS, Shard, ShardCount, ShardError, ShardFile,
++    Sharding, full_run_cap, shard,
++};
+ pub use specialists::{
+-    HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport, Specialists,
+-    SpecialistsRequest, run_specialists,
++    HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport,
++    ShardedSpecialists, ShardsError, ShardsRequest, Specialists, SpecialistsRequest, run_shards,
++    run_specialists,
+ };
+ pub use status::{
+     AppId, BundleProblem, CheckView, Detail, FetchedAt, Identities, InvalidFetchedAt,
+diff --git a/crates/assay-app/src/plan/document.rs b/crates/assay-app/src/plan/document.rs
+index a9b2607..a0c9305 100644
+--- a/crates/assay-app/src/plan/document.rs
++++ b/crates/assay-app/src/plan/document.rs
+@@ -200,7 +200,8 @@ struct FilteredStats<'a> {
+ 
+ /// The document as JSON. A draft schedules no reviewer and no shard (04 §2.4: gates only), but
+ /// keeps the roles its tier requires, so `decide` knows what review it lacks; otherwise every
+-/// file left after filtering is one shard (sharding is #98's).
++/// file left after filtering is one shard. `plan` holds neither the context pack nor the
++/// import graph, so the split by dependency cluster is the review job's ([`crate::shard`]).
+ pub(super) fn to_json(inputs: &Inputs<'_>) -> Result<Vec<u8>, serde_json::Error> {
+     let Inputs {
+         pull_request,
+diff --git a/crates/assay-app/src/shard.rs b/crates/assay-app/src/shard.rs
+new file mode 100644
+index 0000000..66d555a
+--- /dev/null
++++ b/crates/assay-app/src/shard.rs
+@@ -0,0 +1,292 @@
++//! Sharding by dependency cluster (`docs/architecture/04-pipeline.md` §3, #98): a `full` PR
++//! whose context pack exceeds [`MAX_DIFF_BYTES`] is split into at most [`MAX_SHARDS`] shards,
++//! each a set of clusters (a changed file, its direct importers, and every changed file
++//! reachable through them), so a file is reviewed beside the code that uses it. Shards run one
++//! after another, each with the full specialist set ([`run_shards`](crate::run_shards)), and
++//! the run cap scales by their count ([`full_run_cap`]).
++//!
++//! The file list, the pack sizes and the import edges come from the pull request, so every step
++//! is linear or `n log n` in them, never a loop over pairs, and the counts are capped: past a
++//! cap the input is refused, not truncated (wi-b5affa).
++
++mod cluster;
++
++use std::cmp::Reverse;
++use std::collections::BTreeSet;
++
++use assay_domain::{Aeu, RequiredRole};
++
++use self::cluster::{Cluster, Graph};
++use crate::check::MAX_DIFF_BYTES;
++use crate::coordinate::COORDINATOR_CAP;
++use crate::prompt_bundle::Role;
++use crate::verify::VerifierTier;
++
++/// The most shards a run is split into (04 §3).
++pub const MAX_SHARDS: usize = 3;
++
++/// The most changed files [`shard`] reads: `plan`'s cap on the REST file list.
++pub const MAX_SHARD_FILES: usize = 3_000;
++
++/// The most import edges [`shard`] reads.
++pub const MAX_IMPORTS: usize = 1 << 16;
++
++/// A changed file and the bytes it takes in the context pack (its diff, and the base side of
++/// deleted code).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct ShardFile<'a> {
++    /// The file's repository path.
++    pub path: &'a str,
++    /// Its bytes in the context pack.
++    pub pack_bytes: usize,
++}
++
++/// One file of the head tree importing another (`use`, `mod`, or what the caller's language
++/// reads as a dependency). Only imports of changed files matter; the rest are ignored.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct Import<'a> {
++    /// The file that imports.
++    pub importer: &'a str,
++    /// The file it imports.
++    pub imported: &'a str,
++}
++
++/// How many shards a run has: one to [`MAX_SHARDS`].
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
++pub struct ShardCount(u8);
++
++impl ShardCount {
++    /// An unsharded run.
++    pub const ONE: Self = Self(1);
++
++    /// `count` shards, if it is one to [`MAX_SHARDS`].
++    #[must_use]
++    pub fn new(count: usize) -> Option<Self> {
++        if (1..=MAX_SHARDS).contains(&count) {
++            u8::try_from(count).ok().map(Self)
++        } else {
++            None
++        }
++    }
++
++    /// The number of shards.
++    #[must_use]
++    pub fn get(self) -> usize {
++        usize::from(self.0)
++    }
++}
++
++/// A run's shards, one to [`MAX_SHARDS`], heaviest cluster first.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Sharding<'a> {
++    shards: Vec<Shard<'a>>,
++}
++
++impl<'a> Sharding<'a> {
++    /// The shards, in the order they run.
++    #[must_use]
++    pub fn shards(&self) -> &[Shard<'a>] {
++        &self.shards
++    }
++
++    /// How many shards there are.
++    #[must_use]
++    pub fn count(&self) -> ShardCount {
++        // `shard` builds one to `MAX_SHARDS`, so the fallback is never taken.
++        ShardCount::new(self.shards.len()).unwrap_or(ShardCount::ONE)
++    }
++}
++
++/// One shard: the changed files its pack shows and the unchanged files importing them.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Shard<'a> {
++    files: Vec<&'a str>,
++    importers: Vec<&'a str>,
++    pack_bytes: usize,
++}
++
++impl<'a> Shard<'a> {
++    /// The changed files, in the order they were listed.
++    #[must_use]
++    pub fn files(&self) -> &[&'a str] {
++        &self.files
++    }
++
++    /// The unchanged files that directly import one of [`files`](Self::files), sorted; the
++    /// reviewers read them from the tree. Empty for an unsharded run.
++    #[must_use]
++    pub fn importers(&self) -> &[&'a str] {
++        &self.importers
++    }
++
++    /// The pack bytes of its files.
++    #[must_use]
++    pub const fn pack_bytes(&self) -> usize {
++        self.pack_bytes
++    }
++
++    /// Whether its files take more than [`MAX_DIFF_BYTES`]: a cluster larger than that, or one
++    /// that fitted in no shard once all three were open. Its pack shows what fits and says how
++    /// many files it left out, as an unsharded pack does.
++    #[must_use]
++    pub const fn is_overfull(&self) -> bool {
++        self.pack_bytes > MAX_DIFF_BYTES
++    }
++}
++
++/// Why [`shard`] refused its input.
++#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
++pub enum ShardError {
++    /// No changed file was given: there is nothing to review.
++    #[error("no changed file to shard")]
++    NoFiles,
++    /// More than [`MAX_SHARD_FILES`] changed files.
++    #[error("{files} changed files; at most {MAX_SHARD_FILES} are sharded")]
++    TooManyFiles {
++        /// How many were given.
++        files: usize,
++    },
++    /// More than [`MAX_IMPORTS`] import edges.
++    #[error("{imports} imports; at most {MAX_IMPORTS} are read")]
++    TooManyImports {
++        /// How many were given.
++        imports: usize,
++    },
++    /// A changed file was listed twice, so its pack bytes are ambiguous.
++    #[error("the changed file {path:?} is listed twice")]
++    RepeatedFile {
++        /// The repeated path.
++        path: String,
++    },
++}
++
++/// Splits `files` into shards by dependency cluster (04 §3).
++///
++/// A pack of at most [`MAX_DIFF_BYTES`] is one shard of every file, in order. A larger one is clustered: each changed file joins its direct
++/// importers in `imports`, and clusters that share a file merge. The clusters, heaviest first
++/// (ties in the order of their first file), go to the first shard they fit in, to a new one
++/// while fewer than [`MAX_SHARDS`] are open, and otherwise to the lightest, which is then
++/// [overfull](Shard::is_overfull). Every changed file is in exactly one shard.
++///
++/// Linear in the files and imports apart from sorting (`n log n`); no step compares pairs.
++///
++/// # Errors
++/// Returns [`ShardError`] for no file, more than [`MAX_SHARD_FILES`] files, more than
++/// [`MAX_IMPORTS`] imports, or a file listed twice; nothing is sharded then.
++///
++/// # Examples
++///
++/// ```
++/// use assay_app::{Import, MAX_DIFF_BYTES, ShardFile, shard};
++///
++/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
++/// let files = [
++///     ShardFile { path: "src/a.rs", pack_bytes: MAX_DIFF_BYTES },
++///     ShardFile { path: "src/b.rs", pack_bytes: 100 },
++/// ];
++/// let imports = [Import { importer: "src/lib.rs", imported: "src/b.rs" }];
++///
++/// let sharding = shard(&files, &imports)?;
++///
++/// let [first, second] = sharding.shards() else {
++///     return Err("expected two shards".into());
++/// };
++/// assert_eq!((first.files(), first.importers()), (&["src/a.rs"][..], &[][..]));
++/// assert_eq!((second.files(), second.importers()), (&["src/b.rs"][..], &["src/lib.rs"][..]));
++/// # Ok(())
++/// # }
++/// ```
++pub fn shard<'a>(
++    files: &[ShardFile<'a>],
++    imports: &[Import<'a>],
++) -> Result<Sharding<'a>, ShardError> {
++    if files.is_empty() {
++        return Err(ShardError::NoFiles);
++    }
++    if files.len() > MAX_SHARD_FILES {
++        return Err(ShardError::TooManyFiles { files: files.len() });
++    }
++    if imports.len() > MAX_IMPORTS {
++        return Err(ShardError::TooManyImports {
++            imports: imports.len(),
++        });
++    }
++    let mut graph = Graph::new(files)?;
++    let total = files
++        .iter()
++        .fold(0_usize, |sum, file| sum.saturating_add(file.pack_bytes));
++    if total <= MAX_DIFF_BYTES {
++        let shard = Shard {
++            files: files.iter().map(|file| file.path).collect(),
++            importers: Vec::new(),
++            pack_bytes: total,
++        };
++        return Ok(Sharding {
++            shards: vec![shard],
++        });
++    }
++    for &import in imports {
++        graph.join(import);
++    }
++    Ok(Sharding {
++        shards: pack(files, graph.clusters()),
++    })
++}
++
++/// First-fit decreasing into at most [`MAX_SHARDS`] shards: linear in the clusters after the
++/// sort, which is stable, so equal clusters keep the order of their first file.
++fn pack<'a>(files: &[ShardFile<'a>], mut clusters: Vec<Cluster<'a>>) -> Vec<Shard<'a>> {
++    clusters.sort_by_key(|cluster| Reverse(cluster.pack_bytes));
++    let mut bins: Vec<Cluster<'a>> = Vec::with_capacity(MAX_SHARDS);
++    for cluster in clusters {
++        let fits = bins
++            .iter()
++            .position(|bin| bin.pack_bytes.saturating_add(cluster.pack_bytes) <= MAX_DIFF_BYTES);
++        let target = match fits {
++            Some(index) => bins.get_mut(index),
++            None if bins.len() < MAX_SHARDS => {
++                bins.push(Cluster::default());
++                bins.last_mut()
++            }
++            // The first of the lightest, so ties keep shard order.
++            None => bins.iter_mut().min_by_key(|bin| bin.pack_bytes),
++        };
++        if let Some(bin) = target {
++            bin.absorb(cluster);
++        }
++    }
++    bins.into_iter()
++        .map(|mut bin| {
++            bin.files.sort_unstable();
++            bin.importers.sort_unstable();
++            Shard {
++                files: bin
++                    .files
++                    .iter()
++                    .filter_map(|&index| files.get(index).map(|file| file.path))
++                    .collect(),
++                importers: bin.importers,
++                pack_bytes: bin.pack_bytes,
++            }
++        })
++        .collect()
++}
++
++/// The run cap of a `full` run with `roles` (each counted once) split into `shards`.
++///
++/// Per shard it is the roles' caps, the coordinator's and the verifier stage's, so $2.30 a shard ($2.60 with
++/// `meta`), and $6.90 ($7.80) for three (04 §3, 06 §1).
++#[must_use]
++pub fn full_run_cap(roles: &[RequiredRole], shards: ShardCount) -> Aeu {
++    let per_shard = roles
++        .iter()
++        .copied()
++        .collect::<BTreeSet<RequiredRole>>()
++        .into_iter()
++        .map(|role| Role::from(role).cap())
++        .fold(
++            COORDINATOR_CAP.saturating_add(VerifierTier::Full.budget()),
++            Aeu::saturating_add,
++        );
++    Aeu::from_micros(per_shard.micros().saturating_mul(u64::from(shards.0)))
++}
+diff --git a/crates/assay-app/src/shard/cluster.rs b/crates/assay-app/src/shard/cluster.rs
+new file mode 100644
+index 0000000..deb2436
+--- /dev/null
++++ b/crates/assay-app/src/shard/cluster.rs
+@@ -0,0 +1,174 @@
++//! The dependency clusters of a change: disjoint sets over the changed files and their direct
++//! importers, joined along each import of a changed file.
++
++use std::collections::HashMap;
++use std::collections::hash_map::Entry;
++
++use super::{Import, ShardError, ShardFile};
++
++/// Changed files grouped with their importers, or a shard being filled with such groups.
++#[derive(Debug, Default)]
++pub(super) struct Cluster<'a> {
++    /// Indices of its changed files in the input.
++    pub(super) files: Vec<usize>,
++    /// Its unchanged importers.
++    pub(super) importers: Vec<&'a str>,
++    /// The pack bytes of its changed files.
++    pub(super) pack_bytes: usize,
++}
++
++impl Cluster<'_> {
++    /// Takes `other`'s files and importers.
++    pub(super) fn absorb(&mut self, other: Self) {
++        self.files.extend(other.files);
++        self.importers.extend(other.importers);
++        self.pack_bytes = self.pack_bytes.saturating_add(other.pack_bytes);
++    }
++}
++
++/// The files as nodes, changed ones first (node `i` is input file `i`), then each unchanged
++/// importer as an import first names it.
++pub(super) struct Graph<'f, 'a> {
++    files: &'f [ShardFile<'a>],
++    nodes: HashMap<&'a str, usize>,
++    /// The path of each node past the changed files.
++    importers: Vec<&'a str>,
++    sets: DisjointSets,
++}
++
++impl<'f, 'a> Graph<'f, 'a> {
++    /// A graph of `files` with no edge yet.
++    ///
++    /// # Errors
++    /// Returns [`ShardError::RepeatedFile`] when a path is listed twice.
++    pub(super) fn new(files: &'f [ShardFile<'a>]) -> Result<Self, ShardError> {
++        let mut nodes = HashMap::with_capacity(files.len());
++        for (index, file) in files.iter().enumerate() {
++            if nodes.insert(file.path, index).is_some() {
++                return Err(ShardError::RepeatedFile {
++                    path: file.path.to_owned(),
++                });
++            }
++        }
++        Ok(Self {
++            files,
++            nodes,
++            importers: Vec::new(),
++            sets: DisjointSets::new(files.len()),
++        })
++    }
++
++    /// Joins the importer to the cluster of the file it imports, when that file changed; an
++    /// import of an unchanged file, or of a file by itself, joins nothing.
++    pub(super) fn join(&mut self, import: Import<'a>) {
++        if import.importer == import.imported {
++            return;
++        }
++        let dependency = match self.nodes.get(import.imported) {
++            Some(&node) if node < self.files.len() => node,
++            _ => return,
++        };
++        let importer = match self.nodes.entry(import.importer) {
++            Entry::Occupied(node) => *node.get(),
++            Entry::Vacant(vacant) => {
++                let node = self.sets.add();
++                self.importers.push(import.importer);
++                *vacant.insert(node)
++            }
++        };
++        self.sets.union(dependency, importer);
++    }
++
++    /// The clusters, in the order of their first changed file. Every unchanged importer was
++    /// joined to a changed file when it was added, so its cluster is one of these.
++    pub(super) fn clusters(mut self) -> Vec<Cluster<'a>> {
++        let mut cluster_of: Vec<Option<usize>> = vec![None; self.sets.len()];
++        let mut clusters: Vec<Cluster<'a>> = Vec::new();
++        for (node, file) in self.files.iter().enumerate() {
++            let root = self.sets.find(node);
++            let Some(slot) = cluster_of.get_mut(root) else {
++                continue;
++            };
++            let index = *slot.get_or_insert_with(|| {
++                clusters.push(Cluster::default());
++                clusters.len().saturating_sub(1)
++            });
++            if let Some(cluster) = clusters.get_mut(index) {
++                cluster.files.push(node);
++                cluster.pack_bytes = cluster.pack_bytes.saturating_add(file.pack_bytes);
++            }
++        }
++        let changed = self.files.len();
++        for (offset, &path) in self.importers.iter().enumerate() {
++            let root = self.sets.find(changed.saturating_add(offset));
++            let cluster = cluster_of
++                .get(root)
++                .copied()
++                .flatten()
++                .and_then(|index| clusters.get_mut(index));
++            if let Some(cluster) = cluster {
++                cluster.importers.push(path);
++            }
++        }
++        clusters
++    }
++}
++
++/// Union-find with union by size and path halving: near-constant time per operation, and no
++/// recursion, so a long chain of imports cannot exhaust the stack.
++struct DisjointSets {
++    parent: Vec<usize>,
++    size: Vec<usize>,
++}
++
++impl DisjointSets {
++    fn new(len: usize) -> Self {
++        Self {
++            parent: (0..len).collect(),
++            size: vec![1; len],
++        }
++    }
++
++    const fn len(&self) -> usize {
++        self.parent.len()
++    }
++
++    /// A new singleton set, by its node.
++    fn add(&mut self) -> usize {
++        let node = self.parent.len();
++        self.parent.push(node);
++        self.size.push(1);
++        node
++    }
++
++    /// The root of `node`'s set (`node` itself for a node out of range).
++    fn find(&mut self, mut node: usize) -> usize {
++        loop {
++            let parent = self.parent.get(node).copied().unwrap_or(node);
++            if parent == node {
++                return node;
++            }
++            let grandparent = self.parent.get(parent).copied().unwrap_or(parent);
++            if let Some(slot) = self.parent.get_mut(node) {
++                *slot = grandparent;
++            }
++            node = grandparent;
++        }
++    }
++
++    fn union(&mut self, a: usize, b: usize) {
++        let (a, b) = (self.find(a), self.find(b));
++        if a == b {
++            return;
++        }
++        let size = |node: usize| self.size.get(node).copied().unwrap_or(1);
++        let (small, large) = if size(a) < size(b) { (a, b) } else { (b, a) };
++        let merged = size(small).saturating_add(size(large));
++        if let Some(parent) = self.parent.get_mut(small) {
++            *parent = large;
++        }
++        if let Some(slot) = self.size.get_mut(large) {
++            *slot = merged;
++        }
++    }
++}
+diff --git a/crates/assay-app/src/specialists.rs b/crates/assay-app/src/specialists.rs
+index 4dc35ca..4cc5e06 100644
+--- a/crates/assay-app/src/specialists.rs
++++ b/crates/assay-app/src/specialists.rs
+@@ -15,6 +15,7 @@
+ mod board;
+ mod report;
+ mod schedule;
++mod sharded;
+ 
+ use std::collections::BTreeSet;
+ use std::path::PathBuf;
+@@ -24,6 +25,7 @@ use std::time::Duration;
+ use assay_domain::RequiredRole;
+ 
+ pub use report::{Halt, RoleFailure, RoleOutcome, RoleReport, Specialists};
++pub use sharded::{ShardedSpecialists, ShardsError, ShardsRequest, run_shards};
+ 
+ use self::board::Board;
+ use self::schedule::{Joined, Schedule, Start};
+@@ -159,44 +161,86 @@ where
+     R: ModelRunner + Sync,
+     R::Error: Send,
+ {
+-    let roles: Vec<Role> = request
+-        .roles
+-        .iter()
+-        .copied()
+-        .collect::<BTreeSet<RequiredRole>>()
+-        .into_iter()
+-        .map(Role::from)
+-        .collect();
+-    let head_start = request.head_start;
+-    let calls = calls(&roles, request)?;
+-    let mut schedule = Schedule::new(&roles);
+-    let board = Board::default();
+-    thread::scope(|scope| {
+-        let mut workers = Workers {
+-            scope,
+-            runner,
+-            calls: calls.into_iter().map(Some).collect(),
+-            board: &board,
+-            handles: roles.iter().map(|_| None).collect(),
+-        };
+-        // The first call goes alone; the head start ends early if it does.
+-        workers.start(&mut schedule, 1);
+-        if schedule.in_flight() > 0 {
+-            for slot in board.take_within(head_start) {
+-                workers.settle(&mut schedule, slot);
+-            }
+-        }
+-        loop {
+-            workers.start(&mut schedule, MAX_MODEL_PROCESSES);
+-            if schedule.in_flight() == 0 {
+-                break;
++    Ok(Prepared::new(request)?.run(runner))
++}
++
++/// A fan-out whose prompts are checked, ready to run: its distinct roles in roster order and
++/// one call per role.
++struct Prepared {
++    roles: Vec<Role>,
++    calls: Vec<ModelCall>,
++    head_start: Duration,
++}
++
++impl Prepared {
++    /// The roles and calls of `request`.
++    ///
++    /// # Errors
++    /// Returns [`InvalidPrompt`] when a user prompt is not a valid prompt.
++    fn new(request: SpecialistsRequest<'_>) -> Result<Self, InvalidPrompt> {
++        let roles: Vec<Role> = request
++            .roles
++            .iter()
++            .copied()
++            .collect::<BTreeSet<RequiredRole>>()
++            .into_iter()
++            .map(Role::from)
++            .collect();
++        let head_start = request.head_start;
++        let calls = calls(&roles, request)?;
++        Ok(Self {
++            roles,
++            calls,
++            head_start,
++        })
++    }
++
++    /// Runs the calls (see [`run_specialists`]); every thread is joined before this returns.
++    fn run<R>(self, runner: &R) -> Specialists<R::Error>
++    where
++        R: ModelRunner + Sync,
++        R::Error: Send,
++    {
++        let Self {
++            roles,
++            calls,
++            head_start,
++        } = self;
++        let mut schedule = Schedule::new(&roles);
++        let board = Board::default();
++        thread::scope(|scope| {
++            let mut workers = Workers {
++                scope,
++                runner,
++                calls: calls.into_iter().map(Some).collect(),
++                board: &board,
++                handles: roles.iter().map(|_| None).collect(),
++            };
++            // The first call goes alone; the head start ends early if it does.
++            workers.start(&mut schedule, 1);
++            if schedule.in_flight() > 0 {
++                for slot in board.take_within(head_start) {
++                    workers.settle(&mut schedule, slot);
++                }
+             }
+-            for slot in board.take() {
+-                workers.settle(&mut schedule, slot);
++            loop {
++                workers.start(&mut schedule, MAX_MODEL_PROCESSES);
++                if schedule.in_flight() == 0 {
++                    break;
++                }
++                for slot in board.take() {
++                    workers.settle(&mut schedule, slot);
++                }
+             }
+-        }
+-    });
+-    Ok(schedule.finish())
++        });
++        schedule.finish()
++    }
++
++    /// The reports of a fan-out that never starts because the stage halted before it: every
++    /// role is skipped for `halt`, with no call and no cost.
++    fn skipped<E>(self, halt: Halt) -> Specialists<E> {
++        Schedule::halted(&self.roles, halt).finish()
++    }
+ }
+ 
+ /// One call per role, in the roles' order: the pack, the intent for the roles that see it,
+@@ -293,6 +337,11 @@ where
+     /// Joins `slot`'s thread, which has posted, and settles its call.
+     fn settle(&mut self, schedule: &mut Schedule<R::Error>, slot: usize) {
+         let Some(handle) = self.handles.get_mut(slot).and_then(Option::take) else {
++            // Only a started thread posts, and its handle is kept until this joins it, so this
++            // does not happen. Were it to, the call is settled as never started, so the
++            // schedule's count of calls in flight still falls and the fan-out cannot wait on
++            // a call that is not there (#223).
++            schedule.refused(slot, std::io::ErrorKind::NotFound);
+             return;
+         };
+         let joined = match handle.join() {
+diff --git a/crates/assay-app/src/specialists/report.rs b/crates/assay-app/src/specialists/report.rs
+index 474ab32..7cf6608 100644
+--- a/crates/assay-app/src/specialists/report.rs
++++ b/crates/assay-app/src/specialists/report.rs
+@@ -17,6 +17,10 @@ pub struct Specialists<E> {
+     pub roles: Vec<RoleReport<E>>,
+     /// The run cap the calls were held to: the sum of the roles' caps (06 §1).
+     pub run_cap: Aeu,
++    /// Why the stage stopped starting calls, if it did: the run cap, a pause for a rate limit
++    /// or quota, or a runner's panic. A paused or stopped stage starts no later shard
++    /// ([`run_shards`](crate::run_shards)).
++    pub halt: Option<Halt>,
+ }
+ 
+ impl<E> Specialists<E> {
+diff --git a/crates/assay-app/src/specialists/schedule.rs b/crates/assay-app/src/specialists/schedule.rs
+index 42f97ad..c1096be 100644
+--- a/crates/assay-app/src/specialists/schedule.rs
++++ b/crates/assay-app/src/specialists/schedule.rs
+@@ -147,6 +147,13 @@ impl<E> Schedule<E> {
+         }
+     }
+ 
++    /// A schedule for `roles` that starts nothing: the stage halted for `halt` before it.
++    pub(super) fn halted(roles: &[Role], halt: Halt) -> Self {
++        let mut schedule = Self::new(roles);
++        schedule.halt = Some(halt);
++        schedule
++    }
++
+     /// The calls in flight.
+     pub(super) const fn in_flight(&self) -> usize {
+         self.in_flight
+@@ -327,6 +334,7 @@ impl<E> Schedule<E> {
+         Specialists {
+             roles,
+             run_cap: self.ledger.cap,
++            halt: self.halt,
+         }
+     }
+ }
+diff --git a/crates/assay-app/src/specialists/sharded.rs b/crates/assay-app/src/specialists/sharded.rs
+new file mode 100644
+index 0000000..d230874
+--- /dev/null
++++ b/crates/assay-app/src/specialists/sharded.rs
+@@ -0,0 +1,172 @@
++//! Sharded runs (04 §3, #98): the shards of a large pack run one after another, each through
++//! the whole fan-out with every role over its own pack, so a run never has more than
++//! [`MAX_MODEL_PROCESSES`](super::MAX_MODEL_PROCESSES) calls in flight.
++
++use std::collections::BTreeSet;
++use std::path::PathBuf;
++use std::time::Duration;
++
++use assay_domain::{Aeu, RequiredRole};
++
++use super::{Halt, Prepared, Specialists, SpecialistsRequest};
++use crate::model_runner::{InvalidPrompt, ModelRunner};
++use crate::prompt_bundle::PromptBundle;
++use crate::shard::{MAX_SHARDS, ShardCount};
++
++/// What to run over each shard, and how to call the model: a [`SpecialistsRequest`] with one
++/// context pack per shard.
++#[derive(Debug)]
++pub struct ShardsRequest<'a> {
++    /// One context pack per shard, in the order the shards run: one to [`MAX_SHARDS`]. Each
++    /// must not start with `-` (see [`Prompt`](crate::Prompt)).
++    pub packs: &'a [String],
++    /// The roles the plan requires; each shard runs every one, once, in roster order.
++    pub roles: &'a [RequiredRole],
++    /// The intent envelope, sent after the pack to the roles that see it, on every shard.
++    pub intent: Option<&'a str>,
++    /// The prompt bundle.
++    pub bundle: &'a PromptBundle,
++    /// The JSON Schema of the findings every role returns, as JSON text.
++    pub json_schema: &'a str,
++    /// The base-sourced system prompt file (absolute path).
++    pub system_prompt_file: PathBuf,
++    /// The read-only PR tree the roles may read (absolute path).
++    pub add_dir: PathBuf,
++    /// The wall-clock limit of each call.
++    pub timeout: Duration,
++    /// How long each shard's first call runs alone: the packs differ, so each shard writes its
++    /// own prompt cache entry.
++    pub head_start: Duration,
++}
++
++impl<'a> ShardsRequest<'a> {
++    /// The fan-out request of the shard whose pack is `pack`.
++    fn for_pack(&self, pack: &'a str) -> SpecialistsRequest<'a> {
++        SpecialistsRequest {
++            roles: self.roles,
++            context_pack: pack,
++            intent: self.intent,
++            bundle: self.bundle,
++            json_schema: self.json_schema,
++            // Each shard's calls own their paths (`ModelCall` stores them); at most three.
++            system_prompt_file: self.system_prompt_file.clone(),
++            add_dir: self.add_dir.clone(),
++            timeout: self.timeout,
++            head_start: self.head_start,
++        }
++    }
++}
++
++/// Why [`run_shards`] made no call.
++#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
++pub enum ShardsError {
++    /// No pack, or more than [`MAX_SHARDS`].
++    #[error("{packs} shard packs; a run has 1 to {MAX_SHARDS}")]
++    Count {
++        /// How many packs were given.
++        packs: usize,
++    },
++    /// A shard's pack (or the intent) does not make a valid prompt.
++    #[error("the prompts of shard {shard} are not valid")]
++    Prompt {
++        /// The shard, counted from 0.
++        shard: usize,
++        /// Why its prompt was refused.
++        #[source]
++        source: InvalidPrompt,
++    },
++}
++
++/// The outcome of a sharded run: one fan-out per shard, in shard order.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ShardedSpecialists<E> {
++    /// Each shard's fan-out. A shard after one whose stage paused or stopped never starts:
++    /// every role is [`Skipped`](super::RoleOutcome::Skipped) for that reason.
++    pub shards: Vec<Specialists<E>>,
++}
++
++impl<E> ShardedSpecialists<E> {
++    /// What every call of every shard cost, to ledger.
++    #[must_use]
++    pub fn cost(&self) -> Aeu {
++        self.shards
++            .iter()
++            .fold(Aeu::ZERO, |total, shard| total.saturating_add(shard.cost()))
++    }
++
++    /// The roles that produced structured output on every shard, for `decide`'s
++    /// `completed_roles` (04 §5): a role that did not complete on one shard did not review
++    /// that shard's files.
++    #[must_use]
++    pub fn completed_roles(&self) -> BTreeSet<RequiredRole> {
++        let mut shards = self.shards.iter();
++        let Some(first) = shards.next() else {
++            return BTreeSet::new();
++        };
++        shards.fold(first.completed_roles(), |mut roles, shard| {
++            let completed = shard.completed_roles();
++            roles.retain(|role| completed.contains(role));
++            roles
++        })
++    }
++
++    /// The specialists' run cap over all shards: each shard's, summed (06 §1).
++    #[must_use]
++    pub fn run_cap(&self) -> Aeu {
++        self.shards.iter().fold(Aeu::ZERO, |total, shard| {
++            total.saturating_add(shard.run_cap)
++        })
++    }
++}
++
++/// Runs every role over each pack of `request`, one shard after another.
++///
++/// Each shard runs as
++/// [`run_specialists`](crate::run_specialists) runs it under its own run cap (the roles' caps),
++/// so the calls in flight never exceed [`MAX_MODEL_PROCESSES`](super::MAX_MODEL_PROCESSES) and
++/// the shards together stay within the scaled cap ([`full_run_cap`](crate::full_run_cap)).
++///
++/// A shard whose run cap skipped roles does not stop the next, which has its own cap. A shard
++/// whose stage paused (quota, a `rejected` or `allowed_warning` rate limit) or stopped (a
++/// runner's panic) starts no later shard: each is reported with every role skipped for that
++/// reason (06 §1). Every thread is joined before this returns.
++///
++/// # Errors
++/// Returns [`ShardsError`] before any call: [`Count`](ShardsError::Count) for no pack or more
++/// than [`MAX_SHARDS`], [`Prompt`](ShardsError::Prompt) for the first shard whose prompts are
++/// not valid (its pack starts with `-`, or the pack or intent holds a NUL byte).
++pub fn run_shards<R>(
++    runner: &R,
++    request: &ShardsRequest<'_>,
++) -> Result<ShardedSpecialists<R::Error>, ShardsError>
++where
++    R: ModelRunner + Sync,
++    R::Error: Send,
++{
++    let packs = request.packs.len();
++    if ShardCount::new(packs).is_none() {
++        return Err(ShardsError::Count { packs });
++    }
++    let prepared = request
++        .packs
++        .iter()
++        .enumerate()
++        .map(|(shard, pack)| {
++            Prepared::new(request.for_pack(pack))
++                .map_err(|source| ShardsError::Prompt { shard, source })
++        })
++        .collect::<Result<Vec<_>, _>>()?;
++    let mut halted = None;
++    let mut shards = Vec::with_capacity(prepared.len());
++    for shard in prepared {
++        let ran = match halted {
++            Some(halt) => shard.skipped(halt),
++            None => shard.run(runner),
++        };
++        if let Some(halt @ (Halt::RateLimited | Halt::Panicked)) = ran.halt {
++            halted.get_or_insert(halt);
++        }
++        shards.push(ran);
++    }
++    Ok(ShardedSpecialists { shards })
++}
+diff --git a/crates/assay-app/tests/it/main.rs b/crates/assay-app/tests/it/main.rs
+index 57951ba..112c2bd 100644
+--- a/crates/assay-app/tests/it/main.rs
++++ b/crates/assay-app/tests/it/main.rs
+@@ -44,6 +44,8 @@ mod rereview_settle;
+ mod rereview_target;
+ mod self_trust;
+ mod session_init;
++mod shard;
++mod shard_runs;
+ mod spec;
+ mod specialists;
+ #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+diff --git a/crates/assay-app/tests/it/shard.rs b/crates/assay-app/tests/it/shard.rs
+new file mode 100644
+index 0000000..972c66e
+--- /dev/null
++++ b/crates/assay-app/tests/it/shard.rs
+@@ -0,0 +1,436 @@
++//! Sharding by dependency cluster (`docs/architecture/04-pipeline.md` §3, issue #98): a pack
++//! over 120 KiB is split into at most three shards, each a set of clusters of changed files and
++//! their direct importers; the run cap scales by the shard count.
++
++use std::collections::BTreeSet;
++use std::error::Error;
++
++use assay_app::{
++    Import, MAX_DIFF_BYTES, MAX_IMPORTS, MAX_SHARD_FILES, MAX_SHARDS, Shard, ShardCount,
++    ShardError, ShardFile, Sharding, full_run_cap, shard,
++};
++use assay_domain::{Aeu, RequiredRole};
++use proptest::collection::vec;
++use proptest::prelude::*;
++
++const FULL: [RequiredRole; 3] = [
++    RequiredRole::Bugs,
++    RequiredRole::Security,
++    RequiredRole::Design,
++];
++
++const FULL_META: [RequiredRole; 4] = [
++    RequiredRole::Bugs,
++    RequiredRole::Security,
++    RequiredRole::Design,
++    RequiredRole::Meta,
++];
++
++fn file(path: &str, pack_bytes: usize) -> ShardFile<'_> {
++    ShardFile { path, pack_bytes }
++}
++
++/// `by` imports `of`.
++fn import<'a>(by: &'a str, of: &'a str) -> Import<'a> {
++    Import {
++        importer: by,
++        imported: of,
++    }
++}
++
++/// Each shard's changed files and importers, in shard order.
++fn layout<'a>(sharding: &Sharding<'a>) -> Vec<(Vec<&'a str>, Vec<&'a str>)> {
++    sharding
++        .shards()
++        .iter()
++        .map(|shard| (shard.files().to_vec(), shard.importers().to_vec()))
++        .collect()
++}
++
++/// A third of the budget: three fill a shard.
++const THIRD: usize = MAX_DIFF_BYTES / 3;
++
++#[test]
++fn a_pack_exactly_at_the_budget_is_one_shard_of_every_file_in_input_order()
++-> Result<(), Box<dyn Error>> {
++    let files = [
++        file("src/b.rs", THIRD),
++        file("src/a.rs", THIRD),
++        file("src/c.rs", MAX_DIFF_BYTES - 2 * THIRD),
++    ];
++
++    let sharding = shard(&files, &[import("src/lib.rs", "src/a.rs")])?;
++
++    assert_eq!(
++        layout(&sharding),
++        [(vec!["src/b.rs", "src/a.rs", "src/c.rs"], vec![])]
++    );
++    assert_eq!(sharding.count(), ShardCount::ONE);
++    Ok(())
++}
++
++#[test]
++fn a_pack_one_byte_over_the_budget_is_sharded_by_cluster() -> Result<(), Box<dyn Error>> {
++    let files = [
++        file("src/a.rs", MAX_DIFF_BYTES / 2),
++        file("src/b.rs", MAX_DIFF_BYTES / 2 + 1),
++    ];
++
++    let sharding = shard(&files, &[])?;
++
++    assert_eq!(
++        layout(&sharding),
++        [(vec!["src/b.rs"], vec![]), (vec!["src/a.rs"], vec![])]
++    );
++    assert_eq!(sharding.count().get(), 2);
++    Ok(())
++}
++
++#[test]
++fn a_changed_file_shares_its_shard_with_its_direct_importers() -> Result<(), Box<dyn Error>> {
++    let files = [file("src/a.rs", MAX_DIFF_BYTES), file("src/b.rs", 10)];
++    let imports = [
++        import("src/main.rs", "src/b.rs"),
++        import("src/lib.rs", "src/b.rs"),
++        import("src/x.rs", "src/a.rs"),
++    ];
++
++    let sharding = shard(&files, &imports)?;
++
++    assert_eq!(
++        layout(&sharding),
++        [
++            (vec!["src/a.rs"], vec!["src/x.rs"]),
++            (vec!["src/b.rs"], vec!["src/lib.rs", "src/main.rs"]),
++        ]
++    );
++    Ok(())
++}
++
++#[test]
++fn changed_files_with_a_common_importer_share_a_shard() -> Result<(), Box<dyn Error>> {
++    let files = [
++        file("src/a.rs", THIRD * 2),
++        file("src/b.rs", THIRD * 2),
++        file("src/c.rs", THIRD * 2),
++    ];
++    let imports = [
++        import("src/lib.rs", "src/a.rs"),
++        import("src/lib.rs", "src/c.rs"),
++    ];
++
++    let sharding = shard(&files, &imports)?;
++
++    assert_eq!(
++        layout(&sharding),
++        [
++            (vec!["src/a.rs", "src/c.rs"], vec!["src/lib.rs"]),
++            (vec!["src/b.rs"], vec![]),
++        ]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_changed_file_importing_another_shares_its_shard() -> Result<(), Box<dyn Error>> {
++    let files = [
++        file("src/a.rs", THIRD * 2),
++        file("src/b.rs", THIRD * 2),
++        file("src/c.rs", THIRD * 2),
++    ];
++
++    let sharding = shard(&files, &[import("src/c.rs", "src/b.rs")])?;
++
++    assert_eq!(
++        layout(&sharding),
++        [
++            (vec!["src/b.rs", "src/c.rs"], vec![]),
++            (vec!["src/a.rs"], vec![]),
++        ]
++    );
++    Ok(())
++}
++
++#[test]
++fn imports_of_unchanged_files_and_self_imports_join_nothing() -> Result<(), Box<dyn Error>> {
++    let files = [file("src/a.rs", MAX_DIFF_BYTES), file("src/b.rs", 10)];
++    let imports = [
++        import("src/a.rs", "src/util.rs"),
++        import("src/b.rs", "src/util.rs"),
++        import("src/a.rs", "src/a.rs"),
++    ];
++
++    let sharding = shard(&files, &imports)?;
++
++    assert_eq!(
++        layout(&sharding),
++        [(vec!["src/a.rs"], vec![]), (vec!["src/b.rs"], vec![])]
++    );
++    Ok(())
++}
++
++#[test]
++fn clusters_past_three_shards_join_the_lightest_which_is_overfull() -> Result<(), Box<dyn Error>> {
++    let files = [
++        file("a.rs", THIRD * 2 + 3),
++        file("b.rs", THIRD * 2 + 2),
++        file("c.rs", THIRD * 2 + 1),
++        file("d.rs", THIRD * 2),
++    ];
++
++    let sharding = shard(&files, &[])?;
++
++    assert_eq!(
++        layout(&sharding),
++        [
++            (vec!["a.rs"], vec![]),
++            (vec!["b.rs"], vec![]),
++            (vec!["c.rs", "d.rs"], vec![]),
++        ]
++    );
++    let overfull: Vec<bool> = sharding.shards().iter().map(Shard::is_overfull).collect();
++    assert_eq!(overfull, [false, false, true]);
++    assert_eq!(
++        sharding.shards().last().map(Shard::pack_bytes),
++        Some(THIRD * 4 + 1)
++    );
++    Ok(())
++}
++
++#[test]
++fn a_cluster_over_the_budget_is_its_own_overfull_shard() -> Result<(), Box<dyn Error>> {
++    let files = [file("a.rs", MAX_DIFF_BYTES + 1), file("b.rs", 5)];
++
++    let sharding = shard(&files, &[])?;
++
++    assert_eq!(
++        layout(&sharding),
++        [(vec!["a.rs"], vec![]), (vec!["b.rs"], vec![])]
++    );
++    let overfull: Vec<bool> = sharding.shards().iter().map(Shard::is_overfull).collect();
++    assert_eq!(overfull, [true, false]);
++    Ok(())
++}
++
++#[test]
++fn equal_clusters_keep_input_order() -> Result<(), Box<dyn Error>> {
++    let files = [
++        file("z.rs", THIRD * 2),
++        file("m.rs", THIRD * 2),
++        file("a.rs", THIRD * 2),
++    ];
++
++    let sharding = shard(&files, &[])?;
++
++    assert_eq!(
++        layout(&sharding),
++        [
++            (vec!["z.rs"], vec![]),
++            (vec!["m.rs"], vec![]),
++            (vec!["a.rs"], vec![])
++        ]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_chain_of_imports_through_the_most_files_is_one_cluster() -> Result<(), Box<dyn Error>> {
++    let paths: Vec<String> = (0..MAX_SHARD_FILES).map(|n| format!("f{n}.rs")).collect();
++    let files: Vec<ShardFile<'_>> = paths.iter().map(|path| file(path, 100)).collect();
++    let imports: Vec<Import<'_>> = paths
++        .iter()
++        .zip(paths.iter().skip(1))
++        .map(|(by, of)| import(by, of))
++        .collect();
++
++    let sharding = shard(&files, &imports)?;
++
++    let [only] = sharding.shards() else {
++        return Err(format!("{} shards", sharding.shards().len()).into());
++    };
++    assert_eq!(only.files().len(), MAX_SHARD_FILES);
++    assert_eq!(
++        (only.pack_bytes(), only.is_overfull()),
++        (MAX_SHARD_FILES * 100, true)
++    );
++    Ok(())
++}
++
++#[test]
++fn no_file_is_refused() {
++    assert_eq!(shard(&[], &[]), Err(ShardError::NoFiles));
++}
++
++#[test]
++fn the_most_files_are_sharded_and_one_more_is_refused() -> Result<(), Box<dyn Error>> {
++    let paths: Vec<String> = (0..=MAX_SHARD_FILES).map(|n| format!("f{n}.rs")).collect();
++    let files: Vec<ShardFile<'_>> = paths.iter().map(|path| file(path, 100)).collect();
++    let (at_cap, _) = files
++        .split_at_checked(MAX_SHARD_FILES)
++        .ok_or("too few files")?;
++
++    let accepted = shard(at_cap, &[])?;
++    let refused = shard(&files, &[]);
++
++    assert_eq!(
++        accepted
++            .shards()
++            .iter()
++            .map(|s| s.files().len())
++            .sum::<usize>(),
++        MAX_SHARD_FILES
++    );
++    assert_eq!(
++        refused,
++        Err(ShardError::TooManyFiles {
++            files: MAX_SHARD_FILES + 1
++        })
++    );
++    Ok(())
++}
++
++#[test]
++fn a_repeated_file_is_refused() {
++    let files = [file("a.rs", 1), file("b.rs", 1), file("a.rs", 1)];
++
++    assert_eq!(
++        shard(&files, &[]),
++        Err(ShardError::RepeatedFile {
++            path: "a.rs".to_owned()
++        })
++    );
++}
++
++#[test]
++fn the_most_imports_are_read_and_one_more_is_refused() -> Result<(), Box<dyn Error>> {
++    let files = [file("a.rs", MAX_DIFF_BYTES), file("b.rs", 1)];
++    let importers: Vec<String> = (0..=MAX_IMPORTS).map(|n| format!("i{n}.rs")).collect();
++    let imports: Vec<Import<'_>> = importers
++        .iter()
++        .map(|importer| import(importer, "b.rs"))
++        .collect();
++    let (at_cap, _) = imports
++        .split_at_checked(MAX_IMPORTS)
++        .ok_or("too few imports")?;
++
++    let accepted = shard(&files, at_cap)?;
++    let refused = shard(&files, &imports);
++
++    let importers: Vec<usize> = accepted
++        .shards()
++        .iter()
++        .map(|s| s.importers().len())
++        .collect();
++    assert_eq!(importers, [0, MAX_IMPORTS]);
++    assert_eq!(
++        refused,
++        Err(ShardError::TooManyImports {
++            imports: MAX_IMPORTS + 1
++        })
++    );
++    Ok(())
++}
++
++#[test]
++fn a_shard_count_is_one_to_three() {
++    let counts: Vec<Option<usize>> = (0..=MAX_SHARDS + 1)
++        .map(|n| ShardCount::new(n).map(ShardCount::get))
++        .collect();
++
++    assert_eq!(counts, [None, Some(1), Some(2), Some(3), None]);
++}
++
++#[test]
++fn the_full_run_cap_scales_by_the_shard_count() -> Result<(), Box<dyn Error>> {
++    let caps = |roles: &[RequiredRole]| -> Result<Vec<Aeu>, String> {
++        (1..=MAX_SHARDS)
++            .map(|n| {
++                let count = ShardCount::new(n).ok_or("no count")?;
++                Ok(full_run_cap(roles, count))
++            })
++            .collect()
++    };
++
++    assert_eq!(
++        caps(&FULL)?,
++        [2_300_000, 4_600_000, 6_900_000].map(Aeu::from_micros)
++    );
++    assert_eq!(
++        caps(&FULL_META)?,
++        [2_600_000, 5_200_000, 7_800_000].map(Aeu::from_micros)
++    );
++    Ok(())
++}
++
++#[test]
++fn the_run_cap_counts_a_repeated_role_once() {
++    let repeated = [
++        RequiredRole::Bugs,
++        RequiredRole::Bugs,
++        RequiredRole::Security,
++    ];
++
++    assert_eq!(
++        full_run_cap(&repeated, ShardCount::ONE),
++        full_run_cap(
++            &[RequiredRole::Bugs, RequiredRole::Security],
++            ShardCount::ONE
++        )
++    );
++}
++
++/// Files `f0.rs`.. with the given sizes, and imports between indices (an index past the files
++/// names an unchanged importer `u<n>.rs`).
++fn graph(sizes: &[usize], edges: &[(usize, usize)]) -> (Vec<String>, Vec<(String, String)>) {
++    let name = |n: usize| {
++        if n < sizes.len() {
++            format!("f{n}.rs")
++        } else {
++            format!("u{n}.rs")
++        }
++    };
++    let edges = edges
++        .iter()
++        .map(|&(importer, imported)| (name(importer), name(imported % sizes.len().max(1))))
++        .collect();
++    ((0..sizes.len()).map(name).collect(), edges)
++}
++
++proptest! {
++    #[test]
++    fn every_changed_file_is_in_exactly_one_of_at_most_three_shards(
++        sizes in vec(0..MAX_DIFF_BYTES, 1..24),
++        edges in vec((0..40_usize, 0..40_usize), 0..48),
++    ) {
++        let (paths, edges) = graph(&sizes, &edges);
++        let files: Vec<ShardFile<'_>> = paths
++            .iter()
++            .zip(&sizes)
++            .map(|(path, &bytes)| file(path, bytes))
++            .collect();
++        let imports: Vec<Import<'_>> = edges
++            .iter()
++            .map(|(importer, imported)| import(importer, imported))
++            .collect();
++
++        let sharding = shard(&files, &imports).map_err(|e| TestCaseError::fail(e.to_string()))?;
++        let again = shard(&files, &imports).map_err(|e| TestCaseError::fail(e.to_string()))?;
++
++        let mut seen: Vec<&str> = sharding.shards().iter().flat_map(|s| s.files().iter().copied()).collect();
++        seen.sort_unstable();
++        let mut expected: Vec<&str> = paths.iter().map(String::as_str).collect();
++        expected.sort_unstable();
++        prop_assert_eq!(seen, expected);
++        prop_assert!((1..=MAX_SHARDS).contains(&sharding.shards().len()));
++        prop_assert_eq!(sharding.count().get(), sharding.shards().len());
++        let changed: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
++        let importers: Vec<&str> = sharding.shards().iter().flat_map(|s| s.importers().iter().copied()).collect();
++        let distinct: BTreeSet<&str> = importers.iter().copied().collect();
++        prop_assert_eq!(distinct.len(), importers.len());
++        prop_assert!(importers.iter().all(|path| !changed.contains(path)));
++        prop_assert_eq!(layout(&sharding), layout(&again));
++        let total: usize = sizes.iter().sum();
++        let summed: usize = sharding.shards().iter().map(Shard::pack_bytes).sum();
++        prop_assert_eq!(summed, total);
++    }
++}
+diff --git a/crates/assay-app/tests/it/shard_runs.rs b/crates/assay-app/tests/it/shard_runs.rs
+new file mode 100644
+index 0000000..d76f280
+--- /dev/null
++++ b/crates/assay-app/tests/it/shard_runs.rs
+@@ -0,0 +1,327 @@
++//! Sharded runs (`docs/architecture/04-pipeline.md` §3, issue #98): shards run one after
++//! another, each with the full specialist set over its own pack, so a run never has more than
++//! four model processes; a paused or stopped stage skips the shards after it.
++
++use std::collections::BTreeSet;
++use std::error::Error;
++use std::path::PathBuf;
++use std::time::Duration;
++
++use assay_app::{
++    Halt, ModelOutcome, PromptBundle, PromptError, Role, RoleFailure, RoleOutcome,
++    ShardedSpecialists, ShardsError, ShardsRequest, Specialists, run_shards,
++};
++use assay_domain::{Aeu, RequiredRole};
++
++use crate::specialists_fakes::{
++    Answer, Fake, Hold, SCHEMA, Step, Unreachable, bundle, document_from, ended, ran, tenth_of,
++};
++
++/// A head start that never passes in a test: the first call always ends before it.
++const LONG: Duration = Duration::from_secs(3_600);
++
++const FULL: [RequiredRole; 3] = [
++    RequiredRole::Bugs,
++    RequiredRole::Security,
++    RequiredRole::Design,
++];
++
++const FULL_META: [RequiredRole; 4] = [
++    RequiredRole::Bugs,
++    RequiredRole::Security,
++    RequiredRole::Design,
++    RequiredRole::Meta,
++];
++
++/// A request for `roles` over `packs` with the stand-in bundle, no intent and `head_start`.
++fn request<'a>(
++    packs: &'a [String],
++    roles: &'a [RequiredRole],
++    bundle: &'a PromptBundle,
++    head_start: Duration,
++) -> ShardsRequest<'a> {
++    ShardsRequest {
++        packs,
++        roles,
++        intent: None,
++        bundle,
++        json_schema: SCHEMA,
++        system_prompt_file: PathBuf::from("/base/plugin/prompts/v1/system.md"),
++        add_dir: PathBuf::from("/work/pr"),
++        timeout: Duration::from_secs(600),
++        head_start,
++    }
++}
++
++/// `count` packs, `PACK-1`, `PACK-2`, ...
++fn packs(count: usize) -> Vec<String> {
++    (1..=count).map(|n| format!("PACK-{n}")).collect()
++}
++
++/// Runs `roles` over `packs` through `fake` with the stand-in bundle: the bundle's failure is
++/// the outer error, the run's result the inner one.
++fn run(
++    fake: &Fake,
++    packs: &[String],
++    roles: &[RequiredRole],
++    head_start: Duration,
++) -> Result<Result<ShardedSpecialists<Unreachable>, ShardsError>, Box<dyn Error>> {
++    let bundle = bundle()?;
++    Ok(run_shards(
++        fake,
++        &request(packs, roles, &bundle, head_start),
++    ))
++}
++
++/// Every role of `FULL`, with whether it completed: `bugs`, `security`, `design` in order.
++fn full(completed: [bool; 3]) -> Vec<(Role, bool)> {
++    [Role::Bugs, Role::Security, Role::Design]
++        .into_iter()
++        .zip(completed)
++        .collect()
++}
++
++/// Each role of a shard and whether it completed.
++fn completed(shard: &Specialists<Unreachable>) -> Vec<(Role, bool)> {
++    shard
++        .roles
++        .iter()
++        .map(|report| {
++            (
++                report.role,
++                matches!(report.outcome, RoleOutcome::Completed(_)),
++            )
++        })
++        .collect()
++}
++
++/// The pack each call was made with, in the order the calls started.
++fn packs_called(fake: &Fake) -> Vec<String> {
++    fake.seen()
++        .calls
++        .iter()
++        .filter_map(|call| {
++            let (pack, _) = call.user_prompt.as_str().split_once("\n\n")?;
++            Some(pack.to_owned())
++        })
++        .collect()
++}
++
++#[test]
++fn each_shard_runs_every_role_over_its_own_pack() -> Result<(), Box<dyn Error>> {
++    let fake = Fake::answering();
++    let packs = packs(2);
++
++    let sharded = run(&fake, &packs, &FULL, LONG)??;
++
++    let shards: Vec<_> = sharded.shards.iter().map(completed).collect();
++    assert_eq!(shards, [full([true; 3]), full([true; 3])]);
++    let mut prompts: Vec<String> = fake
++        .seen()
++        .calls
++        .iter()
++        .map(|call| call.user_prompt.as_str().to_owned())
++        .collect();
++    prompts.sort_unstable();
++    assert_eq!(
++        prompts,
++        [
++            "PACK-1\n\nBUGS",
++            "PACK-1\n\nDESIGN",
++            "PACK-1\n\nSECURITY",
++            "PACK-2\n\nBUGS",
++            "PACK-2\n\nDESIGN",
++            "PACK-2\n\nSECURITY",
++        ]
++    );
++    Ok(())
++}
++
++#[test]
++fn never_more_than_four_processes_run_across_three_shards() -> Result<(), Box<dyn Error>> {
++    // Every call of a shard waits until four are in flight at once, so each shard's calls
++    // overlap fully; a shard that started before the last one ended would show in the steps.
++    let fake = Fake::new(
++        [],
++        Hold::UntilInFlight {
++            in_flight: 4,
++            total: 4,
++        },
++    );
++    let packs = packs(3);
++
++    let sharded = run(&fake, &packs, &FULL_META, Duration::ZERO)??;
++
++    assert_eq!(sharded.shards.len(), 3);
++    let seen = fake.seen();
++    assert_eq!((seen.peak, seen.started), (4, 12));
++    for steps in seen.steps.chunks(8) {
++        let starts = steps
++            .iter()
++            .filter(|step| matches!(step, Step::Start(_)))
++            .count();
++        assert_eq!(starts, 4, "a shard's calls all end before the next starts");
++    }
++    drop(seen);
++    let called = packs_called(&fake);
++    let by_shard: Vec<BTreeSet<&str>> = called
++        .chunks(4)
++        .map(|chunk| chunk.iter().map(String::as_str).collect())
++        .collect();
++    assert_eq!(
++        by_shard,
++        [
++            BTreeSet::from(["PACK-1"]),
++            BTreeSet::from(["PACK-2"]),
++            BTreeSet::from(["PACK-3"]),
++        ]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_quota_exhausted_shard_skips_the_shards_after_it() -> Result<(), Box<dyn Error>> {
++    let quota = Answer::Ran(ended(ModelOutcome::QuotaExhausted, Aeu::ZERO));
++    let fake = Fake::new([(Role::Bugs, vec![quota])], Hold::Never);
++    let packs = packs(3);
++
++    let sharded = run(&fake, &packs, &FULL, LONG)??;
++
++    let [first, second, third] = sharded.shards.as_slice() else {
++        return Err("three shards".into());
++    };
++    assert_eq!(first.halt, Some(Halt::RateLimited));
++    for shard in [second, third] {
++        assert!(shard.roles.iter().all(|report| {
++            report.outcome == RoleOutcome::Skipped(Halt::RateLimited) && report.attempts == 0
++        }));
++        assert_eq!(shard.halt, Some(Halt::RateLimited));
++    }
++    assert_eq!(packs_called(&fake), ["PACK-1"]);
++    Ok(())
++}
++
++#[test]
++fn a_panicking_runner_skips_the_shards_after_it() -> Result<(), Box<dyn Error>> {
++    let fake = Fake::new([(Role::Bugs, vec![Answer::Panics])], Hold::Never);
++    let packs = packs(2);
++
++    let sharded = run(&fake, &packs, &FULL, LONG)??;
++
++    let [first, second] = sharded.shards.as_slice() else {
++        return Err("two shards".into());
++    };
++    assert_eq!(
++        first.roles.first().map(|report| &report.outcome),
++        Some(&RoleOutcome::Failed(RoleFailure::Panicked))
++    );
++    assert!(
++        second
++            .roles
++            .iter()
++            .all(|report| report.outcome == RoleOutcome::Skipped(Halt::Panicked))
++    );
++    assert_eq!(packs_called(&fake), ["PACK-1"]);
++    Ok(())
++}
++
++#[test]
++fn a_shard_that_reaches_its_run_cap_does_not_stop_the_next() -> Result<(), Box<dyn Error>> {
++    // Bugs goes alone and spends the whole shard's cap, so the others no longer fit.
++    let whole_cap = Aeu::from_micros(1_600_000);
++    let fake = Fake::new(
++        [(
++            Role::Bugs,
++            vec![Answer::Ran(ran(document_from("bugs"), whole_cap))],
++        )],
++        Hold::Never,
++    );
++    let packs = packs(2);
++
++    let sharded = run(&fake, &packs, &FULL, LONG)??;
++
++    let shards: Vec<_> = sharded.shards.iter().map(completed).collect();
++    assert_eq!(shards, [full([true, false, false]), full([true; 3])]);
++    assert_eq!(
++        sharded.shards.first().map(|shard| shard.halt),
++        Some(Some(Halt::RunCap))
++    );
++    Ok(())
++}
++
++#[test]
++fn an_invalid_pack_in_a_later_shard_is_refused_before_any_call() -> Result<(), Box<dyn Error>> {
++    let fake = Fake::answering();
++    let packs = ["PACK-1".to_owned(), "PACK\0".to_owned()];
++
++    let refused = run(&fake, &packs, &FULL, LONG)?;
++
++    assert!(matches!(
++        refused,
++        Err(ShardsError::Prompt { shard: 1, ref source }) if source.reason() == PromptError::Nul
++    ));
++    assert_eq!(fake.seen().started, 0);
++    Ok(())
++}
++
++#[test]
++fn no_pack_is_refused() -> Result<(), Box<dyn Error>> {
++    let fake = Fake::answering();
++
++    let refused = run(&fake, &[], &FULL, LONG)?;
++
++    assert!(matches!(refused, Err(ShardsError::Count { packs: 0 })));
++    assert_eq!(fake.seen().started, 0);
++    Ok(())
++}
++
++#[test]
++fn four_packs_are_refused() -> Result<(), Box<dyn Error>> {
++    let fake = Fake::answering();
++    let packs = packs(4);
++
++    let refused = run(&fake, &packs, &FULL, LONG)?;
++
++    assert!(matches!(refused, Err(ShardsError::Count { packs: 4 })));
++    assert_eq!(fake.seen().started, 0);
++    Ok(())
++}
++
++#[test]
++fn a_role_completed_on_every_shard_counts_and_costs_sum() -> Result<(), Box<dyn Error>> {
++    let security = Answer::Ran(ran(document_from("security"), tenth_of(Role::Security)));
++    let fake = Fake::new(
++        [(Role::Security, vec![security, Answer::Fails])],
++        Hold::Never,
++    );
++    let packs = packs(2);
++
++    let sharded = run(&fake, &packs, &FULL, LONG)??;
++
++    assert_eq!(
++        sharded.completed_roles(),
++        BTreeSet::from([RequiredRole::Bugs, RequiredRole::Design])
++    );
++    let runner_failed = sharded
++        .shards
++        .last()
++        .and_then(|shard| shard.roles.get(1))
++        .map(|report| &report.outcome);
++    assert_eq!(
++        runner_failed,
++        Some(&RoleOutcome::Failed(RoleFailure::Runner(Unreachable)))
++    );
++    // Five calls at a tenth of their caps, and the failed one charged its whole cap.
++    let tenths = [
++        Role::Bugs,
++        Role::Design,
++        Role::Bugs,
++        Role::Security,
++        Role::Design,
++    ]
++    .into_iter()
++    .fold(Aeu::ZERO, |sum, role| sum.saturating_add(tenth_of(role)));
++    assert_eq!(sharded.cost(), tenths.saturating_add(Role::Security.cap()));
++    assert_eq!(sharded.run_cap(), Aeu::from_micros(3_200_000));
++    Ok(())
++}

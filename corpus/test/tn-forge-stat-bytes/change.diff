@@ -1,0 +1,263 @@
+diff --git a/crates/assay-forge/AGENTS.md b/crates/assay-forge/AGENTS.md
+index 4f71145..e8c5fa7 100644
+--- a/crates/assay-forge/AGENTS.md
++++ b/crates/assay-forge/AGENTS.md
+@@ -20,11 +20,11 @@ Workspace-internal, not published (`publish = false`).
+ - Every git process is built by `git::command::git`, the only `Command::new("git")` in production code; the only other process is the validated `GroupKiller` program that signals a timed-out process group (`tests/it/single_constructor.rs` enforces both). The constructor clears the environment to what `GitEnvironment` holds, sets `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ATTR_NOSYSTEM=1`, and passes the §9 `-c` flags including `attr.tree=<empty tree>`; every diff carries `--no-ext-diff --no-textconv`.
+ - PR objects are fetched only by full SHA over https into a bare repository; refs such as `refs/pull/N/merge` cannot be expressed.
+ - Every child leads its own process group, has its stdio spooled to anonymous temporary files (no pipes, so no reader can block), and is waited on. A run completes only when the child has exited and its group has no live member; past the deadline, or past the output cap, the whole group is killed and must be verifiably gone (`/proc`), else `ProcessError::Kill`. A group whose leader is reaped is signalled only when `/proc` shows a live member: with none it is left alone, and when `/proc` cannot be read it is `ProcessError::Kill`, never a signal (pgid reuse). A diff past its cap is `needs-split`, never a hang.
+-- A `/proc` scan skips a process only when it is shown to be gone: its stat read fails with `NotFound` or `ESRCH`, or an unparseable stat line (an exiting process can yield an empty or truncated one; a line without the kernel's trailing newline counts as truncated) is followed by a re-read that does. A process whose stat stays unparseable is an error, never an empty group.
++- A `/proc` scan skips a process only when it is shown to be gone: its stat read fails with `NotFound` or `ESRCH`, or an unparseable stat line (an exiting process can yield an empty or truncated one; a line without the kernel's trailing newline counts as truncated) is followed by a re-read that does. A process whose stat stays unparseable is an error, never an empty group. Stat files are read as bytes: `comm` is raw and may be any bytes (`prctl(PR_SET_NAME)`, the executable's file name), so only the fields after its last `) ` must be text.
+ - Every changed path (both sides of renames) is policed; Rust sources, manifests and trust files can never be allowlisted, and allowlisted paths come back as `opaque`, never silently trusted.
+ 
+ ## Runtime prerequisites
+-- Linux `/proc` describing this process (process-group supervision; `/proc/self/stat` must name `std::process::id()`, so a `/proc` from another pid namespace is refused) and a procps or util-linux `kill` in `/usr/bin` or `/bin`. Every `GroupKiller` is built after that preflight: `GroupKiller::system` (and so `GitEnvironment::from_process_env`) checks both, and `GroupKiller::at` checks `/proc` before accepting its program, so any `GitEnvironment` carries a checked killer. A failure is `KillerError::ProcUnavailable` (its `ProcFault` says whether the file was unreadable, malformed or named another process) or `KillerError::NotFound` (`docs/architecture/06-operations.md` §5 F22).
++- Linux `/proc` describing this process (process-group supervision; `/proc/self/stat` must name `std::process::id()`, so a `/proc` from another pid namespace is refused, and must have the shape a `/proc` scan parses, trailing newline included, so such a `/proc` fails once at startup rather than every run) and a procps or util-linux `kill` in `/usr/bin` or `/bin`. Every `GroupKiller` is built after that preflight: `GroupKiller::system` (and so `GitEnvironment::from_process_env`) checks both, and `GroupKiller::at` checks `/proc` before accepting its program, so any `GitEnvironment` carries a checked killer. A failure is `KillerError::ProcUnavailable` (its `ProcFault` says whether the file was unreadable, malformed or named another process) or `KillerError::NotFound` (`docs/architecture/06-operations.md` §5 F22).
+ - git 2.42 or later (see the last invariant below).
+ - Spool files live in the system temp directory (`TMPDIR`). Each is bounded by the output cap plus what the group writes before it is stopped: up to one poll interval plus one `/proc` scan until the overshoot is seen, then up to the kill grace (`KILL_GRACE`, 5 s) while the kill runs and the group exits. When the kill fails (`ProcessError::Kill`) the group may still be writing and no bound holds.
+ - Attribute policing needs git 2.40 or later (`check-attr --source`), and `attr.tree` needs 2.42; an older git fails closed or ignores the setting (then in-tree attributes can only make numstat print `-`, which counts as maximum size).
+@@ -51,3 +51,4 @@ Integration tests in `tests/it/` against recorded `gh` responses; no live networ
+ | 2026-10-11 | Kill timed-out process groups through the system `kill` (fixed `PATH`, bounded) rather than `unsafe` or a new `libc` dependency. | H-01, H-16, H-13 | Story #52 |
+ | 2026-10-11 | A `/proc` that does not describe this process is refused up front (`KillerError::ProcUnavailable`) rather than read as empty groups, and a `ProcessError::Kill` aborts the job (`gate-error`), never a retry. | H-13, ERR-10 | #133 (PR #134) |
+ | 2026-10-11 | `GroupKiller::at` runs the `/proc` preflight too, so no killer skips it; `ProcUnavailable` carries a `Copy + Eq` `ProcFault` (the `check_proc` test expectations name the fault). A `/proc` scan treats an unparseable stat as an exited process only once a re-read shows it gone, which fixes a flaky `init_accepts_an_empty_directory` without failing open. | OWN-12, ERR-03, H-13 | #135, owner |
++| 2026-10-11 | `/proc/<pid>/stat` is read as bytes, so a host process with a non-UTF-8 name no longer fails every run; the `/proc` preflight also requires the stat shape the scan parses (`ProcFault::Malformed`), and the `check_proc` fixtures gained the kernel's trailing newline. | H-10, ERR-03 | #141 |
+diff --git a/crates/assay-forge/src/process.rs b/crates/assay-forge/src/process.rs
+index 7d7ec83..138b17f 100644
+--- a/crates/assay-forge/src/process.rs
++++ b/crates/assay-forge/src/process.rs
+@@ -135,8 +135,9 @@ pub enum ProcFault {
+     /// It could not be read; `NotFound` when the host has no `/proc`.
+     #[error("it could not be read ({0})")]
+     Unreadable(io::ErrorKind),
+-    /// It was read but does not have the documented `pid (comm) ...` shape.
+-    #[error("it does not start with a pid and a command name")]
++    /// It was read but does not have the documented `pid (comm) state ppid pgrp ...` shape,
++    /// ending in a newline, that a `/proc` scan parses.
++    #[error("it does not have the documented `pid (comm) state ppid pgrp ...` shape")]
+     Malformed,
+     /// It names the process with this pid instead, as a `/proc` from another pid namespace
+     /// does.
+@@ -376,18 +377,26 @@ fn terminate(
+     }
+ }
+ 
+-/// Fails unless the `/proc/<pid>/stat` file at `stat` names `pid`: a missing `/proc`, or one
+-/// from another pid namespace, would make every group look empty.
++/// Fails unless the `/proc/<pid>/stat` file at `stat` names `pid` and has the shape a `/proc`
++/// scan parses ([`in_group`]): a missing `/proc`, one from another pid namespace, or one whose
++/// stat lines the scan cannot read would make every group look empty or every scan fail.
+ fn check_proc(stat: &Path, pid: u32) -> Result<(), KillerError> {
+-    let line = fs::read_to_string(stat).map_err(|error| KillerError::ProcUnavailable {
++    let line = fs::read(stat).map_err(|error| KillerError::ProcUnavailable {
+         cause: ProcFault::Unreadable(error.kind()),
+     })?;
++    let malformed = KillerError::ProcUnavailable {
++        cause: ProcFault::Malformed,
++    };
++    if in_group(&line, 0).is_err() {
++        return Err(malformed);
++    }
+     let named: u32 = line
+-        .split_once(" (")
+-        .and_then(|(field, _)| field.parse().ok())
+-        .ok_or(KillerError::ProcUnavailable {
+-            cause: ProcFault::Malformed,
+-        })?;
++        .windows(2)
++        .position(|pair| pair == b" (")
++        .and_then(|pid_end| line.get(..pid_end))
++        .and_then(|field| std::str::from_utf8(field).ok())
++        .and_then(|field| field.parse().ok())
++        .ok_or(malformed)?;
+     if named == pid {
+         Ok(())
+     } else {
+@@ -422,14 +431,19 @@ fn group_alive(group: u32) -> io::Result<bool> {
+         if !is_pid {
+             continue;
+         }
+-        let stat = entry.path().join("stat");
+-        if is_live_member(|| fs::read_to_string(&stat), group)? {
++        if stat_names_live_member(&entry.path().join("stat"), group)? {
+             return Ok(true);
+         }
+     }
+     Ok(false)
+ }
+ 
++/// [`is_live_member`] over the `/proc/<pid>/stat` file at `stat`, read as bytes because the
++/// kernel writes `comm` unescaped and it need not be UTF-8.
++fn stat_names_live_member(stat: &Path, group: u32) -> io::Result<bool> {
++    is_live_member(|| fs::read(stat), group)
++}
++
+ /// Whether the process whose `/proc/<pid>/stat` `read` returns is a live member of `group`.
+ ///
+ /// A process that is gone (the read fails with `NotFound` or `ESRCH`) is not a member. A
+@@ -437,7 +451,7 @@ fn group_alive(group: u32) -> io::Result<bool> {
+ /// unparseable line is read once more: gone on that re-read means it exited mid-scan, a
+ /// parseable line is used, and a line that is still unparseable is an `InvalidData` error,
+ /// because a present process that cannot be read must not make its group look empty.
+-fn is_live_member(mut read: impl FnMut() -> io::Result<String>, group: u32) -> io::Result<bool> {
++fn is_live_member(mut read: impl FnMut() -> io::Result<Vec<u8>>, group: u32) -> io::Result<bool> {
+     let Some(stat) = read_present(&mut read)? else {
+         return Ok(false);
+     };
+@@ -453,7 +467,7 @@ fn is_live_member(mut read: impl FnMut() -> io::Result<String>, group: u32) -> i
+ }
+ 
+ /// One read of a `/proc/<pid>/stat`: `None` when the process is gone (`NotFound` or `ESRCH`).
+-fn read_present(read: &mut impl FnMut() -> io::Result<String>) -> io::Result<Option<String>> {
++fn read_present(read: &mut impl FnMut() -> io::Result<Vec<u8>>) -> io::Result<Option<Vec<u8>>> {
+     match read() {
+         Ok(stat) => Ok(Some(stat)),
+         Err(error)
+@@ -470,11 +484,20 @@ fn read_present(read: &mut impl FnMut() -> io::Result<String>) -> io::Result<Opt
+ struct UnreadableStat;
+ 
+ /// Whether a `/proc/<pid>/stat` line (`pid (comm) state ppid pgrp ...`) is a live member of
+-/// `group`. `comm` may contain `) `, so the fields start after the last one. The kernel ends
+-/// the line with `\n`; a line without it was cut off, possibly inside `pgrp`, and is unreadable.
+-fn in_group(stat: &str, group: u32) -> Result<bool, UnreadableStat> {
+-    let line = stat.strip_suffix('\n').ok_or(UnreadableStat)?;
+-    let (_, fields) = line.rsplit_once(") ").ok_or(UnreadableStat)?;
++/// `group`. `comm` may contain `) ` and any other bytes, so the fields start after the last
++/// `) `, and only they must be text (the kernel writes them in ASCII). The kernel ends the line
++/// with `\n`; a line without it was cut off, possibly inside `pgrp`, and is unreadable.
++fn in_group(stat: &[u8], group: u32) -> Result<bool, UnreadableStat> {
++    let line = stat.strip_suffix(b"\n").ok_or(UnreadableStat)?;
++    let comm_end = line
++        .windows(2)
++        .rposition(|pair| pair == b") ")
++        .ok_or(UnreadableStat)?;
++    let fields = line
++        .get(comm_end..)
++        .and_then(|rest| rest.strip_prefix(b") "))
++        .ok_or(UnreadableStat)?;
++    let fields = std::str::from_utf8(fields).map_err(|_not_utf8| UnreadableStat)?;
+     let mut fields = fields.split_whitespace();
+     let state = fields.next().ok_or(UnreadableStat)?;
+     let pgrp: u32 = fields
+@@ -729,7 +752,7 @@ mod tests {
+     fn a_proc_that_describes_another_process_is_unavailable() {
+         let scratch = tempfile::tempdir().expect("a scratch directory");
+         let stat = scratch.path().join("stat");
+-        fs::write(&stat, "7 (assay) R 1 7 7 0").expect("write the stat line");
++        fs::write(&stat, "7 (assay) R 1 7 7 0\n").expect("write the stat line");
+ 
+         assert_eq!(
+             check_proc(&stat, 8),
+@@ -748,6 +771,34 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn a_proc_whose_stat_lines_the_scan_cannot_parse_is_unavailable() {
++        let scratch = tempfile::tempdir().expect("a scratch directory");
++        let stat = scratch.path().join("stat");
++        fs::write(&stat, "7 (assay) R 1 7 7 0").expect("write the stat line");
++
++        assert_eq!(
++            check_proc(&stat, 7),
++            Err(KillerError::ProcUnavailable {
++                cause: ProcFault::Malformed
++            }),
++            "a line without the kernel's trailing newline would fail every scan, so fail once here"
++        );
++    }
++
++    #[test]
++    fn a_proc_naming_this_process_by_a_non_utf8_name_is_available() {
++        let scratch = tempfile::tempdir().expect("a scratch directory");
++        let stat = scratch.path().join("stat");
++        fs::write(&stat, b"7 (a\xffb) R 1 7 7 0\n").expect("write the stat line");
++
++        assert_eq!(
++            check_proc(&stat, 7),
++            Ok(()),
++            "an executable whose file name is not UTF-8 still passes the preflight"
++        );
++    }
++
+     #[test]
+     fn a_missing_proc_is_unavailable() {
+         let scratch = tempfile::tempdir().expect("a scratch directory");
+@@ -765,7 +816,7 @@ mod tests {
+     fn an_explicit_kill_program_is_refused_when_proc_describes_another_process() {
+         let scratch = tempfile::tempdir().expect("a scratch directory");
+         let stat = scratch.path().join("stat");
+-        fs::write(&stat, "7 (assay) R 1 7 7 0").expect("write the stat line");
++        fs::write(&stat, "7 (assay) R 1 7 7 0\n").expect("write the stat line");
+ 
+         // A missing program too: `/proc` is checked first, so its fault is what surfaces.
+         let killer = GroupKiller::checked(&stat, 8, scratch.path().join("absent"), KILL_GRACE);
+@@ -828,7 +879,7 @@ mod tests {
+             reads
+                 .next()
+                 .expect("the scan reads no more often than scripted")
+-                .map(str::to_owned)
++                .map(|stat| stat.as_bytes().to_vec())
+         };
+         is_live_member(read, 42).map_err(|error| error.kind())
+     }
+@@ -902,7 +953,7 @@ mod tests {
+     #[test]
+     fn a_stat_line_without_its_trailing_newline_is_unreadable() {
+         assert_eq!(
+-            in_group("9 (sh) S 1 4", 4),
++            in_group(b"9 (sh) S 1 4", 4),
+             Err(UnreadableStat),
+             "a line cut off inside pgrp must not parse as a shorter group id"
+         );
+@@ -928,26 +979,46 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn a_stat_whose_command_name_is_not_utf8_is_read() {
++        // Any process can name itself with arbitrary bytes (`prctl(PR_SET_NAME)`).
++        let scratch = tempfile::tempdir().expect("a scratch directory");
++        let stat = scratch.path().join("stat");
++        fs::write(&stat, b"42 (a\xffb) S 1 42 42 0\n").expect("write the stat line");
++
++        let member = stat_names_live_member(&stat, 42).map_err(|error| error.kind());
++
++        assert_eq!(
++            member,
++            Ok(true),
++            "the fields after the command name are ASCII and still name the group"
++        );
++    }
++
+     #[test]
+     fn a_process_in_the_group_is_alive_unless_it_is_a_zombie() {
+         assert_eq!(
+-            in_group("42 (sh) S 1 42 42 0\n", 42),
++            in_group(b"42 (sh) S 1 42 42 0\n", 42),
+             Ok(true),
+             "a sleeping member"
+         );
+         assert_eq!(
+-            in_group("43 (odd) name) R 1 42 42 0\n", 42),
++            in_group(b"43 (odd) name) R 1 42 42 0\n", 42),
+             Ok(true),
+             "a command name containing `) ` is skipped over"
+         );
+-        assert_eq!(in_group("44 (sh) Z 1 42 42 0\n", 42), Ok(false), "a zombie");
+         assert_eq!(
+-            in_group("45 (sh) S 1 7 7 0\n", 42),
++            in_group(b"44 (sh) Z 1 42 42 0\n", 42),
++            Ok(false),
++            "a zombie"
++        );
++        assert_eq!(
++            in_group(b"45 (sh) S 1 7 7 0\n", 42),
+             Ok(false),
+             "another group"
+         );
+         assert_eq!(
+-            in_group("garbage", 42),
++            in_group(b"garbage", 42),
+             Err(UnreadableStat),
+             "an unreadable stat line fails closed"
+         );

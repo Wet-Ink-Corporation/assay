@@ -1,0 +1,19 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "rebase",
+  "labels": [
+    {
+      "file": "crates/assay-app/src/check/review.rs",
+      "start_line": 44,
+      "end_line": 56,
+      "class": "security"
+    },
+    {
+      "file": "crates/assay-app/src/check/review.rs",
+      "start_line": 158,
+      "end_line": 164,
+      "class": "security"
+    }
+  ]
+}

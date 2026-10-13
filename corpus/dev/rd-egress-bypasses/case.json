@@ -1,0 +1,25 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-app/src/validation/egress.rs",
+      "start_line": 163,
+      "end_line": 167,
+      "class": "security"
+    },
+    {
+      "file": "crates/assay-app/src/validation/egress.rs",
+      "start_line": 247,
+      "end_line": 264,
+      "class": "security"
+    },
+    {
+      "file": "crates/assay-app/src/validation/egress.rs",
+      "start_line": 272,
+      "end_line": 280,
+      "class": "security"
+    }
+  ]
+}

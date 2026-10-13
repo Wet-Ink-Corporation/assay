@@ -1,0 +1,2940 @@
+diff --git a/crates/assay-domain/AGENTS.md b/crates/assay-domain/AGENTS.md
+index b9da76e..1d7c76a 100644
+--- a/crates/assay-domain/AGENTS.md
++++ b/crates/assay-domain/AGENTS.md
+@@ -19,17 +19,24 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
+ - `FindingsDocument`, `Source`, `Stats`, `Finding`, `Caller`: `assay.findings/1` (03 §3).
+ - `Event`, `EventPayload` (with `GateRun`, `Preflight`, `SpecialistRun`) and `RunUid`: `assay.event/1` (03 §6).
+ - `Aeu`: an amount of API-equivalent dollars held exactly in micro-AEU (`from_micros`, `micros`, `saturating_add`), displayed as a plain decimal (`0.74`), the form `--max-budget-usd` reads.
++- `Tier` and `PrClass` (04 §2.3, 03 §1), closed vocabularies.
++- `Rubric` (`version`, `majors_block_threshold`, `max_requeues`, `is_micro_role`, `is_waivable`): the validated data of `rubric/v1.toml`, built only by deserialising; the caller parses the TOML.
++- `decide(&Rubric, &DecisionInputs) -> Decision`: rubric v1 rules 1 to 9, waive and override (04 §5), pure and total. `DecisionInputs` and its parts (`Policy`, `PullRequest`, `GateReport`, `GateOutcome`, `GateFinding`, `ReviewedFinding`, `WeighIn`, `LlmStage`, `Deferral`, `LlmPolicy`, `InfraPolicy`, `OwnerApproval`, `Authorship`, `Waiver`, `Override`, `OverrideScope`) are a decide-specific projection, not a versioned contract.
++- `Decision` with `DecisionSchema`, `Conclusion`, `Reason`, `Counts`, `FindingDisposition`, `Waived`, `DegradedRole`: `assay.decision/1` (03 §5); `Decision::reasons_digest` is the digest an override quotes.
+ 
+ ## Invariants
+ - No I/O: every function is a pure function of its arguments.
+ - Fingerprints are computed only in this crate.
++- `decide` is total and deterministic: equal rubric and inputs give byte-identical JSON. Its conclusion is that of the first rule that fires in the order 1, 2, 2a, 3, 4, 5, 6, 7, 8a, 8b, 8c; its reasons are those of every firing rule, in that order; `pending` comes only from rule 8a. `inputs_digest` is `sha256:<hex>` over a canonical length-prefixed encoding of the rubric and every input field (`src/decide/digest.rs`); the reasons digest is `sha256:<hex>` of the sorted reason codes, one per line, `override` excluded.
+ - Contract types serialise to exactly their schema's wire names and reject unknown fields and versions on deserialisation. They are plain data with `pub` fields: length caps, formats and conditional requirements are the schema's, checked by `assay-app` on read. `Severity` orders `nit < minor < major < blocker`.
+ 
+ ## Errors
+-None yet. Rejections will be `thiserror` enums per operation; business outcomes only, never infrastructure (ERR-10).
++- `RubricError` (`EmptyVersion`): a rubric file that would make decisions without a `rubric_version`.
++- `decide` cannot fail: every input it is given has a decision.
++Rejections are `thiserror` enums per operation; business outcomes only, never infrastructure (ERR-10).
+ 
+ ## Test strategy
+-Unit tests beside the code. `tests/it/` (dev-dependency `serde_json`) pins every vocabulary to its schema `enum` and, where 03 lists one, to 03's text, round-trips every valid fixture in `schemas/fixtures/` and refuses the invalid fixtures whose fault is one of shape; `assay-app`'s `tests/it/domain_model.rs` checks that what these types write passes the schemas. Property tests for fingerprint stability and state-machine invariants; the `assay-self` golden corpus replays `decide` (02 §7). Run: `cargo test -p assay-domain`.
++Unit tests beside the code. `tests/it/` (dev-dependency `serde_json`) pins every vocabulary to its schema `enum` and, where 03 lists one, to 03's text, round-trips every valid fixture in `schemas/fixtures/` and refuses the invalid fixtures whose fault is one of shape; `assay-app`'s `tests/it/domain_model.rs` checks that what these types write passes the schemas. `decide` has one test per rule and per precedence pair (`tests/it/decide*.rs`, dev-dependencies `toml` for `rubric/v1.toml` and `proptest`), property tests for byte-identical output, `pending` only from a deferred stage and read-back, and the golden corpus `corpus/golden/` compared byte for byte (`tests/it/golden.rs`), which the `assay-self` gate will also replay (02 §7). Property tests for fingerprint stability and state-machine invariants come with those stories. Run: `cargo test -p assay-domain`.
+ 
+ ## Do not
+ - Do not read time, ids, the environment or files here; the application passes them in through its ports.
+@@ -41,4 +48,5 @@ Unit tests beside the code. `tests/it/` (dev-dependency `serde_json`) pins every
+ | 2026-10-11 | Crate created empty (Story #46); dependencies are added when first used. | ARC-12, CRF-05 | Story #46 |
+ | 2026-10-11 | `Disposition` added (Story #47) so schema rejections in `assay-app` map to a domain value; no dependency needed. | API-02 | Story #47 |
+ | 2026-10-11 | Findings model, vocabularies and event envelope (Story #48) add `serde` (derive) and dev-dependency `serde_json`, both pre-approved. 03 v1.2 wins over the issue: the envelope carries `run_uid` and there are 23 reason codes. Kinds whose `data` 03 lists no fields for are empty struct variants that reject any field (no `serde_json::Value` here), stricter than the schema's open object; they gain fields with the story that defines them. AEU amounts are `f64`, so events are `PartialEq` only. | OUT-02, API-04, ARC-02 | Story #48 |
++| 2026-10-11 | Rubric v1 and `decide` (#51) add `sha2` (inputs and reasons digests; fingerprints #49 will share it) and `thiserror` (`RubricError`), and dev-dependencies `toml` and `proptest`, all pre-approved. The domain does not parse TOML: `Rubric` derives `Deserialize` with validation. `decide` reads a projection (`DecisionInputs`) the application builds; eligibility (#58), fingerprints (#49) and command-record validity are computed before it, and `fp` stays a `String` until #49's type lands. `inputs_digest` is computed inside `decide` over a hand-written canonical encoding, not passed in, so a decision attests what it read. Spec readings, open to the owner: counts cover reviewer findings plus unwaived gate findings; an override is void when the reason codes differ in any way (an added reason, and also a removed one); waivable findings are named by (gate, rule) in the rubric, with temper rule ids `raised`, `exception`, `gate-config`, `test-inventory`, `manifest-switch` for the adapter to emit; `Tier` includes `needs-split`, which `run-1.schema.json` lacks. | ARC-02, OUT-01, H-16 | #51 |
+ | 2026-10-11 | `Aeu` added (#82) as integer micro-AEU rather than a float or a decimal crate (none is allowed here), so caps and costs compare and sum exactly. | API-02, H-11 | #82 |
+diff --git a/crates/assay-domain/Cargo.toml b/crates/assay-domain/Cargo.toml
+index 028c359..fe09c3f 100644
+--- a/crates/assay-domain/Cargo.toml
++++ b/crates/assay-domain/Cargo.toml
+@@ -12,7 +12,12 @@ workspace = true
+ # crates/assay-cli/tests/it/architecture.rs enforces the allowlist.
+ [dependencies]
+ serde = { workspace = true }
++sha2 = { workspace = true }
++thiserror = { workspace = true }
+ 
+-# Round-trip tests against the golden fixtures in schemas/ (pre-approved).
++# Round-trip tests against the golden fixtures in schemas/, rubric/v1.toml and the golden
++# decision corpus, and property tests (all pre-approved).
+ [dev-dependencies]
++proptest = { workspace = true }
+ serde_json = { workspace = true }
++toml = { workspace = true }
+diff --git a/crates/assay-domain/src/decide.rs b/crates/assay-domain/src/decide.rs
+new file mode 100644
+index 0000000..088ef55
+--- /dev/null
++++ b/crates/assay-domain/src/decide.rs
+@@ -0,0 +1,142 @@
++//! `decide`: the pure function from validated inputs and a rubric to a decision
++//! (`docs/architecture/04-pipeline.md` §5, P1, ADR-04).
++
++pub(crate) mod digest;
++pub(crate) mod inputs;
++mod rules;
++
++use std::collections::BTreeSet;
++
++use crate::decision::{Conclusion, Counts, Decision, DecisionSchema, FindingDisposition, Reason};
++use crate::disposition::Disposition;
++use crate::reason::ReasonCode;
++use crate::rubric::Rubric;
++use crate::severity::Severity;
++use inputs::{DecisionInputs, LlmPolicy, OverrideScope};
++use rules::{Effect, Firing};
++
++/// Decides one PR head: rubric v1 rules 1 to 9, waive and override of 04 §5.
++///
++/// The conclusion is that of the first rule that fires, in the order 1, 2, 2a, 3, 4, 5, 6, 7,
++/// 8a, 8b, 8c (rule 9 is success); `pending` comes only from rule 8a. The reasons are those of
++/// every rule that fires, in that order, and are kept when an override turns the conclusion
++/// `neutral`. A waiver removes one human-decision gate finding the rubric lists from rule 1; an
++/// override is void unless the reasons hash to the digest it quotes, and scope `llm` only
++/// neutralises a decision whose every failing or pending reason comes from rule 8.
++///
++/// Pure and total: the same rubric and inputs give the same decision, whose `inputs_digest`
++/// identifies both. The decision is a new document: the keys, fingerprints, dispositions and
++/// degraded roles it repeats from the borrowed inputs are copied into it.
++#[must_use]
++pub fn decide(rubric: &Rubric, inputs: &DecisionInputs) -> Decision {
++    let waived = rules::waived(rubric, inputs);
++    let waived_fps: BTreeSet<&str> = waived.iter().map(|w| w.fp.as_str()).collect();
++    let firings = rules::evaluate(rubric, inputs, &waived_fps);
++
++    let mut conclusion = conclusion_of(&firings);
++    let overridden = overriding_scope(inputs, conclusion, &firings);
++    let mut reasons: Vec<Reason> = firings.into_iter().map(|firing| firing.reason).collect();
++    if let Some(scope) = overridden {
++        conclusion = Conclusion::Neutral;
++        reasons.push(Reason {
++            code: ReasonCode::Override,
++            detail: scope.code().to_owned(),
++            fp: None,
++        });
++    }
++
++    let mut dispositions: Vec<FindingDisposition> = inputs
++        .dispositions
++        .iter()
++        .cloned()
++        .chain(waived.iter().map(|w| FindingDisposition {
++            fp: w.fp.clone(),
++            code: Disposition::WaivedByOwner,
++        }))
++        .collect();
++    dispositions.sort_unstable();
++    dispositions.dedup();
++    let mut degraded = inputs.degraded.clone();
++    degraded.sort_unstable();
++
++    Decision {
++        schema: DecisionSchema::V1,
++        key: inputs.decision_key.clone(),
++        evidence_key: inputs.evidence_key.clone(),
++        conclusion,
++        reasons,
++        counts: counts(inputs, &waived_fps),
++        advisory_blockers: advisory_blockers(inputs),
++        dispositions,
++        waived,
++        degraded,
++        rubric_version: rubric.version().to_owned(),
++        inputs_digest: digest::inputs_digest(rubric, inputs),
++    }
++}
++
++/// The conclusion of the first rule that fires with a failing or pending effect.
++fn conclusion_of(firings: &[Firing]) -> Conclusion {
++    firings
++        .iter()
++        .find_map(|firing| match firing.effect {
++            Effect::Fail | Effect::LlmFail => Some(Conclusion::Failure),
++            Effect::LlmPending => Some(Conclusion::Pending),
++            Effect::LlmWarn => None,
++        })
++        .unwrap_or(Conclusion::Success)
++}
++
++/// The scope of the inputs' override, if it is valid and applies to this conclusion.
++fn overriding_scope(
++    inputs: &DecisionInputs,
++    conclusion: Conclusion,
++    firings: &[Firing],
++) -> Option<OverrideScope> {
++    let record = inputs.override_record.as_ref()?;
++    if !matches!(conclusion, Conclusion::Failure | Conclusion::Pending) {
++        return None;
++    }
++    if record.reasons_digest != digest::reasons_digest(firings.iter().map(|f| &f.reason)) {
++        return None;
++    }
++    let outside_rule_8 = firings.iter().any(|f| f.effect == Effect::Fail);
++    match record.scope {
++        OverrideScope::Llm if outside_rule_8 => None,
++        scope => Some(scope),
++    }
++}
++
++/// Reviewer findings plus gate findings not waived, by severity.
++fn counts(inputs: &DecisionInputs, waived_fps: &BTreeSet<&str>) -> Counts {
++    let reviewer = inputs.findings.iter().map(|f| f.severity);
++    let gates = inputs
++        .gates
++        .iter()
++        .flat_map(|gate| &gate.findings)
++        .filter(|f| !waived_fps.contains(f.fp.as_str()))
++        .map(|f| f.severity);
++    reviewer
++        .chain(gates)
++        .fold(Counts::default(), |mut counts, severity| {
++            let slot = match severity {
++                Severity::Blocker => &mut counts.blocker,
++                Severity::Major => &mut counts.major,
++                Severity::Minor => &mut counts.minor,
++                Severity::Nit => &mut counts.nit,
++            };
++            *slot = slot.saturating_add(1);
++            counts
++        })
++}
++
++/// Verified blockers published, not failing, while `llm_blockers` is advisory.
++fn advisory_blockers(inputs: &DecisionInputs) -> Vec<String> {
++    if inputs.policy.llm_blockers != LlmPolicy::Advisory {
++        return Vec::new();
++    }
++    let fps: BTreeSet<&str> = rules::verified_blockers(inputs)
++        .map(|f| f.fp.as_str())
++        .collect();
++    fps.into_iter().map(str::to_owned).collect()
++}
+diff --git a/crates/assay-domain/src/decide/digest.rs b/crates/assay-domain/src/decide/digest.rs
+new file mode 100644
+index 0000000..bddc81b
+--- /dev/null
++++ b/crates/assay-domain/src/decide/digest.rs
+@@ -0,0 +1,260 @@
++//! The digests a decision carries: `inputs_digest` over what `decide` read, and the reasons
++//! digest an override quotes (`docs/architecture/04-pipeline.md` §5).
++//!
++//! `inputs_digest` hashes a canonical encoding defined here rather than any serialisation
++//! format: every value is written in field order, strings and lists with a length prefix,
++//! enums by their wire code. Each `Canonical` impl destructures its type exhaustively, so a new
++//! field does not compile until it is part of the digest.
++
++use std::fmt;
++
++use sha2::{Digest, Sha256};
++
++use crate::decide::inputs::{
++    Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
++    LlmPolicy, LlmStage, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
++    ReviewedFinding, Waiver, WeighIn,
++};
++use crate::decision::{DegradedRole, FindingDisposition, Reason};
++use crate::disposition::Disposition;
++use crate::event::VerifierVerdict;
++use crate::findings::GateConclusion;
++use crate::reason::ReasonCode;
++use crate::rubric::Rubric;
++use crate::severity::Severity;
++use crate::tier::{PrClass, Tier};
++
++/// Separates this encoding from any other use of SHA-256 over similar bytes.
++const INPUTS_DOMAIN: &str = "assay.decide-inputs/1";
++
++/// Bytes displayed as lowercase hex.
++struct Hex<'a>(&'a [u8]);
++
++impl fmt::Display for Hex<'_> {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
++    }
++}
++
++/// `sha256:<lowercase hex>` of the bytes fed into `hasher`.
++fn render(hasher: Sha256) -> String {
++    format!("sha256:{}", Hex(&hasher.finalize()))
++}
++
++/// The reasons digest of 04 §5: `sha256:<hex>` of the reason codes sorted by wire code,
++/// duplicates kept, each followed by a newline; `override` reasons are left out, so the
++/// digest of an overridden decision is the one its override quoted. Reproducible by hand with
++/// `printf 'gate-failed\nneeds-split\n' | sha256sum`.
++pub(crate) fn reasons_digest<'a>(reasons: impl IntoIterator<Item = &'a Reason>) -> String {
++    let mut codes: Vec<&str> = reasons
++        .into_iter()
++        .filter(|reason| reason.code != ReasonCode::Override)
++        .map(|reason| reason.code.code())
++        .collect();
++    codes.sort_unstable();
++    let mut hasher = Sha256::new();
++    for code in codes {
++        hasher.update(code.as_bytes());
++        hasher.update(b"\n");
++    }
++    render(hasher)
++}
++
++/// `sha256:<hex>` of the canonical encoding of the rubric and the inputs.
++pub(crate) fn inputs_digest(rubric: &Rubric, inputs: &DecisionInputs) -> String {
++    let mut encoder = Encoder(Sha256::new());
++    INPUTS_DOMAIN.encode(&mut encoder);
++    rubric.encode(&mut encoder);
++    inputs.encode(&mut encoder);
++    render(encoder.0)
++}
++
++/// Feeds a canonical encoding into SHA-256.
++pub(crate) struct Encoder(Sha256);
++
++impl Encoder {
++    fn length(&mut self, length: usize) {
++        // usize is at most 64 bits on every target Rust supports, so this never saturates.
++        let length = u64::try_from(length).unwrap_or(u64::MAX);
++        self.0.update(length.to_be_bytes());
++    }
++}
++
++/// A value with a canonical encoding for `inputs_digest`.
++pub(crate) trait Canonical {
++    /// Writes this value's canonical encoding.
++    fn encode(&self, encoder: &mut Encoder);
++}
++
++impl Canonical for str {
++    fn encode(&self, encoder: &mut Encoder) {
++        encoder.length(self.len());
++        encoder.0.update(self.as_bytes());
++    }
++}
++
++impl Canonical for String {
++    fn encode(&self, encoder: &mut Encoder) {
++        self.as_str().encode(encoder);
++    }
++}
++
++impl Canonical for u32 {
++    fn encode(&self, encoder: &mut Encoder) {
++        encoder.0.update(self.to_be_bytes());
++    }
++}
++
++impl Canonical for bool {
++    fn encode(&self, encoder: &mut Encoder) {
++        encoder.0.update([u8::from(*self)]);
++    }
++}
++
++impl<T: Canonical> Canonical for Option<T> {
++    fn encode(&self, encoder: &mut Encoder) {
++        self.is_some().encode(encoder);
++        if let Some(value) = self {
++            value.encode(encoder);
++        }
++    }
++}
++
++impl<T: Canonical> Canonical for [T] {
++    fn encode(&self, encoder: &mut Encoder) {
++        encoder.length(self.len());
++        for item in self {
++            item.encode(encoder);
++        }
++    }
++}
++
++impl<T: Canonical> Canonical for Vec<T> {
++    fn encode(&self, encoder: &mut Encoder) {
++        self.as_slice().encode(encoder);
++    }
++}
++
++/// Closed vocabularies encode as their wire code.
++macro_rules! canonical_by_code {
++    ($($name:ty),+ $(,)?) => {
++        $(
++            impl Canonical for $name {
++                fn encode(&self, encoder: &mut Encoder) {
++                    self.code().encode(encoder);
++                }
++            }
++        )+
++    };
++}
++
++canonical_by_code!(
++    Authorship,
++    Deferral,
++    Disposition,
++    GateConclusion,
++    InfraPolicy,
++    LlmPolicy,
++    OverrideScope,
++    OwnerApproval,
++    PrClass,
++    Severity,
++    Tier,
++    VerifierVerdict,
++    WeighIn,
++);
++
++/// Encodes each field in turn, after exhaustively destructuring the struct.
++macro_rules! canonical_struct {
++    ($name:ident { $($field:ident),+ $(,)? }) => {
++        impl Canonical for $name {
++            fn encode(&self, encoder: &mut Encoder) {
++                let Self { $($field),+ } = self;
++                $($field.encode(encoder);)+
++            }
++        }
++    };
++}
++
++canonical_struct!(DecisionInputs {
++    decision_key,
++    evidence_key,
++    policy,
++    pr,
++    gates,
++    weigh_in,
++    llm,
++    findings,
++    dispositions,
++    degraded,
++    waivers,
++    override_record,
++});
++canonical_struct!(Policy {
++    protected_bases,
++    llm_blockers,
++    llm_majors,
++    on_infra_failure,
++    block_on_infra_for,
++});
++canonical_struct!(PullRequest {
++    base_ref,
++    open_prs_on_head,
++    tier,
++    classes,
++    owner_approval,
++    authorship,
++    requeues,
++});
++canonical_struct!(GateReport {
++    name,
++    required,
++    outcome,
++    findings
++});
++canonical_struct!(GateFinding { fp, rule, severity });
++canonical_struct!(ReviewedFinding {
++    fp,
++    group_id,
++    role,
++    severity,
++    pre_existing,
++    verdict,
++});
++canonical_struct!(FindingDisposition { fp, code });
++canonical_struct!(DegradedRole { role, reason });
++canonical_struct!(Waiver { fp, by });
++canonical_struct!(Override {
++    scope,
++    reasons_digest,
++    by
++});
++
++impl Canonical for GateOutcome {
++    fn encode(&self, encoder: &mut Encoder) {
++        match self {
++            Self::Ran { conclusion } => {
++                "ran".encode(encoder);
++                conclusion.encode(encoder);
++            }
++            Self::Error { detail } => {
++                "error".encode(encoder);
++                detail.encode(encoder);
++            }
++            Self::Skipped => "skipped".encode(encoder),
++        }
++    }
++}
++
++impl Canonical for LlmStage {
++    fn encode(&self, encoder: &mut Encoder) {
++        match self {
++            Self::NotRun => "not-run".encode(encoder),
++            Self::Completed => "completed".encode(encoder),
++            Self::Deferred { reason } => {
++                "deferred".encode(encoder);
++                reason.encode(encoder);
++            }
++        }
++    }
++}
+diff --git a/crates/assay-domain/src/decide/inputs.rs b/crates/assay-domain/src/decide/inputs.rs
+new file mode 100644
+index 0000000..4eb0caf
+--- /dev/null
++++ b/crates/assay-domain/src/decide/inputs.rs
+@@ -0,0 +1,273 @@
++//! What `decide` reads: validated, Z4-recomputed facts about one PR head
++//! (`docs/architecture/04-pipeline.md` §5 "Inputs").
++//!
++//! These are a projection the application builds from the gate documents, the verified
++//! findings, the recomputed plan, the GitHub state snapshot and base policy. They are plain data:
++//! validation, fingerprinting, eligibility and command-record checks happen before `decide`.
++
++use serde::{Deserialize, Serialize};
++
++use crate::decision::{DegradedRole, FindingDisposition};
++use crate::event::VerifierVerdict;
++use crate::findings::GateConclusion;
++use crate::reason::ReasonCode;
++use crate::severity::Severity;
++use crate::tier::{PrClass, Tier};
++use crate::vocabulary::closed_enum;
++
++/// Everything one decision depends on besides the rubric.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct DecisionInputs {
++    /// The decision's idempotency key (02 §5), copied into the decision.
++    pub decision_key: String,
++    /// The evidence key (02 §5), copied into the decision.
++    pub evidence_key: String,
++    /// Policy from base `.assay/plugins.toml`.
++    pub policy: Policy,
++    /// Facts about the PR and its head.
++    pub pr: PullRequest,
++    /// Every gate of the plan, the Weigh-In gate included.
++    pub gates: Vec<GateReport>,
++    /// What the Weigh-In gate reports (rule 5).
++    pub weigh_in: WeighIn,
++    /// Whether and how the LLM stage ran.
++    pub llm: LlmStage,
++    /// Reviewer findings after validation and verification.
++    pub findings: Vec<ReviewedFinding>,
++    /// Dispositions recorded upstream (validation, coordinator, verifier).
++    pub dispositions: Vec<FindingDisposition>,
++    /// Required roles that ran degraded (rule 8b, 8c).
++    pub degraded: Vec<DegradedRole>,
++    /// Valid waiver command records for this head.
++    pub waivers: Vec<Waiver>,
++    /// The valid override command record for this head, if any.
++    pub override_record: Option<Override>,
++}
++
++/// Base policy (03 §1 `[assay]`).
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Policy {
++    /// Bases the verdict check is required on (rule 2).
++    pub protected_bases: Vec<String>,
++    /// Whether a verified blocker fails the PR (rule 6).
++    pub llm_blockers: LlmPolicy,
++    /// Whether too many verified majors fail the PR (rule 7).
++    pub llm_majors: LlmPolicy,
++    /// What an unavailable LLM stage does (rule 8).
++    pub on_infra_failure: InfraPolicy,
++    /// PR classes that always block when the LLM stage is unavailable (rule 8).
++    pub block_on_infra_for: Vec<PrClass>,
++}
++
++closed_enum! {
++    /// Whether an LLM rule may fail a PR (`llm_blockers`, `llm_majors`; promotion by QA-05).
++    pub enum LlmPolicy {
++        /// Published, never failing (the default).
++        Advisory => "advisory",
++        /// Fails the PR.
++        Block => "block",
++    }
++}
++
++closed_enum! {
++    /// What an unavailable LLM stage does (`on_infra_failure`); gates are never affected.
++    pub enum InfraPolicy {
++        /// Success with a visible `llm-degraded` warning.
++        Warn => "warn",
++        /// Pending or failure, as for a trust-path PR.
++        Block => "block",
++    }
++}
++
++/// Facts about the PR, recomputed by Z4.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct PullRequest {
++    /// The base ref the PR targets (rule 2).
++    pub base_ref: String,
++    /// Open PRs on `head_sha` into this protected base, this one included (rule 2a).
++    pub open_prs_on_head: u32,
++    /// The recomputed tier (rule 3).
++    pub tier: Tier,
++    /// The recomputed classes (rules 4, 8).
++    pub classes: Vec<PrClass>,
++    /// `owner_approved(head)`, computed by the eligibility rule (rule 4).
++    pub owner_approval: OwnerApproval,
++    /// Whether an agent identity authored the PR (rule 8a, `slot-busy`).
++    pub authorship: Authorship,
++    /// How many times this head's deferred run was already requeued (rule 8a).
++    pub requeues: u32,
++}
++
++closed_enum! {
++    /// The result of `owner_approved(head)` (04 §5), computed elsewhere.
++    pub enum OwnerApproval {
++        /// An eligible owner or approver approved this head after the push clock.
++        Approved => "approved",
++        /// No eligible approval.
++        NotApproved => "not-approved",
++    }
++}
++
++closed_enum! {
++    /// Who authored the PR, by numeric identity (04 §2.5).
++    pub enum Authorship {
++        /// An identity listed in base `.assay/agents`.
++        Agent => "agent",
++        /// Anyone else.
++        Other => "other",
++    }
++}
++
++/// One gate of the plan and what it reported.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct GateReport {
++    /// The plugin name (`temper`).
++    pub name: String,
++    /// Whether base config marks it required (rule 1 reads only required gates).
++    pub required: bool,
++    /// Whether it ran and how.
++    pub outcome: GateOutcome,
++    /// Its findings, fingerprinted by Z4.
++    pub findings: Vec<GateFinding>,
++}
++
++/// How a gate ended (03 §2).
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
++pub enum GateOutcome {
++    /// It ran; its document's conclusion is authoritative.
++    Ran {
++        /// The gate's conclusion.
++        conclusion: GateConclusion,
++    },
++    /// Bad exit, signal, timeout, or a missing or invalid document.
++    Error {
++        /// What went wrong (`gitattributes`, `timeout`).
++        detail: String,
++    },
++    /// A required gate did not run; never a pass.
++    Skipped,
++}
++
++/// One gate finding.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct GateFinding {
++    /// The fingerprint Z4 computed.
++    // A plain string until the `Fingerprint` type of #49 lands.
++    pub fp: String,
++    /// The plugin's rule id; waivers read it.
++    pub rule: Option<String>,
++    /// The display severity the adapter mapped.
++    pub severity: Severity,
++}
++
++closed_enum! {
++    /// What the Weigh-In gate reports (04 §9).
++    pub enum WeighIn {
++        /// The Weigh-In gate is not required, so rule 5 never fires.
++        NotRequired => "not-required",
++        /// Required, and nothing blocks.
++        Clear => "clear",
++        /// Required, with an open blocking item.
++        OpenBlocking => "open-blocking",
++        /// Required, with items awaiting triage.
++        PendingTriage => "pending-triage",
++        /// Required, and it holds no evidence for the change.
++        NoEvidence => "no-evidence",
++    }
++}
++
++/// Whether and how the LLM stage ran.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
++pub enum LlmStage {
++    /// The tier has no LLM stage, or the PR is a draft.
++    NotRun,
++    /// The stage completed; required roles may still have degraded.
++    Completed,
++    /// The stage did not run, for the given reason.
++    Deferred {
++        /// Why.
++        reason: Deferral,
++    },
++}
++
++closed_enum! {
++    /// Why the LLM stage did not run (04 §5 rule 8a).
++    pub enum Deferral {
++        /// The day's budget is spent.
++        BudgetDeferred => "budget-deferred",
++        /// The LLM is unavailable: preflight, verifier or coordinator failure.
++        InfraLlmUnavailable => "infra-llm-unavailable",
++        /// No semaphore slot was free.
++        SlotBusy => "slot-busy",
++    }
++}
++
++impl Deferral {
++    /// The reason code a deferral is published under.
++    #[must_use]
++    pub const fn reason_code(self) -> ReasonCode {
++        match self {
++            Self::BudgetDeferred => ReasonCode::BudgetDeferred,
++            Self::InfraLlmUnavailable => ReasonCode::InfraLlmUnavailable,
++            Self::SlotBusy => ReasonCode::SlotBusy,
++        }
++    }
++}
++
++/// One reviewer finding after validation, coordination and verification.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct ReviewedFinding {
++    /// The fingerprint Z4 computed.
++    // A plain string until the `Fingerprint` type of #49 lands.
++    pub fp: String,
++    /// The coordinator's root-cause group; majors are counted by distinct group.
++    pub group_id: String,
++    /// The role that raised it.
++    pub role: String,
++    /// Its severity after verification (a refuted finding is already `minor`).
++    pub severity: Severity,
++    /// Whether Z4 confirmed it is about code the diff did not introduce.
++    pub pre_existing: bool,
++    /// The verifier's verdict; none when no verifier ran (micro, or over the cap).
++    pub verdict: Option<VerifierVerdict>,
++}
++
++/// A valid `/assay waive <finding-id>` command record.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Waiver {
++    /// The finding it names.
++    pub fp: String,
++    /// The eligible owner who issued it.
++    pub by: String,
++}
++
++/// A valid `/assay override llm|all <reasons_digest> <reason>` command record.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Override {
++    /// What it neutralises.
++    pub scope: OverrideScope,
++    /// The reasons digest it quotes; it is void unless the current reasons hash to it.
++    pub reasons_digest: String,
++    /// The eligible owner who issued it.
++    pub by: String,
++}
++
++closed_enum! {
++    /// What an override neutralises.
++    pub enum OverrideScope {
++        /// Only rule 8 (an unavailable or degraded LLM stage).
++        Llm => "llm",
++        /// Every rule: the break-glass.
++        All => "all",
++    }
++}
+diff --git a/crates/assay-domain/src/decide/rules.rs b/crates/assay-domain/src/decide/rules.rs
+new file mode 100644
+index 0000000..246efb0
+--- /dev/null
++++ b/crates/assay-domain/src/decide/rules.rs
+@@ -0,0 +1,271 @@
++//! The rules of rubric v1 (`docs/architecture/04-pipeline.md` §5), each a pure check that
++//! yields the reasons it fires with.
++
++use std::collections::BTreeSet;
++
++use crate::decide::inputs::{
++    Authorship, DecisionInputs, Deferral, GateOutcome, GateReport, InfraPolicy, LlmPolicy,
++    LlmStage, OwnerApproval, ReviewedFinding, WeighIn,
++};
++use crate::decision::{Reason, Waived};
++use crate::event::VerifierVerdict;
++use crate::findings::GateConclusion;
++use crate::reason::ReasonCode;
++use crate::rubric::Rubric;
++use crate::severity::Severity;
++use crate::tier::Tier;
++
++/// What a firing rule does to the conclusion.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(super) enum Effect {
++    /// Failure from rules 1 to 7, which only an `all` override neutralises.
++    Fail,
++    /// Failure from rule 8 (8a after its requeues, 8b).
++    LlmFail,
++    /// Pending: rule 8a.
++    LlmPending,
++    /// Success with a visible warning: rule 8c.
++    LlmWarn,
++}
++
++/// One reason a rule fired with, and its effect.
++#[derive(Debug)]
++pub(super) struct Firing {
++    pub(super) effect: Effect,
++    pub(super) reason: Reason,
++}
++
++fn firing(effect: Effect, code: ReasonCode, detail: impl Into<String>) -> Firing {
++    Firing {
++        effect,
++        reason: Reason {
++            code,
++            detail: detail.into(),
++            fp: None,
++        },
++    }
++}
++
++/// Every reason of every rule that fires, in rule order.
++pub(super) fn evaluate(
++    rubric: &Rubric,
++    inputs: &DecisionInputs,
++    waived_fps: &BTreeSet<&str>,
++) -> Vec<Firing> {
++    let mut firings = Vec::new();
++    firings.extend(gates(inputs, waived_fps));
++    firings.extend(pull_request(inputs));
++    firings.extend(weigh_in(inputs.weigh_in));
++    firings.extend(blockers(inputs));
++    firings.extend(majors(rubric, inputs));
++    firings.extend(llm(rubric, inputs));
++    firings
++}
++
++/// The waivers that apply: each names a finding of a gate whose rule the rubric lists as a
++/// human-decision finding. Waivers naming anything else are not applied.
++pub(super) fn waived(rubric: &Rubric, inputs: &DecisionInputs) -> Vec<Waived> {
++    let mut waived: Vec<Waived> = inputs
++        .waivers
++        .iter()
++        .filter(|waiver| {
++            inputs.gates.iter().any(|gate| {
++                gate.findings.iter().any(|finding| {
++                    finding.fp == waiver.fp
++                        && finding
++                            .rule
++                            .as_deref()
++                            .is_some_and(|rule| rubric.is_waivable(&gate.name, rule))
++                })
++            })
++        })
++        .map(|waiver| Waived {
++            fp: waiver.fp.clone(),
++            by: waiver.by.clone(),
++        })
++        .collect();
++    waived.sort_unstable();
++    waived.dedup_by(|a, b| a.fp == b.fp);
++    waived
++}
++
++/// Rule 1: a required gate failed, errored or was skipped, minus waived findings.
++fn gates<'a>(
++    inputs: &'a DecisionInputs,
++    waived_fps: &'a BTreeSet<&str>,
++) -> impl Iterator<Item = Firing> + 'a {
++    inputs
++        .gates
++        .iter()
++        .filter(|gate| gate.required)
++        .filter_map(|gate| match &gate.outcome {
++            GateOutcome::Ran {
++                conclusion: GateConclusion::Fail,
++            } if !fully_waived(gate, waived_fps) => {
++                Some(firing(Effect::Fail, ReasonCode::GateFailed, &*gate.name))
++            }
++            GateOutcome::Ran { .. } => None,
++            GateOutcome::Error { detail } => Some(firing(
++                Effect::Fail,
++                ReasonCode::GateError,
++                format!("{}: {detail}", gate.name),
++            )),
++            GateOutcome::Skipped => {
++                Some(firing(Effect::Fail, ReasonCode::GateSkipped, &*gate.name))
++            }
++        })
++}
++
++/// A failed gate whose every finding was waived no longer fails; one with no findings cannot be
++/// waived.
++fn fully_waived(gate: &GateReport, waived_fps: &BTreeSet<&str>) -> bool {
++    !gate.findings.is_empty()
++        && gate
++            .findings
++            .iter()
++            .all(|finding| waived_fps.contains(finding.fp.as_str()))
++}
++
++/// Rules 2, 2a, 3 and 4: the base, the head, the tier and owner approval.
++fn pull_request(inputs: &DecisionInputs) -> Vec<Firing> {
++    let pr = &inputs.pr;
++    let mut firings = Vec::new();
++    if !inputs.policy.protected_bases.contains(&pr.base_ref) {
++        firings.push(firing(
++            Effect::Fail,
++            ReasonCode::BaseNotProtected,
++            &*pr.base_ref,
++        ));
++    }
++    if pr.open_prs_on_head > 1 {
++        firings.push(firing(
++            Effect::Fail,
++            ReasonCode::AmbiguousHead,
++            format!("{} open PRs on this head", pr.open_prs_on_head),
++        ));
++    }
++    if pr.tier == Tier::NeedsSplit {
++        firings.push(firing(
++            Effect::Fail,
++            ReasonCode::NeedsSplit,
++            "over the line budget",
++        ));
++    }
++    if !pr.classes.is_empty() && pr.owner_approval == OwnerApproval::NotApproved {
++        let classes: Vec<&str> = pr.classes.iter().map(|class| class.code()).collect();
++        firings.push(firing(
++            Effect::Fail,
++            ReasonCode::TrustPathUnapproved,
++            classes.join(", "),
++        ));
++    }
++    firings
++}
++
++/// Rule 5: a required Weigh-In gate reports a blocking state.
++fn weigh_in(state: WeighIn) -> Option<Firing> {
++    let code = match state {
++        WeighIn::NotRequired | WeighIn::Clear => return None,
++        WeighIn::OpenBlocking => ReasonCode::WeighInOpenBlocking,
++        WeighIn::PendingTriage => ReasonCode::WeighInPendingTriage,
++        WeighIn::NoEvidence => ReasonCode::WeighInNoEvidence,
++    };
++    Some(firing(Effect::Fail, code, "weigh-in"))
++}
++
++/// A finding the verifier confirmed about code the diff introduced.
++fn confirmed_introduced(finding: &ReviewedFinding) -> bool {
++    finding.verdict == Some(VerifierVerdict::Confirmed) && !finding.pre_existing
++}
++
++/// Confirmed, introduced blockers (rule 6, and `advisory_blockers`).
++pub(super) fn verified_blockers(inputs: &DecisionInputs) -> impl Iterator<Item = &ReviewedFinding> {
++    inputs
++        .findings
++        .iter()
++        .filter(|f| f.severity == Severity::Blocker && confirmed_introduced(f))
++}
++
++/// Rule 6: a verified blocker, while `llm_blockers` blocks.
++fn blockers(inputs: &DecisionInputs) -> Vec<Firing> {
++    if inputs.policy.llm_blockers != LlmPolicy::Block {
++        return Vec::new();
++    }
++    verified_blockers(inputs)
++        .map(|finding| Firing {
++            effect: Effect::Fail,
++            reason: Reason {
++                code: ReasonCode::BlockerVerified,
++                detail: "verified blocker".to_owned(),
++                fp: Some(finding.fp.clone()),
++            },
++        })
++        .collect()
++}
++
++/// Rule 7: enough distinct root causes of confirmed, introduced majors from non-micro roles,
++/// while `llm_majors` blocks.
++fn majors(rubric: &Rubric, inputs: &DecisionInputs) -> Option<Firing> {
++    if inputs.policy.llm_majors != LlmPolicy::Block {
++        return None;
++    }
++    let groups: BTreeSet<&str> = inputs
++        .findings
++        .iter()
++        .filter(|f| f.severity == Severity::Major && confirmed_introduced(f))
++        .filter(|f| !rubric.is_micro_role(&f.role))
++        .map(|f| f.group_id.as_str())
++        .collect();
++    let threshold = rubric.majors_block_threshold().get();
++    // More groups than u32::MAX still exceed any threshold.
++    let count = u32::try_from(groups.len()).unwrap_or(u32::MAX);
++    (count >= threshold).then(|| {
++        firing(
++            Effect::Fail,
++            ReasonCode::MajorsOverThreshold,
++            format!("{count} confirmed majors by root cause (threshold {threshold})"),
++        )
++    })
++}
++
++/// Rule 8: a deferred LLM stage (8a) or degraded required roles (8b), each a warning
++/// otherwise (8c).
++fn llm(rubric: &Rubric, inputs: &DecisionInputs) -> Vec<Firing> {
++    let pr = &inputs.pr;
++    let policy = &inputs.policy;
++    let blocks_on_infra = policy.on_infra_failure == InfraPolicy::Block
++        || pr
++            .classes
++            .iter()
++            .any(|class| policy.block_on_infra_for.contains(class));
++    let mut firings = Vec::new();
++    if let LlmStage::Deferred { reason } = inputs.llm {
++        let holds =
++            blocks_on_infra || (reason == Deferral::SlotBusy && pr.authorship == Authorship::Agent);
++        let max = rubric.max_requeues();
++        firings.push(if !holds {
++            firing(Effect::LlmWarn, ReasonCode::LlmDegraded, reason.code())
++        } else if pr.requeues >= max {
++            firing(
++                Effect::LlmFail,
++                ReasonCode::InfraLlmUnavailable,
++                format!("{} after {max} requeues", reason.code()),
++            )
++        } else {
++            firing(
++                Effect::LlmPending,
++                reason.reason_code(),
++                format!("requeued {} of {max} times", pr.requeues),
++            )
++        });
++    }
++    firings.extend(inputs.degraded.iter().map(|role| {
++        let detail = format!("{}: {}", role.role, role.reason);
++        if blocks_on_infra {
++            firing(Effect::LlmFail, ReasonCode::RequiredRoleDegraded, detail)
++        } else {
++            firing(Effect::LlmWarn, ReasonCode::LlmDegraded, detail)
++        }
++    }));
++    firings
++}
+diff --git a/crates/assay-domain/src/decision.rs b/crates/assay-domain/src/decision.rs
+new file mode 100644
+index 0000000..591efb3
+--- /dev/null
++++ b/crates/assay-domain/src/decision.rs
+@@ -0,0 +1,130 @@
++//! The `assay.decision/1` document `decide` produces (`docs/architecture/03-contracts.md` §5).
++
++use serde::{Deserialize, Serialize};
++
++use crate::decide::digest;
++use crate::disposition::Disposition;
++use crate::reason::ReasonCode;
++use crate::vocabulary::closed_enum;
++
++closed_enum! {
++    /// The `schema` tag of a decision; a closed set of the versions this build reads.
++    #[derive(Default)]
++    pub enum DecisionSchema {
++        /// `assay.decision/1`.
++        #[default]
++        V1 => "assay.decision/1",
++    }
++}
++
++closed_enum! {
++    /// The check conclusion a decision publishes (03 §5).
++    pub enum Conclusion {
++        /// The PR may merge.
++        Success => "success",
++        /// The PR may not merge.
++        Failure => "failure",
++        /// An owner override applies; passes for required checks.
++        Neutral => "neutral",
++        /// The LLM stage is deferred (rule 8a only); published as `in_progress`.
++        Pending => "pending",
++    }
++}
++
++/// One cause of the conclusion.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Reason {
++    /// The closed reason code.
++    pub code: ReasonCode,
++    /// Human-readable detail: the gate, the base ref, the role or the override scope.
++    pub detail: String,
++    /// The finding this reason is about, if any.
++    // A plain string until the `Fingerprint` type of #49 lands.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub fp: Option<String>,
++}
++
++/// How many findings of each severity the decision considered.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Counts {
++    /// Blockers.
++    pub blocker: u64,
++    /// Majors.
++    pub major: u64,
++    /// Minors.
++    pub minor: u64,
++    /// Nits.
++    pub nit: u64,
++}
++
++/// What happened to one finding (03 §5 disposition codes).
++#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct FindingDisposition {
++    /// The finding's fingerprint.
++    pub fp: String,
++    /// What happened to it.
++    pub code: Disposition,
++}
++
++/// A gate finding an owner waived (04 §5 waive).
++#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Waived {
++    /// The waived finding's fingerprint.
++    pub fp: String,
++    /// Who waived it.
++    pub by: String,
++}
++
++/// A reviewer role that ran degraded.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct DegradedRole {
++    /// The role (`bugs`, `combined`).
++    pub role: String,
++    /// Why: its own cap, turns, timeout, or malformed output after a retry.
++    pub reason: String,
++}
++
++/// An `assay.decision/1` document (03 §5).
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Decision {
++    /// The contract version.
++    pub schema: DecisionSchema,
++    /// `decision_key`: the idempotency key of this decision (02 §5).
++    #[serde(rename = "decision_key")]
++    pub key: String,
++    /// The evidence this decision was made over (02 §5).
++    pub evidence_key: String,
++    /// The check conclusion.
++    pub conclusion: Conclusion,
++    /// Every cause, in rubric rule order; kept under an override.
++    pub reasons: Vec<Reason>,
++    /// Findings considered, by severity.
++    pub counts: Counts,
++    /// Verified blockers published while `llm_blockers` is advisory.
++    pub advisory_blockers: Vec<String>,
++    /// What happened to individual findings.
++    pub dispositions: Vec<FindingDisposition>,
++    /// Gate findings removed by owner waivers.
++    pub waived: Vec<Waived>,
++    /// Required roles that ran degraded.
++    pub degraded: Vec<DegradedRole>,
++    /// The rubric version that made the decision.
++    pub rubric_version: String,
++    /// `sha256:<hex>` of the rubric and inputs `decide` read.
++    pub inputs_digest: String,
++}
++
++impl Decision {
++    /// The reasons digest an override must quote (04 §5): `sha256:<hex>` of the sorted reason
++    /// codes, duplicates kept, without any `override` reason.
++    #[must_use]
++    pub fn reasons_digest(&self) -> String {
++        digest::reasons_digest(&self.reasons)
++    }
++}
+diff --git a/crates/assay-domain/src/lib.rs b/crates/assay-domain/src/lib.rs
+index 595251d..5f910d5 100644
+--- a/crates/assay-domain/src/lib.rs
++++ b/crates/assay-domain/src/lib.rs
+@@ -11,15 +11,28 @@
+ mod vocabulary;
+ 
+ mod aeu;
++mod decide;
++mod decision;
+ mod disposition;
+ mod event;
+ mod finding;
+ mod findings;
+ mod reason;
++mod rubric;
+ mod run_uid;
+ mod severity;
++mod tier;
+ 
+ pub use aeu::Aeu;
++pub use decide::decide;
++pub use decide::inputs::{
++    Authorship, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport, InfraPolicy,
++    LlmPolicy, LlmStage, Override, OverrideScope, OwnerApproval, Policy, PullRequest,
++    ReviewedFinding, Waiver, WeighIn,
++};
++pub use decision::{
++    Conclusion, Counts, Decision, DecisionSchema, DegradedRole, FindingDisposition, Reason, Waived,
++};
+ pub use disposition::Disposition;
+ pub use event::{
+     Event, EventKind, EventPayload, EventSchema, FeedbackSignal, GateRun, Preflight,
+@@ -28,5 +41,7 @@ pub use event::{
+ pub use finding::{Caller, Class, Confidence, Finding, FindingKind, IntroducedBy, Side};
+ pub use findings::{FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind, Stats};
+ pub use reason::ReasonCode;
++pub use rubric::{Rubric, RubricError};
+ pub use run_uid::RunUid;
+ pub use severity::{Marker, Severity};
++pub use tier::{PrClass, Tier};
+diff --git a/crates/assay-domain/src/rubric.rs b/crates/assay-domain/src/rubric.rs
+new file mode 100644
+index 0000000..ac0a5bb
+--- /dev/null
++++ b/crates/assay-domain/src/rubric.rs
+@@ -0,0 +1,137 @@
++//! The decision rubric: the data `decide` reads (`rubric/v1.toml`,
++//! `docs/architecture/04-pipeline.md` §5).
++//!
++//! The domain owns the rubric's meaning but reads no files: the caller parses the TOML into
++//! [`Rubric`], which validates on deserialisation.
++
++use std::num::NonZeroU32;
++
++use serde::Deserialize;
++
++use crate::decide::digest::{Canonical, Encoder};
++
++/// A validated decision rubric (04 §5): the thresholds and lists the rules read.
++///
++/// Built only by deserialising (for example `rubric/v1.toml`); an empty version is rejected,
++/// because every decision records it as `rubric_version`.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
++#[serde(try_from = "RubricFile")]
++pub struct Rubric {
++    version: String,
++    majors_block_threshold: NonZeroU32,
++    max_requeues: u32,
++    micro_roles: Vec<String>,
++    waivable: Vec<WaivableRule>,
++}
++
++/// The wire form of a rubric file, before validation.
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct RubricFile {
++    version: String,
++    majors_block_threshold: NonZeroU32,
++    max_requeues: u32,
++    micro_roles: Vec<String>,
++    #[serde(default)]
++    waivable: Vec<WaivableRule>,
++}
++
++/// One kind of human-decision gate finding an owner may waive: a rule of one gate.
++#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct WaivableRule {
++    gate: String,
++    rule: String,
++}
++
++/// Why a rubric was rejected.
++#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
++pub enum RubricError {
++    /// The `version` is empty, so decisions could not record which rubric made them.
++    #[error("the rubric version is empty")]
++    EmptyVersion,
++}
++
++impl TryFrom<RubricFile> for Rubric {
++    type Error = RubricError;
++
++    fn try_from(file: RubricFile) -> Result<Self, Self::Error> {
++        let RubricFile {
++            version,
++            majors_block_threshold,
++            max_requeues,
++            micro_roles,
++            waivable,
++        } = file;
++        if version.is_empty() {
++            return Err(RubricError::EmptyVersion);
++        }
++        Ok(Self {
++            version,
++            majors_block_threshold,
++            max_requeues,
++            micro_roles,
++            waivable,
++        })
++    }
++}
++
++impl Canonical for Rubric {
++    fn encode(&self, encoder: &mut Encoder) {
++        let Self {
++            version,
++            majors_block_threshold,
++            max_requeues,
++            micro_roles,
++            waivable,
++        } = self;
++        version.encode(encoder);
++        majors_block_threshold.get().encode(encoder);
++        max_requeues.encode(encoder);
++        micro_roles.encode(encoder);
++        waivable.encode(encoder);
++    }
++}
++
++impl Canonical for WaivableRule {
++    fn encode(&self, encoder: &mut Encoder) {
++        let Self { gate, rule } = self;
++        gate.encode(encoder);
++        rule.encode(encoder);
++    }
++}
++
++impl Rubric {
++    /// The version every decision records as `rubric_version`.
++    #[must_use]
++    pub fn version(&self) -> &str {
++        &self.version
++    }
++
++    /// Rule 7: how many distinct root causes of confirmed majors fail the PR (`A-07`).
++    #[must_use]
++    pub const fn majors_block_threshold(&self) -> NonZeroU32 {
++        self.majors_block_threshold
++    }
++
++    /// Rule 8a: how many times a deferred run is requeued before it fails
++    /// `infra-llm-unavailable`.
++    #[must_use]
++    pub const fn max_requeues(&self) -> u32 {
++        self.max_requeues
++    }
++
++    /// Whether findings from `role` are advisory and never count for rule 7 (the micro tier).
++    #[must_use]
++    pub fn is_micro_role(&self, role: &str) -> bool {
++        self.micro_roles.iter().any(|micro| micro == role)
++    }
++
++    /// Whether a finding of `rule` from `gate` is a human-decision finding an owner may waive.
++    #[must_use]
++    pub fn is_waivable(&self, gate: &str, rule: &str) -> bool {
++        self.waivable
++            .iter()
++            .any(|waivable| waivable.gate == gate && waivable.rule == rule)
++    }
++}
+diff --git a/crates/assay-domain/src/tier.rs b/crates/assay-domain/src/tier.rs
+new file mode 100644
+index 0000000..80ecb3a
+--- /dev/null
++++ b/crates/assay-domain/src/tier.rs
+@@ -0,0 +1,31 @@
++//! Review tiers and PR classes (`docs/architecture/04-pipeline.md` §2.3,
++//! `docs/architecture/03-contracts.md` §1).
++
++use crate::vocabulary::closed_enum;
++
++closed_enum! {
++    /// How much review a PR gets: the first matching row of 04 §2.3.
++    pub enum Tier {
++        /// Over 5,000 filtered changed lines: no review, the PR fails `needs-split` (rule 3).
++        NeedsSplit => "needs-split",
++        /// Only files in the base docs allowlist: gates only.
++        Trivial => "trivial",
++        /// A trust path, exec surface, risk glob or more than 150 lines: the full roster.
++        Full => "full",
++        /// 21 to 150 lines, or a dependency change: the `combined` reviewer.
++        Lite => "lite",
++        /// Everything else: the `combined-micro` reviewer, advisory only.
++        Micro => "micro",
++    }
++}
++
++closed_enum! {
++    /// A risk class of a PR (03 §1); a PR may be in both or neither.
++    #[derive(PartialOrd, Ord)]
++    pub enum PrClass {
++        /// A changed file matches the trust-path list (04 §2.2).
++        TrustPath => "trust-path",
++        /// The change adds or alters code that runs at build time (04 §2.2).
++        ExecSurface => "exec-surface",
++    }
++}
+diff --git a/crates/assay-domain/tests/it/decide.rs b/crates/assay-domain/tests/it/decide.rs
+new file mode 100644
+index 0000000..c55a968
+--- /dev/null
++++ b/crates/assay-domain/tests/it/decide.rs
+@@ -0,0 +1,252 @@
++//! `decide` rules 1 to 5 and 9 of `docs/architecture/04-pipeline.md` §5, and the precedence
++//! between rules.
++
++use std::error::Error;
++
++use assay_domain::{
++    Conclusion, Decision, DecisionInputs, GateConclusion, GateOutcome, LlmStage, OwnerApproval,
++    PrClass, ReasonCode, Tier, WeighIn, decide,
++};
++
++use crate::support::{clean_inputs, gate, reason, rubric_v1};
++
++fn decided(inputs: &DecisionInputs) -> Result<Decision, Box<dyn Error>> {
++    Ok(decide(&rubric_v1()?, inputs))
++}
++
++#[test]
++fn clean_inputs_succeed_with_no_reasons() -> Result<(), Box<dyn Error>> {
++    let decision = decided(&clean_inputs())?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    assert_eq!(decision.reasons, []);
++    Ok(())
++}
++
++#[test]
++fn the_decision_carries_the_keys_and_the_rubric_version() -> Result<(), Box<dyn Error>> {
++    let decision = decided(&clean_inputs())?;
++
++    assert_eq!(decision.key, "dec-42-1");
++    assert_eq!(decision.evidence_key, "run-42-1");
++    assert_eq!(decision.rubric_version, "1");
++    Ok(())
++}
++
++#[test]
++fn a_failed_required_gate_fails_the_pr() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.gates = vec![gate("temper", GateConclusion::Fail, Vec::new())];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(decision.reasons, [reason(ReasonCode::GateFailed, "temper")]);
++    Ok(())
++}
++
++#[test]
++fn a_gate_error_fails_the_pr_with_its_detail() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    let mut errored = gate("temper", GateConclusion::Pass, Vec::new());
++    errored.outcome = GateOutcome::Error {
++        detail: "timeout".to_owned(),
++    };
++    inputs.gates = vec![errored];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons,
++        [reason(ReasonCode::GateError, "temper: timeout")]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_skipped_required_gate_fails_the_pr() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    let mut skipped = gate("temper", GateConclusion::Pass, Vec::new());
++    skipped.outcome = GateOutcome::Skipped;
++    inputs.gates = vec![skipped];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons,
++        [reason(ReasonCode::GateSkipped, "temper")]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_failed_optional_gate_does_not_fail_the_pr() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    let mut optional = gate("custom-lint", GateConclusion::Fail, Vec::new());
++    optional.required = false;
++    inputs.gates.push(optional);
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    assert_eq!(decision.reasons, []);
++    Ok(())
++}
++
++#[test]
++fn an_unprotected_base_fails_base_not_protected() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.pr.base_ref = "release".to_owned();
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons,
++        [reason(ReasonCode::BaseNotProtected, "release")]
++    );
++    Ok(())
++}
++
++#[test]
++fn two_open_prs_on_the_head_fail_ambiguous_head() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.pr.open_prs_on_head = 2;
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons,
++        [reason(ReasonCode::AmbiguousHead, "2 open PRs on this head")]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_needs_split_tier_fails_needs_split() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.pr.tier = Tier::NeedsSplit;
++    inputs.llm = LlmStage::NotRun;
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons,
++        [reason(ReasonCode::NeedsSplit, "over the line budget")]
++    );
++    Ok(())
++}
++
++#[test]
++fn an_unapproved_trust_path_change_fails_trust_path_unapproved() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.pr.tier = Tier::Full;
++    inputs.pr.classes = vec![PrClass::TrustPath, PrClass::ExecSurface];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons,
++        [reason(
++            ReasonCode::TrustPathUnapproved,
++            "trust-path, exec-surface"
++        )]
++    );
++    Ok(())
++}
++
++#[test]
++fn an_owner_approved_trust_path_change_succeeds() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.pr.tier = Tier::Full;
++    inputs.pr.classes = vec![PrClass::ExecSurface];
++    inputs.pr.owner_approval = OwnerApproval::Approved;
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    assert_eq!(decision.reasons, []);
++    Ok(())
++}
++
++#[test]
++fn a_required_weigh_in_gate_fails_on_each_blocking_state() -> Result<(), Box<dyn Error>> {
++    let states = [
++        (WeighIn::OpenBlocking, ReasonCode::WeighInOpenBlocking),
++        (WeighIn::PendingTriage, ReasonCode::WeighInPendingTriage),
++        (WeighIn::NoEvidence, ReasonCode::WeighInNoEvidence),
++    ];
++
++    for (state, code) in states {
++        let mut inputs = clean_inputs();
++        inputs.weigh_in = state;
++
++        let decision = decided(&inputs)?;
++
++        assert_eq!(decision.conclusion, Conclusion::Failure, "{state:?}");
++        assert_eq!(decision.reasons, [reason(code, "weigh-in")], "{state:?}");
++    }
++    Ok(())
++}
++
++#[test]
++fn a_clear_weigh_in_gate_succeeds() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.weigh_in = WeighIn::Clear;
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    Ok(())
++}
++
++#[test]
++fn every_firing_rule_is_a_reason_in_rule_order() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.weigh_in = WeighIn::OpenBlocking;
++    inputs.pr.classes = vec![PrClass::TrustPath];
++    inputs.pr.base_ref = "release".to_owned();
++    inputs.gates = vec![gate("temper", GateConclusion::Fail, Vec::new())];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons,
++        [
++            reason(ReasonCode::GateFailed, "temper"),
++            reason(ReasonCode::BaseNotProtected, "release"),
++            reason(ReasonCode::TrustPathUnapproved, "trust-path"),
++            reason(ReasonCode::WeighInOpenBlocking, "weigh-in"),
++        ]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_gate_failure_wins_over_a_deferred_llm_stage() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.pr.classes = vec![PrClass::TrustPath];
++    inputs.pr.owner_approval = OwnerApproval::Approved;
++    inputs.llm = LlmStage::Deferred {
++        reason: assay_domain::Deferral::BudgetDeferred,
++    };
++    inputs.gates = vec![gate("temper", GateConclusion::Fail, Vec::new())];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons,
++        [
++            reason(ReasonCode::GateFailed, "temper"),
++            reason(ReasonCode::BudgetDeferred, "requeued 0 of 3 times"),
++        ]
++    );
++    Ok(())
++}
+diff --git a/crates/assay-domain/tests/it/decide_commands.rs b/crates/assay-domain/tests/it/decide_commands.rs
+new file mode 100644
+index 0000000..1808060
+--- /dev/null
++++ b/crates/assay-domain/tests/it/decide_commands.rs
+@@ -0,0 +1,286 @@
++//! `decide` waive and override (`docs/architecture/04-pipeline.md` §5), and the parts of the
++//! decision that describe findings: counts, dispositions and the digests.
++
++use std::error::Error;
++
++use assay_domain::{
++    Conclusion, Counts, Decision, DecisionInputs, Deferral, Disposition, FindingDisposition,
++    GateConclusion, LlmStage, Override, OverrideScope, OwnerApproval, PrClass, ReasonCode,
++    Severity, Tier, Waived, Waiver, decide,
++};
++
++use crate::support::{clean_inputs, confirmed, gate, gate_finding, reason, rubric_v1};
++
++/// `printf 'gate-failed\n' | sha256sum`
++const GATE_FAILED_DIGEST: &str =
++    "sha256:edfab635b96543711e1a2662a111f30252334d5a72e82c9d11bb62e35ad7e231";
++/// `printf 'budget-deferred\n' | sha256sum`
++const BUDGET_DEFERRED_DIGEST: &str =
++    "sha256:ab60963112e40bec2b8fcd6c5c6970d3a93d64968fce1754d512ab6b8e767e1d";
++/// `printf 'gate-failed\nneeds-split\n' | sha256sum`
++const GATE_FAILED_NEEDS_SPLIT_DIGEST: &str =
++    "sha256:f9838b74a72d134a2d6270babd99be12097ea49c033b6ab2e780ef72f630024f";
++
++fn decided(inputs: &DecisionInputs) -> Result<Decision, Box<dyn Error>> {
++    Ok(decide(&rubric_v1()?, inputs))
++}
++
++/// A failed temper gate with a raised baseline (waivable) and, when `with_clippy`, a clippy
++/// finding (never waivable).
++fn temper_failed(with_clippy: bool) -> DecisionInputs {
++    let mut findings = vec![gate_finding("00000000000000a1", "raised", Severity::Major)];
++    if with_clippy {
++        findings.push(gate_finding(
++            "00000000000000a2",
++            "clippy::unwrap_used",
++            Severity::Blocker,
++        ));
++    }
++    let mut inputs = clean_inputs();
++    inputs.gates = vec![gate("temper", GateConclusion::Fail, findings)];
++    inputs
++}
++
++fn waiver(fp: &str) -> Waiver {
++    Waiver {
++        fp: fp.to_owned(),
++        by: "owner".to_owned(),
++    }
++}
++
++fn override_record(scope: OverrideScope, digest: &str) -> Override {
++    Override {
++        scope,
++        reasons_digest: digest.to_owned(),
++        by: "owner".to_owned(),
++    }
++}
++
++#[test]
++fn waiving_the_only_human_decision_finding_clears_the_gate() -> Result<(), Box<dyn Error>> {
++    let mut inputs = temper_failed(false);
++    inputs.waivers = vec![waiver("00000000000000a1")];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    assert_eq!(decision.reasons, []);
++    assert_eq!(
++        decision.waived,
++        [Waived {
++            fp: "00000000000000a1".to_owned(),
++            by: "owner".to_owned(),
++        }]
++    );
++    assert_eq!(
++        decision.dispositions,
++        [FindingDisposition {
++            fp: "00000000000000a1".to_owned(),
++            code: Disposition::WaivedByOwner,
++        }]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_waiver_never_removes_a_clippy_finding() -> Result<(), Box<dyn Error>> {
++    let mut inputs = temper_failed(true);
++    inputs.waivers = vec![waiver("00000000000000a2")];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(decision.reasons, [reason(ReasonCode::GateFailed, "temper")]);
++    assert_eq!(decision.waived, []);
++    Ok(())
++}
++
++#[test]
++fn waiving_one_finding_leaves_the_gate_failed_by_the_others() -> Result<(), Box<dyn Error>> {
++    let mut inputs = temper_failed(true);
++    inputs.waivers = vec![waiver("00000000000000a1")];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(decision.reasons, [reason(ReasonCode::GateFailed, "temper")]);
++    assert_eq!(
++        decision.waived.len(),
++        1,
++        "the raised finding is still waived"
++    );
++    Ok(())
++}
++
++#[test]
++fn an_all_override_neutralises_a_gate_failure_and_keeps_its_reasons() -> Result<(), Box<dyn Error>>
++{
++    let mut inputs = temper_failed(true);
++    inputs.override_record = Some(override_record(OverrideScope::All, GATE_FAILED_DIGEST));
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Neutral);
++    assert_eq!(
++        decision.reasons,
++        [
++            reason(ReasonCode::GateFailed, "temper"),
++            reason(ReasonCode::Override, "all"),
++        ]
++    );
++    assert_eq!(decision.reasons_digest(), GATE_FAILED_DIGEST);
++    Ok(())
++}
++
++#[test]
++fn an_llm_override_does_not_neutralise_a_gate_failure() -> Result<(), Box<dyn Error>> {
++    let mut inputs = temper_failed(true);
++    inputs.override_record = Some(override_record(OverrideScope::Llm, GATE_FAILED_DIGEST));
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(decision.reasons, [reason(ReasonCode::GateFailed, "temper")]);
++    Ok(())
++}
++
++#[test]
++fn an_llm_override_neutralises_a_pending_deferral() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.pr.classes = vec![PrClass::TrustPath];
++    inputs.pr.owner_approval = OwnerApproval::Approved;
++    inputs.llm = LlmStage::Deferred {
++        reason: Deferral::BudgetDeferred,
++    };
++    inputs.override_record = Some(override_record(OverrideScope::Llm, BUDGET_DEFERRED_DIGEST));
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Neutral);
++    assert_eq!(
++        decision.reasons.iter().map(|r| r.code).collect::<Vec<_>>(),
++        [ReasonCode::BudgetDeferred, ReasonCode::Override]
++    );
++    Ok(())
++}
++
++#[test]
++fn an_override_is_void_once_a_reason_is_added() -> Result<(), Box<dyn Error>> {
++    let mut inputs = temper_failed(true);
++    inputs.pr.tier = Tier::NeedsSplit;
++    inputs.override_record = Some(override_record(OverrideScope::All, GATE_FAILED_DIGEST));
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(decision.reasons_digest(), GATE_FAILED_NEEDS_SPLIT_DIGEST);
++    assert!(
++        decision
++            .reasons
++            .iter()
++            .all(|r| r.code != ReasonCode::Override),
++        "{:?}",
++        decision.reasons
++    );
++    Ok(())
++}
++
++#[test]
++fn an_override_leaves_a_success_alone() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.override_record = Some(override_record(
++        OverrideScope::All,
++        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
++    ));
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    assert_eq!(decision.reasons, []);
++    Ok(())
++}
++
++#[test]
++fn counts_hold_reviewer_findings_and_unwaived_gate_findings() -> Result<(), Box<dyn Error>> {
++    let mut inputs = temper_failed(true);
++    inputs.waivers = vec![waiver("00000000000000a1")];
++    inputs.findings = vec![
++        confirmed("0000000000000001", Severity::Major),
++        confirmed("0000000000000002", Severity::Minor),
++        confirmed("0000000000000003", Severity::Nit),
++    ];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(
++        decision.counts,
++        Counts {
++            blocker: 1,
++            major: 1,
++            minor: 1,
++            nit: 1,
++        }
++    );
++    Ok(())
++}
++
++#[test]
++fn upstream_dispositions_are_kept_sorted() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    let disposition = |fp: &str, code| FindingDisposition {
++        fp: fp.to_owned(),
++        code,
++    };
++    inputs.dispositions = vec![
++        disposition("00000000000000f2", Disposition::NoTrigger),
++        disposition("00000000000000f1", Disposition::DuplicateOfGate),
++    ];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(
++        decision.dispositions,
++        [
++            disposition("00000000000000f1", Disposition::DuplicateOfGate),
++            disposition("00000000000000f2", Disposition::NoTrigger),
++        ]
++    );
++    Ok(())
++}
++
++#[test]
++fn the_inputs_digest_is_a_sha256_in_lowercase_hex() -> Result<(), Box<dyn Error>> {
++    let decision = decided(&clean_inputs())?;
++
++    let hex = decision
++        .inputs_digest
++        .strip_prefix("sha256:")
++        .ok_or("no sha256: prefix")?;
++
++    assert_eq!(hex.len(), 64, "{hex}");
++    assert!(
++        hex.bytes()
++            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
++        "{hex}"
++    );
++    Ok(())
++}
++
++#[test]
++fn the_inputs_digest_changes_with_any_input() -> Result<(), Box<dyn Error>> {
++    let base = decided(&clean_inputs())?.inputs_digest;
++    let mut renamed = clean_inputs();
++    renamed.decision_key.push('x');
++    let mut requeued = clean_inputs();
++    requeued.pr.requeues = 1;
++    let mut waived = clean_inputs();
++    waived.waivers = vec![waiver("00000000000000a1")];
++
++    let digests = [renamed, requeued, waived]
++        .iter()
++        .map(|inputs| decided(inputs).map(|d| d.inputs_digest))
++        .collect::<Result<Vec<_>, _>>()?;
++
++    assert!(digests.iter().all(|d| *d != base), "{base} in {digests:?}");
++    Ok(())
++}
+diff --git a/crates/assay-domain/tests/it/decide_llm.rs b/crates/assay-domain/tests/it/decide_llm.rs
+new file mode 100644
+index 0000000..bafd3db
+--- /dev/null
++++ b/crates/assay-domain/tests/it/decide_llm.rs
+@@ -0,0 +1,323 @@
++//! `decide` rules 6, 7 and 8 of `docs/architecture/04-pipeline.md` §5: verified blockers,
++//! majors by root cause, and a deferred or degraded LLM stage.
++
++use std::error::Error;
++
++use assay_domain::{
++    Authorship, Conclusion, Decision, DecisionInputs, Deferral, DegradedRole, InfraPolicy,
++    LlmPolicy, LlmStage, OwnerApproval, PrClass, Reason, ReasonCode, Severity, VerifierVerdict,
++    decide,
++};
++
++use crate::support::{clean_inputs, confirmed, reason, rubric_v1};
++
++fn decided(inputs: &DecisionInputs) -> Result<Decision, Box<dyn Error>> {
++    Ok(decide(&rubric_v1()?, inputs))
++}
++
++fn blocking(mut inputs: DecisionInputs) -> DecisionInputs {
++    inputs.policy.llm_blockers = LlmPolicy::Block;
++    inputs.policy.llm_majors = LlmPolicy::Block;
++    inputs
++}
++
++fn deferred(reason: Deferral) -> DecisionInputs {
++    let mut inputs = clean_inputs();
++    inputs.llm = LlmStage::Deferred { reason };
++    inputs
++}
++
++fn trust_path(mut inputs: DecisionInputs) -> DecisionInputs {
++    inputs.pr.classes = vec![PrClass::TrustPath];
++    inputs.pr.owner_approval = OwnerApproval::Approved;
++    inputs
++}
++
++fn bugs_degraded() -> DegradedRole {
++    DegradedRole {
++        role: "bugs".to_owned(),
++        reason: "cap".to_owned(),
++    }
++}
++
++#[test]
++fn an_advisory_verified_blocker_succeeds_and_is_listed() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.findings = vec![confirmed("00000000000000b1", Severity::Blocker)];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    assert_eq!(decision.reasons, []);
++    assert_eq!(decision.advisory_blockers, ["00000000000000b1"]);
++    Ok(())
++}
++
++#[test]
++fn a_verified_blocker_fails_when_llm_blockers_block() -> Result<(), Box<dyn Error>> {
++    let mut inputs = blocking(clean_inputs());
++    inputs.findings = vec![confirmed("00000000000000b1", Severity::Blocker)];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons,
++        [Reason {
++            code: ReasonCode::BlockerVerified,
++            detail: "verified blocker".to_owned(),
++            fp: Some("00000000000000b1".to_owned()),
++        }]
++    );
++    assert_eq!(decision.advisory_blockers, Vec::<String>::new());
++    Ok(())
++}
++
++#[test]
++fn pre_existing_or_unconfirmed_blockers_never_fail() -> Result<(), Box<dyn Error>> {
++    let mut inputs = blocking(clean_inputs());
++    let mut pre_existing = confirmed("00000000000000b1", Severity::Blocker);
++    pre_existing.pre_existing = true;
++    let mut unclear = confirmed("00000000000000b2", Severity::Blocker);
++    unclear.verdict = Some(VerifierVerdict::Unclear);
++    let mut unverified = confirmed("00000000000000b3", Severity::Blocker);
++    unverified.verdict = None;
++    inputs.findings = vec![pre_existing, unclear, unverified];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    assert_eq!(decision.reasons, []);
++    Ok(())
++}
++
++#[test]
++fn three_root_causes_of_confirmed_majors_fail_when_llm_majors_block() -> Result<(), Box<dyn Error>>
++{
++    let mut inputs = blocking(clean_inputs());
++    inputs.findings = ["01", "02", "03"]
++        .map(|n| confirmed(&format!("00000000000000{n}"), Severity::Major))
++        .to_vec();
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons,
++        [reason(
++            ReasonCode::MajorsOverThreshold,
++            "3 confirmed majors by root cause (threshold 3)"
++        )]
++    );
++    Ok(())
++}
++
++#[test]
++fn majors_of_one_root_cause_count_once() -> Result<(), Box<dyn Error>> {
++    let mut inputs = blocking(clean_inputs());
++    inputs.findings = ["01", "02", "03"]
++        .map(|n| {
++            let mut finding = confirmed(&format!("00000000000000{n}"), Severity::Major);
++            finding.group_id = "one-root-cause".to_owned();
++            finding
++        })
++        .to_vec();
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    Ok(())
++}
++
++#[test]
++fn micro_unconfirmed_and_pre_existing_majors_are_not_counted() -> Result<(), Box<dyn Error>> {
++    let mut inputs = blocking(clean_inputs());
++    let mut micro = confirmed("0000000000000001", Severity::Major);
++    micro.role = "combined-micro".to_owned();
++    let mut refuted = confirmed("0000000000000002", Severity::Major);
++    refuted.verdict = Some(VerifierVerdict::Refuted);
++    let mut pre_existing = confirmed("0000000000000003", Severity::Major);
++    pre_existing.pre_existing = true;
++    inputs.findings = vec![
++        micro,
++        refuted,
++        pre_existing,
++        confirmed("0000000000000004", Severity::Major),
++        confirmed("0000000000000005", Severity::Major),
++    ];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    Ok(())
++}
++
++#[test]
++fn advisory_majors_never_fail() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.findings = ["01", "02", "03", "04"]
++        .map(|n| confirmed(&format!("00000000000000{n}"), Severity::Major))
++        .to_vec();
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    assert_eq!(decision.reasons, []);
++    Ok(())
++}
++
++#[test]
++fn a_budget_deferred_trust_path_pr_is_pending() -> Result<(), Box<dyn Error>> {
++    let inputs = trust_path(deferred(Deferral::BudgetDeferred));
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Pending);
++    assert_eq!(
++        decision.reasons,
++        [reason(ReasonCode::BudgetDeferred, "requeued 0 of 3 times")]
++    );
++    Ok(())
++}
++
++#[test]
++fn an_unavailable_llm_is_pending_when_policy_blocks_on_infra() -> Result<(), Box<dyn Error>> {
++    let mut inputs = deferred(Deferral::InfraLlmUnavailable);
++    inputs.policy.on_infra_failure = InfraPolicy::Block;
++    inputs.pr.requeues = 2;
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Pending);
++    assert_eq!(
++        decision.reasons,
++        [reason(
++            ReasonCode::InfraLlmUnavailable,
++            "requeued 2 of 3 times"
++        )]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_deferral_fails_infra_llm_unavailable_after_its_requeues() -> Result<(), Box<dyn Error>> {
++    let mut inputs = trust_path(deferred(Deferral::BudgetDeferred));
++    inputs.pr.requeues = 3;
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons,
++        [reason(
++            ReasonCode::InfraLlmUnavailable,
++            "budget-deferred after 3 requeues"
++        )]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_busy_slot_holds_an_agent_authored_pr_pending() -> Result<(), Box<dyn Error>> {
++    let mut inputs = deferred(Deferral::SlotBusy);
++    inputs.pr.authorship = Authorship::Agent;
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Pending);
++    assert_eq!(
++        decision.reasons,
++        [reason(ReasonCode::SlotBusy, "requeued 0 of 3 times")]
++    );
++    Ok(())
++}
++
++#[test]
++fn an_agent_authored_budget_deferral_only_warns() -> Result<(), Box<dyn Error>> {
++    let mut inputs = deferred(Deferral::BudgetDeferred);
++    inputs.pr.authorship = Authorship::Agent;
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    assert_eq!(
++        decision.reasons,
++        [reason(ReasonCode::LlmDegraded, "budget-deferred")]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_busy_slot_on_a_human_pr_warns_llm_degraded() -> Result<(), Box<dyn Error>> {
++    let inputs = deferred(Deferral::SlotBusy);
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    assert_eq!(
++        decision.reasons,
++        [reason(ReasonCode::LlmDegraded, "slot-busy")]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_degraded_required_role_fails_a_trust_path_pr() -> Result<(), Box<dyn Error>> {
++    let mut inputs = trust_path(clean_inputs());
++    inputs.degraded = vec![bugs_degraded()];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons,
++        [reason(ReasonCode::RequiredRoleDegraded, "bugs: cap")]
++    );
++    assert_eq!(decision.degraded, [bugs_degraded()]);
++    Ok(())
++}
++
++#[test]
++fn a_degraded_required_role_otherwise_warns_llm_degraded() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.degraded = vec![bugs_degraded()];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Success);
++    assert_eq!(
++        decision.reasons,
++        [reason(ReasonCode::LlmDegraded, "bugs: cap")]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_missing_owner_approval_wins_over_a_pending_deferral() -> Result<(), Box<dyn Error>> {
++    let mut inputs = trust_path(deferred(Deferral::SlotBusy));
++    inputs.pr.owner_approval = OwnerApproval::NotApproved;
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Failure);
++    assert_eq!(
++        decision.reasons.iter().map(|r| r.code).collect::<Vec<_>>(),
++        [ReasonCode::TrustPathUnapproved, ReasonCode::SlotBusy]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_pending_deferral_wins_over_a_degraded_role() -> Result<(), Box<dyn Error>> {
++    let mut inputs = trust_path(deferred(Deferral::BudgetDeferred));
++    inputs.degraded = vec![bugs_degraded()];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(decision.conclusion, Conclusion::Pending);
++    assert_eq!(
++        decision.reasons.iter().map(|r| r.code).collect::<Vec<_>>(),
++        [ReasonCode::BudgetDeferred, ReasonCode::RequiredRoleDegraded]
++    );
++    Ok(())
++}
+diff --git a/crates/assay-domain/tests/it/decide_properties.rs b/crates/assay-domain/tests/it/decide_properties.rs
+new file mode 100644
+index 0000000..bba9731
+--- /dev/null
++++ b/crates/assay-domain/tests/it/decide_properties.rs
+@@ -0,0 +1,229 @@
++//! Properties of `decide` over generated inputs: determinism down to the byte, `pending` only
++//! from a deferred LLM stage, and a decision that reads back as written.
++
++use assay_domain::{
++    Authorship, Conclusion, DecisionInputs, Deferral, DegradedRole, Disposition,
++    FindingDisposition, GateConclusion, GateFinding, GateOutcome, GateReport, InfraPolicy,
++    LlmPolicy, LlmStage, Override, OverrideScope, OwnerApproval, Policy, PrClass, PullRequest,
++    ReviewedFinding, Severity, Tier, VerifierVerdict, Waiver, WeighIn, decide,
++};
++use proptest::collection::vec;
++use proptest::option;
++use proptest::prelude::*;
++use proptest::sample::select;
++
++use crate::support::rubric_v1;
++
++fn fp() -> impl Strategy<Value = String> {
++    "[0-9a-f]{2}".prop_map(|tail| format!("00000000000000{tail}"))
++}
++
++fn gate_report() -> impl Strategy<Value = GateReport> {
++    let outcome = prop_oneof![
++        select(GateConclusion::ALL.to_vec()).prop_map(|conclusion| GateOutcome::Ran { conclusion }),
++        "[a-z]{1,8}".prop_map(|detail| GateOutcome::Error { detail }),
++        Just(GateOutcome::Skipped),
++    ];
++    let finding = (
++        fp(),
++        option::of(select(vec![
++            "raised",
++            "exception",
++            "clippy::unwrap_used",
++            "build",
++        ])),
++        select(Severity::ALL.to_vec()),
++    )
++        .prop_map(|(fp, rule, severity)| GateFinding {
++            fp,
++            rule: rule.map(str::to_owned),
++            severity,
++        });
++    (
++        select(vec!["temper", "custom-lint"]),
++        any::<bool>(),
++        outcome,
++        vec(finding, 0..4),
++    )
++        .prop_map(|(name, required, outcome, findings)| GateReport {
++            name: name.to_owned(),
++            required,
++            outcome,
++            findings,
++        })
++}
++
++fn reviewed_finding() -> impl Strategy<Value = ReviewedFinding> {
++    (
++        fp(),
++        "g[0-3]",
++        select(vec!["bugs", "combined", "combined-micro"]),
++        select(Severity::ALL.to_vec()),
++        any::<bool>(),
++        option::of(select(VerifierVerdict::ALL.to_vec())),
++    )
++        .prop_map(
++            |(fp, group_id, role, severity, pre_existing, verdict)| ReviewedFinding {
++                fp,
++                group_id,
++                role: role.to_owned(),
++                severity,
++                pre_existing,
++                verdict,
++            },
++        )
++}
++
++fn policy() -> impl Strategy<Value = Policy> {
++    (
++        select(vec![vec!["main".to_owned()], Vec::new()]),
++        select(LlmPolicy::ALL.to_vec()),
++        select(LlmPolicy::ALL.to_vec()),
++        select(InfraPolicy::ALL.to_vec()),
++        proptest::sample::subsequence(PrClass::ALL.to_vec(), 0..=2),
++    )
++        .prop_map(
++            |(protected_bases, llm_blockers, llm_majors, on_infra_failure, block_on_infra_for)| {
++                Policy {
++                    protected_bases,
++                    llm_blockers,
++                    llm_majors,
++                    on_infra_failure,
++                    block_on_infra_for,
++                }
++            },
++        )
++}
++
++fn pull_request() -> impl Strategy<Value = PullRequest> {
++    (
++        0_u32..3,
++        select(Tier::ALL.to_vec()),
++        proptest::sample::subsequence(PrClass::ALL.to_vec(), 0..=2),
++        select(OwnerApproval::ALL.to_vec()),
++        select(Authorship::ALL.to_vec()),
++        0_u32..5,
++    )
++        .prop_map(
++            |(open_prs_on_head, tier, classes, owner_approval, authorship, requeues)| PullRequest {
++                base_ref: "main".to_owned(),
++                open_prs_on_head,
++                tier,
++                classes,
++                owner_approval,
++                authorship,
++                requeues,
++            },
++        )
++}
++
++fn llm_stage() -> impl Strategy<Value = LlmStage> {
++    prop_oneof![
++        Just(LlmStage::NotRun),
++        Just(LlmStage::Completed),
++        select(Deferral::ALL.to_vec()).prop_map(|reason| LlmStage::Deferred { reason }),
++    ]
++}
++
++fn commands() -> impl Strategy<Value = (Vec<Waiver>, Option<Override>)> {
++    let waiver = fp().prop_map(|fp| Waiver {
++        fp,
++        by: "owner".to_owned(),
++    });
++    let record =
++        (select(OverrideScope::ALL.to_vec()), "[0-9a-f]{4}").prop_map(|(scope, digest)| Override {
++            scope,
++            reasons_digest: format!("sha256:{digest}"),
++            by: "owner".to_owned(),
++        });
++    (vec(waiver, 0..3), option::of(record))
++}
++
++fn inputs() -> impl Strategy<Value = DecisionInputs> {
++    let dispositions = vec(
++        (fp(), select(Disposition::ALL.to_vec()))
++            .prop_map(|(fp, code)| FindingDisposition { fp, code }),
++        0..3,
++    );
++    let degraded = vec(
++        (
++            select(vec!["bugs", "security"]),
++            select(vec!["cap", "timeout"]),
++        )
++            .prop_map(|(role, reason)| DegradedRole {
++                role: role.to_owned(),
++                reason: reason.to_owned(),
++            }),
++        0..2,
++    );
++    (
++        policy(),
++        pull_request(),
++        vec(gate_report(), 0..3),
++        select(WeighIn::ALL.to_vec()),
++        llm_stage(),
++        vec(reviewed_finding(), 0..6),
++        dispositions,
++        degraded,
++        commands(),
++    )
++        .prop_map(
++            |(policy, pr, gates, weigh_in, llm, findings, dispositions, degraded, commands)| {
++                let (waivers, override_record) = commands;
++                DecisionInputs {
++                    decision_key: "dec-42-1".to_owned(),
++                    evidence_key: "run-42-1".to_owned(),
++                    policy,
++                    pr,
++                    gates,
++                    weigh_in,
++                    llm,
++                    findings,
++                    dispositions,
++                    degraded,
++                    waivers,
++                    override_record,
++                }
++            },
++        )
++}
++
++proptest! {
++    #[test]
++    fn identical_inputs_give_byte_identical_decisions(inputs in inputs()) {
++        let rubric = rubric_v1().expect("rubric/v1.toml parses");
++        // A separate but equal value: the property is about equal inputs, not one allocation.
++        let copy = inputs.clone();
++
++        let first = serde_json::to_vec(&decide(&rubric, &inputs)).expect("a decision serialises");
++        let second = serde_json::to_vec(&decide(&rubric, &copy)).expect("a decision serialises");
++
++        prop_assert_eq!(first, second);
++    }
++
++    #[test]
++    fn pending_comes_only_from_a_deferred_llm_stage(inputs in inputs()) {
++        let rubric = rubric_v1().expect("rubric/v1.toml parses");
++
++        let decision = decide(&rubric, &inputs);
++
++        prop_assert!(
++            decision.conclusion != Conclusion::Pending
++                || matches!(inputs.llm, LlmStage::Deferred { .. }),
++            "{:?} from {:?}", decision.reasons, inputs.llm
++        );
++    }
++
++    #[test]
++    fn a_decision_reads_back_as_written(inputs in inputs()) {
++        let rubric = rubric_v1().expect("rubric/v1.toml parses");
++
++        let decision = decide(&rubric, &inputs);
++
++        let written = serde_json::to_vec(&decision).expect("a decision serialises");
++        let read: assay_domain::Decision =
++            serde_json::from_slice(&written).expect("a written decision reads back");
++
++        prop_assert_eq!(read, decision);
++    }
++}
+diff --git a/crates/assay-domain/tests/it/golden.rs b/crates/assay-domain/tests/it/golden.rs
+new file mode 100644
+index 0000000..50551cb
+--- /dev/null
++++ b/crates/assay-domain/tests/it/golden.rs
+@@ -0,0 +1,79 @@
++//! The golden decision corpus (`corpus/golden/`, 02 §7): every case's `inputs.json`, decided
++//! with `rubric/v1.toml`, gives exactly the bytes of its `decision.json`. The `assay-self` gate
++//! replays the same corpus.
++
++use std::collections::BTreeSet;
++use std::error::Error;
++
++use assay_domain::{DecisionInputs, ReasonCode, decide};
++
++use crate::support::{golden_cases, rubric_v1};
++
++/// The written form of a decision: pretty JSON with a final newline.
++fn written(inputs: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
++    let inputs: DecisionInputs = serde_json::from_slice(inputs)?;
++    let mut bytes = serde_json::to_vec_pretty(&decide(&rubric_v1()?, &inputs))?;
++    bytes.push(b'\n');
++    Ok(bytes)
++}
++
++#[test]
++fn every_golden_case_decides_to_its_recorded_bytes() -> Result<(), Box<dyn Error>> {
++    let cases = golden_cases()?;
++    assert!(!cases.is_empty(), "corpus/golden/ holds no cases");
++
++    let mut differing = Vec::new();
++    for (name, case) in &cases {
++        let actual = written(&case.inputs).map_err(|e| format!("{name}: {e}"))?;
++        if actual != case.decision {
++            differing.push(format!("{name}:\n{}", String::from_utf8_lossy(&actual)));
++        }
++    }
++
++    assert!(differing.is_empty(), "{}", differing.join("\n"));
++    Ok(())
++}
++
++#[test]
++fn the_golden_corpus_exercises_every_rubric_reason() -> Result<(), Box<dyn Error>> {
++    let mut seen = BTreeSet::new();
++    for case in golden_cases()?.values() {
++        let decision: serde_json::Value = serde_json::from_slice(&case.decision)?;
++        let codes = decision["reasons"]
++            .as_array()
++            .ok_or("reasons is an array")?;
++        seen.extend(
++            codes
++                .iter()
++                .filter_map(|r| r["code"].as_str())
++                .map(str::to_owned),
++        );
++    }
++
++    let rubric_reasons = [
++        ReasonCode::GateFailed,
++        ReasonCode::GateError,
++        ReasonCode::GateSkipped,
++        ReasonCode::BaseNotProtected,
++        ReasonCode::AmbiguousHead,
++        ReasonCode::NeedsSplit,
++        ReasonCode::TrustPathUnapproved,
++        ReasonCode::WeighInPendingTriage,
++        ReasonCode::BlockerVerified,
++        ReasonCode::MajorsOverThreshold,
++        ReasonCode::BudgetDeferred,
++        ReasonCode::SlotBusy,
++        ReasonCode::InfraLlmUnavailable,
++        ReasonCode::RequiredRoleDegraded,
++        ReasonCode::LlmDegraded,
++        ReasonCode::Override,
++    ];
++    let missing: Vec<&str> = rubric_reasons
++        .iter()
++        .map(|code| code.code())
++        .filter(|code| !seen.contains(*code))
++        .collect();
++
++    assert_eq!(missing, Vec::<&str>::new(), "reasons no golden case covers");
++    Ok(())
++}
+diff --git a/crates/assay-domain/tests/it/main.rs b/crates/assay-domain/tests/it/main.rs
+index 6b64a5f..9b196fc 100644
+--- a/crates/assay-domain/tests/it/main.rs
++++ b/crates/assay-domain/tests/it/main.rs
+@@ -1,7 +1,13 @@
+ //! Integration tests for `assay-domain`, compiled as one binary (TST-14).
+ 
++mod decide;
++mod decide_commands;
++mod decide_llm;
++mod decide_properties;
+ mod finding;
++mod golden;
+ mod round_trip;
++mod rubric;
+ #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+ mod support;
+ mod vocabulary;
+diff --git a/crates/assay-domain/tests/it/round_trip.rs b/crates/assay-domain/tests/it/round_trip.rs
+index 56a53a4..16b22ec 100644
+--- a/crates/assay-domain/tests/it/round_trip.rs
++++ b/crates/assay-domain/tests/it/round_trip.rs
+@@ -5,7 +5,7 @@
+ 
+ use std::error::Error;
+ 
+-use assay_domain::{Event, FindingsDocument};
++use assay_domain::{Decision, Event, FindingsDocument};
+ use serde::Serialize;
+ use serde::de::DeserializeOwned;
+ use serde_json::Value;
+@@ -68,6 +68,34 @@ fn every_valid_event_fixture_round_trips() -> Result<(), Box<dyn Error>> {
+     Ok(())
+ }
+ 
++#[test]
++fn every_valid_decision_fixture_round_trips() -> Result<(), Box<dyn Error>> {
++    let fixtures = valid_fixtures("decision")?;
++    assert!(!fixtures.is_empty(), "no valid decision fixtures");
++
++    for (name, bytes) in &fixtures {
++        assert_round_trips::<Decision>(name, bytes)?;
++    }
++    Ok(())
++}
++
++/// Every invalid decision fixture is a shape fault, so the domain type refuses all of them.
++#[test]
++fn every_invalid_decision_fixture_is_refused() -> Result<(), Box<dyn Error>> {
++    let fixtures = invalid_fixtures("decision")?;
++    assert!(!fixtures.is_empty(), "no invalid decision fixtures");
++
++    for (name, bytes) in &fixtures {
++        let read = serde_json::from_slice::<Decision>(bytes);
++
++        assert!(
++            matches!(&read, Err(e) if e.is_data()),
++            "{name}: expected a data error, got {read:?}"
++        );
++    }
++    Ok(())
++}
++
+ #[test]
+ fn findings_with_a_foreign_field_or_version_are_refused() -> Result<(), Box<dyn Error>> {
+     let fixtures = invalid_fixtures("findings")?;
+diff --git a/crates/assay-domain/tests/it/rubric.rs b/crates/assay-domain/tests/it/rubric.rs
+new file mode 100644
+index 0000000..1031382
+--- /dev/null
++++ b/crates/assay-domain/tests/it/rubric.rs
+@@ -0,0 +1,95 @@
++//! `rubric/v1.toml` holds the data of `docs/architecture/04-pipeline.md` §5 and parses into the
++//! domain's `Rubric`.
++
++use std::error::Error;
++
++use assay_domain::Rubric;
++
++use crate::support::rubric_v1;
++
++#[test]
++fn rubric_v1_carries_version_1_and_the_thresholds_of_04_section_5() -> Result<(), Box<dyn Error>> {
++    let rubric = rubric_v1()?;
++
++    assert_eq!(rubric.version(), "1");
++    assert_eq!(rubric.majors_block_threshold().get(), 3, "A-07");
++    assert_eq!(rubric.max_requeues(), 3, "03 §5: at most 3 requeues");
++    Ok(())
++}
++
++#[test]
++fn rubric_v1_treats_only_the_micro_reviewer_as_micro() -> Result<(), Box<dyn Error>> {
++    let rubric = rubric_v1()?;
++
++    let micro: Vec<&str> = [
++        "bugs",
++        "security",
++        "design",
++        "meta",
++        "combined",
++        "combined-micro",
++    ]
++    .into_iter()
++    .filter(|role| rubric.is_micro_role(role))
++    .collect();
++
++    assert_eq!(micro, ["combined-micro"]);
++    Ok(())
++}
++
++#[test]
++fn rubric_v1_waives_only_temper_human_decision_findings() -> Result<(), Box<dyn Error>> {
++    let rubric = rubric_v1()?;
++    let candidates = [
++        ("temper", "raised"),
++        ("temper", "exception"),
++        ("temper", "gate-config"),
++        ("temper", "test-inventory"),
++        ("temper", "manifest-switch"),
++        ("temper", "clippy::unwrap_used"),
++        ("temper", "build"),
++        ("temper", "tests"),
++        ("temper", "deny"),
++        ("custom-lint", "raised"),
++    ];
++
++    let waivable: Vec<(&str, &str)> = candidates
++        .into_iter()
++        .filter(|(gate, rule)| rubric.is_waivable(gate, rule))
++        .collect();
++
++    assert_eq!(
++        waivable,
++        [
++            ("temper", "raised"),
++            ("temper", "exception"),
++            ("temper", "gate-config"),
++            ("temper", "test-inventory"),
++            ("temper", "manifest-switch"),
++        ]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_rubric_without_a_version_is_rejected() {
++    let text = "version = \"\"\nmajors_block_threshold = 3\nmax_requeues = 3\nmicro_roles = []\n";
++
++    let parsed = toml::from_str::<Rubric>(text).map_err(|e| e.message().to_owned());
++
++    assert_eq!(parsed.err().as_deref(), Some("the rubric version is empty"));
++}
++
++#[test]
++fn a_rubric_with_an_unknown_key_is_rejected() {
++    let text = "version = \"1\"\nmajors_block_threshold = 3\nmax_requeues = 3\nmicro_roles = []\nextra = 1\n";
++
++    let parsed = toml::from_str::<Rubric>(text);
++
++    assert!(
++        parsed
++            .as_ref()
++            .is_err_and(|e| e.message().contains("unknown field `extra`")),
++        "{parsed:?}"
++    );
++}
+diff --git a/crates/assay-domain/tests/it/support.rs b/crates/assay-domain/tests/it/support.rs
+index b7def5c..50fe4f7 100644
+--- a/crates/assay-domain/tests/it/support.rs
++++ b/crates/assay-domain/tests/it/support.rs
+@@ -6,6 +6,11 @@ use std::fs;
+ use std::io;
+ use std::path::PathBuf;
+ 
++use assay_domain::{
++    Authorship, DecisionInputs, GateConclusion, GateFinding, GateOutcome, GateReport, InfraPolicy,
++    LlmPolicy, LlmStage, OwnerApproval, Policy, PrClass, PullRequest, Reason, ReasonCode,
++    ReviewedFinding, Rubric, Severity, Tier, VerifierVerdict, WeighIn,
++};
+ use serde::Serialize;
+ use serde_json::Value;
+ 
+@@ -86,6 +91,118 @@ pub(crate) fn invalid_fixtures(contract: &str) -> io::Result<BTreeMap<String, Ve
+     fixtures(contract, "invalid")
+ }
+ 
++/// Inputs that pass every rule: a `lite` PR into a protected `main`, one required gate that
++/// passed, a completed LLM stage, no findings and no commands.
++pub(crate) fn clean_inputs() -> DecisionInputs {
++    DecisionInputs {
++        decision_key: "dec-42-1".to_owned(),
++        evidence_key: "run-42-1".to_owned(),
++        policy: Policy {
++            protected_bases: vec!["main".to_owned()],
++            llm_blockers: LlmPolicy::Advisory,
++            llm_majors: LlmPolicy::Advisory,
++            on_infra_failure: InfraPolicy::Warn,
++            block_on_infra_for: vec![PrClass::TrustPath, PrClass::ExecSurface],
++        },
++        pr: PullRequest {
++            base_ref: "main".to_owned(),
++            open_prs_on_head: 1,
++            tier: Tier::Lite,
++            classes: Vec::new(),
++            owner_approval: OwnerApproval::NotApproved,
++            authorship: Authorship::Other,
++            requeues: 0,
++        },
++        gates: vec![gate("temper", GateConclusion::Pass, Vec::new())],
++        weigh_in: WeighIn::NotRequired,
++        llm: LlmStage::Completed,
++        findings: Vec::new(),
++        dispositions: Vec::new(),
++        degraded: Vec::new(),
++        waivers: Vec::new(),
++        override_record: None,
++    }
++}
++
++/// A required gate that ran and concluded `conclusion` with `findings`.
++pub(crate) fn gate(
++    name: &str,
++    conclusion: GateConclusion,
++    findings: Vec<GateFinding>,
++) -> GateReport {
++    GateReport {
++        name: name.to_owned(),
++        required: true,
++        outcome: GateOutcome::Ran { conclusion },
++        findings,
++    }
++}
++
++/// A gate finding of `rule` at `severity`.
++pub(crate) fn gate_finding(fp: &str, rule: &str, severity: Severity) -> GateFinding {
++    GateFinding {
++        fp: fp.to_owned(),
++        rule: Some(rule.to_owned()),
++        severity,
++    }
++}
++
++/// A finding from the `bugs` role in its own group, confirmed by the verifier and introduced by
++/// the diff.
++pub(crate) fn confirmed(fp: &str, severity: Severity) -> ReviewedFinding {
++    ReviewedFinding {
++        fp: fp.to_owned(),
++        group_id: format!("group-{fp}"),
++        role: "bugs".to_owned(),
++        severity,
++        pre_existing: false,
++        verdict: Some(VerifierVerdict::Confirmed),
++    }
++}
++
++/// A reason without a fingerprint.
++pub(crate) fn reason(code: ReasonCode, detail: &str) -> Reason {
++    Reason {
++        code,
++        detail: detail.to_owned(),
++        fp: None,
++    }
++}
++
++/// One case of `corpus/golden/`: the bytes of its inputs and of its recorded decision.
++pub(crate) struct GoldenCase {
++    pub(crate) inputs: Vec<u8>,
++    pub(crate) decision: Vec<u8>,
++}
++
++/// Every case directory of `corpus/golden/`, by name.
++pub(crate) fn golden_cases() -> io::Result<BTreeMap<String, GoldenCase>> {
++    let mut cases = BTreeMap::new();
++    for entry in fs::read_dir(repo_root().join("corpus/golden"))? {
++        let dir = entry?.path();
++        if !dir.is_dir() {
++            continue;
++        }
++        let name = dir
++            .file_name()
++            .and_then(|name| name.to_str())
++            .ok_or_else(|| io::Error::other(format!("bad case name {}", dir.display())))?
++            .to_owned();
++        let case = GoldenCase {
++            inputs: fs::read(dir.join("inputs.json"))?,
++            decision: fs::read(dir.join("decision.json"))?,
++        };
++        cases.insert(name, case);
++    }
++    Ok(cases)
++}
++
++/// `rubric/v1.toml`, parsed.
++pub(crate) fn rubric_v1() -> Result<Rubric, Box<dyn Error>> {
++    let text = fs::read_to_string(repo_root().join("rubric/v1.toml"))?;
++    Ok(toml::from_str(&text)?)
++}
++
+ fn fixtures(contract: &str, validity: &str) -> io::Result<BTreeMap<String, Vec<u8>>> {
+     let dir = repo_root()
+         .join("schemas/fixtures")
+diff --git a/crates/assay-domain/tests/it/vocabulary.rs b/crates/assay-domain/tests/it/vocabulary.rs
+index 2247396..4979b86 100644
+--- a/crates/assay-domain/tests/it/vocabulary.rs
++++ b/crates/assay-domain/tests/it/vocabulary.rs
+@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
+ use std::error::Error;
+ 
+ use assay_domain::{
+-    Class, Confidence, Disposition, EventKind, FeedbackSignal, FindingKind, GateConclusion,
+-    IntroducedBy, RateLimitStatus, ReasonCode, Severity, Side, SourceKind, VerifierVerdict,
+-    VoidReason,
++    Class, Conclusion, Confidence, DecisionSchema, Disposition, EventKind, FeedbackSignal,
++    FindingKind, GateConclusion, IntroducedBy, PrClass, RateLimitStatus, ReasonCode, Severity,
++    Side, SourceKind, VerifierVerdict, VoidReason,
+ };
+ 
+ use crate::support::{enum_at, schema, spec_line, spec_names, wire_codes};
+@@ -149,6 +149,39 @@ fn event_kinds_are_exactly_the_spec_list() -> Result<(), Box<dyn Error>> {
+     Ok(())
+ }
+ 
++#[test]
++fn conclusions_are_exactly_the_decision_schema_enum() -> Result<(), Box<dyn Error>> {
++    let schema = enum_at(&schema("decision-1")?, "/properties/conclusion/enum")?;
++
++    let domain = wire_codes(Conclusion::ALL)?;
++
++    assert_eq!(domain, schema);
++    Ok(())
++}
++
++#[test]
++fn the_decision_schema_tag_is_the_schema_const() -> Result<(), Box<dyn Error>> {
++    let schema = schema("decision-1")?;
++    let constant = schema
++        .pointer("/properties/schema/const")
++        .ok_or("no schema const")?;
++
++    let domain = serde_json::to_value(DecisionSchema::V1)?;
++
++    assert_eq!(&domain, constant);
++    Ok(())
++}
++
++#[test]
++fn pr_classes_are_exactly_the_run_schema_enum() -> Result<(), Box<dyn Error>> {
++    let schema = enum_at(&schema("run-1")?, "/properties/classes/items/enum")?;
++
++    let domain = wire_codes(PrClass::ALL)?;
++
++    assert_eq!(domain, schema);
++    Ok(())
++}
++
+ #[test]
+ fn disposition_serialises_as_its_code() -> Result<(), Box<dyn Error>> {
+     for disposition in Disposition::ALL {

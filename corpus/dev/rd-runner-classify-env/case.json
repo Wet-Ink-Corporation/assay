@@ -1,0 +1,19 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-runner/src/stream.rs",
+      "start_line": 45,
+      "end_line": 49,
+      "class": "logic"
+    },
+    {
+      "file": "crates/assay-runner/src/headless/env.rs",
+      "start_line": 15,
+      "end_line": 24,
+      "class": "security"
+    }
+  ]
+}

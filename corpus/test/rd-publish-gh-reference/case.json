@@ -1,0 +1,19 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-app/src/publish/sanitise.rs",
+      "start_line": 80,
+      "end_line": 88,
+      "class": "security"
+    },
+    {
+      "file": "crates/assay-app/src/publish/sanitise.rs",
+      "start_line": 236,
+      "end_line": 239,
+      "class": "security"
+    }
+  ]
+}

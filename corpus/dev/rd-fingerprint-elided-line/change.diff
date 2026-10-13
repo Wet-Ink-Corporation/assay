@@ -1,0 +1,986 @@
+diff --git a/crates/assay-domain/AGENTS.md b/crates/assay-domain/AGENTS.md
+index b9da76e..d4ed117 100644
+--- a/crates/assay-domain/AGENTS.md
++++ b/crates/assay-domain/AGENTS.md
+@@ -19,17 +19,22 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
+ - `FindingsDocument`, `Source`, `Stats`, `Finding`, `Caller`: `assay.findings/1` (03 §3).
+ - `Event`, `EventPayload` (with `GateRun`, `Preflight`, `SpecialistRun`) and `RunUid`: `assay.event/1` (03 §6).
+ - `Aeu`: an amount of API-equivalent dollars held exactly in micro-AEU (`from_micros`, `micros`, `saturating_add`), displayed as a plain decimal (`0.74`), the form `--max-budget-usd` reads.
++- `normalise`: the one shared normaliser of 03 §3 (trailing `//` and ` # ` comments dropped, whitespace collapsed, quote styles unified to `"`, `...`/`…` made one wildcard `…` that absorbs adjacent spaces), for the fingerprint and the evidence check.
++- `Anchor` (`fingerprint`; built by `Finding::anchor`), `Fingerprint` (`FromStr`, `Display`, serde as 16 lowercase hex) and `ParseFingerprintError`: the fingerprint of 03 §3. `EventPayload::WaiverApplied` carries a `Fingerprint`.
++- `Dismissal` (`judge`) and `DismissalMatch` (`Unrelated`, `Suppressed`, `MoreSevere`): the fuzzy dismissal match of 03 §3 and R3-25.
+ 
+ ## Invariants
+ - No I/O: every function is a pure function of its arguments.
+-- Fingerprints are computed only in this crate.
++- Fingerprints are computed only in this crate. The digest is SHA-256 over class code, rename-resolved head path, enclosing symbol and normalised first non-blank line of evidence, each prefixed by its byte length as a big-endian `u64`, then the occurrence index as a big-endian `u32`; the fingerprint is its first 8 bytes. A golden test pins the encoding: changing it orphans every recorded waiver and dismissal.
++- The fuzzy dismissal match compares the same normalised first lines as the fingerprint, by Levenshtein ratio over characters (`1 - distance / longer length`), in integers so 0.8 is exact.
+ - Contract types serialise to exactly their schema's wire names and reject unknown fields and versions on deserialisation. They are plain data with `pub` fields: length caps, formats and conditional requirements are the schema's, checked by `assay-app` on read. `Severity` orders `nit < minor < major < blocker`.
+ 
+ ## Errors
+-None yet. Rejections will be `thiserror` enums per operation; business outcomes only, never infrastructure (ERR-10).
++- `ParseFingerprintError` (`Length`, `Digit`): text that is not 16 lowercase hex digits.
++- Further rejections are `thiserror` enums per operation; business outcomes only, never infrastructure (ERR-10).
+ 
+ ## Test strategy
+-Unit tests beside the code. `tests/it/` (dev-dependency `serde_json`) pins every vocabulary to its schema `enum` and, where 03 lists one, to 03's text, round-trips every valid fixture in `schemas/fixtures/` and refuses the invalid fixtures whose fault is one of shape; `assay-app`'s `tests/it/domain_model.rs` checks that what these types write passes the schemas. Property tests for fingerprint stability and state-machine invariants; the `assay-self` golden corpus replays `decide` (02 §7). Run: `cargo test -p assay-domain`.
++Unit tests beside the code. `tests/it/` (dev-dependencies `serde_json` and `proptest`) pins every vocabulary to its schema `enum` and, where 03 lists one, to 03's text, round-trips every valid fixture in `schemas/fixtures/` and refuses the invalid fixtures whose fault is one of shape; `assay-app`'s `tests/it/domain_model.rs` checks that what these types write passes the schemas. Property tests for fingerprint stability and state-machine invariants; the `assay-self` golden corpus replays `decide` (02 §7). Run: `cargo test -p assay-domain`.
+ 
+ ## Do not
+ - Do not read time, ids, the environment or files here; the application passes them in through its ports.
+@@ -42,3 +47,4 @@ Unit tests beside the code. `tests/it/` (dev-dependency `serde_json`) pins every
+ | 2026-10-11 | `Disposition` added (Story #47) so schema rejections in `assay-app` map to a domain value; no dependency needed. | API-02 | Story #47 |
+ | 2026-10-11 | Findings model, vocabularies and event envelope (Story #48) add `serde` (derive) and dev-dependency `serde_json`, both pre-approved. 03 v1.2 wins over the issue: the envelope carries `run_uid` and there are 23 reason codes. Kinds whose `data` 03 lists no fields for are empty struct variants that reject any field (no `serde_json::Value` here), stricter than the schema's open object; they gain fields with the story that defines them. AEU amounts are `f64`, so events are `PartialEq` only. | OUT-02, API-04, ARC-02 | Story #48 |
+ | 2026-10-11 | `Aeu` added (#82) as integer micro-AEU rather than a float or a decimal crate (none is allowed here), so caps and costs compare and sum exactly. | API-02, H-11 | #82 |
++| 2026-10-11 | Normaliser, fingerprint and fuzzy dismissal match (#49) add `sha2` and `thiserror`, and dev-dependency `proptest`, all pre-approved. Hex is written and parsed by hand (no `hex` here, ARC-02). Callers supply the rename-resolved path, the enclosing symbol (empty at file scope) and the occurrence index; the fuzzy match compares the normalised first line of evidence (the fingerprint's), not the whole span, and includes 03's class and severity-ceiling rule. | ARC-02, API-03, ERR-01 | #49, owner may reopen the first-line choice |
+diff --git a/crates/assay-domain/Cargo.toml b/crates/assay-domain/Cargo.toml
+index 028c359..c55fae0 100644
+--- a/crates/assay-domain/Cargo.toml
++++ b/crates/assay-domain/Cargo.toml
+@@ -12,7 +12,10 @@ workspace = true
+ # crates/assay-cli/tests/it/architecture.rs enforces the allowlist.
+ [dependencies]
+ serde = { workspace = true }
++sha2 = { workspace = true }
++thiserror = { workspace = true }
+ 
+-# Round-trip tests against the golden fixtures in schemas/ (pre-approved).
++# Round-trip tests against the golden fixtures in schemas/, and property tests (pre-approved).
+ [dev-dependencies]
++proptest = { workspace = true }
+ serde_json = { workspace = true }
+diff --git a/crates/assay-domain/src/dismissal.rs b/crates/assay-domain/src/dismissal.rs
+new file mode 100644
+index 0000000..a5a0144
+--- /dev/null
++++ b/crates/assay-domain/src/dismissal.rs
+@@ -0,0 +1,104 @@
++//! An owner's dismissal and how a later finding matches it (`docs/architecture/03-contracts.md`
++//! §3, 04 §6).
++
++use crate::fingerprint::Anchor;
++use crate::severity::Severity;
++
++/// A finding an eligible owner dismissed, as the fuzzy match needs it: where it was and the
++/// severity it had, which is the ceiling of what the dismissal suppresses (04 §5).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct Dismissal<'a> {
++    /// Where the dismissed finding was.
++    pub anchor: Anchor<'a>,
++    /// Its severity when dismissed.
++    pub severity: Severity,
++}
++
++/// How a finding stands against a dismissal (03 §3, R3-25).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum DismissalMatch {
++    /// The finding does not resemble the dismissed one; publish it as usual.
++    Unrelated,
++    /// The dismissed finding again, at or below its severity; suppress it.
++    Suppressed,
++    /// It resembles the dismissed finding but is more severe; publish it with the note
++    /// "previously dismissed similar (`dismissed`)".
++    MoreSevere {
++        /// The severity of the dismissed finding.
++        dismissed: Severity,
++    },
++}
++
++impl Dismissal<'_> {
++    /// Judges a finding at `anchor` with `severity` against this dismissal: it matches when it
++    /// is in the same file and enclosing symbol, of the same class, and its normalised first
++    /// line of evidence is at least 0.8 similar to the dismissed one's.
++    #[must_use]
++    pub fn judge(&self, anchor: &Anchor<'_>, severity: Severity) -> DismissalMatch {
++        if !anchor.resembles(&self.anchor) {
++            DismissalMatch::Unrelated
++        } else if severity <= self.severity {
++            DismissalMatch::Suppressed
++        } else {
++            DismissalMatch::MoreSevere {
++                dismissed: self.severity,
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{Dismissal, DismissalMatch};
++    use crate::finding::Class;
++    use crate::fingerprint::Anchor;
++    use crate::severity::Severity;
++
++    /// An anchor in `parse` on `evidence`.
++    fn in_parse(evidence: &str) -> Anchor<'_> {
++        Anchor {
++            class: Class::ErrorHandling,
++            file: "src/lib.rs",
++            enclosing_symbol: "parse",
++            evidence,
++        }
++    }
++
++    /// A dismissal of a `major` on `y.unwrap()` in `parse`.
++    fn dismissed_major() -> Dismissal<'static> {
++        Dismissal {
++            anchor: in_parse("let x = y.unwrap();"),
++            severity: Severity::Major,
++        }
++    }
++
++    #[test]
++    fn suppresses_a_resembling_finding_at_or_below_the_dismissed_severity() {
++        let dismissal = dismissed_major();
++        let candidate = in_parse("let x = y.unwrap()");
++
++        let outcomes = [Severity::Major, Severity::Minor, Severity::Nit]
++            .map(|severity| dismissal.judge(&candidate, severity));
++
++        assert_eq!(outcomes, [DismissalMatch::Suppressed; 3]);
++    }
++
++    #[test]
++    fn flags_a_resembling_finding_above_the_dismissed_severity() {
++        let outcome = dismissed_major().judge(&in_parse("let x = y.unwrap()"), Severity::Blocker);
++
++        assert_eq!(
++            outcome,
++            DismissalMatch::MoreSevere {
++                dismissed: Severity::Major
++            }
++        );
++    }
++
++    #[test]
++    fn leaves_a_finding_that_does_not_resemble_it_alone() {
++        let outcome = dismissed_major().judge(&in_parse("drop(guard);"), Severity::Nit);
++
++        assert_eq!(outcome, DismissalMatch::Unrelated);
++    }
++}
+diff --git a/crates/assay-domain/src/event/payload.rs b/crates/assay-domain/src/event/payload.rs
+index ccb4489..556c1ce 100644
+--- a/crates/assay-domain/src/event/payload.rs
++++ b/crates/assay-domain/src/event/payload.rs
+@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
+ use super::EventKind;
+ use crate::disposition::Disposition;
+ use crate::findings::GateConclusion;
++use crate::fingerprint::Fingerprint;
+ use crate::run_uid::RunUid;
+ use crate::severity::Severity;
+ use crate::vocabulary::closed_enum;
+@@ -210,8 +211,8 @@ pub enum EventPayload {
+     WaiverApplied {
+         /// Who waived it.
+         who: String,
+-        /// The finding's fingerprint, lowercase hex.
+-        fp: String,
++        /// The finding's fingerprint.
++        fp: Fingerprint,
+     },
+     /// An owner override was applied.
+     OverrideApplied {
+diff --git a/crates/assay-domain/src/finding.rs b/crates/assay-domain/src/finding.rs
+index 815d43f..eb5c964 100644
+--- a/crates/assay-domain/src/finding.rs
++++ b/crates/assay-domain/src/finding.rs
+@@ -5,6 +5,7 @@ use std::num::NonZeroU64;
+ 
+ use serde::{Deserialize, Serialize};
+ 
++use crate::fingerprint::Anchor;
+ use crate::severity::{Marker, Severity};
+ use crate::vocabulary::closed_enum;
+ 
+@@ -160,4 +161,17 @@ impl Finding {
+     pub const fn marker(&self) -> Marker {
+         Marker::of(self.severity, self.pre_existing)
+     }
++
++    /// Where this finding sits for its fingerprint and the dismissal match: its class and
++    /// evidence, in `file_at_head` (its path at head, rename-resolved by Z4) and within
++    /// `enclosing_symbol` (empty at file scope). Nothing else about the finding takes part.
++    #[must_use]
++    pub fn anchor<'a>(&'a self, file_at_head: &'a str, enclosing_symbol: &'a str) -> Anchor<'a> {
++        Anchor {
++            class: self.class,
++            file: file_at_head,
++            enclosing_symbol,
++            evidence: &self.evidence,
++        }
++    }
+ }
+diff --git a/crates/assay-domain/src/fingerprint.rs b/crates/assay-domain/src/fingerprint.rs
+new file mode 100644
+index 0000000..ad7d526
+--- /dev/null
++++ b/crates/assay-domain/src/fingerprint.rs
+@@ -0,0 +1,308 @@
++//! Finding fingerprints, computed here and only here (`docs/architecture/03-contracts.md` §3).
++
++mod similarity;
++
++use std::fmt;
++use std::str::FromStr;
++
++use serde::de::{self, Visitor};
++use serde::{Deserialize, Deserializer, Serialize, Serializer};
++use sha2::{Digest, Sha256};
++
++use crate::finding::Class;
++use crate::normalise::normalise;
++
++/// Hex digits in the wire form: two per byte of the 8-byte fingerprint.
++const HEX_DIGITS: usize = 16;
++
++/// What places a finding, as its fingerprint and the fuzzy dismissal match see it (03 §3).
++///
++/// A short-lived view over the finding and the facts Z4 established about it; nothing else about
++/// the finding (title, body, fix, severity) takes part, so two differently worded reports of the
++/// same defect and class share a fingerprint.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct Anchor<'a> {
++    /// What kind of defect it is.
++    pub class: Class,
++    /// The file's path at head, rename-resolved.
++    pub file: &'a str,
++    /// The enclosing symbol, empty at file scope.
++    pub enclosing_symbol: &'a str,
++    /// The finding's evidence, verbatim; only its first non-blank line, normalised, counts.
++    pub evidence: &'a str,
++}
++
++impl Anchor<'_> {
++    /// The fingerprint of this anchor's `occurrence_index`-th occurrence, counting from 0, of
++    /// its normalised first line of evidence within the file and symbol (03 §3).
++    ///
++    /// The digest is over class code, file, enclosing symbol and normalised first line, each
++    /// prefixed with its byte length as a big-endian `u64` so no boundary can move, then the
++    /// index as a big-endian `u32`; the fingerprint is the digest's first 8 bytes.
++    #[must_use]
++    pub fn fingerprint(&self, occurrence_index: u32) -> Fingerprint {
++        let line = self.first_line();
++        let mut hasher = Sha256::new();
++        for field in [self.class.code(), self.file, self.enclosing_symbol, &line] {
++            // `usize` is at most 64 bits on every target Rust supports, so this never saturates.
++            let len = u64::try_from(field.len()).unwrap_or(u64::MAX);
++            hasher.update(len.to_be_bytes());
++            hasher.update(field);
++        }
++        hasher.update(occurrence_index.to_be_bytes());
++        let digest: [u8; 32] = hasher.finalize().into();
++        let [b0, b1, b2, b3, b4, b5, b6, b7, ..] = digest;
++        Fingerprint(u64::from_be_bytes([b0, b1, b2, b3, b4, b5, b6, b7]))
++    }
++
++    /// Whether this anchor fuzzily matches `other` (03 §3): same file, same enclosing symbol,
++    /// same class, and normalised first lines of evidence at least 0.8 similar.
++    pub(crate) fn resembles(&self, other: &Anchor<'_>) -> bool {
++        self.class == other.class
++            && self.file == other.file
++            && self.enclosing_symbol == other.enclosing_symbol
++            && similarity::similar(&self.first_line(), &other.first_line())
++    }
++
++    /// The first line of evidence that is not blank once normalised, normalised; empty if
++    /// there is none.
++    fn first_line(&self) -> String {
++        self.evidence
++            .lines()
++            .map(normalise)
++            .find(|line| !line.is_empty())
++            .unwrap_or_default()
++    }
++}
++
++/// A finding's fingerprint: the first 8 bytes of a SHA-256 over its class, file, enclosing
++/// symbol, normalised first line of evidence and occurrence index (03 §3).
++///
++/// Its wire and display form is 16 lowercase hex digits (`b49103a10654ff46`). Only Z4's value
++/// is authoritative; Z3 computes the same function to apply suppressions early.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
++pub struct Fingerprint(u64);
++
++/// Why text is not a fingerprint.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
++pub enum ParseFingerprintError {
++    /// The text is not 16 bytes long.
++    #[error("a fingerprint is 16 hex digits, not {len} bytes")]
++    Length {
++        /// Its length in bytes.
++        len: usize,
++    },
++    /// A byte is not a lowercase hex digit.
++    #[error("a fingerprint is lowercase hex, but byte {index} is not")]
++    Digit {
++        /// The byte offset of the first such byte.
++        index: usize,
++    },
++}
++
++impl FromStr for Fingerprint {
++    type Err = ParseFingerprintError;
++
++    /// Parses exactly 16 lowercase hex digits, the only form assay writes.
++    fn from_str(text: &str) -> Result<Self, Self::Err> {
++        if text.len() != HEX_DIGITS {
++            return Err(ParseFingerprintError::Length { len: text.len() });
++        }
++        text.bytes()
++            .enumerate()
++            .try_fold(0_u64, |value, (index, byte)| {
++                let digit = match byte {
++                    b'0'..=b'9' => byte - b'0',
++                    b'a'..=b'f' => byte - b'a' + 10,
++                    _ => return Err(ParseFingerprintError::Digit { index }),
++                };
++                // Sixteen 4-bit digits fill the 64 bits exactly; no bit is shifted out.
++                Ok(value << 4 | u64::from(digit))
++            })
++            .map(Self)
++    }
++}
++
++impl fmt::Display for Fingerprint {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "{:016x}", self.0)
++    }
++}
++
++impl Serialize for Fingerprint {
++    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
++        serializer.collect_str(self)
++    }
++}
++
++impl<'de> Deserialize<'de> for Fingerprint {
++    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
++        deserializer.deserialize_str(FingerprintVisitor)
++    }
++}
++
++/// Reads a fingerprint from its 16-digit string.
++struct FingerprintVisitor;
++
++impl Visitor<'_> for FingerprintVisitor {
++    type Value = Fingerprint;
++
++    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        formatter.write_str("16 lowercase hex digits")
++    }
++
++    fn visit_str<E: de::Error>(self, v: &str) -> Result<Fingerprint, E> {
++        v.parse().map_err(E::custom)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{Anchor, Fingerprint, ParseFingerprintError};
++    use crate::finding::Class;
++
++    /// An anchor on `y.unwrap()` in `parse`.
++    fn unwrap_in_parse(evidence: &str) -> Anchor<'_> {
++        Anchor {
++            class: Class::Logic,
++            file: "crates/x/src/lib.rs",
++            enclosing_symbol: "parse",
++            evidence,
++        }
++    }
++
++    // Golden values from Python's hashlib over the same length-prefixed fields: any change to
++    // the encoding orphans every recorded dismissal and waiver.
++    #[test]
++    fn hashes_length_prefixed_fields_with_sha256() {
++        let anchor = unwrap_in_parse("let x = y.unwrap();");
++
++        let fingerprints = (anchor.fingerprint(0), anchor.fingerprint(1));
++
++        assert_eq!(
++            (fingerprints.0.to_string(), fingerprints.1.to_string()),
++            ("b49103a10654ff46".to_owned(), "2fb44b0e6d1fa041".to_owned())
++        );
++    }
++
++    #[test]
++    fn hashes_only_the_first_non_blank_line_of_evidence_normalised() {
++        let multi_line = unwrap_in_parse("\n  \n let  x = y.unwrap(); // why\n    .map(f);");
++
++        assert_eq!(
++            multi_line.fingerprint(0),
++            unwrap_in_parse("let x = y.unwrap();").fingerprint(0)
++        );
++    }
++
++    #[test]
++    fn every_field_changes_the_fingerprint() {
++        let base = unwrap_in_parse("let x = y.unwrap();");
++        let variants = [
++            Anchor {
++                class: Class::ErrorHandling,
++                ..base
++            },
++            Anchor {
++                file: "crates/x/src/main.rs",
++                ..base
++            },
++            Anchor {
++                enclosing_symbol: "parse_all",
++                ..base
++            },
++            unwrap_in_parse("let x = z.unwrap();"),
++        ];
++
++        for variant in variants {
++            assert_ne!(variant.fingerprint(0), base.fingerprint(0), "{variant:?}");
++        }
++    }
++
++    #[test]
++    fn resembles_a_reworded_quote_of_the_same_line() {
++        let dismissed = unwrap_in_parse("let x = y.unwrap(); // ok\nmore();");
++
++        let reworded = unwrap_in_parse("let  x = y.unwrap()");
++
++        assert!(reworded.resembles(&dismissed));
++    }
++
++    #[test]
++    fn does_not_resemble_another_file_symbol_or_class() {
++        let base = unwrap_in_parse("let x = y.unwrap();");
++        let others = [
++            Anchor {
++                file: "crates/x/src/main.rs",
++                ..base
++            },
++            Anchor {
++                enclosing_symbol: "parse_all",
++                ..base
++            },
++            Anchor {
++                class: Class::Resource,
++                ..base
++            },
++        ];
++
++        for other in others {
++            assert!(!other.resembles(&base), "{other:?}");
++        }
++    }
++
++    #[test]
++    fn does_not_resemble_a_different_line() {
++        let base = unwrap_in_parse("let x = y.unwrap();");
++
++        assert!(!unwrap_in_parse("let total = sum(values)?;").resembles(&base));
++    }
++
++    #[test]
++    fn a_field_boundary_cannot_be_moved() {
++        let split_one_way = Anchor {
++            file: "a/b",
++            enclosing_symbol: "c",
++            ..unwrap_in_parse("x")
++        };
++        let split_another_way = Anchor {
++            file: "a/",
++            enclosing_symbol: "bc",
++            ..unwrap_in_parse("x")
++        };
++
++        assert_ne!(
++            split_one_way.fingerprint(0),
++            split_another_way.fingerprint(0)
++        );
++    }
++
++    #[test]
++    fn displays_as_sixteen_lowercase_hex_digits_and_parses_back() {
++        let text = "00ff10a0b49103a1";
++
++        let parsed: Result<Fingerprint, _> = text.parse();
++
++        assert_eq!(parsed.map(|fp| fp.to_string()), Ok(text.to_owned()));
++    }
++
++    #[test]
++    fn refuses_a_wrong_length() {
++        assert_eq!(
++            "0123".parse::<Fingerprint>(),
++            Err(ParseFingerprintError::Length { len: 4 })
++        );
++    }
++
++    #[test]
++    fn refuses_uppercase_and_signs() {
++        assert_eq!(
++            "0123456789ABCDEF".parse::<Fingerprint>(),
++            Err(ParseFingerprintError::Digit { index: 10 })
++        );
++        assert_eq!(
++            "+123456789abcdef".parse::<Fingerprint>(),
++            Err(ParseFingerprintError::Digit { index: 0 })
++        );
++    }
++}
+diff --git a/crates/assay-domain/src/fingerprint/similarity.rs b/crates/assay-domain/src/fingerprint/similarity.rs
+new file mode 100644
+index 0000000..3e9e117
+--- /dev/null
++++ b/crates/assay-domain/src/fingerprint/similarity.rs
+@@ -0,0 +1,92 @@
++//! Evidence similarity for the fuzzy dismissal match (03 §3).
++
++/// The similarity a fuzzy match needs, `NUMERATOR / DENOMINATOR` = 0.8 (03 §3).
++const NUMERATOR: usize = 4;
++/// See [`NUMERATOR`].
++const DENOMINATOR: usize = 5;
++
++/// Whether two normalised lines are at least 0.8 similar, similarity being
++/// `1 - edit_distance / longer_length` over characters.
++///
++/// Compared in integers, `5 * distance <= longer_length`, so the threshold is exact. Takes
++/// time proportional to the product of the lengths; evidence is capped at 400 characters by the
++/// schema before it gets here.
++pub(super) fn similar(left: &str, right: &str) -> bool {
++    let left: Vec<char> = left.chars().collect();
++    let right: Vec<char> = right.chars().collect();
++    let longer = left.len().max(right.len());
++    // 1 - d / n >= 4 / 5  <=>  5 * d <= (5 - 4) * n.
++    edit_distance(&left, &right).saturating_mul(DENOMINATOR)
++        <= longer.saturating_mul(DENOMINATOR - NUMERATOR)
++}
++
++/// The Levenshtein distance between `left` and `right`: the fewest single-character
++/// insertions, deletions and substitutions that turn one into the other.
++fn edit_distance(left: &[char], right: &[char]) -> usize {
++    // `row[j]` is the distance between the left prefix processed so far and `right[..j]`.
++    let mut row: Vec<usize> = (0..=right.len()).collect();
++    for (i, &l) in left.iter().enumerate() {
++        let Some((first, rest)) = row.split_first_mut() else {
++            break;
++        };
++        // The cell diagonally up-left, and the one to the left, of the cell being computed.
++        let mut diagonal = *first;
++        *first = i.saturating_add(1);
++        let mut previous = *first;
++        for (cell, &r) in rest.iter_mut().zip(right) {
++            let above = *cell;
++            let substitution = diagonal.saturating_add(usize::from(l != r));
++            let insertion_or_deletion = above.min(previous).saturating_add(1);
++            *cell = substitution.min(insertion_or_deletion);
++            diagonal = above;
++            previous = *cell;
++        }
++    }
++    row.last().copied().unwrap_or(left.len())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::similar;
++
++    #[test]
++    fn accepts_exactly_four_fifths() {
++        assert!(similar("abcdefghij", "abcdefghXY"));
++    }
++
++    #[test]
++    fn rejects_below_four_fifths() {
++        assert!(!similar("abcdefghij", "abcdefgXYZ"));
++    }
++
++    #[test]
++    fn rejects_just_below_four_fifths() {
++        let line = "a".repeat(100);
++        let at = format!("{}{}", "a".repeat(80), "b".repeat(20));
++        let below = format!("{}{}", "a".repeat(79), "b".repeat(21));
++
++        assert_eq!((similar(&line, &at), similar(&line, &below)), (true, false));
++    }
++
++    #[test]
++    fn measures_against_the_longer_line() {
++        assert_eq!(
++            (similar("abcd", "abcde"), similar("abc", "abcde")),
++            (true, false)
++        );
++    }
++
++    #[test]
++    fn counts_insertions_deletions_and_substitutions_as_one_edit_each() {
++        // kitten -> sitting is the textbook distance 3 over 7 characters: 4/7 < 4/5.
++        assert_eq!(
++            (similar("kitten", "sitting"), similar("kitten", "kittens")),
++            (false, true)
++        );
++    }
++
++    #[test]
++    fn treats_two_empty_lines_as_identical() {
++        assert!(similar("", ""));
++    }
++}
+diff --git a/crates/assay-domain/src/lib.rs b/crates/assay-domain/src/lib.rs
+index 595251d..7b84770 100644
+--- a/crates/assay-domain/src/lib.rs
++++ b/crates/assay-domain/src/lib.rs
+@@ -11,15 +11,19 @@
+ mod vocabulary;
+ 
+ mod aeu;
++mod dismissal;
+ mod disposition;
+ mod event;
+ mod finding;
+ mod findings;
++mod fingerprint;
++mod normalise;
+ mod reason;
+ mod run_uid;
+ mod severity;
+ 
+ pub use aeu::Aeu;
++pub use dismissal::{Dismissal, DismissalMatch};
+ pub use disposition::Disposition;
+ pub use event::{
+     Event, EventKind, EventPayload, EventSchema, FeedbackSignal, GateRun, Preflight,
+@@ -27,6 +31,8 @@ pub use event::{
+ };
+ pub use finding::{Caller, Class, Confidence, Finding, FindingKind, IntroducedBy, Side};
+ pub use findings::{FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind, Stats};
++pub use fingerprint::{Anchor, Fingerprint, ParseFingerprintError};
++pub use normalise::normalise;
+ pub use reason::ReasonCode;
+ pub use run_uid::RunUid;
+ pub use severity::{Marker, Severity};
+diff --git a/crates/assay-domain/src/normalise.rs b/crates/assay-domain/src/normalise.rs
+new file mode 100644
+index 0000000..1f76ff2
+--- /dev/null
++++ b/crates/assay-domain/src/normalise.rs
+@@ -0,0 +1,170 @@
++//! The one shared normaliser of evidence (`docs/architecture/03-contracts.md` §3), used by the
++//! fingerprint and by the evidence check (04 §4 step 2).
++
++/// The wildcard that `...` and `…` both become.
++const WILDCARD: &str = "\u{2026}";
++
++/// The ASCII spelling of the wildcard.
++const ASCII_WILDCARD: &str = "...";
++
++/// Every quote character other than `"`; each becomes `"`.
++const OTHER_QUOTES: [char; 6] = ['\'', '`', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}'];
++
++/// Normalises `text` so that two quotations of the same code compare equal however they are
++/// spaced, quoted or commented (03 §3).
++///
++/// - A trailing comment is dropped from each line: `//` (not after `:`, so URLs survive) or `#`
++///   between whitespace, outside a `"` string. A line that is only a comment is kept whole.
++/// - Whitespace runs, line breaks included, become one space; the ends are trimmed.
++/// - `'`, `` ` ``, `‘`, `’`, `“` and `”` become `"`.
++/// - `...` and `…` become the wildcard `…`, which absorbs the spaces beside it.
++///
++/// Linear in the length of `text`.
++///
++/// # Examples
++///
++/// ```
++/// use assay_domain::normalise;
++///
++/// assert_eq!(normalise("let s =  'a' ; // why"), r#"let s = "a" ;"#);
++/// assert_eq!(normalise("call( ... )"), "call(…)");
++/// ```
++#[must_use]
++pub fn normalise(text: &str) -> String {
++    let mut spaced = String::with_capacity(text.len());
++    for word in text.lines().map(code_of).flat_map(str::split_whitespace) {
++        if !spaced.is_empty() {
++            spaced.push(' ');
++        }
++        spaced.extend(word.chars().map(unify_quote));
++    }
++    spaced
++        .replace(ASCII_WILDCARD, WILDCARD)
++        .split(WILDCARD)
++        .map(|piece| piece.trim_matches(' '))
++        .collect::<Vec<_>>()
++        .join(WILDCARD)
++}
++
++/// `line` without its trailing comment; a line that is only a comment is returned whole.
++fn code_of(line: &str) -> &str {
++    let mut in_string = false;
++    let mut escaped = false;
++    let mut previous = None;
++    for (index, c) in line.char_indices() {
++        if in_string {
++            match c {
++                _ if escaped => escaped = false,
++                '\\' => escaped = true,
++                '"' => in_string = false,
++                _ => {}
++            }
++        } else if c == '"' {
++            in_string = true;
++        } else if let Some((code, rest)) = line.split_at_checked(index)
++            && starts_comment(previous, rest)
++        {
++            return if code.trim().is_empty() { line } else { code };
++        }
++        previous = Some(c);
++    }
++    line
++}
++
++/// Whether `rest`, which follows the character `previous`, opens a comment.
++fn starts_comment(previous: Option<char>, rest: &str) -> bool {
++    let slashes = rest.starts_with("//") && previous != Some(':');
++    let hash = previous.is_none_or(char::is_whitespace)
++        && rest
++            .strip_prefix('#')
++            .is_some_and(|after| after.is_empty() || after.starts_with(char::is_whitespace));
++    slashes || hash
++}
++
++/// `c`, with every quote style made `"`.
++fn unify_quote(c: char) -> char {
++    if OTHER_QUOTES.contains(&c) { '"' } else { c }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::normalise;
++
++    #[test]
++    fn collapses_whitespace_runs_and_trims_the_ends() {
++        assert_eq!(normalise("\t let  x =\t\ty ;  "), "let x = y ;");
++    }
++
++    #[test]
++    fn joins_lines_with_one_space() {
++        assert_eq!(normalise("foo(\n    bar,\n)"), "foo( bar, )");
++    }
++
++    #[test]
++    fn unifies_every_quote_style_to_a_double_quote() {
++        assert_eq!(
++            normalise("'a' `b` \u{2018}c\u{2019} \u{201c}d\u{201d} \"e\""),
++            "\"a\" \"b\" \"c\" \"d\" \"e\""
++        );
++    }
++
++    #[test]
++    fn strips_a_trailing_line_comment() {
++        assert_eq!(
++            normalise("let x = y.unwrap(); // fine here"),
++            "let x = y.unwrap();"
++        );
++    }
++
++    #[test]
++    fn strips_a_trailing_comment_on_every_line() {
++        assert_eq!(normalise("a(); // one\nb(); // two"), "a(); b();");
++    }
++
++    #[test]
++    fn keeps_slashes_inside_a_string() {
++        assert_eq!(
++            normalise(r#"let url = "a // b\" // c"; // d"#),
++            r#"let url = "a // b\" // c";"#
++        );
++    }
++
++    #[test]
++    fn keeps_a_whole_line_comment_and_the_urls_in_it() {
++        assert_eq!(
++            normalise("/// See https://example.com/x for why."),
++            "/// See https://example.com/x for why."
++        );
++    }
++
++    #[test]
++    fn keeps_a_url_after_code() {
++        assert_eq!(normalise("see http://a/b"), "see http://a/b");
++    }
++
++    #[test]
++    fn strips_a_trailing_hash_comment() {
++        assert_eq!(normalise("key = 1 # why"), "key = 1");
++    }
++
++    #[test]
++    fn keeps_hashes_that_are_not_comments() {
++        assert_eq!(
++            normalise("#[derive(Debug)] struct A; $( #[$m] )* r#\"x\"#;"),
++            "#[derive(Debug)] struct A; $( #[$m] )* r#\"x\"#;"
++        );
++    }
++
++    #[test]
++    fn makes_both_ellipses_one_wildcard_that_absorbs_adjacent_spaces() {
++        assert_eq!(
++            normalise("foo( ... ) \u{2026} bar(\u{2026})"),
++            "foo(\u{2026})\u{2026}bar(\u{2026})"
++        );
++    }
++
++    #[test]
++    fn normalises_blank_text_to_nothing() {
++        assert_eq!(normalise(" \n\t "), "");
++    }
++}
+diff --git a/crates/assay-domain/tests/it/fingerprint.rs b/crates/assay-domain/tests/it/fingerprint.rs
+new file mode 100644
+index 0000000..1923bd7
+--- /dev/null
++++ b/crates/assay-domain/tests/it/fingerprint.rs
+@@ -0,0 +1,133 @@
++//! Fingerprints and the fuzzy dismissal match, through the public API (03 §3, issue #49).
++
++use std::error::Error;
++
++use assay_domain::{
++    Anchor, Class, Confidence, Dismissal, DismissalMatch, Finding, FindingsDocument, Severity,
++};
++use proptest::collection::vec;
++use proptest::prelude::*;
++use proptest::sample::select;
++
++use crate::support::valid_fixtures;
++
++/// The first finding of the reviewer fixture: a `major` on `let x = y.unwrap();`.
++fn reviewer_finding() -> Result<Finding, Box<dyn Error>> {
++    let fixtures = valid_fixtures("findings")?;
++    let bytes = fixtures.get("reviewer").ok_or("no reviewer fixture")?;
++    let document: FindingsDocument = serde_json::from_slice(bytes)?;
++    Ok(document.findings.into_iter().next().ok_or("no finding")?)
++}
++
++#[test]
++fn two_differently_worded_findings_on_the_same_defect_and_class_collide()
++-> Result<(), Box<dyn Error>> {
++    let first = reviewer_finding()?;
++    let second = Finding {
++        severity: Severity::Blocker,
++        line: first.line.saturating_add(1),
++        evidence: "let  x = y.unwrap();   // panics on an empty body".to_owned(),
++        trigger: Some("an empty request body".to_owned()),
++        title: "Handler panics when the body is empty".to_owned(),
++        body: "`unwrap` on a value the client controls.".to_owned(),
++        fix: None,
++        confidence: Some(Confidence::Medium),
++        group_hint: None,
++        ..first.clone()
++    };
++
++    let fingerprints = [&first, &second].map(|finding| {
++        finding
++            .anchor("crates/x/src/lib.rs", "parse")
++            .fingerprint(0)
++    });
++
++    assert_eq!(fingerprints[0], fingerprints[1]);
++    Ok(())
++}
++
++#[test]
++fn the_anchor_takes_the_head_path_given_not_the_finding_s_own() -> Result<(), Box<dyn Error>> {
++    let finding = reviewer_finding()?;
++
++    let anchor = finding.anchor("crates/x/src/renamed.rs", "parse");
++
++    assert_eq!(
++        anchor,
++        Anchor {
++            class: Class::ErrorHandling,
++            file: "crates/x/src/renamed.rs",
++            enclosing_symbol: "parse",
++            evidence: "let x = y.unwrap();",
++        }
++    );
++    Ok(())
++}
++
++/// Every quote style the normaliser unifies.
++const QUOTES: [&str; 7] = [
++    "\"", "'", "`", "\u{2018}", "\u{2019}", "\u{201c}", "\u{201d}",
++];
++
++/// An anchor on `evidence` in `parse`.
++fn in_parse(evidence: &str) -> Anchor<'_> {
++    Anchor {
++        class: Class::Logic,
++        file: "src/lib.rs",
++        enclosing_symbol: "parse",
++        evidence,
++    }
++}
++
++proptest! {
++    // Line breaks may surround the line but not split it: only the first line counts (03 §3).
++    #[test]
++    fn fingerprint_is_stable_under_whitespace_and_quote_style_changes(
++        words in vec("[A-Za-z0-9_(){};=,.:]{1,6}", 1..8),
++        quoted in vec(any::<bool>(), 8),
++        styles in vec(select(QUOTES.to_vec()), 8),
++        gaps in vec("[ \t]{1,3}", 8),
++        ends in ("[ \t\n]{0,3}", "[ \t\n]{0,3}"),
++        occurrence in 0..4_u32,
++    ) {
++        let mut plain = Vec::new();
++        let mut restyled = ends.0;
++        for (((word, quoted), style), gap) in words.iter().zip(&quoted).zip(&styles).zip(&gaps) {
++            let (plain_quote, other_quote) = if *quoted { ("\"", *style) } else { ("", "") };
++            plain.push(format!("{plain_quote}{word}{plain_quote}"));
++            restyled.extend([other_quote, word.as_str(), other_quote, gap.as_str()]);
++        }
++        restyled.push_str(&ends.1);
++        let plain = plain.join(" ");
++
++        prop_assert_eq!(
++            in_parse(&restyled).fingerprint(occurrence),
++            in_parse(&plain).fingerprint(occurrence),
++            "{:?} vs {:?}", restyled, plain
++        );
++    }
++}
++
++/// A dismissal of a `major` whose evidence is 20 characters long.
++fn dismissed_major() -> Dismissal<'static> {
++    Dismissal {
++        anchor: in_parse("call(abcdefghijklmn)"),
++        severity: Severity::Major,
++    }
++}
++
++#[test]
++fn a_dismissal_matches_evidence_exactly_four_fifths_similar() {
++    // Four of twenty characters differ: similarity 0.8.
++    let outcome = dismissed_major().judge(&in_parse("call(abcdefghijWXYZ)"), Severity::Major);
++
++    assert_eq!(outcome, DismissalMatch::Suppressed);
++}
++
++#[test]
++fn a_dismissal_does_not_match_evidence_below_four_fifths_similar() {
++    // Five of twenty characters differ: similarity 0.75.
++    let outcome = dismissed_major().judge(&in_parse("call(abcdefghiVWXYZ)"), Severity::Major);
++
++    assert_eq!(outcome, DismissalMatch::Unrelated);
++}
+diff --git a/crates/assay-domain/tests/it/main.rs b/crates/assay-domain/tests/it/main.rs
+index 6b64a5f..906c46c 100644
+--- a/crates/assay-domain/tests/it/main.rs
++++ b/crates/assay-domain/tests/it/main.rs
+@@ -1,6 +1,7 @@
+ //! Integration tests for `assay-domain`, compiled as one binary (TST-14).
+ 
+ mod finding;
++mod fingerprint;
+ mod round_trip;
+ #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+ mod support;

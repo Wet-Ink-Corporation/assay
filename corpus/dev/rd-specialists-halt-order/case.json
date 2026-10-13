@@ -1,0 +1,19 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-app/src/specialists/schedule.rs",
+      "start_line": 273,
+      "end_line": 273,
+      "class": "logic"
+    },
+    {
+      "file": "crates/assay-app/src/specialists/schedule.rs",
+      "start_line": 288,
+      "end_line": 288,
+      "class": "logic"
+    }
+  ]
+}

@@ -1,0 +1,403 @@
+diff --git a/crates/assay-forge/AGENTS.md b/crates/assay-forge/AGENTS.md
+index f671518..1a0e31b 100644
+--- a/crates/assay-forge/AGENTS.md
++++ b/crates/assay-forge/AGENTS.md
+@@ -19,17 +19,17 @@ Workspace-internal, not published (`publish = false`).
+ - Every external call has a timeout and a bounded response size (H-13).
+ - Every git process is built by `git::command::git`, the only `Command::new("git")` in production code; the only other process is the validated `GroupKiller` program that signals a timed-out process group (`tests/it/single_constructor.rs` enforces both). The constructor clears the environment to what `GitEnvironment` holds, sets `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ATTR_NOSYSTEM=1`, and passes the §9 `-c` flags including `attr.tree=<empty tree>`; every diff carries `--no-ext-diff --no-textconv`.
+ - PR objects are fetched only by full SHA over https into a bare repository; refs such as `refs/pull/N/merge` cannot be expressed.
+-- Every child leads its own process group, has its stdio spooled to anonymous temporary files (no pipes, so no reader can block), and is waited on. A run completes only when the child has exited and its group has no live member; past the deadline, or past the output cap, the whole group is killed and must be verifiably gone (`/proc`), else `ProcessError::Kill`. A group whose leader is reaped and which has no live member is never signalled (pgid reuse). A diff past its cap is `needs-split`, never a hang.
++- Every child leads its own process group, has its stdio spooled to anonymous temporary files (no pipes, so no reader can block), and is waited on. A run completes only when the child has exited and its group has no live member; past the deadline, or past the output cap, the whole group is killed and must be verifiably gone (`/proc`), else `ProcessError::Kill`. A group whose leader is reaped is signalled only when `/proc` shows a live member: with none it is left alone, and when `/proc` cannot be read it is `ProcessError::Kill`, never a signal (pgid reuse). A diff past its cap is `needs-split`, never a hang.
+ - Every changed path (both sides of renames) is policed; Rust sources, manifests and trust files can never be allowlisted, and allowlisted paths come back as `opaque`, never silently trusted.
+ 
+ ## Runtime prerequisites
+-- Linux `/proc` (process-group supervision) and a procps or util-linux `kill` in `/usr/bin` or `/bin`. `GitEnvironment::from_process_env` (via `GroupKiller::system`) checks for `kill` before any git runs and fails closed with `KillerError::NotFound` (`docs/architecture/06-operations.md` §5 F22).
++- Linux `/proc` describing this process (process-group supervision; `/proc/self/stat` must name `std::process::id()`, so a `/proc` from another pid namespace is refused) and a procps or util-linux `kill` in `/usr/bin` or `/bin`. `GitEnvironment::from_process_env` (via `GroupKiller::system`) checks both before any git runs and fails closed with `KillerError::ProcUnavailable` or `KillerError::NotFound` (`docs/architecture/06-operations.md` §5 F22).
+ - git 2.42 or later (see the last invariant below).
+-- Spool files live in the system temp directory (`TMPDIR`), bounded by the output cap plus at most one poll interval of writing.
++- Spool files live in the system temp directory (`TMPDIR`). Each is bounded by the output cap plus what the group writes before it is stopped: up to one poll interval (5 ms) until the overshoot is seen, then up to the kill grace (`KILL_GRACE`, 5 s) while the kill runs and the group exits. When the kill fails (`ProcessError::Kill`) the group may still be writing and no bound holds.
+ - Attribute policing needs git 2.40 or later (`check-attr --source`), and `attr.tree` needs 2.42; an older git fails closed or ignores the setting (then in-tree attributes can only make numstat print `-`, which counts as maximum size).
+ 
+ ## Errors
+-A `thiserror` enum per operation, separating GitHub rejections from transport failures (ERR-10). git: `GitError` (process failure, non-zero exit, unreadable output, missing commit) and `AttributeError` (`Forbidden`, displayed as `gate-error:gitattributes`, or a `GitError`); both fail closed.
++A `thiserror` enum per operation, separating GitHub rejections from transport failures (ERR-10). git: `GitError` (process failure, non-zero exit, unreadable output, missing commit) and `AttributeError` (`Forbidden`, displayed as `gate-error:gitattributes`, or a `GitError`); both fail closed. `ProcessError::Kill` (inside `GitError::Process`) means a process group may still be running, unbounded: callers must abort the job (`gate-error`), not retry or run more git in the same job.
+ 
+ ## Test strategy
+ Integration tests in `tests/it/` against recorded `gh` responses; no live network in tests (TST-10). The git layer is tested against fixture repositories built with plain git in a temporary directory (`tests/it/support.rs`); fetch is covered by its argument list, not by a network fetch. Run: `cargo test -p assay-forge`.
+diff --git a/crates/assay-forge/src/git/attributes.rs b/crates/assay-forge/src/git/attributes.rs
+index e4b4741..725064c 100644
+--- a/crates/assay-forge/src/git/attributes.rs
++++ b/crates/assay-forge/src/git/attributes.rs
+@@ -8,6 +8,7 @@
+ //! The only exception is a path matching an [`AttributeAllowlist`] glob from the base
+ //! configuration, and Rust sources, manifests and trust files can never be excepted.
+ 
++use std::collections::HashSet;
+ use std::fmt;
+ 
+ use super::glob::{Glob, GlobError};
+@@ -94,8 +95,8 @@ impl AttributeAllowlist {
+     /// file name at any depth, one with `/` the whole path.
+     ///
+     /// # Errors
+-    /// [`GlobError`] for the first glob that is empty, starts with `/`, or uses `[`, `]`,
+-    /// `{`, `}`, `!` or `\`.
++    /// [`GlobError`] for the first glob that is empty, starts with `/`, uses `[`, `]`, `{`,
++    /// `}`, `!` or `\`, or has a `**` that is not a whole path segment (`a**`, `**b`, `***`).
+     pub fn new<I>(globs: I) -> Result<Self, GlobError>
+     where
+         I: IntoIterator,
+@@ -168,17 +169,16 @@ impl AttributeReport {
+         &self.opaque
+     }
+ 
+-    /// The allowlisted paths that carry policed attributes, each once, in git's order.
++    /// The allowlisted paths that carry policed attributes, each once, in the order git first
++    /// reported them. A path can appear in [`opaque`](Self::opaque) apart from its first
++    /// entry (it was checked twice, say as one rename's old side and another change's path),
++    /// so repeats are removed by path, not only when adjacent.
+     pub fn opaque_paths(&self) -> impl Iterator<Item = &str> + '_ {
+-        let mut previous = None;
++        let mut seen = HashSet::new();
+         self.opaque
+             .iter()
+             .map(PolicedAttribute::path)
+-            .filter(move |path| {
+-                let repeated = previous == Some(*path);
+-                previous = Some(*path);
+-                !repeated
+-            })
++            .filter(move |path| seen.insert(*path))
+     }
+ }
+ 
+@@ -292,6 +292,30 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn opaque_paths_lists_each_path_once_even_when_repeated_apart() {
++        let attribute = |path: &str, attribute: &str| PolicedAttribute {
++            path: path.to_owned(),
++            attribute: attribute.to_owned(),
++            value: "set".to_owned(),
++        };
++        let found = vec![
++            attribute("assets/a.png", "diff"),
++            attribute("assets/a.png", "text"),
++            attribute("assets/b.png", "diff"),
++            attribute("assets/a.png", "diff"),
++        ];
++        let allowlist = AttributeAllowlist::new(["assets/**"]).expect("valid globs");
++
++        let report = judge(found, &allowlist).expect("every path is allowlisted");
++
++        assert_eq!(
++            report.opaque_paths().collect::<Vec<_>>(),
++            ["assets/a.png", "assets/b.png"],
++            "a path checked twice (a rename's old side and a new file) is listed once"
++        );
++    }
++
+     #[test]
+     fn an_allowlist_rejects_an_unsupported_glob() {
+         assert_eq!(
+diff --git a/crates/assay-forge/src/git/command.rs b/crates/assay-forge/src/git/command.rs
+index 69f9fed..b82dbb6 100644
+--- a/crates/assay-forge/src/git/command.rs
++++ b/crates/assay-forge/src/git/command.rs
+@@ -110,12 +110,13 @@ pub struct GitEnvironment {
+ impl GitEnvironment {
+     /// Reads `PATH`, `HTTPS_PROXY`, `https_proxy`, `NO_PROXY` and `no_proxy` from this
+     /// process's environment (the rest, including `HOME`, `GIT_DIR`, `GIT_CONFIG_*`,
+-    /// `GIT_EXTERNAL_DIFF` and `GIT_SSH_COMMAND`, is never passed on) and finds the system
+-    /// `kill`.
++    /// `GIT_EXTERNAL_DIFF` and `GIT_SSH_COMMAND`, is never passed on), checks `/proc` and
++    /// finds the system `kill` ([`GroupKiller::system`]).
+     ///
+     /// # Errors
+-    /// [`KillerError::NotFound`] when the host has no usable `kill`: without it a timed-out
+-    /// process group could not be stopped, so nothing runs.
++    /// [`KillerError::ProcUnavailable`] when `/proc` does not describe this process, and
++    /// [`KillerError::NotFound`] when the host has no usable `kill`: without either a
++    /// timed-out process group could not be stopped, so nothing runs.
+     pub fn from_process_env() -> Result<Self, KillerError> {
+         let killer = GroupKiller::system()?;
+         let inherited = PASSED_THROUGH
+diff --git a/crates/assay-forge/src/git/glob.rs b/crates/assay-forge/src/git/glob.rs
+index 9030d07..c712867 100644
+--- a/crates/assay-forge/src/git/glob.rs
++++ b/crates/assay-forge/src/git/glob.rs
+@@ -2,10 +2,11 @@
+ //!
+ //! `*` matches any run of characters except `/`, `?` one character except `/`, `**` anything,
+ //! and `**/` zero or more whole directories. `**` must be a whole path segment (at the start
+-//! or after `/`, and followed by `/` or the end); `a**`, `**b` and `***` are refused. A glob without `/` matches the file name at any
+-//! depth (as in `.gitattributes`); one with `/` matches the whole path from the root.
+-//! Character classes, braces, negation and escapes are rejected rather than half-supported.
+-//! Matching is a linear-space dynamic programme, so no glob can make it exponential.
++//! or after `/`, and followed by `/` or the end); `a**`, `**b` and `***` are refused. A glob
++//! without `/` matches the file name at any depth (as in `.gitattributes`); one with `/`
++//! matches the whole path from the root. Character classes, braces, negation and escapes are
++//! rejected rather than half-supported. Matching is a linear-space dynamic programme, so no
++//! glob can make it exponential.
+ 
+ use std::str::FromStr;
+ 
+diff --git a/crates/assay-forge/src/process.rs b/crates/assay-forge/src/process.rs
+index c4a7851..1fc783d 100644
+--- a/crates/assay-forge/src/process.rs
++++ b/crates/assay-forge/src/process.rs
+@@ -13,19 +13,20 @@
+ //! not believed; the kill counts only once `/proc` shows no live member of the group, and
+ //! anything else is [`ProcessError::Kill`]. The child itself is then killed through std and
+ //! always waited on. A group is never signalled once its leader has been reaped and no member
+-//! is left, because the group id may then be reused; the remaining window is a member exiting
+-//! between the `/proc` scan and the signal (microseconds), after which an unrelated process
+-//! would have to take that id as its own group id before the signal lands.
++//! is left, because the group id may then be reused; nor when its leader has been reaped and
++//! `/proc` cannot be read, which is [`ProcessError::Kill`]. The remaining window is a member
++//! exiting between the `/proc` scan and the signal (microseconds), after which an unrelated
++//! process would have to take that id as its own group id before the signal lands.
+ //!
+-//! Runtime prerequisites: Linux `/proc` and a procps or util-linux `kill` in `/usr/bin` or
+-//! `/bin`. [`GroupKiller::system`] checks the latter up front, so a host without it fails
+-//! closed before any process starts.
++//! Runtime prerequisites: Linux `/proc` describing this process (not another pid namespace's)
++//! and a procps or util-linux `kill` in `/usr/bin` or `/bin`. [`GroupKiller::system`] checks
++//! both up front, so a host without them fails closed before any process starts.
+ 
+ use std::fs::{self, File};
+ use std::io::{self, Read, Seek, SeekFrom, Write};
+ use std::os::unix::fs::PermissionsExt;
+ use std::os::unix::process::CommandExt;
+-use std::path::PathBuf;
++use std::path::{Path, PathBuf};
+ use std::process::{Child, Command, ExitStatus, Stdio};
+ use std::thread;
+ use std::time::{Duration, Instant};
+@@ -34,7 +35,7 @@ use std::time::{Duration, Instant};
+ /// we configure, long enough that polling costs nothing measurable.
+ const POLL_INTERVAL: Duration = Duration::from_millis(5);
+ 
+-/// Default time the kill program has to run, and the group then has to be gone.
++/// Default deadline for a group kill, shared by the kill program's run and the group's exit.
+ pub(crate) const KILL_GRACE: Duration = Duration::from_secs(5);
+ 
+ /// Where [`GroupKiller::system`] looks for `kill`, in order.
+@@ -43,6 +44,9 @@ const SYSTEM_KILL: [&str; 2] = ["/usr/bin/kill", "/bin/kill"];
+ /// `PATH` for the kill program; fixed rather than inherited.
+ const SYSTEM_PATH: &str = "/usr/bin:/bin";
+ 
++/// The `/proc` entry that [`GroupKiller::system`] checks describes this process.
++const SELF_STAT: &str = "/proc/self/stat";
++
+ /// `errno` for "no such process", which reading `/proc/<pid>/stat` of a process that has
+ /// just exited can return.
+ const ESRCH: i32 = 3;
+@@ -114,6 +118,10 @@ pub enum KillerError {
+         /// The program that was refused.
+         path: PathBuf,
+     },
++    /// `/proc/self/stat` is missing, unreadable or names another process (for example a
++    /// `/proc` mounted from another pid namespace), so process groups cannot be supervised.
++    #[error("{SELF_STAT} does not describe this process: Linux /proc is a runtime prerequisite")]
++    ProcUnavailable,
+ }
+ 
+ /// The program that kills a timed-out child's whole process group: a procps or util-linux
+@@ -125,11 +133,14 @@ pub struct GroupKiller {
+ }
+ 
+ impl GroupKiller {
+-    /// The system `kill` from `/usr/bin` or `/bin`, with a five-second grace.
++    /// The system `kill` from `/usr/bin` or `/bin`, with a five-second grace, once `/proc` is
++    /// shown to describe this process.
+     ///
+     /// # Errors
+-    /// [`KillerError::NotFound`] when neither location holds an executable `kill`.
++    /// [`KillerError::ProcUnavailable`] when `/proc/self/stat` cannot be read or names another
++    /// process; [`KillerError::NotFound`] when neither location holds an executable `kill`.
+     pub fn system() -> Result<Self, KillerError> {
++        check_proc(Path::new(SELF_STAT), std::process::id())?;
+         SYSTEM_KILL
+             .into_iter()
+             .find_map(|program| Self::at(program, KILL_GRACE).ok())
+@@ -138,7 +149,8 @@ impl GroupKiller {
+             })
+     }
+ 
+-    /// `program` as the kill program; it, and then the group's exit, get `grace` each.
++    /// `program` as the kill program. One `grace` deadline covers both its run and the group's
++    /// exit after it.
+     ///
+     /// # Errors
+     /// [`KillerError::NotExecutable`] when `program` is not an executable file.
+@@ -209,7 +221,7 @@ pub(crate) fn run(
+     drop(command);
+ 
+     let outcome = supervise(&mut child, [&stdout, &stderr], cap, deadline)
+-        .map_err(|interrupted| terminate(&mut child, interrupted, killer));
++        .map_err(|interrupted| terminate(&mut child, interrupted, killer, group_alive));
+     let reaped = child.wait();
+     let status = match (outcome, reaped) {
+         (Ok(status), Ok(_)) => status,
+@@ -290,15 +302,30 @@ fn supervise(
+ }
+ 
+ /// Kills what is left of the child's group after `interrupted`, and the child itself.
+-fn terminate(child: &mut Child, interrupted: Interrupted, killer: &GroupKiller) -> ProcessError {
++/// `alive` reports whether the group has a live member ([`group_alive`] outside tests).
++fn terminate(
++    child: &mut Child,
++    interrupted: Interrupted,
++    killer: &GroupKiller,
++    alive: impl FnOnce(u32) -> io::Result<bool>,
++) -> ProcessError {
+     let Interrupted {
+         cause,
+         leader_reaped,
+     } = interrupted;
+     let group = child.id();
+-    // A reaped leader with no live member left: nothing to kill, and the id may be reused.
+-    if leader_reaped && matches!(group_alive(group), Ok(false)) {
+-        return cause;
++    // Once the leader is reaped the id may be reused: signal only a group seen to be alive.
++    if leader_reaped {
++        match alive(group) {
++            Ok(true) => {}
++            Ok(false) => return cause,
++            Err(source) => {
++                return ProcessError::Kill {
++                    cause: Box::new(cause),
++                    source,
++                };
++            }
++        }
+     }
+     let group_killed = killer.kill_group(group);
+     // Already-exited children report `Ok` here.
+@@ -312,6 +339,20 @@ fn terminate(child: &mut Child, interrupted: Interrupted, killer: &GroupKiller)
+     }
+ }
+ 
++/// Fails unless the `/proc/<pid>/stat` file at `stat` names `pid`: a missing `/proc`, or one
++/// from another pid namespace, would make every group look empty.
++fn check_proc(stat: &Path, pid: u32) -> Result<(), KillerError> {
++    let line = fs::read_to_string(stat).map_err(|_unreadable| KillerError::ProcUnavailable)?;
++    let named: Option<u32> = line
++        .split_once(" (")
++        .and_then(|(field, _)| field.parse().ok());
++    if named == Some(pid) {
++        Ok(())
++    } else {
++        Err(KillerError::ProcUnavailable)
++    }
++}
++
+ /// Reads a whole output file, or fails when it holds more than `cap` bytes.
+ fn read_capped(mut file: File, cap: usize) -> Result<Vec<u8>, ProcessError> {
+     file.seek(SeekFrom::Start(0)).map_err(ProcessError::Spool)?;
+@@ -399,8 +440,6 @@ fn poll_until<T>(
+ 
+ #[cfg(test)]
+ mod tests {
+-    use std::path::Path;
+-
+     use super::*;
+ 
+     const GENEROUS: Limits = Limits {
+@@ -494,13 +533,9 @@ mod tests {
+             "a process group still running at the deadline is a timeout, got {result:?}"
+         );
+         let pid = fs::read_to_string(&pid_file).expect("the shell started the grandchild first");
+-        // `run` returns only once the group is verifiably gone; re-poll briefly regardless.
+-        let dead = (0..1000).any(|_| {
+-            thread::yield_now();
+-            is_dead(pid.trim())
+-        });
++        // `run` returns only once `/proc` shows no live member of the group.
+         assert!(
+-            dead,
++            is_dead(pid.trim()),
+             "the grandchild must have been killed with its process group"
+         );
+     }
+@@ -581,6 +616,77 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
++    fn a_reaped_leader_whose_group_cannot_be_observed_is_not_signalled() {
++        let scratch = tempfile::tempdir().expect("a scratch directory");
++        let marker = scratch.path().join("killed");
++        let spy = script(
++            scratch.path(),
++            "kill",
++            &format!("touch '{}'", marker.display()),
++        );
++        let killer = GroupKiller::at(&spy, Duration::from_millis(100)).expect("executable");
++        let mut child = Command::new("true").spawn().expect("true starts");
++        child.wait().expect("true is reaped");
++        let interrupted = Interrupted {
++            cause: ProcessError::TimedOut,
++            leader_reaped: true,
++        };
++
++        let error = terminate(&mut child, interrupted, &killer, |_| {
++            Err(io::Error::other("/proc is unreadable"))
++        });
++
++        assert!(
++            matches!(&error, ProcessError::Kill { cause, .. } if matches!(**cause, ProcessError::TimedOut)),
++            "an unobservable group must surface as a kill failure, got {error:?}"
++        );
++        assert!(
++            !marker.exists(),
++            "a group whose leader is reaped must not be signalled (pgid reuse)"
++        );
++    }
++
++    #[test]
++    fn this_hosts_proc_describes_this_process() {
++        assert_eq!(
++            check_proc(Path::new(SELF_STAT), std::process::id()),
++            Ok(()),
++            "the test host mounts its own /proc"
++        );
++    }
++
++    #[test]
++    fn a_proc_that_describes_another_process_is_unavailable() {
++        let scratch = tempfile::tempdir().expect("a scratch directory");
++        let stat = scratch.path().join("stat");
++        fs::write(&stat, "7 (assay) R 1 7 7 0").expect("write the stat line");
++
++        assert_eq!(
++            check_proc(&stat, 8),
++            Err(KillerError::ProcUnavailable),
++            "a /proc from another pid namespace must fail closed"
++        );
++        fs::write(&stat, "garbage").expect("write the stat line");
++        assert_eq!(
++            check_proc(&stat, 7),
++            Err(KillerError::ProcUnavailable),
++            "an unreadable stat line must fail closed"
++        );
++    }
++
++    #[test]
++    fn a_missing_proc_is_unavailable() {
++        let scratch = tempfile::tempdir().expect("a scratch directory");
++
++        assert_eq!(
++            check_proc(&scratch.path().join("absent"), std::process::id()),
++            Err(KillerError::ProcUnavailable),
++            "a host without /proc must fail closed"
++        );
++    }
++
+     #[test]
+     fn finds_the_system_kill() {
+         assert!(

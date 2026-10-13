@@ -1,0 +1,19 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-domain/src/decide/roles.rs",
+      "start_line": 17,
+      "end_line": 26,
+      "class": "logic"
+    },
+    {
+      "file": "crates/assay-domain/src/decide/roles.rs",
+      "start_line": 40,
+      "end_line": 57,
+      "class": "logic"
+    }
+  ]
+}
