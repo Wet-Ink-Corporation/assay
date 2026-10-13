@@ -7,9 +7,9 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use assay_app::{
-    FindingRef, MAX_REASON_CHARS, ModelOutcome, RejectRate, UnsupportedTier, VERDICT_SCHEMA,
-    VERIFIER_CAP, VERIFIER_MAX_TURNS, VerdictTally, VerifiedFinding, VerifierFailure,
-    VerifierStatus, VerifierTier, verify,
+    ClaimRef, FindingRef, MAX_REASON_CHARS, ModelOutcome, RejectRate, UnsupportedTier,
+    VERDICT_SCHEMA, VERIFIER_CAP, VERIFIER_MAX_TURNS, VerdictTally, VerifiedFinding,
+    VerifierFailure, VerifierStatus, VerifierTier, verify,
 };
 use assay_domain::{
     Aeu, CallFailure, Confidence, Disposition, Event, EventPayload, EventSchema, RunUid, Severity,
@@ -43,10 +43,10 @@ fn a_confirmed_candidate_keeps_its_severity() -> Result<(), Box<dyn Error>> {
     };
     assert_eq!(
         only.at,
-        FindingRef::Finding {
+        ClaimRef::Raised(FindingRef::Finding {
             document: 0,
             index: 0
-        }
+        })
     );
     assert_eq!(
         (only.raised, only.severity),
@@ -419,10 +419,10 @@ fn a_verifier_malformed_twice_degrades_and_shows_unverified_majors() -> Result<(
     assert_eq!(
         verified.failure,
         Some(VerifierFailure::Call {
-            at: FindingRef::Finding {
+            at: ClaimRef::Raised(FindingRef::Finding {
                 document: 0,
                 index: 0
-            },
+            }),
             reason: CallFailure::Malformed
         })
     );
@@ -593,10 +593,10 @@ fn an_unreachable_runner_is_unavailable_and_charged_at_the_cap() -> Result<(), B
     assert_eq!(
         verified.failure,
         Some(VerifierFailure::Runner {
-            at: FindingRef::Finding {
+            at: ClaimRef::Raised(FindingRef::Finding {
                 document: 0,
                 index: 0
-            },
+            }),
             source: Unreachable
         })
     );
@@ -626,7 +626,7 @@ fn a_runner_failing_on_the_retry_charges_both_attempts() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn only_lite_and_micro_have_a_verifier_here() {
+fn only_full_lite_and_micro_have_a_verifier() {
     let tiers = Tier::ALL.map(|tier| (tier, VerifierTier::try_from(tier).ok()));
 
     assert_eq!(
@@ -634,7 +634,7 @@ fn only_lite_and_micro_have_a_verifier_here() {
         [
             (Tier::NeedsSplit, None),
             (Tier::Trivial, None),
-            (Tier::Full, None),
+            (Tier::Full, Some(VerifierTier::Full)),
             (Tier::Lite, Some(VerifierTier::Lite)),
             (Tier::Micro, Some(VerifierTier::Micro)),
         ]
@@ -643,9 +643,9 @@ fn only_lite_and_micro_have_a_verifier_here() {
 
 #[test]
 fn an_unsupported_tier_is_refused_by_name() {
-    let refused = VerifierTier::try_from(Tier::Full).map_err(UnsupportedTier::tier);
+    let refused = VerifierTier::try_from(Tier::Trivial).map_err(UnsupportedTier::tier);
 
-    assert_eq!(refused, Err(Tier::Full));
+    assert_eq!(refused, Err(Tier::Trivial));
 }
 
 /// The verifier's row of 04 §3's roster.
@@ -676,6 +676,16 @@ fn the_verifier_limits_are_the_04_roster() -> Result<(), Box<dyn Error>> {
         focus.contains(&format!("≤ {} lite", VerifierTier::Lite.calls())),
         "focus {focus} does not cap lite at {}",
         VerifierTier::Lite.calls()
+    );
+    assert!(
+        focus.contains(&format!("≤ {} full", VerifierTier::Full.calls())),
+        "focus {focus} does not cap full at {}",
+        VerifierTier::Full.calls()
+    );
+    // The stage totals, which `VerifierTier::budget` enforces (400_000 and 240_000 micro-AEU).
+    assert!(
+        cap.ends_with("(≤ $0.40 / ≤ $0.24)"),
+        "cap {cap} does not total $0.40 full and $0.24 lite"
     );
     Ok(())
 }

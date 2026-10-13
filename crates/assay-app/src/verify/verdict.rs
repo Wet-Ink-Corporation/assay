@@ -49,9 +49,10 @@ impl Judgement {
     }
 }
 
-/// Why an answer was refused. Never quotes the answer: it is untrusted text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Refused {
+/// Why an answer was refused as a verdict, kept so refusal causes can be measured. Never quotes
+/// the answer: it is untrusted text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VerdictRefusal {
     /// Not an object with exactly the keys `verdict` and `reason`.
     Shape,
     /// `verdict` is not one of the three codes, exactly.
@@ -71,41 +72,41 @@ pub(super) enum Refused {
 
 /// Reads `answer` as a verdict on a change to `repository` (`owner/name`), refusing anything
 /// but the exact shape.
-pub(super) fn read(answer: Value, repository: &str) -> Result<Judgement, Refused> {
+pub(super) fn read(answer: Value, repository: &str) -> Result<Judgement, VerdictRefusal> {
     let Value::Object(mut fields) = answer else {
-        return Err(Refused::Shape);
+        return Err(VerdictRefusal::Shape);
     };
     let (Some(verdict), Some(reason), 0) = (
         fields.remove("verdict"),
         fields.remove("reason"),
         fields.len(),
     ) else {
-        return Err(Refused::Shape);
+        return Err(VerdictRefusal::Shape);
     };
     let verdict = verdict
         .as_str()
         .and_then(|code| VerifierVerdict::ALL.into_iter().find(|v| v.code() == code))
-        .ok_or(Refused::Verdict)?;
+        .ok_or(VerdictRefusal::Verdict)?;
     let reason = read_reason(reason, repository)?;
     Ok(Judgement { verdict, reason })
 }
 
-fn read_reason(reason: Value, repository: &str) -> Result<VerdictReason, Refused> {
+fn read_reason(reason: Value, repository: &str) -> Result<VerdictReason, VerdictRefusal> {
     let Value::String(text) = reason else {
-        return Err(Refused::ReasonType);
+        return Err(VerdictRefusal::ReasonType);
     };
     // Length first, so nothing longer is scanned further.
     if text.len() > MAX_REASON_CHARS {
-        return Err(Refused::TooLong);
+        return Err(VerdictRefusal::TooLong);
     }
     if !text.bytes().all(|byte| matches!(byte, b' '..=b'~')) {
-        return Err(Refused::Character);
+        return Err(VerdictRefusal::Character);
     }
     if text.trim().is_empty() {
-        return Err(Refused::Blank);
+        return Err(VerdictRefusal::Blank);
     }
     if is_injection_suspect(&text, repository) {
-        return Err(Refused::Suspect);
+        return Err(VerdictRefusal::Suspect);
     }
     Ok(VerdictReason(text))
 }
@@ -114,7 +115,7 @@ fn read_reason(reason: Value, repository: &str) -> Result<VerdictReason, Refused
 mod tests {
     use serde_json::{Map, Value, json};
 
-    use super::{MAX_REASON_CHARS, Refused, VERDICT_SCHEMA, read};
+    use super::{MAX_REASON_CHARS, VERDICT_SCHEMA, VerdictRefusal, read};
 
     const REPOSITORY: &str = "Wet-Ink-Corporation/assay";
 
@@ -128,12 +129,12 @@ mod tests {
         )
     }
 
-    fn refusal(answer: &Value) -> Option<Refused> {
+    fn refusal(answer: &Value) -> Option<VerdictRefusal> {
         // A copy: `read` takes the answer by value, as the verifier hands it over.
         read(answer.clone(), REPOSITORY).err()
     }
 
-    fn refusal_or_code(answer: &Value) -> Result<&'static str, Refused> {
+    fn refusal_or_code(answer: &Value) -> Result<&'static str, VerdictRefusal> {
         read(answer.clone(), REPOSITORY).map(|judgement| judgement.verdict().code())
     }
 
@@ -164,7 +165,7 @@ mod tests {
 
         let refusals: Vec<_> = answers.iter().map(refusal).collect();
 
-        assert_eq!(refusals, [Some(Refused::Shape); 5]);
+        assert_eq!(refusals, [Some(VerdictRefusal::Shape); 5]);
     }
 
     #[test]
@@ -175,7 +176,7 @@ mod tests {
 
         let refusals: Vec<_> = answers.iter().chain([&not_a_string]).map(refusal).collect();
 
-        assert_eq!(refusals, [Some(Refused::Verdict); 5]);
+        assert_eq!(refusals, [Some(VerdictRefusal::Verdict); 5]);
     }
 
     #[test]
@@ -185,14 +186,14 @@ mod tests {
             ("reason", json!(["seen"])),
         ]));
 
-        assert_eq!(refused, Some(Refused::ReasonType));
+        assert_eq!(refused, Some(VerdictRefusal::ReasonType));
     }
 
     #[test]
     fn a_blank_reason_is_refused() {
         assert_eq!(
             (refusal(&reason("")), refusal(&reason("   "))),
-            (Some(Refused::Blank), Some(Refused::Blank))
+            (Some(VerdictRefusal::Blank), Some(VerdictRefusal::Blank))
         );
     }
 
@@ -207,7 +208,7 @@ mod tests {
             kept.as_ref().map(|judgement| judgement.reason().as_str()),
             Ok(at_cap.as_str())
         );
-        assert_eq!(refusal(&reason(&over)), Some(Refused::TooLong));
+        assert_eq!(refusal(&reason(&over)), Some(VerdictRefusal::TooLong));
     }
 
     #[test]
@@ -223,7 +224,7 @@ mod tests {
 
         let refusals: Vec<_> = texts.map(reason).iter().map(refusal).collect();
 
-        assert_eq!(refusals, [Some(Refused::Character); 6]);
+        assert_eq!(refusals, [Some(VerdictRefusal::Character); 6]);
     }
 
     #[test]
@@ -237,7 +238,7 @@ mod tests {
 
         let refusals: Vec<_> = texts.map(reason).iter().map(refusal).collect();
 
-        assert_eq!(refusals, [Some(Refused::Suspect); 4]);
+        assert_eq!(refusals, [Some(VerdictRefusal::Suspect); 4]);
     }
 
     #[test]
