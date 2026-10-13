@@ -550,6 +550,7 @@ fn api_keys_and_cloud_providers_cannot_be_passed() {
         "CLOUD_ML_REGION",
         "VERTEX_REGION_CLAUDE_SONNET_4_5",
         "NODE_OPTIONS",
+        "NODE_EXTRA_CA_CERTS",
         "CLAUDE_CONFIG_DIR",
         "LD_PRELOAD",
         "LD_LIBRARY_PATH",

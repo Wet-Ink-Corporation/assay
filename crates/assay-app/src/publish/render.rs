@@ -175,7 +175,7 @@ pub(super) fn comment(summary: &str) -> String {
 
 /// Appends up to [`MAX_ITEMS`] of `total` items as one fenced block whose fence is longer than
 /// any backtick run inside it, each item cleaned and clipped, then how many were left out.
-fn block(lines: &mut Vec<String>, total: usize, items: impl Iterator<Item = String>) {
+pub(super) fn block(lines: &mut Vec<String>, total: usize, items: impl Iterator<Item = String>) {
     if total == 0 {
         lines.push("none".to_owned());
         return;
@@ -221,7 +221,7 @@ const FORMAT: [(char, char); 21] = [
 ];
 
 /// Whether `c` renders as something other than itself: a control or a format character.
-fn is_hidden(c: char) -> bool {
+pub(super) fn is_hidden(c: char) -> bool {
     c.is_control()
         || FORMAT
             .iter()

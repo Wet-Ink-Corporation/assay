@@ -8,9 +8,10 @@ use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    BundleStore, CheckName, CheckRun, CheckRunId, CheckStatus, CheckUpdate, CommentId, CommitId,
-    EvidenceEntry, PublishLedger, SummaryComment, VerdictForge,
+    BundleStore, CheckName, CheckRun, CheckRunId, CheckStatus, CheckUpdate, CommentForge,
+    CommentId, CommitId, EvidenceEntry, InlineComment, PublishLedger, SummaryComment, VerdictForge,
 };
+use assay_domain::Side;
 
 use crate::plan_fakes::FakeError;
 
@@ -46,11 +47,41 @@ pub(crate) struct FakeComment {
     pub(crate) body: String,
 }
 
+/// One review comment on a diff line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FakeReviewComment {
+    pub(crate) author: Author,
+    pub(crate) commit_id: String,
+    pub(crate) path: String,
+    pub(crate) line: NonZeroU64,
+    pub(crate) start_line: Option<NonZeroU64>,
+    pub(crate) side: Side,
+    pub(crate) body: String,
+}
+
+impl FakeReviewComment {
+    /// A comment on line 1 of `src/lib.rs` at `head` with `body`.
+    pub(crate) fn on_head(author: Author, head: &str, body: &str) -> Self {
+        Self {
+            author,
+            commit_id: head.to_owned(),
+            path: "src/lib.rs".to_owned(),
+            line: NonZeroU64::MIN,
+            start_line: None,
+            side: Side::Right,
+            body: body.to_owned(),
+        }
+    }
+}
+
 /// A port call, in the order made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Call {
     FindCheck,
     UpdateCheck,
+    CreateCheck,
+    ReadReviewComments,
+    CreateReviewComment,
     FindSummary,
     CreateSummary,
     UpdateSummary,
@@ -63,7 +94,10 @@ pub(crate) enum Call {
 impl Call {
     /// Whether the call changes anything.
     pub(crate) const fn writes(self) -> bool {
-        !matches!(self, Self::FindCheck | Self::FindSummary)
+        !matches!(
+            self,
+            Self::FindCheck | Self::FindSummary | Self::ReadReviewComments
+        )
     }
 }
 
@@ -83,6 +117,7 @@ pub(crate) type Interleave = Box<dyn FnOnce(&FakeWorld)>;
 pub(crate) struct FakeWorld {
     pub(crate) checks: RefCell<Vec<FakeCheck>>,
     pub(crate) comments: RefCell<Vec<FakeComment>>,
+    pub(crate) review_comments: RefCell<Vec<FakeReviewComment>>,
     /// The lock's current lease, if held.
     pub(crate) lock: RefCell<Option<u64>>,
     leases: RefCell<u64>,
@@ -250,6 +285,64 @@ impl VerdictForge for FakeWorld {
         for comment in self.comments.borrow_mut().iter_mut().filter(|c| c.id == id) {
             body.clone_into(&mut comment.body);
         }
+        Ok(())
+    }
+}
+
+impl CommentForge for FakeWorld {
+    fn app_review_comments(&self, _number: NonZeroU64) -> Result<Vec<String>, FakeError> {
+        self.record(Call::ReadReviewComments)?;
+        Ok(self
+            .review_comments
+            .borrow()
+            .iter()
+            .filter(|comment| comment.author == Author::App)
+            .map(|comment| comment.body.clone())
+            .collect())
+    }
+
+    fn create_review_comment(
+        &self,
+        _number: NonZeroU64,
+        comment: &InlineComment<'_>,
+    ) -> Result<(), FakeError> {
+        self.record(Call::CreateReviewComment)?;
+        self.review_comments.borrow_mut().push(FakeReviewComment {
+            author: Author::App,
+            commit_id: comment.commit_id.as_str().to_owned(),
+            path: comment.path.to_owned(),
+            line: comment.line,
+            start_line: comment.start_line,
+            side: comment.side,
+            body: comment.body.clone(),
+        });
+        Ok(())
+    }
+
+    fn create_check(
+        &self,
+        head: &CommitId,
+        name: &CheckName,
+        update: &CheckUpdate,
+    ) -> Result<(), FakeError> {
+        self.record(Call::CreateCheck)?;
+        let mut checks = self.checks.borrow_mut();
+        let next = u64::try_from(checks.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(9001);
+        checks.push(FakeCheck {
+            id: CheckRunId(NonZeroU64::new(next).unwrap_or(NonZeroU64::MIN)),
+            head: head.as_str().to_owned(),
+            name: name.as_str().to_owned(),
+            author: Author::App,
+            external_id: update.external_id.clone(),
+            status: match update.state {
+                assay_app::CheckState::InProgress => CheckStatus::InProgress,
+                assay_app::CheckState::Completed(_) => CheckStatus::Completed,
+            },
+            output: Some(update.clone()),
+            annotations: 0,
+        });
         Ok(())
     }
 }

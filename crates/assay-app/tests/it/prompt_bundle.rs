@@ -8,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use assay_app::{BundleFile, BundleFileError, BundleFiles, PromptBundle, Role};
-use assay_domain::{ContentHash, Severity};
+use assay_domain::{ContentHash, Severity, VerifierVerdict};
 
 fn prompts_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugin/prompts")
@@ -24,6 +24,7 @@ fn v1_files() -> Result<BundleFiles, Box<dyn Error>> {
         system: read(BundleFile::System)?,
         combined: read(BundleFile::Instruction(Role::Combined))?,
         combined_micro: read(BundleFile::Instruction(Role::CombinedMicro))?,
+        verifier: read(BundleFile::Verifier)?,
     })
 }
 
@@ -32,6 +33,7 @@ fn small_files() -> BundleFiles {
         system: "SYSTEM".to_owned(),
         combined: "COMBINED".to_owned(),
         combined_micro: "MICRO".to_owned(),
+        verifier: "VERIFIER".to_owned(),
     }
 }
 
@@ -41,6 +43,7 @@ fn with_char_changed(mut files: BundleFiles, file: BundleFile, char_index: usize
         BundleFile::System => &mut files.system,
         BundleFile::Instruction(Role::Combined) => &mut files.combined,
         BundleFile::Instruction(Role::CombinedMicro) => &mut files.combined_micro,
+        BundleFile::Verifier => &mut files.verifier,
     };
     *text = text
         .chars()
@@ -147,6 +150,55 @@ fn an_empty_file_is_refused_by_name_and_the_files_are_handed_back() -> Result<()
 }
 
 #[test]
+fn a_whitespace_only_file_is_refused_as_empty() -> Result<(), Box<dyn Error>> {
+    let files = BundleFiles {
+        combined_micro: " \n\t\n".to_owned(),
+        ..small_files()
+    };
+
+    let refused = PromptBundle::new(files);
+
+    let error = refused.err().ok_or("a whitespace-only file was accepted")?;
+    assert_eq!(
+        (error.file(), error.reason()),
+        (
+            BundleFile::Instruction(Role::CombinedMicro),
+            BundleFileError::Empty
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn an_empty_verifier_instruction_is_refused_by_name() -> Result<(), Box<dyn Error>> {
+    let files = BundleFiles {
+        verifier: String::new(),
+        ..small_files()
+    };
+
+    let refused = PromptBundle::new(files);
+
+    let error = refused
+        .err()
+        .ok_or("an empty verifier instruction was accepted")?;
+    assert_eq!(
+        (error.file(), error.reason()),
+        (BundleFile::Verifier, BundleFileError::Empty)
+    );
+    Ok(())
+}
+
+#[test]
+fn the_verifier_is_sent_its_own_instruction() -> Result<(), Box<dyn Error>> {
+    let bundle = PromptBundle::new(small_files())?;
+
+    let instruction = bundle.verifier_instruction();
+
+    assert_eq!(instruction, "VERIFIER");
+    Ok(())
+}
+
+#[test]
 fn a_nul_byte_is_refused_by_name() -> Result<(), Box<dyn Error>> {
     let files = BundleFiles {
         system: "SYS\0TEM".to_owned(),
@@ -171,6 +223,7 @@ fn the_bundle_hash_is_the_content_hash_of_its_files_under_their_paths() -> Resul
         ("v1/system.md", files.system.as_bytes()),
         ("v1/combined.md", files.combined.as_bytes()),
         ("v1/combined-micro.md", files.combined_micro.as_bytes()),
+        ("v1/verifier.md", files.verifier.as_bytes()),
     ]);
 
     let bundle = PromptBundle::new(files)?;
@@ -205,11 +258,13 @@ fn swapping_two_role_instructions_changes_the_bundle_hash() -> Result<(), Box<dy
         system,
         combined,
         combined_micro,
+        verifier,
     } = small_files();
     let swapped = BundleFiles {
         system,
         combined: combined_micro,
         combined_micro: combined,
+        verifier,
     };
 
     let (original, edited) = (
@@ -281,6 +336,48 @@ fn the_v1_system_prompt_lists_what_not_to_flag_and_no_instruction_repeats_it()
             "{} repeats the shared list",
             role.code()
         );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_v1_what_not_to_flag_list_has_one_bullet_per_04_item() -> Result<(), Box<dyn Error>> {
+    let spec = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/architecture/04-pipeline.md"),
+    )?;
+    let paragraph = spec
+        .lines()
+        .find(|line| line.starts_with("**\"What not to flag\"**"))
+        .ok_or("04 §3 has no what-not-to-flag paragraph")?;
+    let (_, list) = paragraph
+        .split_once("): ")
+        .ok_or("the paragraph has no list")?;
+    let (list, _) = list.split_once(". ").ok_or("the list has no end")?;
+    let items = list.split("; ").count();
+
+    let bundle = PromptBundle::new(v1_files()?)?;
+
+    let bullets = bundle
+        .system_prompt()
+        .lines()
+        .skip_while(|line| *line != "## What not to flag")
+        .skip(1)
+        .take_while(|line| !line.starts_with("## "))
+        .filter(|line| line.starts_with("- "))
+        .count();
+    assert_eq!(bullets, items, "bullets of the shared list, 04 §3");
+    Ok(())
+}
+
+#[test]
+fn the_v1_verifier_instruction_names_every_verdict() -> Result<(), Box<dyn Error>> {
+    let bundle = PromptBundle::new(v1_files()?)?;
+
+    let instruction = bundle.verifier_instruction();
+
+    for verdict in VerifierVerdict::ALL {
+        let code = format!("`{}`", verdict.code());
+        assert!(instruction.contains(&code), "verifier.md lacks {code}");
     }
     Ok(())
 }

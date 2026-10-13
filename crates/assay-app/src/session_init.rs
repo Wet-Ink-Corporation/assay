@@ -61,7 +61,9 @@ pub struct InitParts {
 /// [`SessionInit::new`]; judge it with [`check_init`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInit {
-    parts: InitParts,
+    // Boxed: every `ModelResult` carries one, and the lists would otherwise make it, and the
+    // retry error holding it, several hundred bytes.
+    parts: Box<InitParts>,
 }
 
 /// Why no [`SessionInit`] could be read from a transcript. Every variant fails the preflight.
@@ -138,7 +140,9 @@ impl SessionInit {
         }
         names("skills", &parts.skills)?;
         names("agents", &parts.agents)?;
-        Ok(Self { parts })
+        Ok(Self {
+            parts: Box::new(parts),
+        })
     }
 
     /// `claude_code_version`.
@@ -218,7 +222,7 @@ fn names(field: &'static str, names: &[String]) -> Result<(), InitReadError> {
 }
 
 /// 1 to [`MAX_BUILTIN_NAME_BYTES`] bytes, none of them a control character.
-fn is_readable(name: &str) -> bool {
+pub(crate) fn is_readable(name: &str) -> bool {
     (1..=MAX_BUILTIN_NAME_BYTES).contains(&name.len()) && !name.chars().any(char::is_control)
 }
 

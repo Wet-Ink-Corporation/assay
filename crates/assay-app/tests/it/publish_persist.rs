@@ -469,6 +469,34 @@ fn a_bundle_over_its_cap_is_not_persisted() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn a_trust_path_pr_whose_bundle_is_over_its_cap_fails_closed() -> Result<(), Box<dyn Error>> {
+    // As in `a_bundle_over_its_cap_is_not_persisted`: 144 MiB of JSON, past the 96 MiB cap.
+    let mut scenario = Scenario::of(trust_path_pr())?;
+    for name in ["a", "b", "c"] {
+        scenario.publish_review(
+            &format!("{name}.json"),
+            vec![1; assay_app::MAX_DOCUMENT_BYTES],
+        )?;
+    }
+    let run = overridden(&scenario)?;
+    let world = stamped()?;
+
+    let written = written(run.publish(&world))?;
+
+    assert_eq!(
+        written.state,
+        CheckState::Completed(CheckConclusion::Failure)
+    );
+    let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
+    assert!(
+        summary.contains("persist-error: bundle-too-large"),
+        "{summary}"
+    );
+    assert_eq!(*world.uploads.borrow(), []);
+    Ok(())
+}
+
+#[test]
 fn a_trust_path_pr_whose_bundle_is_not_utf8_fails_closed() -> Result<(), Box<dyn Error>> {
     let mut scenario = Scenario::of(trust_path_pr())?;
     scenario.publish_review("combined-micro.json", vec![b'{', 0xff, b'}'])?;
