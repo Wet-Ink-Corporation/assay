@@ -1,6 +1,8 @@
-//! The `builtin:temper` adapter in `gates-static`, zone Z2s: the decision-relevant temper checks
-//! that need no compilation, out of a hostile `build.rs`'s reach
-//! (`docs/architecture/03-contracts.md` §2.1 steps 1-3, ADR-12, 05 T4 and T5).
+//! The `builtin:temper` adapter. In `gates-static`, zone Z2s: the decision-relevant temper
+//! checks that need no compilation, out of a hostile `build.rs`'s reach
+//! (`docs/architecture/03-contracts.md` §2.1 steps 1-4, ADR-12, 05 T4 and T5). In `gates-lint`
+//! (Z2b): the pinned `baseline --check` with its ratchet asserted, and the declared `lint`
+//! steps (steps 5-7, `temper/lint.rs`).
 //!
 //! 1. `raised`: `.claude/temper-baseline.json` at base and head; any count that rises, any new
 //!    entry, and any crate added to or moved in `crates` fails.
@@ -24,13 +26,17 @@ mod closure;
 #[cfg(test)]
 mod corpus;
 mod error;
+mod evidence;
 mod exceptions;
 mod findings;
 mod gate_config;
 mod head;
 mod inventory;
 mod layout;
+mod lint;
+mod lint_findings;
 mod manifests;
+mod ratchet;
 mod reach;
 mod references;
 mod report;
@@ -46,11 +52,15 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use assay_app::{Adapter, GateDocument, GateJob, GateRun, GateRunner, Plugin, Termination};
+use assay_app::{
+    Adapter, BuildJob, CommitId, GateDocument, GateError, GateJob, GateRun, GateRunner, Plugin,
+    Termination,
+};
 use assay_domain::{Finding, FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind};
 
 pub use closure::{CompileTimeReach, compile_time_reach};
 pub use error::{TemperError, TemperSettingsError};
+pub use ratchet::RatchetDegradation;
 
 use self::baseline::Totals;
 use self::exceptions::Allowlist;
@@ -75,6 +85,16 @@ const MAX_SCAN_OUTPUT_BYTES: usize = 16 << 20;
 /// How [`TemperError::Revision`] names the whole tree.
 const TREE: &str = ".";
 
+/// The commits `gates-lint`'s ratchet is checked against (03 §2.1 step 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RatchetBase {
+    /// The PR's base commit, passed to temper as `--base` (never a moving `origin/<x>` ref).
+    pub base: CommitId,
+    /// The merge base of the base and head commits, computed by assay in Z2s; temper's
+    /// `ratchet.base` must equal it.
+    pub merge_base: CommitId,
+}
+
 /// Where the temper adapter's programs and trees are in this job. Every path is absolute.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemperPaths {
@@ -93,9 +113,11 @@ pub struct TemperSettings {
     node: PathBuf,
     pinned: PathBuf,
     head_tree: PathBuf,
+    script: String,
     scan_args: Vec<String>,
     scan_env: Vec<(OsString, OsString)>,
     run_key: String,
+    ratchet: Option<RatchetBase>,
 }
 
 impl TemperSettings {
@@ -149,7 +171,9 @@ impl TemperSettings {
             ("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()),
             ("GIT_CEILING_DIRECTORIES".into(), ceiling),
         ]);
-        let scan_args = [script]
+        // The scan's argv keeps its own copy of the script path; `gates-lint` builds its argv
+        // from `script`.
+        let scan_args = [script.clone()]
             .into_iter()
             .chain(SCAN.map(str::to_owned))
             .collect();
@@ -157,10 +181,40 @@ impl TemperSettings {
             node,
             pinned,
             head_tree,
+            script,
             scan_args,
             scan_env,
             run_key,
+            ratchet: None,
         })
+    }
+
+    /// These settings, able to run `gates-lint`: temper's ratchet runs against `ratchet.base`
+    /// and is believed only when its base is `ratchet.merge_base`. Without it, `gates-lint`
+    /// is [`TemperError::NoRatchetBase`].
+    #[must_use]
+    pub fn with_ratchet(self, ratchet: RatchetBase) -> Self {
+        Self {
+            ratchet: Some(ratchet),
+            ..self
+        }
+    }
+
+    /// `<pinned>/temper.mjs baseline --check --locked --base <base> --findings-out <out>`, when
+    /// a ratchet base is set.
+    fn lint_args(&self) -> Option<Vec<String>> {
+        let base = self.ratchet.as_ref()?.base.as_str();
+        let args = [
+            &self.script,
+            "baseline",
+            "--check",
+            "--locked",
+            "--base",
+            base,
+            "--findings-out",
+            lint::FINDINGS_OUT,
+        ];
+        Some(args.map(str::to_owned).to_vec())
     }
 }
 
@@ -201,25 +255,48 @@ type ErrorOf<S, R> = TemperError<<S as CaptureSupervisor>::Error, <R as Revision
 impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R> {
     type Error = ErrorOf<S, R>;
 
-    /// Runs the Z2s checks and reports them as one `assay.findings/1` document that concludes
-    /// `fail` when `raised`, `exception`, a blind spot or the gate-config diff found anything.
+    /// In `gates-static`, runs the Z2s checks and reports them as one `assay.findings/1`
+    /// document that concludes `fail` when `raised`, `exception`, a blind spot, the gate-config
+    /// diff or a step 4 check found anything. In `gates-lint`, runs the pinned `baseline
+    /// --check` and the declared `lint` steps, and concludes `fail` when the ratchet fails, a
+    /// `raised` or unadmitted `exception` entry is reported, or a step exits non-zero; a run
+    /// that does not exit, or a `baseline --check` exit other than 0 or 1, is reported as that
+    /// termination.
     ///
     /// # Errors
     ///
-    /// [`TemperError`] without running anything when `plugin` is not temper or `job` is not
-    /// `gates-static`; and when a file the checks need is missing, not a regular file or
-    /// unparsable, the head tree cannot be read, the scan cannot run, does not exit 0 or 1 or
-    /// prints unreadable output, or the pinned copy cannot be read.
+    /// [`TemperError`] without running anything when `plugin` is not temper, `job` is
+    /// `gates-test`, or `gates-lint` has no [`RatchetBase`]; when a file the checks need is
+    /// missing, not a regular file or unparsable, the head tree cannot be read, a process
+    /// cannot run, the scan does not exit 0 or 1 or prints unreadable output, or the pinned
+    /// copy cannot be read; and in `gates-lint` when temper's findings document is unusable
+    /// or its ratchet is degraded ([`TemperError::RatchetDegraded`]).
     fn run(&mut self, plugin: &Plugin, job: GateJob) -> Result<GateRun, Self::Error> {
-        let Adapter::Temper { pin, .. } = plugin.adapter() else {
+        let Adapter::Temper { pin, steps } = plugin.adapter() else {
             return Err(TemperError::NotTemper {
                 plugin: plugin.name().as_str().to_owned(),
             });
         };
-        if job != GateJob::Static {
-            return Err(TemperError::OutsideStatic { job });
-        }
         let pin = pin.to_string();
+        match job {
+            GateJob::Static => self.run_static(plugin, pin),
+            GateJob::Build(BuildJob::Lint) => self.run_lint(plugin, pin, steps),
+            GateJob::Build(BuildJob::Test) => Err(TemperError::UnsupportedJob { job }),
+        }
+    }
+
+    /// [`GateError::RatchetDegraded`] for a degraded ratchet, [`GateError::NotRun`] otherwise.
+    fn gate_error(error: &Self::Error) -> GateError {
+        match error {
+            TemperError::RatchetDegraded { .. } => GateError::RatchetDegraded,
+            _ => GateError::NotRun,
+        }
+    }
+}
+
+impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
+    /// The Z2s checks, steps 1-4.
+    fn run_static(&mut self, plugin: &Plugin, pin: String) -> Result<GateRun, ErrorOf<S, R>> {
         let allowlist = self.allowlist()?;
         let mut failing = self.raised()?;
         failing.extend(self.gate_config(&allowlist)?);
@@ -253,6 +330,17 @@ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R> 
             GateConclusion::Fail
         };
         failing.extend(drift);
+        self.document(plugin, pin, (conclusion, failing))
+    }
+
+    /// The run's `assay.findings/1` document: `plugin` at `pin` concludes `conclusion` with
+    /// `findings`, as a clean exit.
+    fn document(
+        &self,
+        plugin: &Plugin,
+        pin: String,
+        (conclusion, findings): (GateConclusion, Vec<Finding>),
+    ) -> Result<GateRun, ErrorOf<S, R>> {
         let document = FindingsDocument {
             schema: FindingsSchema::V1,
             source: Source {
@@ -264,7 +352,7 @@ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R> 
                 run_key: self.settings.run_key.clone(),
             },
             conclusion: Some(conclusion),
-            findings: failing,
+            findings,
             stats: None,
         };
         let bytes = serde_json::to_vec(&document).map_err(TemperError::Document)?;
@@ -273,9 +361,6 @@ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R> 
             document: GateDocument::Written(bytes),
         })
     }
-}
-
-impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
     /// Step 1: the baseline diff, counts and crates.
     fn raised(&self) -> Result<Vec<Finding>, ErrorOf<S, R>> {
         let base = self.required(Revision::Base, baseline::PATH)?;

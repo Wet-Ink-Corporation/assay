@@ -169,7 +169,8 @@ fn admitted(request: &Request, analysis: &Analysis<'_>, allowlist: &Allowlist) -
     named && all_admitted
 }
 
-fn unadmitted(request: Request) -> Finding {
+/// The `exception` finding for `request`, which base does not admit.
+pub(super) fn unadmitted(request: Request) -> Finding {
     let lint = request
         .lint
         .as_deref()

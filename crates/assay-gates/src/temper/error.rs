@@ -1,5 +1,6 @@
 //! Why the temper adapter produced no [`GateRun`](assay_app::GateRun). Every one fails closed:
-//! the `gate` use case records it as `gate-error:not-run`, never as a pass.
+//! the `gate` use case records it as `gate-error:not-run`, or a degraded ratchet as
+//! `gate-error:ratchet-degraded`, never as a pass.
 
 use std::io;
 use std::path::PathBuf;
@@ -7,6 +8,7 @@ use std::path::PathBuf;
 use assay_app::{GateJob, Termination};
 use thiserror::Error;
 
+use super::ratchet::RatchetDegradation;
 use crate::revision::Revision;
 
 /// Why the temper adapter did not conclude, generic over the supervisor's error `S` and the
@@ -19,11 +21,47 @@ pub enum TemperError<S, R> {
         /// The plugin.
         plugin: String,
     },
-    /// The job is not `gates-static`: the Z2b part of the adapter is not built yet.
-    #[error("the temper adapter runs only in gates-static, not in {job}")]
-    OutsideStatic {
+    /// The job is `gates-test`, whose declared steps are not built yet (#67).
+    #[error("the temper adapter does not run in {job} yet")]
+    UnsupportedJob {
         /// The job asked for.
         job: GateJob,
+    },
+    /// `gates-lint` was asked for without the base SHA and the merge base Z2s computed
+    /// ([`TemperSettings::with_ratchet`](super::TemperSettings::with_ratchet)).
+    #[error("the temper adapter has no ratchet base for gates-lint")]
+    NoRatchetBase,
+    /// The ratchet did not diff against the expected merge base: recorded as
+    /// `gate-error:ratchet-degraded`, never believed.
+    #[error("the temper ratchet is degraded: {why}")]
+    RatchetDegraded {
+        /// What gave it away.
+        why: RatchetDegradation,
+    },
+    /// The findings document could not be cleared before the run or read after it.
+    #[error("could not prepare or read the temper findings document {}", path.display())]
+    FindingsOut {
+        /// The document's path.
+        path: PathBuf,
+        /// The file system's error.
+        #[source]
+        source: io::Error,
+    },
+    /// The findings document is absent, not a regular file, too large, not the shape temper
+    /// 1.3.0 writes, or disagrees with temper's exit code; the detail never quotes it.
+    #[error("the temper findings document is unusable: {detail}")]
+    FindingsOutput {
+        /// What was wrong.
+        detail: String,
+    },
+    /// The supervisor could not run `baseline --check` or a declared step.
+    #[error("could not run {process} in gates-lint")]
+    Lint {
+        /// `baseline --check`, or the step's name.
+        process: String,
+        /// The supervisor's error.
+        #[source]
+        source: S,
     },
     /// A file or the tree of the PR could not be read.
     #[error("could not read {path} at {revision}")]

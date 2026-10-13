@@ -30,8 +30,15 @@ pub trait GateRunner {
     /// # Errors
     ///
     /// Returns [`Self::Error`] when the gate could not be run; the use case records that as
-    /// [`GateError::NotRun`], never as a pass.
+    /// [`Self::gate_error`] of it, never as a pass.
     fn run(&mut self, plugin: &Plugin, job: GateJob) -> Result<GateRun, Self::Error>;
+
+    /// The gate error a failed [`run`](Self::run) is recorded as: [`GateError::NotRun`] unless
+    /// the runner names a more precise one (the temper adapter's degraded ratchet is
+    /// [`GateError::RatchetDegraded`]).
+    fn gate_error(_error: &Self::Error) -> GateError {
+        GateError::NotRun
+    }
 }
 
 /// The raw facts of one gate run, before assay believes any of them.
@@ -120,6 +127,11 @@ pub enum GateError {
     /// A required gate reported nothing.
     #[error("gate-error:skipped")]
     Skipped,
+    /// The temper ratchet did not diff against the expected merge base (03 §2.1 step 5): its
+    /// mode is not `diff+totals`, a note says only the totals were compared, or its base is
+    /// not the merge base assay computed.
+    #[error("gate-error:ratchet-degraded")]
+    RatchetDegraded,
 }
 
 impl GateError {
@@ -135,6 +147,7 @@ impl GateError {
             Self::InvalidDocument => Cow::Borrowed("invalid-document"),
             Self::NotRun => Cow::Borrowed("not-run"),
             Self::Skipped => Cow::Borrowed("skipped"),
+            Self::RatchetDegraded => Cow::Borrowed("ratchet-degraded"),
         }
     }
 }
@@ -176,7 +189,7 @@ pub fn run_gates<R: GateRunner>(
         .map(|plugin| {
             let classified = runner
                 .run(plugin, job)
-                .map_err(|error| Rejected::because(GateError::NotRun, error.to_string()))
+                .map_err(|error| Rejected::because(R::gate_error(&error), error.to_string()))
                 .and_then(|run| classify(plugin.name(), run, validator));
             let (outcome, document, cause) = match classified {
                 Ok((conclusion, document)) => {
@@ -322,6 +335,7 @@ mod tests {
             GateError::InvalidDocument,
             GateError::NotRun,
             GateError::Skipped,
+            GateError::RatchetDegraded,
         ];
 
         for error in errors {
