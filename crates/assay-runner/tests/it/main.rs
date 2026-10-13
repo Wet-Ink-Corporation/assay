@@ -5,5 +5,6 @@ mod canary;
 mod headless;
 mod init;
 mod replay;
+mod status;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod support;
