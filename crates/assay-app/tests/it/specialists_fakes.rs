@@ -230,6 +230,7 @@ pub(crate) fn bundle() -> Result<PromptBundle, Box<dyn Error>> {
         combined: instruction(Role::Combined).to_owned(),
         combined_micro: instruction(Role::CombinedMicro).to_owned(),
         verifier: "VERIFIER".to_owned(),
+        verifier_carried: "VERIFIER-CARRIED".to_owned(),
         coordinator: "COORDINATOR".to_owned(),
     })?)
 }

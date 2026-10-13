@@ -146,7 +146,7 @@ pub struct CoordinateRequest<'a> {
 ///     system: text("system"), bugs: text("bugs"), security: text("security"),
 ///     design: text("design"), meta: text("meta"), combined: text("combined"),
 ///     combined_micro: text("micro"), verifier: text("verifier"),
-///     coordinator: text("coordinator"),
+///     verifier_carried: text("verifier-carried"), coordinator: text("coordinator"),
 /// })?;
 ///
 /// let coordinated = coordinate(&OneGroup, CoordinateRequest {

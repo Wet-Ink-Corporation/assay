@@ -31,6 +31,7 @@ fn v1_files() -> Result<BundleFiles, Box<dyn Error>> {
         combined: read(BundleFile::Instruction(Role::Combined))?,
         combined_micro: read(BundleFile::Instruction(Role::CombinedMicro))?,
         verifier: read(BundleFile::Verifier)?,
+        verifier_carried: read(BundleFile::CarriedVerifier)?,
         coordinator: read(BundleFile::Coordinator)?,
     })
 }
@@ -45,6 +46,7 @@ fn small_files() -> BundleFiles {
         combined: "COMBINED".to_owned(),
         combined_micro: "MICRO".to_owned(),
         verifier: "VERIFIER".to_owned(),
+        verifier_carried: "VERIFIER-CARRIED".to_owned(),
         coordinator: "COORDINATOR".to_owned(),
     }
 }
@@ -60,6 +62,7 @@ fn with_char_changed(mut files: BundleFiles, file: BundleFile, char_index: usize
         BundleFile::Instruction(Role::Combined) => &mut files.combined,
         BundleFile::Instruction(Role::CombinedMicro) => &mut files.combined_micro,
         BundleFile::Verifier => &mut files.verifier,
+        BundleFile::CarriedVerifier => &mut files.verifier_carried,
         BundleFile::Coordinator => &mut files.coordinator,
     };
     *text = text
@@ -253,6 +256,35 @@ fn the_verifier_is_sent_its_own_instruction() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn a_carried_finding_is_sent_the_carried_verifier_instruction() -> Result<(), Box<dyn Error>> {
+    let bundle = PromptBundle::new(small_files())?;
+
+    let instruction = bundle.carried_verifier_instruction();
+
+    assert_eq!(instruction, "VERIFIER-CARRIED");
+    Ok(())
+}
+
+#[test]
+fn an_empty_carried_verifier_instruction_is_refused_by_name() -> Result<(), Box<dyn Error>> {
+    let files = BundleFiles {
+        verifier_carried: " \n".to_owned(),
+        ..small_files()
+    };
+
+    let refused = PromptBundle::new(files);
+
+    let error = refused
+        .err()
+        .ok_or("an empty carried verifier instruction was accepted")?;
+    assert_eq!(
+        (error.file(), error.reason()),
+        (BundleFile::CarriedVerifier, BundleFileError::Empty)
+    );
+    Ok(())
+}
+
+#[test]
 fn an_empty_coordinator_instruction_is_refused_by_name() -> Result<(), Box<dyn Error>> {
     let files = BundleFiles {
         coordinator: String::new(),
@@ -311,6 +343,7 @@ fn the_bundle_hash_is_the_content_hash_of_its_files_under_their_paths() -> Resul
         ("v1/combined.md", files.combined.as_bytes()),
         ("v1/combined-micro.md", files.combined_micro.as_bytes()),
         ("v1/verifier.md", files.verifier.as_bytes()),
+        ("v1/verifier-carried.md", files.verifier_carried.as_bytes()),
         ("v1/coordinator.md", files.coordinator.as_bytes()),
     ]);
 
@@ -461,6 +494,27 @@ fn the_v1_verifier_instruction_names_every_verdict() -> Result<(), Box<dyn Error
     for verdict in VerifierVerdict::ALL {
         let code = format!("`{}`", verdict.code());
         assert!(instruction.contains(&code), "verifier.md lacks {code}");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_v1_carried_verifier_instruction_asks_04_s7s_question_and_names_every_verdict()
+-> Result<(), Box<dyn Error>> {
+    let bundle = PromptBundle::new(v1_files()?)?;
+
+    let instruction = bundle.carried_verifier_instruction();
+
+    assert!(
+        instruction.contains("is this defect still present at head?"),
+        "verifier-carried.md does not ask 04 §7's question"
+    );
+    for verdict in VerifierVerdict::ALL {
+        let code = format!("`{}`", verdict.code());
+        assert!(
+            instruction.contains(&code),
+            "verifier-carried.md lacks {code}"
+        );
     }
     Ok(())
 }

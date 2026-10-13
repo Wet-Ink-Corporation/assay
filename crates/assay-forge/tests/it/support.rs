@@ -3,8 +3,9 @@
 
 use std::env;
 use std::error::Error;
+use std::fmt::Write as _;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use assay_forge::git::{CommitSha, FileChange, GitEnvironment, GitLimits, ObjectRepo};
@@ -12,14 +13,19 @@ use tempfile::TempDir;
 
 /// A repository holding a base commit and a head commit on top of it.
 pub(crate) struct Fixture {
-    /// Keeps the scratch directory alive for the test.
-    _scratch: TempDir,
+    /// Keeps the scratch directory alive for the test, and holds the bare repository.
+    scratch: TempDir,
     pub(crate) repo: ObjectRepo,
     pub(crate) base: CommitSha,
     pub(crate) head: CommitSha,
 }
 
 impl Fixture {
+    /// The bare repository's directory.
+    pub(crate) fn git_dir(&self) -> PathBuf {
+        self.scratch.path().join("objects.git")
+    }
+
     /// The files the head commit changed, as numstat reports them.
     pub(crate) fn changes(&self) -> Result<Vec<FileChange>, Box<dyn Error>> {
         let outcome =
@@ -85,7 +91,7 @@ pub(crate) fn fixture_with_head(
     // HEAD names the PR, so a bare repository would read its `.gitattributes` by default.
     plain_git(&git_dir, &["symbolic-ref", "HEAD", "refs/heads/pr"])?;
     Ok(Fixture {
-        _scratch: scratch,
+        scratch,
         repo,
         base,
         head,
@@ -135,7 +141,119 @@ pub(crate) fn forked_fixture(
         ],
     )?;
     Ok(Fixture {
-        _scratch: scratch,
+        scratch,
+        repo,
+        base,
+        head,
+    })
+}
+
+/// A force-pushed PR: the base holds the files of [`fixture`]; the earlier head (`previous`,
+/// committed as "previous") and the head that replaced it ("head") both sit on the base, so the
+/// earlier head is reachable but not an ancestor of the head.
+pub(crate) struct Forced {
+    pub(crate) fixture: Fixture,
+    pub(crate) previous: CommitSha,
+}
+
+pub(crate) fn forced_fixture() -> Result<Forced, Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    let work = scratch.path().join("work");
+    plain_git(scratch.path(), &["init", "--quiet", "work"])?;
+    write(&work, "README.md", b"# fixture\n")?;
+    write(&work, "src/lib.rs", b"pub fn one() -> u8 {\n    1\n}\n")?;
+    let base = commit(&work, "base")?;
+    write(&work, "src/lib.rs", b"pub fn one() -> u8 {\n    2\n}\n")?;
+    let previous = commit(&work, "previous")?;
+    plain_git(&work, &["branch", "earlier"])?;
+    plain_git(&work, &["reset", "--quiet", "--hard", base.as_str()])?;
+    write(&work, "src/lib.rs", b"pub fn one() -> u8 {\n    3\n}\n")?;
+    let head = commit(&work, "head")?;
+
+    let git_dir = scratch.path().join("objects.git");
+    let repo = ObjectRepo::init(
+        &git_dir,
+        GitEnvironment::from_process_env()?,
+        GitLimits::default(),
+    )?;
+    let destination = git_dir.to_str().ok_or("scratch path is not UTF-8")?;
+    plain_git(
+        &work,
+        &[
+            "push",
+            "--quiet",
+            destination,
+            "HEAD:refs/heads/pr",
+            "earlier:refs/heads/earlier",
+        ],
+    )?;
+    Ok(Forced {
+        fixture: Fixture {
+            scratch,
+            repo,
+            base,
+            head,
+        },
+        previous,
+    })
+}
+
+/// A PR of `commits` empty commits on top of a base holding a README, written in one
+/// `git fast-import` so a long history is cheap to build.
+pub(crate) fn long_fixture(commits: u64) -> Result<Fixture, Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    let work = scratch.path().join("work");
+    plain_git(scratch.path(), &["init", "--quiet", "work"])?;
+    write(&work, "README.md", b"# fixture\n")?;
+    let base = commit(&work, "base")?;
+    let mut stream = String::new();
+    for n in 1..=commits {
+        let from = if n == 1 {
+            base.to_string()
+        } else {
+            format!(":{}", n - 1)
+        };
+        writeln!(
+            stream,
+            "commit refs/heads/long\nmark :{n}\ncommitter fixture <fixture@example.invalid> \
+             {n} +0000\ndata 6\nstep {}\nfrom {from}\n",
+            n % 10
+        )?;
+    }
+    let mut import = Command::new("git");
+    import.env_clear();
+    if let Some(path) = env::var_os("PATH") {
+        import.env("PATH", path);
+    }
+    let mut child = import
+        .current_dir(&work)
+        .args(["fast-import", "--quiet"])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    std::io::Write::write_all(
+        &mut child.stdin.take().ok_or("fast-import has no stdin")?,
+        stream.as_bytes(),
+    )?;
+    if !child.wait()?.success() {
+        return Err("git fast-import failed".into());
+    }
+    let head: CommitSha = plain_git(&work, &["rev-parse", "long"])?.trim().parse()?;
+
+    let git_dir = scratch.path().join("objects.git");
+    let repo = ObjectRepo::init(
+        &git_dir,
+        GitEnvironment::from_process_env()?,
+        GitLimits::default(),
+    )?;
+    let destination = git_dir.to_str().ok_or("scratch path is not UTF-8")?;
+    plain_git(
+        &work,
+        &["push", "--quiet", destination, "long:refs/heads/pr"],
+    )?;
+    Ok(Fixture {
+        scratch,
         repo,
         base,
         head,

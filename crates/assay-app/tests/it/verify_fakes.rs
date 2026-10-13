@@ -9,8 +9,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use assay_app::{
-    BundleFiles, CarriedFinding, FindingRef, InitReadError, ModelCall, ModelOutcome, ModelResult,
-    ModelRunner, Placement, PromptBundle, Structured, ValidFinding, VerifierTier, VerifyRequest,
+    BundleFiles, CarriedFinding, CarriedParts, FindingRef, InitReadError, ModelCall, ModelOutcome,
+    ModelResult, ModelRunner, Placement, PromptBundle, Structured, ValidFinding, VerifierTier,
+    VerifyRequest,
 };
 use assay_domain::{Aeu, Class, Confidence, Finding, FindingKind, Severity};
 use serde_json::{Value, json};
@@ -103,6 +104,7 @@ pub(crate) fn bundle() -> Result<PromptBundle, Box<dyn Error>> {
         combined: "COMBINED".to_owned(),
         combined_micro: "MICRO".to_owned(),
         verifier: "VERIFIER".to_owned(),
+        verifier_carried: "VERIFIER-CARRIED".to_owned(),
         coordinator: "COORDINATOR".to_owned(),
     })?)
 }
@@ -184,14 +186,20 @@ pub(crate) fn finding_sure(
 /// A finding of `severity` open from an earlier run, titled `carried <index>`, now at line 40 of
 /// `src/moved.rs`.
 pub(crate) fn carried(index: usize, severity: Severity) -> Result<CarriedFinding, Box<dyn Error>> {
-    let mut earlier = finding(index, severity)?.finding;
-    earlier.line = NonZeroU64::new(40).ok_or("40 is not zero")?;
-    earlier.title = format!("carried {index}");
-    earlier.trigger = Some("an empty list reaches the index".to_owned());
-    Ok(CarriedFinding {
-        finding: earlier,
-        file_at_head: "src/moved.rs".to_owned(),
-    })
+    let earlier = finding(index, severity)?;
+    Ok(CarriedFinding::read(
+        CarriedParts {
+            fp: format!("{index:016x}").parse()?,
+            file: "src/moved.rs".to_owned(),
+            line: NonZeroU64::new(40).ok_or("40 is not zero")?,
+            class: earlier.finding.class,
+            severity,
+            title: format!("carried {index}"),
+            trigger: Some("an empty list reaches the index".to_owned()),
+            evidence: earlier.finding.evidence,
+        },
+        REPOSITORY,
+    )?)
 }
 
 /// The `claim` of each call `runner` was given, in order.

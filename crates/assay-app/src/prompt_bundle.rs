@@ -24,6 +24,9 @@ pub enum BundleFile {
     /// The verifier is not a [`Role`]: it writes verdicts, never findings, so validation must
     /// not accept a findings document in its name.
     Verifier,
+    /// The blind verifier's instruction for a finding carried from an earlier run, asking
+    /// whether the defect is still present at head (04 §7).
+    CarriedVerifier,
     /// The coordinator's instruction, sent after the findings it groups (04 §3, §4 step 7).
     /// Like the verifier it is not a [`Role`]: it answers with groups of finding ids, never
     /// findings of its own.
@@ -32,8 +35,9 @@ pub enum BundleFile {
 
 impl BundleFile {
     /// Every file, in the order the bundle hash covers them: the system prompt, each role's
-    /// instruction in roster order, then the verifier's, then the coordinator's.
-    pub const ALL: [Self; 9] = [
+    /// instruction in roster order, then the verifier's, the carried verifier's, then the
+    /// coordinator's.
+    pub const ALL: [Self; 10] = [
         Self::System,
         Self::Instruction(Role::Bugs),
         Self::Instruction(Role::Security),
@@ -42,6 +46,7 @@ impl BundleFile {
         Self::Instruction(Role::Combined),
         Self::Instruction(Role::CombinedMicro),
         Self::Verifier,
+        Self::CarriedVerifier,
         Self::Coordinator,
     ];
 
@@ -58,6 +63,7 @@ impl BundleFile {
             Self::Instruction(Role::Combined) => "v1/combined.md",
             Self::Instruction(Role::CombinedMicro) => "v1/combined-micro.md",
             Self::Verifier => "v1/verifier.md",
+            Self::CarriedVerifier => "v1/verifier-carried.md",
             Self::Coordinator => "v1/coordinator.md",
         }
     }
@@ -83,6 +89,8 @@ pub struct BundleFiles {
     pub combined_micro: String,
     /// [`BundleFile::Verifier`].
     pub verifier: String,
+    /// [`BundleFile::CarriedVerifier`].
+    pub verifier_carried: String,
     /// [`BundleFile::Coordinator`].
     pub coordinator: String,
 }
@@ -98,6 +106,7 @@ impl BundleFiles {
             BundleFile::Instruction(Role::Combined) => &self.combined,
             BundleFile::Instruction(Role::CombinedMicro) => &self.combined_micro,
             BundleFile::Verifier => &self.verifier,
+            BundleFile::CarriedVerifier => &self.verifier_carried,
             BundleFile::Coordinator => &self.coordinator,
         }
     }
@@ -213,6 +222,13 @@ impl PromptBundle {
     #[must_use]
     pub fn verifier_instruction(&self) -> &str {
         self.files.text(BundleFile::Verifier)
+    }
+
+    /// The blind verifier's instruction for a carried finding, sent after its claim: is the
+    /// defect still present at head (04 §7)?
+    #[must_use]
+    pub fn carried_verifier_instruction(&self) -> &str {
+        self.files.text(BundleFile::CarriedVerifier)
     }
 
     /// The coordinator's instruction, sent after the findings it groups (04 §4 step 7).

@@ -38,6 +38,10 @@ mod redaction;
 mod replay;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod replay_fakes;
+mod rereview_anchor;
+mod rereview_carried;
+mod rereview_settle;
+mod rereview_target;
 mod self_trust;
 mod session_init;
 mod shard;
