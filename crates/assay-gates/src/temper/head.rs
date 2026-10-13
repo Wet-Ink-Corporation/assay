@@ -17,11 +17,17 @@ use super::tokens::{Lexed, Source, Unlexable};
 use crate::revision::{EntryKind, TreeEntry};
 
 /// Whether `path` names Rust source: its extension is `rs` in any case, so a `.RS` file the
-/// scan's walk would pass over is still read here.
+/// scan's walk would pass over is still read here, or its file name is `.rs` in any case,
+/// which has no extension but which temper's `*.rs` walk scans and a target `path` can name
+/// (#177). Either way, a name that is not exactly `*.rs` with a stem is an `Extension` blind
+/// spot.
 pub(super) fn is_rust(path: &str) -> bool {
-    Path::new(path)
-        .extension()
+    let path = Path::new(path);
+    path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
+        || path
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(".rs"))
 }
 
 /// Whether `path` names a Cargo manifest, which decides the crate roots `layout.rs` reads.
@@ -41,8 +47,8 @@ pub(super) enum Why {
     SkippedDirectory,
     /// A submodule: its files are not in this tree.
     Submodule,
-    /// A symlinked Rust file or `Cargo.toml`, or a symlink that does not resolve, inside the tree and through
-    /// real directories only, to a regular file.
+    /// A symlinked Rust file or `Cargo.toml`, or a symlink that does not resolve, inside the
+    /// tree and through real directories only, to a regular file.
     Symlink,
     /// A Rust file whose extension is not exactly `.rs` (`lib.RS`), which the scan's walk
     /// skips.

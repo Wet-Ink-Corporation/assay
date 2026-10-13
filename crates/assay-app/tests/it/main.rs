@@ -32,6 +32,9 @@ mod publish_persist;
 mod publish_support;
 mod read_limits;
 mod redaction;
+mod replay;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod replay_fakes;
 mod self_trust;
 mod session_init;
 mod spec;
@@ -39,3 +42,7 @@ mod spec;
 mod support;
 mod tiering;
 mod validation;
+mod verify;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod verify_fakes;
+mod verify_full;

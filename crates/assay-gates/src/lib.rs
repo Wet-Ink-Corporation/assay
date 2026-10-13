@@ -30,6 +30,6 @@ pub use exec::{
 };
 pub use revision::{EntryKind, Revision, RevisionFiles, TreeEntry};
 pub use temper::{
-    CompileTimeReach, TemperAdapter, TemperError, TemperPaths, TemperSettings, TemperSettingsError,
-    compile_time_reach,
+    CompileTimeReach, RatchetBase, RatchetDegradation, TemperAdapter, TemperError, TemperPaths,
+    TemperSettings, TemperSettingsError, compile_time_reach,
 };
