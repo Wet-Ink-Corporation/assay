@@ -10,80 +10,89 @@ use crate::contract::parse_json_strict;
 
 /// What may stand before each byte of hex written one byte at a time, lowercase (after
 /// folding): `\u00`, `u+00` (`U+0073`), `&#x`, `0x`, `\x` and `%`.
-const BYTE_PREFIXES: [&[u8]; 6] = [b"\\u00", b"u+00", b"&#x", b"0x", b"\\x", b"%"];
+const BYTE_PREFIXES: [&str; 6] = ["\\u00", "u+00", "&#x", "0x", "\\x", "%"];
 
 /// The most decimal digits a character reference standing for one byte holds (`&#255;`).
 const MAX_BYTE_DIGITS: usize = 3;
 
 /// `text` as hex digits only: folded and lowercase, every [`BYTE_PREFIXES`] prefix deleted,
 /// each decimal character reference of a byte (`&#115;`) read as that byte's two hex digits,
-/// and every other character but `[0-9a-f]` dropped. `\x73\x6b`, `0x73, 0x6b`, `&#x73;`,
-/// `%73`, `s`, `U+0073` and `&#115;` all read `736b…`.
+/// each non-ASCII alphanumeric the folds left as a wildcard, and every other character but
+/// `[0-9a-f]` dropped. `\x73\x6b`, `0x73, 0x6b`, `&#x73;`, `%73`, `\u0073`, `U+0073` and
+/// `&#115;` all read `736b…`.
 ///
-/// Cost: linear; each step consumes at least one byte and tries a fixed set of prefixes.
+/// Cost: linear; each step consumes at least one character and tries a fixed set of prefixes.
 pub(super) fn hex_view(text: &str) -> Vec<u8> {
     let folded = super::fold(text);
-    let mut rest = folded.as_bytes();
+    let mut rest = folded.as_str();
     let mut view = Vec::with_capacity(rest.len());
-    while let Some((&first, tail)) = rest.split_first() {
+    while let Some(first) = rest.chars().next() {
         if let Some(after) = BYTE_PREFIXES
             .iter()
-            .find_map(|prefix| rest.strip_prefix(*prefix))
+            .find_map(|prefix| rest.strip_prefix(prefix))
         {
             rest = after;
         } else if let Some((byte, after)) = decimal_reference(rest) {
             view.extend(super::encoding::hex(&[byte]).bytes());
             rest = after;
         } else {
-            if first.is_ascii_hexdigit() {
-                view.push(first);
+            if let Some(symbol) = super::symbol_of(first)
+                && (symbol == super::WILDCARD || symbol.is_ascii_hexdigit())
+            {
+                view.push(symbol);
             }
-            rest = tail;
+            rest = after_first(rest);
         }
     }
     view
 }
 
+/// `text` without its first character.
+fn after_first(text: &str) -> &str {
+    let mut chars = text.chars();
+    chars.next();
+    chars.as_str()
+}
+
 /// The byte a decimal character reference at the start of `text` stands for (`&#` and one to
 /// three digits of a value below 256; the `;` is optional, as browsers read it), and the text
 /// after it.
-fn decimal_reference(text: &[u8]) -> Option<(u8, &[u8])> {
-    let digits = text.strip_prefix(b"&#")?;
+fn decimal_reference(text: &str) -> Option<(u8, &str)> {
+    let digits = text.strip_prefix("&#")?;
     let count = digits
-        .iter()
+        .bytes()
         .take(MAX_BYTE_DIGITS)
-        .take_while(|byte| byte.is_ascii_digit())
+        .take_while(u8::is_ascii_digit)
         .count();
     let (number, after) = digits.split_at_checked(count)?;
     if number.is_empty() {
         return None;
     }
-    let byte = number.iter().try_fold(0_u8, |value, digit| {
+    let byte = number.bytes().try_fold(0_u8, |value, digit| {
         value.checked_mul(10)?.checked_add(digit.checked_sub(b'0')?)
     })?;
-    Some((byte, after.strip_prefix(b";").unwrap_or(after)))
+    Some((byte, after.strip_prefix(';').unwrap_or(after)))
 }
 
 /// Whether `c` is drawn like an ASCII letter or digit from a block that normalisation drops
 /// rather than reads back: Mathematical Alphanumeric Symbols, Enclosed Alphanumerics and their
-/// supplement, superscript and subscript letters, small capitals and modifier letters, a Latin
-/// letter with no ASCII base, or any other non-ASCII numeric character. Such text is refused,
-/// not mapped (wi-b5affa). Superscript and subscript digits are read as ASCII digits instead.
+/// supplement, superscript and subscript letters, small capitals and modifier letters, or any
+/// other non-ASCII numeric character. Such text is refused, not mapped (wi-b5affa).
+/// Superscript and subscript digits are read as ASCII digits instead; letters of other scripts
+/// are wildcards in the token windows rather than refusals.
 pub(super) fn is_obfuscated(c: char) -> bool {
     if super::latin::script_digit(c).is_some() {
         // Read as an ASCII digit (`O(n²)`), not refused.
         return false;
     }
-    super::latin::is_unmapped_latin(c)
-        || matches!(
-            c,
-            '\u{1d400}'..='\u{1d7ff}'
-                | '\u{2460}'..='\u{24ff}'
-                | '\u{1f100}'..='\u{1f1ff}'
-                | '\u{2070}'..='\u{209f}'
-                | '\u{1d00}'..='\u{1dbf}'
-        )
-        || (c.is_numeric() && !c.is_ascii_digit())
+    matches!(
+        c,
+        '\u{1d400}'..='\u{1d7ff}'
+            | '\u{2460}'..='\u{24ff}'
+            | '\u{1f100}'..='\u{1f1ff}'
+            | '\u{2070}'..='\u{209f}'
+            | '\u{1d00}'..='\u{1dbf}'
+    ) || (c.is_numeric() && !c.is_ascii_digit())
 }
 
 /// A document whose escapes could not be read back, so what it spells is unknown.
@@ -241,14 +250,12 @@ mod tests {
 
     #[test]
     fn refuses_lookalikes_but_not_letters_of_other_scripts_or_raised_digits() {
-        let refused = [
-            '𝐀', '𝐳', '𝟗', '①', '🄰', 'ⁿ', 'ₐ', 'ᴀ', 'ᵃ', '٣', '５', '½', 'ß', 'ł',
-        ];
-        let read = ['a', 'é', 'ạ', 'ж', 'Ω', '中', '7', '²', '⁴', '₄'];
+        let refused = ['𝐀', '𝐳', '𝟗', '①', '🄰', 'ⁿ', 'ₐ', 'ᴀ', 'ᵃ', '٣', '５', '½'];
+        let read = ['a', 'é', 'ạ', 'ß', 'ł', 'ж', 'Ω', '中', '7', '²', '⁴', '₄'];
 
         assert_eq!(
             (refused.map(is_obfuscated), read.map(is_obfuscated)),
-            ([true; 14], [false; 10])
+            ([true; 12], [false; 12])
         );
     }
 }

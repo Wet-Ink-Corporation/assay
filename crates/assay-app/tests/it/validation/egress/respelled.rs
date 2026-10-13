@@ -69,9 +69,9 @@ fn reads_fullwidth_digits_as_ascii_ones() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn flags_a_lookalike_alphanumeric_from_each_refused_block() -> Result<(), Box<dyn Error>> {
-    // Mathematical, circled, squared, superscript and subscript letters, small capital,
-    // non-ASCII digit, and Latin letters with no ASCII base.
-    let lookalikes = ["𝐳", "①", "🄰", "ⁿ", "ₐ", "ᴀ", "٣", "ß", "ø"];
+    // Mathematical, circled, squared, superscript and subscript letters, small capital and a
+    // non-ASCII digit.
+    let lookalikes = ["𝐳", "①", "🄰", "ⁿ", "ₐ", "ᴀ", "٣"];
     let findings: Vec<_> = lookalikes
         .iter()
         .map(|c| finding_with(json!({ "body": format!("see {c} here") })))
@@ -181,5 +181,61 @@ fn passes_superscript_and_subscript_digits_in_prose() -> Result<(), Box<dyn Erro
     let validated = z4(&[prose])?;
 
     assert_eq!(validated.egress, Vec::new());
+    Ok(())
+}
+
+/// `TOKEN` with each ASCII capital replaced by the letter of `script` at the same offset from
+/// `first` (Lisu U+A4D0, Cherokee U+13A0), lowercase letters and digits kept, spaced every 15.
+fn capitals_from(first: u32) -> String {
+    respelled(|c| {
+        c.is_ascii_uppercase()
+            .then(|| char::from_u32(first + (u32::from(c) - u32::from('A'))))
+            .flatten()
+    })
+}
+
+#[test]
+fn reads_the_token_with_lisu_capitals() -> Result<(), Box<dyn Error>> {
+    assert_eq!(kind_of(&capitals_from(0xa4d0))?, Some(EgressKind::Token));
+    Ok(())
+}
+
+#[test]
+fn reads_the_token_with_cherokee_capitals() -> Result<(), Box<dyn Error>> {
+    assert_eq!(kind_of(&capitals_from(0x13a0))?, Some(EgressKind::Token));
+    Ok(())
+}
+
+#[test]
+fn passes_german_nordic_and_polish_prose() -> Result<(), Box<dyn Error>> {
+    assert_eq!(
+        kind_of("Die Funktion hei\u{df}t gro\u{df}; see S\u{f8}ren and \u{141}ukasz.")?,
+        None
+    );
+    Ok(())
+}
+
+#[test]
+fn passes_a_cjk_paragraph() -> Result<(), Box<dyn Error>> {
+    assert_eq!(
+        kind_of(
+            "\u{8fd9}\u{4e2a}\u{51fd}\u{6570}\u{5728}\u{8f93}\u{5165}\u{4e3a}\u{7a7a}\u{65f6}\u{4f1a}\u{5d29}\u{6e83}\u{ff0c}\u{8bf7}\u{5148}\u{68c0}\u{67e5}\u{957f}\u{5ea6}\u{3002}"
+        )?,
+        None
+    );
+    Ok(())
+}
+
+#[test]
+fn needs_six_ascii_symbols_in_a_window_holding_lookalikes() -> Result<(), Box<dyn Error>> {
+    // The token's first twelve normalised symbols are `skantoat01zq`; `\u{4e2d}` stands for any
+    // character no fold reads back.
+    let six = "s\u{4e2d}a\u{4e2d}t\u{4e2d}a\u{4e2d}0\u{4e2d}z\u{4e2d}";
+    let five = "s\u{4e2d}a\u{4e2d}t\u{4e2d}a\u{4e2d}0\u{4e2d}\u{4e2d}\u{4e2d}";
+
+    assert_eq!(
+        (kind_of(six)?, kind_of(five)?),
+        (Some(EgressKind::Token), None)
+    );
     Ok(())
 }

@@ -1,6 +1,6 @@
 //! Precomposed Latin letters read as their base ASCII letter, and superscript and subscript
 //! digits read as ASCII digits, so a token respelled with diacritics or raised digits still
-//! normalises to itself. Latin letters with no ASCII base are refused instead (wi-b5affa).
+//! normalises to itself. Letters with no ASCII base become wildcards (see `windows`).
 
 /// Every letter in Latin-1 Supplement, Latin Extended-A and -B (U+00C0-024F) and Latin
 /// Extended Additional (U+1E00-1EFF) whose canonical decomposition (NFD) is an ASCII letter
@@ -501,38 +501,12 @@ const PRECOMPOSED: [(char, &str); 488] = [
     ('\u{1ef9}', "y\u{303}"),
 ];
 
-/// The Latin blocks whose letters are refused when [`PRECOMPOSED`] has no base for them:
-/// ordinal indicators, Latin-1 Supplement and Extended-A and -B, IPA Extensions, Latin Extended
-/// Additional, -C, -D and -E, and the Latin ligatures.
-const LATIN_RANGES: [(char, char); 9] = [
-    ('\u{aa}', '\u{aa}'),
-    ('\u{ba}', '\u{ba}'),
-    ('\u{c0}', '\u{2af}'),
-    ('\u{1e00}', '\u{1eff}'),
-    ('\u{2c60}', '\u{2c7f}'),
-    ('\u{a720}', '\u{a7ff}'),
-    ('\u{ab30}', '\u{ab6f}'),
-    ('\u{fb00}', '\u{fb06}'),
-    ('\u{1df00}', '\u{1dfff}'),
-];
-
 /// `c` with a precomposed Latin letter read as its base ASCII letter (case kept) and a
 /// superscript or subscript digit as its ASCII digit; any other character unchanged.
 ///
 /// Cost: a binary search of [`PRECOMPOSED`], a constant.
 pub(super) fn fold_char(c: char) -> char {
     base_letter(c).or_else(|| script_digit(c)).unwrap_or(c)
-}
-
-/// Whether `c` is a non-ASCII letter of a Latin block that [`PRECOMPOSED`] cannot read back
-/// (`ß`, `ø`, `ł`, `ɐ`): drawn from the Latin script, but with no ASCII base to compare.
-pub(super) fn is_unmapped_latin(c: char) -> bool {
-    !c.is_ascii()
-        && c.is_alphabetic()
-        && LATIN_RANGES
-            .iter()
-            .any(|&(first, last)| (first..=last).contains(&c))
-        && base_letter(c).is_none()
 }
 
 /// The ASCII digit a superscript or subscript digit (`²`, `³`, `¹`, U+2070-2089) is drawn as.
@@ -560,7 +534,7 @@ fn base_letter(c: char) -> Option<char> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PRECOMPOSED, fold_char, is_unmapped_latin, script_digit};
+    use super::{PRECOMPOSED, fold_char, script_digit};
 
     #[test]
     fn reads_a_letter_of_each_block_as_its_base() {
@@ -627,20 +601,6 @@ mod tests {
                 Some('9'),
                 None
             ]
-        );
-    }
-
-    #[test]
-    fn refuses_latin_letters_without_an_ascii_base_only() {
-        let unmapped = ['\u{df}', '\u{f8}', '\u{142}', '\u{250}', '\u{fb01}'];
-        let other = ['\u{e9}', 'a', '\u{436}', '\u{d7}', '\u{4e2d}'];
-
-        assert_eq!(
-            (
-                unmapped.map(is_unmapped_latin),
-                other.map(is_unmapped_latin)
-            ),
-            ([true; 5], [false; 5])
         );
     }
 }

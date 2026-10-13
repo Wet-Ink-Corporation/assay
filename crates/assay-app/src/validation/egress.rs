@@ -11,6 +11,7 @@
 mod encoding;
 mod latin;
 mod views;
+mod windows;
 
 use std::collections::HashSet;
 use std::fmt;
@@ -25,6 +26,21 @@ use crate::config::CommitId;
 /// How many normalised characters of the token a window holds (03 §3: at least 12). A longer
 /// match holds a window of this length, so only this length is looked for.
 const WINDOW: usize = 12;
+
+/// What a non-ASCII alphanumeric left after the folds becomes in a view: a symbol that matches
+/// any of the token's, so a lookalike from a script no table covers cannot hide the token
+/// (wi-b5affa: refused by construction, not modelled script by script).
+const WILDCARD: u8 = b'*';
+
+/// The fewest ASCII symbols a normalised window holding a wildcard needs to match. Folded
+/// symbols are one of 36, so a chance match of six is 36^-6 (about 5e-10) per token window
+/// compared; a lookalike attack must then replace more than half of every twelve characters,
+/// while respelling the capitals of a base64 token leaves about 58% of them ASCII.
+const MIN_KNOWN: usize = 6;
+
+/// The fewest hex symbols a hex-view window holding a wildcard needs: hex is one of 16, so eight
+/// give the same odds as [`MIN_KNOWN`] (16^-8 is about 2e-10).
+const MIN_KNOWN_HEX: usize = 8;
 
 /// The fewest characters of a run that must occur in the tree or base `REVIEW.md` (03 §3).
 const MIN_UNEXPLAINED_RUN: usize = 20;
@@ -48,8 +64,8 @@ pub enum EgressKind {
     UnexplainedRun,
     /// A character drawn like an ASCII letter or digit from a block normalisation cannot read
     /// back: mathematical alphanumerics, enclosed alphanumerics, superscript and subscript
-    /// letters, small capitals and modifier letters, Latin letters with no ASCII base (`ß`,
-    /// `ø`), and non-ASCII numeric characters other than superscript and subscript digits.
+    /// letters, small capitals and modifier letters, and non-ASCII numeric characters other
+    /// than superscript and subscript digits. Other non-ASCII letters are wildcards instead.
     Obfuscated,
     /// In an artifact: a token-shaped string the tree does not explain (a credential prefix, a
     /// private key header, an AWS access key id, or a long run mixing letters and digits that
@@ -124,7 +140,7 @@ pub enum KnownRunsError {
 /// The OAuth token, held as the windows the scan looks for. Z3 holds it; Z4 does not (05 §4).
 pub struct EgressToken {
     /// Every window of the token's normalised forms: plain, base64 at three alignments, hex.
-    windows: HashSet<[u8; WINDOW]>,
+    windows: windows::TokenWindows,
 }
 
 impl fmt::Debug for EgressToken {
@@ -150,7 +166,9 @@ impl EgressToken {
                 max: MAX_TOKEN_BYTES,
             });
         }
-        let plain = normalise(token);
+        let mut plain = normalise(token);
+        // A token is ASCII; anything else in it is no symbol to look for.
+        plain.retain(|&symbol| symbol != WILDCARD);
         if plain.len() < WINDOW {
             return Err(EgressTokenError::TooShort { min: WINDOW });
         }
@@ -161,19 +179,18 @@ impl EgressToken {
                 .filter_map(|skip| bytes.get(skip..))
                 .map(|from| normalise(&encoding::base64_whole_groups(from))),
         );
-        let windows = forms
-            .iter()
-            .flat_map(|form| form.array_windows::<WINDOW>().copied())
-            .collect();
-        Ok(Self { windows })
+        Ok(Self {
+            windows: windows::TokenWindows::new(&forms),
+        })
     }
 
-    /// Whether `text` holds one of the token's windows, normalised or read as per-byte hex.
+    /// Whether `text` holds one of the token's windows, normalised or read as per-byte hex,
+    /// wildcards matching any symbol.
     fn is_in(&self, text: &str) -> bool {
-        [normalise(text), views::hex_view(text)].iter().any(|view| {
-            view.array_windows::<WINDOW>()
-                .any(|window| self.windows.contains(window))
-        })
+        self.windows.matched_in(&normalise(text), MIN_KNOWN)
+            || self
+                .windows
+                .matched_in(&views::hex_view(text), MIN_KNOWN_HEX)
     }
 }
 
@@ -319,14 +336,23 @@ impl<'t> EgressScan<'t> {
     }
 }
 
-/// `text` as the token windows are compared with it: [`fold`]ed, then only ASCII letters and
-/// digits kept. Separators, case, and the difference between the two base64 alphabets are
-/// gone.
+/// `text` as the token windows are compared with it: [`fold`]ed, then each ASCII letter or
+/// digit kept, each other alphanumeric a [`WILDCARD`], and everything else dropped.
+/// Separators, case, and the difference between the two base64 alphabets are gone.
 fn normalise(text: &str) -> Vec<u8> {
-    fold(text)
-        .bytes()
-        .filter(u8::is_ascii_alphanumeric)
-        .collect()
+    fold(text).chars().filter_map(symbol_of).collect()
+}
+
+/// What `c`, already folded, is in a view: itself if an ASCII letter or digit, a [`WILDCARD`]
+/// if another alphanumeric, nothing otherwise.
+fn symbol_of(c: char) -> Option<u8> {
+    if c.is_ascii_alphanumeric() {
+        u8::try_from(c).ok()
+    } else if c.is_alphanumeric() {
+        Some(WILDCARD)
+    } else {
+        None
+    }
 }
 
 /// `text` as a reader sees it, for the scan: the screen's fold (invisible characters dropped,
@@ -408,6 +434,16 @@ mod tests {
                 })
             )
         );
+    }
+
+    #[test]
+    fn needs_eight_hex_symbols_in_a_hex_window_holding_lookalikes() {
+        // `sk-ant` is `736b2d616e74`; `\u{4e2d}` is a wildcard where a hex digit was.
+        let token = EgressToken::new("sk-ant-oat01-secretsecret").expect("long enough");
+        let eight = "\\x7\u{4e2d}\\x6\u{4e2d}\\x2\u{4e2d}\\x6\u{4e2d}\\x6e\\x74";
+        let seven = "\\x7\u{4e2d}\\x6\u{4e2d}\\x2\u{4e2d}\\x6\u{4e2d}\\x6\u{4e2d}\\x74";
+
+        assert_eq!((token.is_in(eight), token.is_in(seven)), (true, false));
     }
 
     #[test]
