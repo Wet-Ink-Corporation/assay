@@ -17,6 +17,7 @@ mod plan;
 mod preflight;
 mod prompt_bundle;
 mod publish;
+mod replay;
 mod session_init;
 mod tiering;
 
@@ -81,13 +82,19 @@ pub use publish::{
     SUMMARY_MARKER, Stale, SummaryComment, Target, Unlock, Verdict, VerdictForge, Written, publish,
     publish_findings,
 };
+pub use replay::{
+    BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
+    ReplayRequest, Replayed, RunField, StoredBundle, replay_decision,
+};
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};
 
 mod validation;
 pub use validation::{
-    Change, DiffPaths, FileDiff, FindingRef, Hunk, Inputs, LineSpan, Placement, SuppressRules,
-    Transition, ValidFinding, Validated, validate,
+    Change, DiffPaths, EgressHit, EgressKind, EgressScan, EgressToken, EgressTokenError, FileDiff,
+    FindingRef, FreeTextField, Hunk, Inputs, KnownRuns, KnownRunsError, LineSpan,
+    MAX_INDEXED_BYTES, MAX_TOKEN_BYTES, Placement, SuppressRules, Transition, ValidFinding,
+    Validated, validate,
 };
 
 mod verify;

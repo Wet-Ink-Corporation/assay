@@ -76,9 +76,9 @@ pub struct VerifyRequest<'a> {
 /// use std::time::Duration;
 ///
 /// use assay_app::{
-///     BundleFiles, Change, ContractValidator, InitReadError, Inputs, ModelCall, ModelOutcome,
-///     ModelResult, ModelRunner, PromptBundle, Structured, SuppressRules, VerifierTier,
-///     VerifyRequest, validate, verify,
+///     BundleFiles, Change, ContractValidator, EgressScan, InitReadError, Inputs, KnownRuns,
+///     ModelCall, ModelOutcome, ModelResult, ModelRunner, PromptBundle, Structured,
+///     SuppressRules, VerifierTier, VerifyRequest, validate, verify,
 /// };
 /// use assay_domain::{Aeu, Finding, Severity, SupportOutcome, VerifierVerdict};
 /// use serde_json::json;
@@ -114,12 +114,14 @@ pub struct VerifyRequest<'a> {
 ///     head_files: BTreeMap::from([("src/lib.rs".to_owned(), lib.to_owned())]),
 ///     ..Change::default()
 /// };
+/// let egress = EgressScan::without_token(KnownRuns::index([lib.as_bytes()])?);
 /// let inputs = Inputs {
 ///     repository: "owner/repo",
 ///     change: &change,
 ///     suppress: &NoRules,
 ///     dismissals: &[],
 ///     gate_findings: &[],
+///     egress: &egress,
 /// };
 /// let document = br#"{"schema": "assay.findings/1",
 ///     "source": {"kind": "reviewer", "name": "claude", "version": "v", "role": "combined",

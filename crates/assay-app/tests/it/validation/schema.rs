@@ -122,12 +122,13 @@ fn codes_with(changes: serde_json::Value) -> Result<Vec<Disposition>, Box<dyn Er
     Ok(validated.transitions.iter().map(|t| t.code).collect())
 }
 
-// wi-641e1a: the schema leaves `rule` and `group_hint` unbounded; validation caps them.
+// wi-641e1a: the schema leaves `rule` and `group_hint` unbounded; validation caps them. The
+// texts are cut into short words: a run of 20 characters the tree lacks is an egress hit.
 #[test]
 fn rejects_a_rule_over_128_bytes_and_keeps_one_at_the_cap() -> Result<(), Box<dyn Error>> {
     let (over, at) = (
-        codes_with(json!({ "rule": "R".repeat(129) }))?,
-        codes_with(json!({ "rule": "R".repeat(128) }))?,
+        codes_with(json!({ "rule": format!("{}R", "R-".repeat(64)) }))?,
+        codes_with(json!({ "rule": "R-".repeat(64) }))?,
     );
 
     assert_eq!((over, at), (vec![Disposition::Schema], vec![]));
@@ -137,8 +138,8 @@ fn rejects_a_rule_over_128_bytes_and_keeps_one_at_the_cap() -> Result<(), Box<dy
 #[test]
 fn rejects_a_group_hint_over_100_characters() -> Result<(), Box<dyn Error>> {
     let (over, at) = (
-        codes_with(json!({ "group_hint": "\u{e9}".repeat(101) }))?,
-        codes_with(json!({ "group_hint": "\u{e9}".repeat(100) }))?,
+        codes_with(json!({ "group_hint": format!("{}\u{e9}", "\u{e9} ".repeat(50)) }))?,
+        codes_with(json!({ "group_hint": "\u{e9} ".repeat(50) }))?,
     );
 
     assert_eq!((over, at), (vec![Disposition::Schema], vec![]));

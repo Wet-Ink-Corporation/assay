@@ -43,6 +43,10 @@ const PROMPT_WINDOW: usize = 4;
 /// The shortest alphanumeric run with letters and digits that reads as a token or key.
 const TOKEN_RUN: usize = 32;
 
+/// How Anthropic API keys and OAuth tokens begin (`sk-ant-api03-`, `sk-ant-oat01-`); the rest of
+/// one holds `-` and `_`, so it need not form one long run.
+const CREDENTIAL_PREFIX: &[u8] = b"sk-ant-";
+
 /// The lengths of a hex SHA-1 and SHA-256 digest: commit and content ids, not secrets.
 const DIGEST_LENGTHS: [usize; 2] = [40, 64];
 
@@ -58,7 +62,8 @@ pub(super) enum Suspicion {
     Html,
     /// An `@mention` outside code.
     Mention,
-    /// A fenced block with the `suggestion` info string.
+    /// A fenced block whose info string is `suggestion`, or holds a `&` or `\` that could
+    /// spell it.
     SuggestionFence,
     /// A string shaped like a token or key.
     TokenShaped,
@@ -246,13 +251,23 @@ fn has_suggestion_fence(text: &str) -> bool {
     })
 }
 
-/// Whether `text` holds a token-shaped string: a private key header, an AWS access key id, or
-/// an alphanumeric run of at least [`TOKEN_RUN`] characters mixing letters and digits.
+/// Whether `text` holds a token-shaped string (see [`token_shaped`]).
 fn has_token(text: &str) -> bool {
+    token_shaped(text, |_| false)
+}
+
+/// Whether `text` holds a token-shaped string: a private key header, the [`CREDENTIAL_PREFIX`]
+/// in any ASCII case, or an AWS access key id or an ASCII alphanumeric run of at least
+/// [`TOKEN_RUN`] characters mixing letters and digits that is not `explained`.
+pub(super) fn token_shaped(text: &str, explained: impl Fn(&str) -> bool) -> bool {
     text.contains("PRIVATE KEY-----")
         || text
+            .as_bytes()
+            .windows(CREDENTIAL_PREFIX.len())
+            .any(|window| window.eq_ignore_ascii_case(CREDENTIAL_PREFIX))
+        || text
             .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|run| is_long_mixed(run) || is_aws_key_id(run))
+            .any(|run| (is_long_mixed(run) || is_aws_key_id(run)) && !explained(run))
 }
 
 /// Whether `run` is long and mixes letters and digits, and is not a lowercase hex digest.
@@ -331,7 +346,7 @@ fn unconfuse(c: char) -> char {
         'ԝ' => 'w',
         'х' | 'χ' => 'x',
         'у' | 'ү' => 'y',
-        '\u{ff41}'..='\u{ff5a}' => u32::from(c)
+        '\u{ff10}'..='\u{ff19}' | '\u{ff41}'..='\u{ff5a}' => u32::from(c)
             .checked_sub(0xfee0)
             .and_then(char::from_u32)
             .unwrap_or(c),
@@ -387,22 +402,22 @@ mod tests {
         assert_eq!(texts.map(screened), [None; 4]);
     }
 
-    // Round 4 (wi-b5affa): where the screen cannot be sure how GitHub renders text, it reads
-    // it as prose and flags it.
+    // wi-b5affa: where the screen cannot be sure how GitHub renders text, it reads it as
+    // prose and flags it.
     #[test]
     fn flags_urls_holding_characters_github_may_not_end_them_at() {
         let texts = [
-            // B1: U+3000 is whitespace to Rust, not to a link destination.
+            // U+3000 is whitespace to Rust, not to a link destination.
             "[x](https://github.com/wet-ink-corporation/assay/\u{3000}/../../../evil/repo)",
             "See https://github.com/wet-ink-corporation/assay/\u{a0}/../../../evil/repo now.",
             "See https://docs.rs/\u{e9}t\u{e9}.",
-            // B2: character references decode inside a destination.
+            // Character references decode inside a destination.
             "[x](https://github.com/wet-ink-corporation/assay/&#46;&#46;/&#46;&#46;/&#46;&#46;/e)",
-            // B3: a definition inside a container.
+            // A definition inside a container.
             "> [x]: //evil.example\n\nSee [x].",
-            // B6: a backtick in the title, which a later backtick could pair with.
+            // A backtick in the title, which a later backtick could pair with.
             "[x](https://github.com/wet-ink-corporation/assay \"`\")<img src=x> `",
-            // m3: GFM links an email address as `mailto:`.
+            // GFM links an email address as `mailto:`.
             "Contact me at dev@example.com.",
         ];
 
@@ -411,13 +426,13 @@ mod tests {
 
     #[test]
     fn reads_a_paragraph_whose_backticks_do_not_pair_per_line_as_prose() {
-        // B4: GitHub pairs the first two backticks across the line break.
+        // GitHub pairs the first two backticks across the line break.
         assert_eq!(screened("`x\n` <img src=x> `y`"), Some(Suspicion::Html));
     }
 
     #[test]
     fn keeps_fences_as_prose_when_a_container_could_close_them() {
-        // B5: the list item ends at the unindented line, closing its fence before the tag.
+        // The list item ends at the unindented line, closing its fence before the tag.
         assert_eq!(
             screened("* a\n  ```\n<img src=x>\n  ```"),
             Some(Suspicion::Html)
@@ -426,7 +441,6 @@ mod tests {
 
     #[test]
     fn flags_character_references_and_mentions_after_punctuation() {
-        // B7.
         let texts = [
             "Thanks &#64;owner.",
             "See &lt;b&gt;.",
@@ -449,17 +463,16 @@ mod tests {
 
     #[test]
     fn flags_a_suggestion_fence_inside_containers() {
-        // m2.
         assert_eq!(
             screened("> - ```suggestion\n>   x\n> ```"),
             Some(Suspicion::SuggestionFence)
         );
     }
 
-    // Round 5: a field that is not plain is read entirely as prose.
+    // A field that is not plain is read entirely as prose.
     #[test]
     fn reads_table_cells_as_prose() {
-        // F1: GitHub splits a table row at `|` before pairing backticks.
+        // GitHub splits a table row at `|` before pairing backticks.
         let texts = [
             "| `a | <img src=x> | b` |\n|---|---|---|",
             "| `a | @owner | b` |\n|---|---|---|",
@@ -480,7 +493,7 @@ mod tests {
 
     #[test]
     fn flags_a_lone_carriage_return() {
-        // F2: `lines()` does not split at a lone CR; GitHub does.
+        // `lines()` does not split at a lone CR; GitHub does.
         let texts = [
             "```suggestion\rx\r```",
             "~~~\rcode\r~~~\r<img src=x>",
@@ -497,7 +510,7 @@ mod tests {
 
     #[test]
     fn reads_lines_of_other_whitespace_as_prose() {
-        // F3: a line of NBSP or U+3000 is not blank to GitHub, so the paragraph goes on.
+        // A line of NBSP or U+3000 is not blank to GitHub, so the paragraph goes on.
         let texts = [
             "`a\n\u{a0}\n` <img src=x> `",
             "`a\n\u{3000}\n` <img src=x> `",
@@ -508,7 +521,7 @@ mod tests {
 
     #[test]
     fn flags_references_into_other_repositories() {
-        // F4: GitHub links `owner/name#1` and `owner/name@sha`.
+        // GitHub links `owner/name#1` and `owner/name@sha`.
         let texts = [
             "Fixed in other/repo#12.",
             "See other/repo@abc1234.",
@@ -524,7 +537,7 @@ mod tests {
 
     #[test]
     fn flags_a_reference_definition_whose_backticks_pair_as_spans() {
-        // Round 6 F1: definitions are parsed before code spans, so spans cannot hide `]:`.
+        // Definitions are parsed before code spans, so spans cannot hide `]:`.
         let texts = [
             "Short finding text.\n\n[a`]: //evil.example \"`\"\nSee [a`] for details.",
             "Short finding text.\n\n[a\nb`]: //evil.example \"`\"\nSee [a\nb`] for details.",
@@ -537,7 +550,7 @@ mod tests {
 
     #[test]
     fn flags_a_commit_in_another_users_fork() {
-        // Round 6 F2: GitHub links `user@sha` to the commit in that user's fork.
+        // GitHub links `user@sha` to the commit in that user's fork.
         let texts = [
             "See evil@a5c3785ed8d6a35868bc169f07e40e889087fd2e",
             "See (evil@a5c3785) here.",
@@ -553,7 +566,7 @@ mod tests {
 
     #[test]
     fn flags_a_repository_url_holding_a_kelvin_sign() {
-        // Round 7 F1: full lowercasing maps U+212A to ASCII `k`, hiding the non-ASCII URL.
+        // Full lowercasing maps U+212A to ASCII `k`, hiding the non-ASCII URL.
         let texts = [
             "See https://github.com/wet-ink-corporation/assay/blob/main/\u{212a}.rs here.",
             "See [it](https://github.com/wet-ink-corporation/assay/\u{212a}) here.",
@@ -564,7 +577,7 @@ mod tests {
 
     #[test]
     fn removes_only_fences_of_allowlisted_inert_languages() {
-        // Round 8: an info string off the allowlist, encoded or with extra words, is prose.
+        // An info string off the allowlist, encoded or with extra words, is prose.
         let texts = [
             "```&#109;ermaid\ngraph TD\nA[\"<img src=x>\"]\n```",
             "```rust ignore\n<img src=x>\n```",
@@ -593,16 +606,24 @@ mod tests {
 
         assert_eq!(
             (
-                screened("```&#115;uggestion\nfoo();\n```").is_some(),
+                screened("```&#115;uggestion\nfoo();\n```"),
                 encoded.map(has_suggestion_fence)
             ),
-            (true, [true, true, false])
+            (Some(Suspicion::Html), [true, true, false])
+        );
+    }
+
+    #[test]
+    fn flags_a_tilde_fence_whose_info_string_escapes_suggestion() {
+        assert_eq!(
+            screened("~~~ \\suggestion\nfoo();\n~~~"),
+            Some(Suspicion::SuggestionFence)
         );
     }
 
     #[test]
     fn keeps_an_unclosed_fence_raw() {
-        // Round 8 F2: spans inside an unclosed fence are not stripped.
+        // Spans inside an unclosed fence are not stripped.
         assert_eq!(
             screened("~~~mermaid\nA[\"`<img src=x>`\"]"),
             Some(Suspicion::Html)
@@ -611,7 +632,7 @@ mod tests {
 
     #[test]
     fn reads_fences_github_renders_live_as_prose() {
-        // Round 7 F2: mermaid, math, geojson, topojson and stl fences are rendered, not shown.
+        // Mermaid, math, geojson, topojson and stl fences are rendered, not shown.
         let texts = [
             "```mermaid\ngraph TD\nA[\"<img src=x>\"]\n```",
             "```MATH\n<img src=x>\n```",
@@ -636,7 +657,7 @@ mod tests {
 
     #[test]
     fn flags_tex_link_commands_even_in_code() {
-        // Round 7 F2: math renders `\href` and `\url` as links.
+        // Math renders `\href` and `\url` as links.
         let texts = [
             "Use $\\href{https://docs.rs/x}{x}$ here.",
             "Use `\\URL{https://docs.rs/x}` here.",
@@ -647,7 +668,7 @@ mod tests {
 
     #[test]
     fn flags_an_authority_with_characters_a_host_cannot_have() {
-        // F5: browsers read `\` as `/`, so the host here is `evil.example`.
+        // Browsers read `\` as `/`, so the host here is `evil.example`.
         let texts = [
             "See https://evil.example\\.docs.rs/x.",
             "See https://evil.example%2f.docs.rs/x.",
@@ -723,6 +744,13 @@ mod tests {
         ];
 
         assert_eq!(texts.map(screened), [Some(Suspicion::TokenShaped); 3]);
+    }
+
+    #[test]
+    fn flags_the_anthropic_credential_prefix_in_any_case() {
+        let texts = ["key sk-ant-api03-x_y", "SK-Ant-oat01-x"];
+
+        assert_eq!(texts.map(screened), [Some(Suspicion::TokenShaped); 2]);
     }
 
     #[test]

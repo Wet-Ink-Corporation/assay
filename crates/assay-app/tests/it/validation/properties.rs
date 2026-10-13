@@ -1,12 +1,12 @@
 //! Properties over generated findings: determinism, relocation onto matching lines only, and
 //! that every finding ends kept or dropped exactly once.
 
-use assay_app::{ContractSchemaError, FindingRef, Validated};
+use assay_app::{FindingRef, Validated};
 use assay_domain::{Disposition, Side, normalise};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
-use super::fixture::{LIB_AT_BASE, LIB_AT_HEAD, Run, document, finding_with};
+use super::fixture::{LIB_AT_BASE, LIB_AT_HEAD, Run, RunError, document, finding_with};
 
 /// Dispositions that drop a finding; the others keep it.
 const DROPPING: [Disposition; 7] = [
@@ -59,7 +59,7 @@ fn generated_finding() -> impl Strategy<Value = Value> {
         )
 }
 
-fn validated(findings: &[Value]) -> Result<Validated, &'static ContractSchemaError> {
+fn validated(findings: &[Value]) -> Result<Validated, RunError> {
     Run::default().validate(&[document(findings)])
 }
 
