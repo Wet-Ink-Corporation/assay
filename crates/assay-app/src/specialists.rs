@@ -338,10 +338,10 @@ where
     fn settle(&mut self, schedule: &mut Schedule<R::Error>, slot: usize) {
         let Some(handle) = self.handles.get_mut(slot).and_then(Option::take) else {
             // Only a started thread posts, and its handle is kept until this joins it, so this
-            // does not happen. Were it to, the call is settled as never started, so the
-            // schedule's count of calls in flight still falls and the fan-out cannot wait on
-            // a call that is not there (#223).
-            schedule.refused(slot, std::io::ErrorKind::NotFound);
+            // does not happen. Were it to, the call is settled as `Lost`, charged its budget, so
+            // the schedule's count of calls in flight still falls and the fan-out cannot wait
+            // on a call that is not there (#223).
+            schedule.settle(slot, Joined::Lost);
             return;
         };
         let joined = match handle.join() {

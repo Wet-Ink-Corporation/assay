@@ -202,6 +202,34 @@ fn a_quota_exhausted_shard_skips_the_shards_after_it() -> Result<(), Box<dyn Err
 }
 
 #[test]
+fn a_quota_pause_in_a_retry_after_the_run_cap_halt_skips_the_later_shards()
+-> Result<(), Box<dyn Error>> {
+    // Bugs goes alone, answers malformed and leaves $0.40 of the shard's $1.60, so the run cap
+    // halts the other roles; its retry gets the $0.40 and reports the quota exhausted.
+    let malformed = Answer::Ran(ended(ModelOutcome::Malformed, Aeu::from_micros(1_200_000)));
+    let quota = Answer::Ran(ended(ModelOutcome::QuotaExhausted, Aeu::ZERO));
+    let fake = Fake::new([(Role::Bugs, vec![malformed, quota])], Hold::Never);
+    let packs = packs(2);
+
+    let sharded = run(&fake, &packs, &FULL, LONG)??;
+
+    let [first, second] = sharded.shards.as_slice() else {
+        return Err("two shards".into());
+    };
+    assert_eq!(first.halt, Some(Halt::RateLimited));
+    let budgets: Vec<Aeu> = fake.calls_of(Role::Bugs).iter().map(|c| c.budget).collect();
+    assert_eq!(budgets, [Role::Bugs.cap(), Aeu::from_micros(400_000)]);
+    assert!(
+        second
+            .roles
+            .iter()
+            .all(|report| report.outcome == RoleOutcome::Skipped(Halt::RateLimited))
+    );
+    assert_eq!(packs_called(&fake), ["PACK-1", "PACK-1"]);
+    Ok(())
+}
+
+#[test]
 fn a_panicking_runner_skips_the_shards_after_it() -> Result<(), Box<dyn Error>> {
     let fake = Fake::new([(Role::Bugs, vec![Answer::Panics])], Hold::Never);
     let packs = packs(2);

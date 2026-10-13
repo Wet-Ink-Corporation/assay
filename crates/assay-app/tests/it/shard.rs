@@ -108,7 +108,9 @@ fn a_changed_file_shares_its_shard_with_its_direct_importers() -> Result<(), Box
 }
 
 #[test]
-fn changed_files_with_a_common_importer_share_a_shard() -> Result<(), Box<dyn Error>> {
+fn an_unchanged_importer_joins_no_cluster_and_is_listed_with_each_shard_it_imports_from()
+-> Result<(), Box<dyn Error>> {
+    // `lib.rs` declares every module, so joining through it would make one cluster of a crate.
     let files = [
         file("src/a.rs", THIRD * 2),
         file("src/b.rs", THIRD * 2),
@@ -117,6 +119,7 @@ fn changed_files_with_a_common_importer_share_a_shard() -> Result<(), Box<dyn Er
     let imports = [
         import("src/lib.rs", "src/a.rs"),
         import("src/lib.rs", "src/c.rs"),
+        import("src/lib.rs", "src/c.rs"),
     ];
 
     let sharding = shard(&files, &imports)?;
@@ -124,8 +127,33 @@ fn changed_files_with_a_common_importer_share_a_shard() -> Result<(), Box<dyn Er
     assert_eq!(
         layout(&sharding),
         [
-            (vec!["src/a.rs", "src/c.rs"], vec!["src/lib.rs"]),
+            (vec!["src/a.rs"], vec!["src/lib.rs"]),
             (vec!["src/b.rs"], vec![]),
+            (vec!["src/c.rs"], vec!["src/lib.rs"]),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn an_importer_of_two_files_in_one_shard_is_listed_there_once() -> Result<(), Box<dyn Error>> {
+    let files = [
+        file("src/a.rs", THIRD),
+        file("src/b.rs", THIRD),
+        file("src/c.rs", MAX_DIFF_BYTES),
+    ];
+    let imports = [
+        import("src/lib.rs", "src/a.rs"),
+        import("src/lib.rs", "src/b.rs"),
+    ];
+
+    let sharding = shard(&files, &imports)?;
+
+    assert_eq!(
+        layout(&sharding),
+        [
+            (vec!["src/c.rs"], vec![]),
+            (vec!["src/a.rs", "src/b.rs"], vec!["src/lib.rs"]),
         ]
     );
     Ok(())
@@ -135,8 +163,8 @@ fn changed_files_with_a_common_importer_share_a_shard() -> Result<(), Box<dyn Er
 fn a_changed_file_importing_another_shares_its_shard() -> Result<(), Box<dyn Error>> {
     let files = [
         file("src/a.rs", THIRD * 2),
-        file("src/b.rs", THIRD * 2),
-        file("src/c.rs", THIRD * 2),
+        file("src/b.rs", THIRD),
+        file("src/c.rs", THIRD),
     ];
 
     let sharding = shard(&files, &[import("src/c.rs", "src/b.rs")])?;
@@ -144,8 +172,8 @@ fn a_changed_file_importing_another_shares_its_shard() -> Result<(), Box<dyn Err
     assert_eq!(
         layout(&sharding),
         [
-            (vec!["src/b.rs", "src/c.rs"], vec![]),
             (vec!["src/a.rs"], vec![]),
+            (vec!["src/b.rs", "src/c.rs"], vec![]),
         ]
     );
     Ok(())
@@ -170,12 +198,12 @@ fn imports_of_unchanged_files_and_self_imports_join_nothing() -> Result<(), Box<
 }
 
 #[test]
-fn clusters_past_three_shards_join_the_lightest_which_is_overfull() -> Result<(), Box<dyn Error>> {
+fn clusters_that_exactly_fill_three_shards_are_accepted() -> Result<(), Box<dyn Error>> {
     let files = [
-        file("a.rs", THIRD * 2 + 3),
-        file("b.rs", THIRD * 2 + 2),
-        file("c.rs", THIRD * 2 + 1),
-        file("d.rs", THIRD * 2),
+        file("a.rs", MAX_DIFF_BYTES),
+        file("b.rs", MAX_DIFF_BYTES),
+        file("c.rs", THIRD),
+        file("d.rs", MAX_DIFF_BYTES - THIRD),
     ];
 
     let sharding = shard(&files, &[])?;
@@ -188,28 +216,62 @@ fn clusters_past_three_shards_join_the_lightest_which_is_overfull() -> Result<()
             (vec!["c.rs", "d.rs"], vec![]),
         ]
     );
-    let overfull: Vec<bool> = sharding.shards().iter().map(Shard::is_overfull).collect();
-    assert_eq!(overfull, [false, false, true]);
+    let bytes: Vec<usize> = sharding.shards().iter().map(Shard::pack_bytes).collect();
+    assert_eq!(bytes, [MAX_DIFF_BYTES; 3]);
+    Ok(())
+}
+
+#[test]
+fn one_byte_more_than_three_shards_hold_is_refused() {
+    let files = [
+        file("a.rs", MAX_DIFF_BYTES),
+        file("b.rs", MAX_DIFF_BYTES),
+        file("c.rs", THIRD),
+        file("d.rs", MAX_DIFF_BYTES - THIRD),
+        file("e.rs", 1),
+    ];
+
     assert_eq!(
-        sharding.shards().last().map(Shard::pack_bytes),
-        Some(THIRD * 4 + 1)
+        shard(&files, &[]),
+        Err(ShardError::Overfull {
+            withheld_bytes: 1,
+            files: 1
+        })
+    );
+}
+
+#[test]
+fn a_cluster_of_exactly_the_budget_is_one_shard() -> Result<(), Box<dyn Error>> {
+    let files = [
+        file("a.rs", MAX_DIFF_BYTES - 1),
+        file("b.rs", 1),
+        file("c.rs", 1),
+    ];
+
+    let sharding = shard(&files, &[import("b.rs", "a.rs")])?;
+
+    assert_eq!(
+        layout(&sharding),
+        [(vec!["a.rs", "b.rs"], vec![]), (vec!["c.rs"], vec![])]
     );
     Ok(())
 }
 
 #[test]
-fn a_cluster_over_the_budget_is_its_own_overfull_shard() -> Result<(), Box<dyn Error>> {
-    let files = [file("a.rs", MAX_DIFF_BYTES + 1), file("b.rs", 5)];
-
-    let sharding = shard(&files, &[])?;
+fn a_cluster_one_byte_over_the_budget_is_refused() {
+    let files = [
+        file("a.rs", MAX_DIFF_BYTES),
+        file("b.rs", 1),
+        file("c.rs", 5),
+    ];
 
     assert_eq!(
-        layout(&sharding),
-        [(vec!["a.rs"], vec![]), (vec!["b.rs"], vec![])]
+        shard(&files, &[import("a.rs", "b.rs")]),
+        Err(ShardError::Overfull {
+            withheld_bytes: MAX_DIFF_BYTES + 1,
+            files: 2
+        })
     );
-    let overfull: Vec<bool> = sharding.shards().iter().map(Shard::is_overfull).collect();
-    assert_eq!(overfull, [true, false]);
-    Ok(())
 }
 
 #[test]
@@ -235,8 +297,9 @@ fn equal_clusters_keep_input_order() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn a_chain_of_imports_through_the_most_files_is_one_cluster() -> Result<(), Box<dyn Error>> {
-    let paths: Vec<String> = (0..MAX_SHARD_FILES).map(|n| format!("f{n}.rs")).collect();
-    let files: Vec<ShardFile<'_>> = paths.iter().map(|path| file(path, 100)).collect();
+    let paths: Vec<String> = (1..MAX_SHARD_FILES).map(|n| format!("f{n}.rs")).collect();
+    let mut files = vec![file("big.rs", MAX_DIFF_BYTES)];
+    files.extend(paths.iter().map(|path| file(path, 40)));
     let imports: Vec<Import<'_>> = paths
         .iter()
         .zip(paths.iter().skip(1))
@@ -245,13 +308,13 @@ fn a_chain_of_imports_through_the_most_files_is_one_cluster() -> Result<(), Box<
 
     let sharding = shard(&files, &imports)?;
 
-    let [only] = sharding.shards() else {
+    let [big, chain] = sharding.shards() else {
         return Err(format!("{} shards", sharding.shards().len()).into());
     };
-    assert_eq!(only.files().len(), MAX_SHARD_FILES);
+    assert_eq!(big.files(), ["big.rs"]);
     assert_eq!(
-        (only.pack_bytes(), only.is_overfull()),
-        (MAX_SHARD_FILES * 100, true)
+        (chain.files().len(), chain.pack_bytes()),
+        (MAX_SHARD_FILES - 1, (MAX_SHARD_FILES - 1) * 40)
     );
     Ok(())
 }
@@ -396,10 +459,59 @@ fn graph(sizes: &[usize], edges: &[(usize, usize)]) -> (Vec<String>, Vec<(String
     ((0..sizes.len()).map(name).collect(), edges)
 }
 
+/// Every invariant of a sharding of `paths` (sized `sizes`) under `edges`.
+fn check(
+    sharding: &Sharding<'_>,
+    paths: &[String],
+    sizes: &[usize],
+    edges: &[(String, String)],
+) -> Result<(), TestCaseError> {
+    let shards = sharding.shards();
+    prop_assert!((1..=MAX_SHARDS).contains(&shards.len()));
+    prop_assert_eq!(sharding.count().get(), shards.len());
+    let mut seen: Vec<&str> = shards
+        .iter()
+        .flat_map(|s| s.files().iter().copied())
+        .collect();
+    seen.sort_unstable();
+    let mut expected: Vec<&str> = paths.iter().map(String::as_str).collect();
+    expected.sort_unstable();
+    prop_assert_eq!(seen, expected);
+    let summed: usize = shards.iter().map(Shard::pack_bytes).sum();
+    prop_assert_eq!(summed, sizes.iter().sum::<usize>());
+    if shards.len() > 1 {
+        prop_assert!(shards.iter().all(|s| s.pack_bytes() <= MAX_DIFF_BYTES));
+    }
+    let shard_of = |path: &str| shards.iter().position(|s| s.files().contains(&path));
+    for shard in shards {
+        let distinct: BTreeSet<&str> = shard.importers().iter().copied().collect();
+        prop_assert_eq!(distinct.len(), shard.importers().len());
+        prop_assert!(
+            shard
+                .importers()
+                .iter()
+                .all(|path| shard_of(path).is_none())
+        );
+    }
+    let sharded = sizes.iter().sum::<usize>() > MAX_DIFF_BYTES;
+    for (importer, imported) in edges.iter().filter(|_| sharded) {
+        let target = shard_of(imported);
+        match shard_of(importer) {
+            Some(home) => prop_assert_eq!(Some(home), target),
+            None => prop_assert!(
+                target
+                    .and_then(|index| shards.get(index))
+                    .is_some_and(|s| s.importers().contains(&importer.as_str()))
+            ),
+        }
+    }
+    Ok(())
+}
+
 proptest! {
     #[test]
-    fn every_changed_file_is_in_exactly_one_of_at_most_three_shards(
-        sizes in vec(0..MAX_DIFF_BYTES, 1..24),
+    fn every_changed_file_is_in_exactly_one_shard_or_the_input_is_refused(
+        sizes in vec(0..MAX_DIFF_BYTES / 8, 1..24),
         edges in vec((0..40_usize, 0..40_usize), 0..48),
     ) {
         let (paths, edges) = graph(&sizes, &edges);
@@ -410,27 +522,23 @@ proptest! {
             .collect();
         let imports: Vec<Import<'_>> = edges
             .iter()
+            .filter(|(importer, imported)| importer != imported)
             .map(|(importer, imported)| import(importer, imported))
             .collect();
+        let real: Vec<(String, String)> = imports
+            .iter()
+            .map(|edge| (edge.importer.to_owned(), edge.imported.to_owned()))
+            .collect();
 
-        let sharding = shard(&files, &imports).map_err(|e| TestCaseError::fail(e.to_string()))?;
-        let again = shard(&files, &imports).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let result = shard(&files, &imports);
 
-        let mut seen: Vec<&str> = sharding.shards().iter().flat_map(|s| s.files().iter().copied()).collect();
-        seen.sort_unstable();
-        let mut expected: Vec<&str> = paths.iter().map(String::as_str).collect();
-        expected.sort_unstable();
-        prop_assert_eq!(seen, expected);
-        prop_assert!((1..=MAX_SHARDS).contains(&sharding.shards().len()));
-        prop_assert_eq!(sharding.count().get(), sharding.shards().len());
-        let changed: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
-        let importers: Vec<&str> = sharding.shards().iter().flat_map(|s| s.importers().iter().copied()).collect();
-        let distinct: BTreeSet<&str> = importers.iter().copied().collect();
-        prop_assert_eq!(distinct.len(), importers.len());
-        prop_assert!(importers.iter().all(|path| !changed.contains(path)));
-        prop_assert_eq!(layout(&sharding), layout(&again));
-        let total: usize = sizes.iter().sum();
-        let summed: usize = sharding.shards().iter().map(Shard::pack_bytes).sum();
-        prop_assert_eq!(summed, total);
+        prop_assert_eq!(&result, &shard(&files, &imports));
+        match result {
+            Ok(sharding) => check(&sharding, &paths, &sizes, &real)?,
+            Err(ShardError::Overfull { withheld_bytes, files }) => {
+                prop_assert!(withheld_bytes > 0 && files > 0);
+            }
+            Err(other) => prop_assert!(false, "unexpected refusal {other:?}"),
+        }
     }
 }

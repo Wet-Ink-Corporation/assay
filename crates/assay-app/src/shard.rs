@@ -1,22 +1,24 @@
 //! Sharding by dependency cluster (`docs/architecture/04-pipeline.md` §3, #98): a `full` PR
-//! whose context pack exceeds [`MAX_DIFF_BYTES`] is split into at most [`MAX_SHARDS`] shards,
-//! each a set of clusters (a changed file, its direct importers, and every changed file
-//! reachable through them), so a file is reviewed beside the code that uses it. Shards run one
-//! after another, each with the full specialist set ([`run_shards`](crate::run_shards)), and
-//! the run cap scales by their count ([`full_run_cap`]).
+//! whose context pack exceeds [`MAX_DIFF_BYTES`] is split into at most [`MAX_SHARDS`] shards of
+//! at most [`MAX_DIFF_BYTES`] each. A shard is a set of clusters (changed files joined where
+//! one imports another), listed with the unchanged files that import them, so a file is
+//! reviewed beside the code it uses and the code that uses it. Shards run one after another,
+//! each with the full specialist set ([`run_shards`](crate::run_shards)), and the run cap
+//! scales by their count ([`full_run_cap`]).
 //!
 //! The file list, the pack sizes and the import edges come from the pull request, so every step
-//! is linear or `n log n` in them, never a loop over pairs, and the counts are capped: past a
-//! cap the input is refused, not truncated (wi-b5affa).
+//! is linear or `n log n` in them, never a loop over pairs, and the input is refused rather
+//! than truncated (wi-b5affa): past a count cap, and when the clusters do not fit in the
+//! shards, since a withheld file would be reported as reviewed.
 
 mod cluster;
 
 use std::cmp::Reverse;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use assay_domain::{Aeu, RequiredRole};
 
-use self::cluster::{Cluster, Graph};
+use self::cluster::{Cluster, Graph, importers};
 use crate::check::MAX_DIFF_BYTES;
 use crate::coordinate::COORDINATOR_CAP;
 use crate::prompt_bundle::Role;
@@ -80,6 +82,7 @@ impl ShardCount {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sharding<'a> {
     shards: Vec<Shard<'a>>,
+    count: ShardCount,
 }
 
 impl<'a> Sharding<'a> {
@@ -91,9 +94,8 @@ impl<'a> Sharding<'a> {
 
     /// How many shards there are.
     #[must_use]
-    pub fn count(&self) -> ShardCount {
-        // `shard` builds one to `MAX_SHARDS`, so the fallback is never taken.
-        ShardCount::new(self.shards.len()).unwrap_or(ShardCount::ONE)
+    pub const fn count(&self) -> ShardCount {
+        self.count
     }
 }
 
@@ -113,7 +115,8 @@ impl<'a> Shard<'a> {
     }
 
     /// The unchanged files that directly import one of [`files`](Self::files), sorted; the
-    /// reviewers read them from the tree. Empty for an unsharded run.
+    /// reviewers read them from the tree. An importer of files in several shards is listed with
+    /// each. Empty for an unsharded run.
     #[must_use]
     pub fn importers(&self) -> &[&'a str] {
         &self.importers
@@ -123,14 +126,6 @@ impl<'a> Shard<'a> {
     #[must_use]
     pub const fn pack_bytes(&self) -> usize {
         self.pack_bytes
-    }
-
-    /// Whether its files take more than [`MAX_DIFF_BYTES`]: a cluster larger than that, or one
-    /// that fitted in no shard once all three were open. Its pack shows what fits and says how
-    /// many files it left out, as an unsharded pack does.
-    #[must_use]
-    pub const fn is_overfull(&self) -> bool {
-        self.pack_bytes > MAX_DIFF_BYTES
     }
 }
 
@@ -152,6 +147,16 @@ pub enum ShardError {
         /// How many were given.
         imports: usize,
     },
+    /// The clusters do not fit in [`MAX_SHARDS`] shards of [`MAX_DIFF_BYTES`]: a cluster is
+    /// larger than a shard, or none of the shards open has room for it. Reviewing the rest would
+    /// report the withheld files as reviewed, so nothing is sharded.
+    #[error("{files} changed files ({withheld_bytes} pack bytes) fit in no shard")]
+    Overfull {
+        /// The pack bytes of the clusters that fitted nowhere.
+        withheld_bytes: usize,
+        /// How many changed files they hold.
+        files: usize,
+    },
     /// A changed file was listed twice, so its pack bytes are ambiguous.
     #[error("the changed file {path:?} is listed twice")]
     RepeatedFile {
@@ -162,17 +167,19 @@ pub enum ShardError {
 
 /// Splits `files` into shards by dependency cluster (04 §3).
 ///
-/// A pack of at most [`MAX_DIFF_BYTES`] is one shard of every file, in order. A larger one is clustered: each changed file joins its direct
-/// importers in `imports`, and clusters that share a file merge. The clusters, heaviest first
-/// (ties in the order of their first file), go to the first shard they fit in, to a new one
-/// while fewer than [`MAX_SHARDS`] are open, and otherwise to the lightest, which is then
-/// [overfull](Shard::is_overfull). Every changed file is in exactly one shard.
+/// A pack of at most [`MAX_DIFF_BYTES`] is one shard of every file, in order. A larger one is
+/// clustered: two changed files share a cluster when one imports the other in `imports`,
+/// directly or through other changed files. The clusters, heaviest first (ties in the order of
+/// their first file), go to the first shard with room, or to a new one while fewer than
+/// [`MAX_SHARDS`] are open. Every changed file is in exactly one shard, and every unchanged
+/// file importing one is listed with that shard.
 ///
 /// Linear in the files and imports apart from sorting (`n log n`); no step compares pairs.
 ///
 /// # Errors
 /// Returns [`ShardError`] for no file, more than [`MAX_SHARD_FILES`] files, more than
-/// [`MAX_IMPORTS`] imports, or a file listed twice; nothing is sharded then.
+/// [`MAX_IMPORTS`] imports, a file listed twice, or clusters that do not fit in the shards
+/// ([`Overfull`](ShardError::Overfull)); nothing is sharded then.
 ///
 /// # Examples
 ///
@@ -223,59 +230,71 @@ pub fn shard<'a>(
         };
         return Ok(Sharding {
             shards: vec![shard],
+            count: ShardCount::ONE,
         });
     }
     for &import in imports {
         graph.join(import);
     }
-    Ok(Sharding {
-        shards: pack(files, graph.clusters()),
-    })
-}
-
-/// First-fit decreasing into at most [`MAX_SHARDS`] shards: linear in the clusters after the
-/// sort, which is stable, so equal clusters keep the order of their first file.
-fn pack<'a>(files: &[ShardFile<'a>], mut clusters: Vec<Cluster<'a>>) -> Vec<Shard<'a>> {
-    clusters.sort_by_key(|cluster| Reverse(cluster.pack_bytes));
-    let mut bins: Vec<Cluster<'a>> = Vec::with_capacity(MAX_SHARDS);
-    for cluster in clusters {
-        let fits = bins
-            .iter()
-            .position(|bin| bin.pack_bytes.saturating_add(cluster.pack_bytes) <= MAX_DIFF_BYTES);
-        let target = match fits {
-            Some(index) => bins.get_mut(index),
-            None if bins.len() < MAX_SHARDS => {
-                bins.push(Cluster::default());
-                bins.last_mut()
-            }
-            // The first of the lightest, so ties keep shard order.
-            None => bins.iter_mut().min_by_key(|bin| bin.pack_bytes),
-        };
-        if let Some(bin) = target {
-            bin.absorb(cluster);
-        }
-    }
-    bins.into_iter()
-        .map(|mut bin| {
+    let bins = pack(graph.clusters())?;
+    // Every file was placed (or `pack` refused), and there is at least one file.
+    let count = ShardCount::new(bins.len()).ok_or(ShardError::NoFiles)?;
+    let shard_of: HashMap<&'a str, usize> = bins
+        .iter()
+        .enumerate()
+        .flat_map(|(shard, bin)| bin.files.iter().map(move |&(_, path)| (path, shard)))
+        .collect();
+    let shards = bins
+        .into_iter()
+        .zip(importers(&shard_of, imports, count.get()))
+        .map(|(mut bin, importers)| {
             bin.files.sort_unstable();
-            bin.importers.sort_unstable();
             Shard {
-                files: bin
-                    .files
-                    .iter()
-                    .filter_map(|&index| files.get(index).map(|file| file.path))
-                    .collect(),
-                importers: bin.importers,
+                files: bin.files.into_iter().map(|(_, path)| path).collect(),
+                importers,
                 pack_bytes: bin.pack_bytes,
             }
         })
-        .collect()
+        .collect();
+    Ok(Sharding { shards, count })
+}
+
+/// First-fit decreasing into at most [`MAX_SHARDS`] shards of [`MAX_DIFF_BYTES`]: linear in the
+/// clusters after the sort, which is stable, so equal clusters keep the order of their first
+/// file.
+///
+/// # Errors
+/// Returns [`ShardError::Overfull`] with every cluster that fitted nowhere.
+fn pack(mut clusters: Vec<Cluster<'_>>) -> Result<Vec<Cluster<'_>>, ShardError> {
+    clusters.sort_by_key(|cluster| Reverse(cluster.pack_bytes));
+    let mut bins: Vec<Cluster<'_>> = Vec::with_capacity(MAX_SHARDS);
+    let (mut withheld_bytes, mut withheld_files) = (0_usize, 0_usize);
+    for cluster in clusters {
+        let room = |bin: &&mut Cluster<'_>| {
+            bin.pack_bytes.saturating_add(cluster.pack_bytes) <= MAX_DIFF_BYTES
+        };
+        if let Some(bin) = bins.iter_mut().find(room) {
+            bin.absorb(cluster);
+        } else if cluster.pack_bytes <= MAX_DIFF_BYTES && bins.len() < MAX_SHARDS {
+            bins.push(cluster);
+        } else {
+            withheld_bytes = withheld_bytes.saturating_add(cluster.pack_bytes);
+            withheld_files = withheld_files.saturating_add(cluster.files.len());
+        }
+    }
+    if withheld_files > 0 {
+        return Err(ShardError::Overfull {
+            withheld_bytes,
+            files: withheld_files,
+        });
+    }
+    Ok(bins)
 }
 
 /// The run cap of a `full` run with `roles` (each counted once) split into `shards`.
 ///
-/// Per shard it is the roles' caps, the coordinator's and the verifier stage's, so $2.30 a shard ($2.60 with
-/// `meta`), and $6.90 ($7.80) for three (04 §3, 06 §1).
+/// Per shard it is the roles' caps, the coordinator's and the verifier stage's, so $2.30 a
+/// shard ($2.60 with `meta`), and $6.90 ($7.80) for three (04 §3, 06 §1).
 #[must_use]
 pub fn full_run_cap(roles: &[RequiredRole], shards: ShardCount) -> Aeu {
     let per_shard = roles

@@ -89,6 +89,9 @@ pub enum RoleFailure<E> {
     /// The runner panicked, a bug in the adapter; the call is charged at its budget and no
     /// further call starts.
     Panicked,
+    /// The fan-out lost track of the call's thread, a bug in assay's bookkeeping that its
+    /// construction rules out; the call is charged at its budget.
+    Lost,
 }
 
 impl<E> RoleFailure<E> {
@@ -98,7 +101,9 @@ impl<E> RoleFailure<E> {
     pub const fn reason(&self) -> CallFailure {
         match self {
             Self::Call(reason) => *reason,
-            Self::Runner(_) | Self::Spawn(_) | Self::Panicked => CallFailure::Unavailable,
+            Self::Runner(_) | Self::Spawn(_) | Self::Panicked | Self::Lost => {
+                CallFailure::Unavailable
+            }
         }
     }
 }
