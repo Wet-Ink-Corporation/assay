@@ -77,6 +77,8 @@ pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_tru
 
 mod validation;
 pub use validation::{
-    Change, DiffPaths, FileDiff, FindingRef, Hunk, Inputs, LineSpan, Placement, SuppressRules,
-    Transition, ValidFinding, Validated, validate,
+    Change, DiffPaths, EgressHit, EgressKind, EgressScan, EgressToken, EgressTokenError, FileDiff,
+    FindingRef, FreeTextField, Hunk, Inputs, KnownRuns, KnownRunsError, LineSpan,
+    MAX_INDEXED_BYTES, MAX_TOKEN_BYTES, Placement, SuppressRules, Transition, ValidFinding,
+    Validated, validate,
 };

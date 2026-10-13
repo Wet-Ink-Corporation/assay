@@ -7,6 +7,7 @@
 
 mod anchor;
 mod change;
+mod egress;
 mod evidence;
 mod index;
 mod screen;
@@ -21,6 +22,10 @@ use assay_domain::{
 };
 
 pub use change::{Change, DiffPaths, FileDiff, Hunk, LineSpan};
+pub use egress::{
+    EgressHit, EgressKind, EgressScan, EgressToken, EgressTokenError, FreeTextField, KnownRuns,
+    KnownRunsError, MAX_INDEXED_BYTES, MAX_TOKEN_BYTES,
+};
 pub(crate) use symbol::enclosing_functions;
 
 use crate::contract::{Contract, ContractValidator};
@@ -57,6 +62,8 @@ pub struct Inputs<'a> {
     pub dismissals: &'a [Dismissal<'a>],
     /// Gate findings, in Z4 only; Z3 runs before the gates finish and passes none (04 §1).
     pub gate_findings: &'a [Finding],
+    /// The free-text egress scan (03 §3): with the token in Z3, without it in Z4.
+    pub egress: &'a EgressScan<'a>,
 }
 
 impl fmt::Debug for Inputs<'_> {
@@ -66,6 +73,7 @@ impl fmt::Debug for Inputs<'_> {
             .field("change", &self.change)
             .field("dismissals", &self.dismissals)
             .field("gate_findings", &self.gate_findings)
+            .field("egress", &self.egress)
             .finish_non_exhaustive()
     }
 }
@@ -162,6 +170,9 @@ pub struct Validated {
     pub findings: Vec<ValidFinding>,
     /// Every transition, in the order applied; a dropped finding's last one drops it.
     pub transitions: Vec<Transition>,
+    /// The findings the egress scan dropped, in input order; each is also an
+    /// `injection-suspect` transition.
+    pub egress: Vec<EgressHit>,
 }
 
 impl Validated {
@@ -178,6 +189,13 @@ impl Validated {
     #[must_use]
     pub fn raises_injection_warning(&self) -> bool {
         self.injection_suspects() >= INJECTION_WARNING_AT
+    }
+
+    /// Whether the egress scan hit anything (03 §3): the `review` job then fails and the OAuth
+    /// token is flagged for rotation, whatever else the run found.
+    #[must_use]
+    pub fn raises_egress_alarm(&self) -> bool {
+        !self.egress.is_empty()
     }
 
     /// One `FindingDisposed` event per transition, in order.
@@ -202,7 +220,9 @@ impl Validated {
 /// ```
 /// use std::collections::BTreeMap;
 ///
-/// use assay_app::{Change, ContractValidator, Inputs, Placement, SuppressRules, validate};
+/// use assay_app::{
+///     Change, ContractValidator, EgressScan, Inputs, KnownRuns, Placement, SuppressRules, validate,
+/// };
 /// use assay_domain::Finding;
 ///
 /// struct NoRules;
@@ -219,12 +239,15 @@ impl Validated {
 ///     head_files: BTreeMap::from([("src/lib.rs".to_owned(), lib.to_owned())]),
 ///     ..Change::default()
 /// };
+/// // Z4 holds no OAuth token; Z3 passes it with `EgressScan::with_token`.
+/// let egress = EgressScan::without_token(KnownRuns::index([lib.as_bytes()])?);
 /// let inputs = Inputs {
 ///     repository: "owner/repo",
 ///     change: &change,
 ///     suppress: &NoRules,
 ///     dismissals: &[],
 ///     gate_findings: &[],
+///     egress: &egress,
 /// };
 /// let document = br#"{"schema": "assay.findings/1",
 ///     "source": {"kind": "reviewer", "name": "claude", "version": "v", "role": "combined",
@@ -252,6 +275,11 @@ pub fn validate(
             Ok((ceiling, findings)) => {
                 for (index, finding) in findings.into_iter().enumerate() {
                     let at = FindingRef::Finding { document, index };
+                    // Before the cap: the scan is linear in the text, and a finding past the
+                    // cap was still written, and uploaded, by the model.
+                    if run.drops_for_egress(at, &finding) {
+                        continue;
+                    }
                     if index < MAX_FINDINGS_PER_DOCUMENT {
                         run.check(at, finding, ceiling);
                     } else {

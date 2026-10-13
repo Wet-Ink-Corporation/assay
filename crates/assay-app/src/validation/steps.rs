@@ -6,7 +6,9 @@ use assay_domain::{
 
 use super::anchor::{Anchored, anchor};
 use super::index::Files;
-use super::{FindingRef, Inputs, Placement, Transition, ValidFinding, Validated, screen};
+use super::{
+    EgressHit, FindingRef, Inputs, Placement, Transition, ValidFinding, Validated, screen,
+};
 
 /// How many lines apart a reviewer finding may be from a gate finding of the same class in the
 /// same file and still duplicate it (04 §1).
@@ -36,6 +38,7 @@ impl<'s, 'c> Run<'s, 'c> {
             validated: Validated {
                 findings: Vec::new(),
                 transitions: Vec::new(),
+                egress: Vec::new(),
             },
         }
     }
@@ -43,6 +46,17 @@ impl<'s, 'c> Run<'s, 'c> {
     /// Records that the input at `at` was dropped as `code` before its findings were read.
     pub(super) fn reject(&mut self, at: FindingRef, code: Disposition) {
         self.validated.transitions.push(Transition::of(at, code));
+    }
+
+    /// The egress scan (03 §3) of one schema-valid finding, before any other step reads it:
+    /// `true` when it hit, recorded as an [`EgressHit`] and an `injection-suspect` drop.
+    pub(super) fn drops_for_egress(&mut self, at: FindingRef, finding: &Finding) -> bool {
+        let Some((field, kind)) = self.inputs.egress.scan_finding(finding) else {
+            return false;
+        };
+        self.validated.egress.push(EgressHit { at, field, kind });
+        self.reject(at, Disposition::InjectionSuspect);
+        true
     }
 
     /// Validates one schema-valid finding from a role whose findings may be at most `ceiling`.

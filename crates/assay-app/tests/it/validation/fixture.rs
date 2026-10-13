@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use assay_app::{
-    Change, ContractSchemaError, ContractValidator, DiffPaths, FileDiff, Hunk, Inputs, LineSpan,
-    SuppressRules, Validated, validate,
+    Change, ContractSchemaError, ContractValidator, DiffPaths, EgressScan, EgressToken, FileDiff,
+    Hunk, Inputs, KnownRuns, KnownRunsError, LineSpan, SuppressRules, Validated, validate,
 };
 use assay_domain::{Dismissal, Finding};
 use serde_json::{Value, json};
@@ -128,6 +128,10 @@ pub(crate) struct Run<'a> {
     pub(crate) suppress: &'a dyn SuppressRules,
     pub(crate) dismissals: Vec<Dismissal<'a>>,
     pub(crate) gate_findings: Vec<Finding>,
+    /// The OAuth token, as Z3 holds it; Z4 holds none (05 §4).
+    pub(crate) token: Option<EgressToken>,
+    /// Base `REVIEW.md`, whose long runs explain a finding's as the tree's do (03 §3).
+    pub(crate) review_md: String,
 }
 
 impl Default for Run<'_> {
@@ -137,8 +141,21 @@ impl Default for Run<'_> {
             suppress: &NoRules,
             dismissals: Vec::new(),
             gate_findings: Vec::new(),
+            token: None,
+            review_md: String::new(),
         }
     }
+}
+
+/// Why a run could not validate: a fixture defect, never an outcome under test.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RunError {
+    /// The embedded schemas do not compile.
+    #[error(transparent)]
+    Schema(#[from] &'static ContractSchemaError),
+    /// The run's tree is past the egress index cap.
+    #[error(transparent)]
+    Index(#[from] KnownRunsError),
 }
 
 /// One validator for every test: compiling the schemas dominates a property test's run time.
@@ -147,17 +164,28 @@ static VALIDATOR: LazyLock<Result<ContractValidator, ContractSchemaError>> =
 
 impl Run<'_> {
     /// Validates `documents` in this run.
-    pub(crate) fn validate(
-        &self,
-        documents: &[Vec<u8>],
-    ) -> Result<Validated, &'static ContractSchemaError> {
+    pub(crate) fn validate(&self, documents: &[Vec<u8>]) -> Result<Validated, RunError> {
         let validator = VALIDATOR.as_ref()?;
+        // The tree is every file of the change at either end, and base REVIEW.md.
+        let tree = self
+            .change
+            .head_files
+            .values()
+            .chain(self.change.base_files.values())
+            .chain([&self.review_md])
+            .map(String::as_bytes);
+        let known = KnownRuns::index(tree)?;
+        let egress = match &self.token {
+            Some(token) => EgressScan::with_token(token, known),
+            None => EgressScan::without_token(known),
+        };
         let inputs = Inputs {
             repository: REPOSITORY,
             change: &self.change,
             suppress: self.suppress,
             dismissals: &self.dismissals,
             gate_findings: &self.gate_findings,
+            egress: &egress,
         };
         let documents: Vec<&[u8]> = documents.iter().map(Vec::as_slice).collect();
         Ok(validate(validator, &inputs, &documents))
@@ -165,6 +193,6 @@ impl Run<'_> {
 }
 
 /// Validates `findings` in one document against the default run.
-pub(crate) fn validate_one(findings: &[Value]) -> Result<Validated, &'static ContractSchemaError> {
+pub(crate) fn validate_one(findings: &[Value]) -> Result<Validated, RunError> {
     Run::default().validate(&[document(findings)])
 }
