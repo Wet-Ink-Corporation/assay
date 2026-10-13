@@ -2,6 +2,8 @@
 //! and digests `decide` computed, with every other string inside one fenced block per list, so
 //! nothing a PR or a model wrote renders as Markdown.
 
+pub(crate) mod read;
+
 use assay_domain::{Aeu, Conclusion, Counts, DegradedRole, PrClass, Reason, Tier};
 
 use super::ports::EvidenceEntry;
@@ -221,7 +223,7 @@ const FORMAT: [(char, char); 21] = [
 ];
 
 /// Whether `c` renders as something other than itself: a control or a format character.
-pub(super) fn is_hidden(c: char) -> bool {
+pub(crate) fn is_hidden(c: char) -> bool {
     c.is_control()
         || FORMAT
             .iter()
@@ -230,7 +232,7 @@ pub(super) fn is_hidden(c: char) -> bool {
 
 /// `item` on one line: control and format characters (line breaks and bidi controls included)
 /// become U+FFFD, and past [`MAX_ITEM_CHARS`] characters it is cut and ends with `…`.
-fn clean(item: &str) -> String {
+pub(crate) fn clean(item: &str) -> String {
     let mut chars = item.chars();
     let mut cleaned: String = chars
         .by_ref()

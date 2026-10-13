@@ -20,6 +20,6 @@ assay-gates = { workspace = true }
 assay-runner = { workspace = true }
 # Writes the `assay-self` gate's document (#76); pre-approved, a dev-dependency before.
 serde_json = { workspace = true }
-
-[dev-dependencies]
+# `assay check --local`'s scratch directory and atomic report write (#107); pre-approved, a
+# dev-dependency before.
 tempfile = { workspace = true }

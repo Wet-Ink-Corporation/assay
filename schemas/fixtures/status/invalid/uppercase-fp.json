@@ -1,0 +1,32 @@
+{
+  "schema": "assay.status/1",
+  "source": "ci",
+  "repo": "Wet-Ink-Corporation/assay",
+  "pr": 42,
+  "branch": "feature/status",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "local_head_sha": null,
+  "stale": false,
+  "check": null,
+  "decision": null,
+  "tier": null,
+  "gates": [],
+  "findings": [
+    {
+      "fp": "00000000000000AB",
+      "finding_id": "00000000000000ab",
+      "severity": "major",
+      "class": "logic",
+      "title": "Event recorded twice",
+      "file": "src/lib.rs",
+      "line": 3,
+      "waivable": false
+    }
+  ],
+  "viewer": {
+    "login": "someone",
+    "is_owner": false,
+    "is_agent": false
+  },
+  "fetched_at": "2026-10-13T09:30:00Z"
+}

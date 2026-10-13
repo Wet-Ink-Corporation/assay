@@ -49,23 +49,27 @@ mod copy;
 mod glob;
 mod history;
 mod numstat;
+mod patch;
 mod repository;
 mod sha;
 mod tree;
+mod worktree;
 
 use crate::process::ProcessError;
 pub use attributes::{
     AttributeAllowlist, AttributeError, AttributeReport, PolicedAttribute, is_protected_path,
 };
 pub use changes::{ChangeListing, ChangedFile};
-pub use command::{GitEnvironment, GitOperation};
+pub use command::{GitEnvironment, GitOperation, UserDirs};
 pub use copy::{CopiedSymlink, CopyError, ManifestCopy};
 pub use glob::GlobError;
 pub use history::{Ancestry, RangeDiffCommits, RangeDiffOutcome};
 pub use numstat::{DiffOutcome, FileChange, LineCount};
+pub use patch::{FilePatch, HunkSpan, LineRange};
 pub use repository::{GitLimits, ObjectRepo};
 pub use sha::{CommitSha, HttpsRemote, ParseRemoteError, ParseShaError};
 pub use tree::{BlobRef, EntryKind, TreeEntry, TreeLimits};
+pub use worktree::{Snapshot, WorkingTree};
 
 /// Why a git operation produced no result.
 #[derive(Debug, thiserror::Error)]
@@ -141,6 +145,29 @@ pub enum GitError {
     MissingCommit {
         /// The commit that was requested.
         commit: CommitSha,
+    },
+    /// A directory is not a working tree local mode can read (02 §6).
+    #[error("{} is not a working tree assay can read: {reason}", root.display())]
+    NotAWorkingTree {
+        /// The directory that was refused.
+        root: PathBuf,
+        /// Why.
+        reason: &'static str,
+    },
+    /// A revision names no commit (an unborn `HEAD` included).
+    #[error("{revision:?} names no commit")]
+    UnknownRevision {
+        /// The revision, as given.
+        revision: String,
+    },
+    /// A scratch repository's file could not be written.
+    #[error("could not write {}", path.display())]
+    Write {
+        /// The file.
+        path: PathBuf,
+        /// Why.
+        #[source]
+        source: io::Error,
     },
 }
 

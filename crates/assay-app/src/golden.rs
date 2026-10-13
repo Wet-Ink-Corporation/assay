@@ -154,7 +154,7 @@ fn findings(replay: &GoldenReplay<'_>) -> Vec<Finding> {
 }
 
 /// The rubric, or the 1-based line its parse error points at (1 when it points nowhere).
-fn parse_rubric(bytes: &[u8]) -> Result<Rubric, usize> {
+pub(crate) fn parse_rubric(bytes: &[u8]) -> Result<Rubric, usize> {
     let text =
         str::from_utf8(bytes).map_err(|error| report::line_at(bytes, error.valid_up_to()))?;
     toml::from_str(text).map_err(|error: toml::de::Error| {

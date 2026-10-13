@@ -2,9 +2,13 @@
 //! and maps outcomes to exit codes (`docs/architecture/02-architecture.md` §2).
 //!
 //! Commands so far: `assay self-gate <corpus-dir> <rubric-file>`, the `assay-self` exec gate
-//! (02 §7, `05` T16), and `assay doctor <plugins-toml> <claude-program>`, the session checks of
-//! 03 §8 (#121). With no arguments it exits successfully without doing anything.
+//! (02 §7, `05` T16), `assay doctor <plugins-toml> <claude-program>`, the session checks of
+//! 03 §8 (#121), and `assay check --local`, the advisory check of a working tree (02 §6, #107).
+//! `assay status [--json] [--pr <n>] [--full]` (#126) checks its arguments and
+//! then stops with exit 2: its GitHub adapter is #53's, and [`assay_cli::run_status`] wires it
+//! once that exists. With no arguments it exits successfully without doing anything.
 
+mod check;
 mod doctor;
 mod self_gate;
 
@@ -25,6 +29,15 @@ fn main() -> ExitCode {
     };
     if command == "doctor" {
         return run_doctor(args);
+    }
+    if command == "check" {
+        return run_check(args);
+    }
+    if command == "status" {
+        return match assay_cli::StatusArgs::parse(args) {
+            Ok(_) => report(&"status: the GitHub adapter it reads through is not built yet (#53)"),
+            Err(usage) => report(&usage),
+        };
     }
     if command != "self-gate" {
         return report(&self_gate::SelfGateError::Usage);
@@ -59,6 +72,33 @@ fn run_doctor(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         return report(&error);
     }
     if outcome.passed() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// `assay check --local`: exit 0 when the decision passes, 1 when it does not, 2 when the
+/// check cannot run.
+fn run_check(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = check::CheckVariables {
+        cwd: env::current_dir(),
+        path: env::var_os("PATH"),
+        home: env::var_os("HOME"),
+        xdg_config_home: env::var_os("XDG_CONFIG_HOME"),
+        vars: env::vars_os().collect(),
+    };
+    let checked = match check::run(args, variables) {
+        Ok(checked) => checked,
+        Err(error) => return report(&error),
+    };
+    if let Err(error) = checked.write(io::stdout().lock()) {
+        return report(&error);
+    }
+    if let Some(left) = &checked.scratch_left {
+        return report(left);
+    }
+    if checked.passed() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

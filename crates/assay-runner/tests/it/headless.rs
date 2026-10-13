@@ -210,6 +210,41 @@ fn every_call_runs_in_the_shared_empty_directory() -> Result<(), Box<dyn Error>>
 
 #[test]
 #[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
+fn a_logged_in_environment_carries_no_token() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new()?;
+    let mut env = HeadlessEnv::logged_in();
+    env.pass("FAKE_RECORD", scene.root.path().join("record"))?;
+    env.pass("FAKE_STREAM", stream_path("ok"))?;
+    let runner = ClaudeHeadless::new(
+        fixtures_dir().join("fake-claude"),
+        Workdir::new(scene.workdir())?,
+        env,
+        &scene.killer,
+    );
+
+    runner.run(&call()?)?;
+
+    // Local mode (02 §6): the CLI uses the developer's stored login, so no token variable is
+    // set at all, not even an empty one; the scrub flag still is.
+    let env = scene.env()?;
+    let names: Vec<&str> = env
+        .keys()
+        .map(String::as_str)
+        .filter(|name| !["PWD", "SHLVL", "_"].contains(name))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB",
+            "FAKE_RECORD",
+            "FAKE_STREAM"
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
 fn the_environment_holds_only_the_token_the_scrub_flag_and_passed_variables()
 -> Result<(), Box<dyn Error>> {
     let scene = Scene::new()?;

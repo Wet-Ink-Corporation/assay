@@ -7,7 +7,7 @@
 //! has a rule the rubric lists as waivable for that gate. Otherwise it clears none of them, so
 //! what a decision counts and what it reports `waived` are always the same findings.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::decide::inputs::{DecisionInputs, GateFinding, GateReport};
 use crate::decision::Waived;
@@ -66,6 +66,29 @@ fn clearable(rubric: &Rubric, gates: &[GateReport], fp: Fingerprint) -> bool {
         })
         .peekable();
     carriers.peek().is_some() && carriers.all(|(gate, finding)| waivable(rubric, gate, finding))
+}
+
+/// The fingerprints an owner's `/assay waive` may clear (R-08(a), 04 §5 waive).
+///
+/// Those are the fingerprints carried by at least one gate finding and only by findings whose
+/// rule the rubric lists as waivable for their own gate, the rule a waiver is applied by.
+/// Reviewer findings are never waivable. One pass over the gate findings, `O(n log n)`.
+#[must_use]
+pub fn waivable_fingerprints(rubric: &Rubric, gates: &[GateReport]) -> BTreeSet<Fingerprint> {
+    let mut all_waivable: BTreeMap<Fingerprint, bool> = BTreeMap::new();
+    for gate in gates {
+        for finding in &gate.findings {
+            let this = waivable(rubric, gate, finding);
+            all_waivable
+                .entry(finding.fp)
+                .and_modify(|every| *every &= this)
+                .or_insert(this);
+        }
+    }
+    all_waivable
+        .into_iter()
+        .filter_map(|(fp, every)| every.then_some(fp))
+        .collect()
 }
 
 fn waivable(rubric: &Rubric, gate: &GateReport, finding: &GateFinding) -> bool {

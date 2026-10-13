@@ -10,7 +10,7 @@ use super::attributes::{
     self, AttributeAllowlist, AttributeError, AttributeReport, POLICED_ATTRIBUTES,
 };
 use super::changes::{self, ChangeListing};
-use super::command::{GitEnvironment, GitOperation, git};
+use super::command::{GitEnvironment, GitOperation, Scope, git_in};
 use super::numstat::{self, DiffOutcome, FileChange};
 use super::sha::{CommitSha, HttpsRemote};
 use super::tree::{self, BlobRef, TreeEntry, TreeLimits};
@@ -49,13 +49,15 @@ impl Default for GitLimits {
     }
 }
 
-/// One git invocation: the operation, its arguments, its stdin and its wall-clock limit.
+/// One git invocation: the operation, its arguments, its stdin, its wall-clock limit and where
+/// it works besides the repository.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Call<'a> {
     pub(super) operation: GitOperation,
     pub(super) args: &'a [&'a str],
     pub(super) input: &'a [u8],
     pub(super) timeout: Duration,
+    pub(super) scope: Scope<'a>,
 }
 
 /// A bare repository holding PR objects as data, with no worktree, so nothing in it is ever
@@ -354,51 +356,72 @@ impl ObjectRepo {
             })
     }
 
-    /// The hardened command for `operation` with `args` appended.
-    fn command(&self, operation: GitOperation, args: &[&str]) -> Command {
-        let mut command = git(&self.git_dir, &self.environment, operation);
-        command.args(args);
-        command
-    }
-
-    /// A call of `operation` with `args`, no stdin and the repository's timeout.
+    /// A call of `operation` with `args`, no stdin, no scope and the repository's timeout.
     pub(super) fn call<'a>(&self, operation: GitOperation, args: &'a [&'a str]) -> Call<'a> {
-        Call {
-            operation,
-            args,
-            input: b"",
-            timeout: self.limits.timeout,
-        }
+        call(operation, args, self.limits)
     }
 
-    /// Runs `call` within its timeout and the output cap; a non-zero exit is an error.
+    /// Runs `call` in this repository within its timeout and the output cap; a non-zero exit is
+    /// an error.
     pub(super) fn run(&self, call: Call<'_>) -> Result<Captured, GitError> {
-        let Call {
+        run_in(&self.git_dir, &self.environment, self.limits, call)
+    }
+}
+
+/// A call of `operation` with `args`, no stdin, no scope and `limits`' timeout.
+pub(super) const fn call<'a>(
+    operation: GitOperation,
+    args: &'a [&'a str],
+    limits: GitLimits,
+) -> Call<'a> {
+    Call {
+        operation,
+        args,
+        input: b"",
+        timeout: limits.timeout,
+        scope: Scope {
+            work_tree: None,
+            index: None,
+            user: None,
+        },
+    }
+}
+
+/// Runs `call` against `git_dir` within its timeout and `limits`' output cap; a non-zero exit
+/// is an error.
+pub(super) fn run_in(
+    git_dir: &Path,
+    environment: &GitEnvironment,
+    limits: GitLimits,
+    call: Call<'_>,
+) -> Result<Captured, GitError> {
+    let Call {
+        operation,
+        args,
+        input,
+        timeout,
+        scope,
+    } = call;
+    let process_limits = Limits {
+        timeout,
+        max_output_bytes: limits.max_output_bytes,
+    };
+    let mut command: Command = git_in(git_dir, scope, environment, operation);
+    command.args(args);
+    let captured = process::run(command, input, process_limits, environment.killer())
+        .map_err(|source| GitError::Process { operation, source })?;
+    if captured.status.success() {
+        Ok(captured)
+    } else {
+        Err(GitError::Failed {
             operation,
-            args,
-            input,
-            timeout,
-        } = call;
-        let limits = Limits {
-            timeout,
-            max_output_bytes: self.limits.max_output_bytes,
-        };
-        let command = self.command(operation, args);
-        let captured = process::run(command, input, limits, self.environment.killer())
-            .map_err(|source| GitError::Process { operation, source })?;
-        if captured.status.success() {
-            Ok(captured)
-        } else {
-            Err(GitError::Failed {
-                operation,
-                status: captured.status,
-                stderr: String::from_utf8_lossy(&captured.stderr)
-                    .trim()
-                    .chars()
-                    .take(STDERR_EXCERPT_CHARS)
-                    .collect(),
-            })
-        }
+            status: captured.status,
+            stderr: String::from_utf8_lossy(&captured.stderr)
+                .trim()
+                .chars()
+                .take(STDERR_EXCERPT_CHARS)
+                .collect(),
+        })
     }
 }
 
@@ -412,6 +435,20 @@ mod tests {
     use std::ffi::OsStr;
 
     use super::*;
+
+    impl ObjectRepo {
+        /// The hardened command for `operation` with `args` appended, as [`run_in`] builds it.
+        fn command(&self, operation: GitOperation, args: &[&str]) -> Command {
+            let mut command = git_in(
+                &self.git_dir,
+                Scope::default(),
+                &self.environment,
+                operation,
+            );
+            command.args(args);
+            command
+        }
+    }
 
     #[test]
     fn the_second_diff_gets_only_what_the_first_left_of_the_cap() {

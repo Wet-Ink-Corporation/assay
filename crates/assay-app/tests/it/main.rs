@@ -1,6 +1,11 @@
 //! Integration tests for `assay-app`, compiled as one binary (TST-14).
 
 mod builtins;
+mod check;
+mod check_egress;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod check_fakes;
+mod check_patches;
 mod config;
 mod contract;
 mod decide;
@@ -42,6 +47,10 @@ mod spec;
 mod specialists;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod specialists_fakes;
+mod status;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod status_fakes;
+mod status_refusals;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod support;
 mod tiering;

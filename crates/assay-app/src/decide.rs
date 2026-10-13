@@ -29,6 +29,7 @@ use assay_domain::{
 };
 use thiserror::Error;
 
+pub(crate) use self::evidence::{Anchors, Cited, ReadFailure, Texts, read_texts};
 pub use self::evidence::{MAX_EVIDENCE_BYTES, MAX_EVIDENCE_FILES, MAX_SYMBOL_BYTES};
 pub use self::fetch::MAX_FETCHED_BYTES;
 use self::fetch::{Artifact, Fetch, Fetcher};
@@ -286,6 +287,15 @@ pub enum DecideError<O, S, A> {
     /// The recomputed run description could not be encoded: a defect in `decide`.
     #[error("could not encode the recomputed run description")]
     Encode(#[source] serde_json::Error),
+}
+
+impl<O, S, A> From<ReadFailure<O>> for DecideError<O, S, A> {
+    fn from(failure: ReadFailure<O>) -> Self {
+        match failure {
+            ReadFailure::Objects(source) => Self::Objects(source),
+            ReadFailure::ShortRead { asked, returned } => Self::ShortRead { asked, returned },
+        }
+    }
 }
 
 /// The [`DecideError`] of [`authenticate`] over `ports`' error types.
@@ -567,7 +577,7 @@ fn is_document_name(file: &str) -> bool {
 }
 
 /// Base policy as the rubric reads it.
-fn policy(settings: &AssaySettings) -> Policy {
+pub(crate) fn policy(settings: &AssaySettings) -> Policy {
     let llm = |promotion| match promotion {
         Promotion::Advisory => LlmPolicy::Advisory,
         Promotion::Block => LlmPolicy::Block,
