@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use assay_app::{
-    InvalidPrompt, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt, PromptError,
-    RetryError, Structured, run_with_retry,
+    InitReadError, InvalidPrompt, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
+    PromptError, RetryError, Structured, run_with_retry,
 };
 use assay_domain::Aeu;
 use serde_json::json;
@@ -71,6 +71,7 @@ fn result(outcome: ModelOutcome, micros: u64) -> ModelResult {
         outcome,
         cost: Aeu::from_micros(micros),
         rate_limits: Vec::new(),
+        init: Err(InitReadError::Missing),
     }
 }
 

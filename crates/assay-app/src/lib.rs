@@ -14,6 +14,7 @@ mod gate;
 mod golden;
 mod model_runner;
 mod plan;
+mod preflight;
 mod prompt_bundle;
 mod publish;
 mod replay;
@@ -23,6 +24,11 @@ mod tiering;
 pub use doctor::{
     CanaryProbe, CanaryRun, CanaryToken, Check, CheckFailure, CheckResult, DoctorError,
     DoctorReport, doctor,
+};
+pub use preflight::{
+    AuthProof, CliProbe, CliStatus, FIRST_PARTY_PROVIDER, OAUTH_TOKEN_METHOD, PreflightFailed,
+    PreflightFailure, PreflightPassed, StatusParts, StatusReadError, UNOBSERVED,
+    is_provider_variable, preflight,
 };
 pub use session_init::{
     AllowlistDrift, InitParts, InitPlugin, InitReadError, InitUnclean, SessionInit,
@@ -68,10 +74,13 @@ pub use prompt_bundle::{
 };
 pub use publish::{
     BUNDLE_FILE, BundleError, BundleStore, CheckConclusion, CheckName, CheckRun, CheckRunId,
-    CheckState, CheckStatus, CheckUpdate, CommentId, Decided, EvidenceEntry, EvidencePointer,
-    EvidenceRecord, ForgeStep, LlmEvidence, MAX_BUNDLE_BYTES, PersistFailure, Publication,
+    CheckState, CheckStatus, CheckUpdate, CommentForge, CommentId, CommentStep, Decided,
+    EvidenceEntry, EvidencePointer, EvidenceRecord, FindingsError, FindingsOutcome,
+    FindingsPublication, FindingsPublished, FindingsWritten, ForgeStep, InlineComment, LlmEvidence,
+    MAX_BUNDLE_BYTES, MAX_INLINE_COMMENTS, MAX_PRIOR_COMMENTS, PersistFailure, Publication,
     PublishError, PublishFailure, PublishLedger, PublishOutcome, PublishPorts, Published,
     SUMMARY_MARKER, Stale, SummaryComment, Target, Unlock, Verdict, VerdictForge, Written, publish,
+    publish_findings,
 };
 pub use replay::{
     BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
