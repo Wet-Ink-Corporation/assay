@@ -1,17 +1,21 @@
 //! The `ClaudeHeadless` adapter: `claude -p` under the hardened headless profile (03 §8).
 
+mod canary;
 mod env;
 mod group;
 mod supervise;
 mod workdir;
 
 use std::io;
-use std::path::PathBuf;
+use std::num::NonZeroU8;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use assay_app::{ModelCall, ModelResult, ModelRunner};
+use assay_domain::Aeu;
 
+pub use canary::{CanaryError, ClaudeCanary};
 pub use env::{EnvVarError, HeadlessEnv};
 pub use group::GroupKill;
 pub use workdir::{Workdir, WorkdirError};
@@ -133,27 +137,51 @@ impl<K> ClaudeHeadless<K> {
     }
 
     fn command(&self, call: &ModelCall) -> Command {
-        let mut command = Command::new(&self.program);
+        let invocation = Invocation {
+            json_schema: &call.json_schema,
+            system_prompt_file: &call.system_prompt_file,
+            add_dir: &call.add_dir,
+            max_turns: call.max_turns,
+            budget: call.budget,
+        };
+        invocation.command(&self.program, self.workdir.path(), &self.env)
+    }
+}
+
+/// The per-call values of the 03 §8 argv, shared by [`ClaudeHeadless`] and [`ClaudeCanary`] so
+/// the canary runs exactly the profile it vouches for.
+struct Invocation<'a> {
+    json_schema: &'a str,
+    system_prompt_file: &'a Path,
+    add_dir: &'a Path,
+    max_turns: NonZeroU8,
+    budget: Aeu,
+}
+
+impl Invocation<'_> {
+    /// `program` with exactly the 03 §8 argv, run in `cwd` with `env` only.
+    fn command(&self, program: &Path, cwd: &Path, env: &HeadlessEnv) -> Command {
+        let mut command = Command::new(program);
         command
             .arg("-p")
             .args(["--output-format", "stream-json", "--verbose"])
             .arg("--json-schema")
-            .arg(&call.json_schema)
+            .arg(self.json_schema)
             .arg("--append-system-prompt-file")
-            .arg(&call.system_prompt_file)
+            .arg(self.system_prompt_file)
             .arg("--exclude-dynamic-system-prompt-sections")
             .args(["--restricted", "--safe-mode"])
             .args(["--settings", SETTINGS])
             .args(["--tools", TOOLS])
             .arg("--add-dir")
-            .arg(&call.add_dir)
+            .arg(self.add_dir)
             .args(["--permission-mode", "dontAsk"])
             .arg("--max-turns")
-            .arg(call.max_turns.to_string())
+            .arg(self.max_turns.to_string())
             .arg("--max-budget-usd")
-            .arg(call.budget.to_string())
-            .current_dir(self.workdir.path());
-        self.env.apply(&mut command);
+            .arg(self.budget.to_string())
+            .current_dir(cwd);
+        env.apply(&mut command);
         command
     }
 }

@@ -9,23 +9,35 @@
 mod config;
 mod contract;
 mod decide;
+mod doctor;
 mod gate;
 mod golden;
 mod model_runner;
 mod plan;
 mod prompt_bundle;
 mod publish;
+mod session_init;
 mod tiering;
 
+pub use doctor::{
+    CanaryProbe, CanaryRun, CanaryToken, Check, CheckFailure, CheckResult, DoctorError,
+    DoctorReport, doctor,
+};
+pub use session_init::{
+    AllowlistDrift, InitParts, InitPlugin, InitReadError, InitUnclean, SessionInit,
+    allowlist_drift, check_init,
+};
+
 pub use config::{
-    Adapter, Argv, AssaySettings, CommitId, ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion,
-    GateName, GlobsConfigError, InfraFailurePolicy, MAX_TIMEOUT_SECS, ParseCommitIdError,
+    Adapter, Argv, AssaySettings, BuiltinAllowlist, BuiltinKind, BuiltinsError, CommitId,
+    ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion, GateName, GlobsConfigError,
+    InfraFailurePolicy, MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS, MAX_TIMEOUT_SECS, ParseCommitIdError,
     ParseDigestError, ParsePinError, Pin, Plugin, PluginsConfig, PrClass, Promotion, RunnerKind,
     Sha256Digest, Step, TomlError, parse_globs,
 };
 pub use contract::{
     Contract, ContractSchemaError, ContractValidator, MAX_DOCUMENT_BYTES, ReadContractError,
-    SchemaCompileError, SchemaViolation,
+    SchemaCompileError, SchemaViolation, parse_json_strict,
 };
 pub use decide::{
     AdmitJob, ArtifactDocument, AuthenticatedRun, Authentication, CurrentPullRequest, DecideError,

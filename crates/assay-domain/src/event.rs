@@ -11,7 +11,7 @@ use crate::run_uid::RunUid;
 use crate::vocabulary::closed_enum;
 
 pub use payload::{
-    EventPayload, FeedbackSignal, GateRun, Preflight, RateLimitStatus, SpecialistRun,
+    BuiltinSet, EventPayload, FeedbackSignal, GateRun, Preflight, RateLimitStatus, SpecialistRun,
     VerifierVerdict, VoidReason,
 };
 

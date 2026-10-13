@@ -13,13 +13,14 @@ const OAUTH_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 const SUBPROCESS_ENV_SCRUB: &str = "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB";
 
 /// Variables reserved by name: the two the runner sets itself, `NODE_OPTIONS` (which can load
-/// code into the CLI's runtime) and `CLAUDE_CONFIG_DIR` (which would point the CLI at another
-/// configuration).
-const RESERVED_NAMES: [&str; 4] = [
+/// code into the CLI's runtime), `CLAUDE_CONFIG_DIR` (which would point the CLI at another
+/// configuration) and `CLAUDE_CODE_PLUGIN_DIRS` (which loads mods from folders, #121).
+const RESERVED_NAMES: [&str; 5] = [
     OAUTH_TOKEN,
     SUBPROCESS_ENV_SCRUB,
     "NODE_OPTIONS",
     "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_PLUGIN_DIRS",
 ];
 
 /// Prefixes of reserved variables: those that select another credential or provider (API keys
@@ -82,7 +83,7 @@ impl HeadlessEnv {
     /// # Errors
     /// Returns [`EnvVarError::InvalidName`] for a name that is not a plain identifier, and
     /// [`EnvVarError::Reserved`] for the token, the scrub flag, `NODE_OPTIONS`,
-    /// `CLAUDE_CONFIG_DIR`, and any `ANTHROPIC_`, `CLAUDE_CODE_USE_`, `AWS_`, `GOOGLE_`,
+    /// `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_PLUGIN_DIRS`, and any `ANTHROPIC_`, `CLAUDE_CODE_USE_`, `AWS_`, `GOOGLE_`,
     /// `CLOUD_ML_`, `VERTEX_`, `LD_` or `DYLD_` variable. The value is dropped, never echoed
     /// back.
     pub fn pass(&mut self, name: &str, value: impl Into<OsString>) -> Result<(), EnvVarError> {

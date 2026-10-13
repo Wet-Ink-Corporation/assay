@@ -42,7 +42,7 @@ pub use decision::{
 pub use dismissal::{Dismissal, DismissalMatch};
 pub use disposition::Disposition;
 pub use event::{
-    Event, EventKind, EventPayload, EventSchema, FeedbackSignal, GateRun, Preflight,
+    BuiltinSet, Event, EventKind, EventPayload, EventSchema, FeedbackSignal, GateRun, Preflight,
     RateLimitStatus, SpecialistRun, VerifierVerdict, VoidReason,
 };
 pub use finding::{Caller, Class, Confidence, Finding, FindingKind, IntroducedBy, Side};
