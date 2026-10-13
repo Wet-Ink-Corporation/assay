@@ -104,7 +104,7 @@ struct FakeLint {
     leaves: Leaves,
     /// How each step ends, by its program's first argument (`fmt`, `deny`); exit 0 otherwise.
     steps: BTreeMap<String, Termination>,
-    /// When set, the supervisor cannot start this step.
+    /// When set, the supervisor cannot start this step, or `baseline --check` for `baseline`.
     cannot_start: Option<String>,
     seen: Vec<SeenSpec>,
 }
@@ -162,11 +162,13 @@ impl CaptureSupervisor for FakeLint {
             timeout: spec.timeout,
             max_output_bytes: spec.max_output_bytes,
         });
+        let baseline = spec.args.get(1).map(String::as_str) == Some("baseline");
         let first = spec.args.first().map(String::as_str).unwrap_or_default();
-        let termination = if spec.args.get(1).map(String::as_str) == Some("baseline") {
+        let process = if baseline { "baseline" } else { first };
+        let termination = if self.cannot_start.as_deref() == Some(process) {
+            return Err(FakeError(format!("cannot start {process}")));
+        } else if baseline {
             self.play_baseline(spec.cwd)?
-        } else if self.cannot_start.as_deref() == Some(first) {
-            return Err(FakeError(format!("cannot start {first}")));
         } else {
             self.steps
                 .get(first)
@@ -313,7 +315,7 @@ fn runs_the_pinned_baseline_check_against_the_base_sha_from_the_head_tree()
     run(&pr, &mut lint)??;
 
     let script = pr.pinned.join("temper.mjs").display().to_string();
-    let first = lint.seen.first().ok_or("nothing ran")?;
+    let first = lint.seen.last().ok_or("nothing ran")?;
     assert_eq!(
         (&first.program, &first.args, &first.cwd, first.timeout),
         (
@@ -681,7 +683,39 @@ fn temper_severities_map_to_display_severities() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn evidence_comes_from_base_when_head_does_not_hold_the_line() -> Result<(), Box<dyn Error>> {
+fn a_head_file_shorter_than_the_cited_line_is_never_quoted_from_base() -> Result<(), Box<dyn Error>>
+{
+    let mut pr = Pr::new()?;
+    pr.set(Revision::Head, "src/lib.rs", "fn a() {}\n");
+    pr.set(
+        Revision::Base,
+        "src/lib.rs",
+        "fn a() {}\nfn b() { x.unwrap() }\n",
+    );
+    let document = edited(|document| {
+        new_code(
+            document,
+            &clippy("clippy::unwrap_used", ("src/lib.rs", 2), "must"),
+        )
+    })?;
+    let mut lint = FakeLint::ending(Termination::Exited(1), Leaves::File(document.into_bytes()));
+
+    let (_, document) = outcome(&pr, &mut lint)?;
+
+    let sides: Vec<(Option<Side>, String)> = shown(document)
+        .into_iter()
+        .map(|seen| (seen.3, seen.5))
+        .collect();
+    assert_eq!(
+        sides,
+        [(Some(Side::Right), "clippy::unwrap_used".to_owned())],
+        "base is read only for a file head deleted (03 §2.1 step 6); this one falls back"
+    );
+    Ok(())
+}
+
+#[test]
+fn evidence_comes_from_base_when_head_deleted_the_file() -> Result<(), Box<dyn Error>> {
     let mut pr = Pr::new()?;
     pr.set(
         Revision::Base,
@@ -852,16 +886,23 @@ fn an_exception_base_admits_passes() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn the_lint_steps_run_from_the_head_tree_under_their_own_timeouts() -> Result<(), Box<dyn Error>> {
+fn the_lint_steps_run_from_the_head_tree_under_their_own_timeouts_before_the_build()
+-> Result<(), Box<dyn Error>> {
     let pr = Pr::new()?;
     let mut lint = FakeLint::leaving(DIFF_TOTALS);
 
     run(&pr, &mut lint)??;
 
+    let last = lint.seen.last().and_then(|seen| seen.args.get(1));
+    assert_eq!(
+        (lint.seen.len(), last.map(String::as_str)),
+        (3, Some("baseline")),
+        "baseline --check runs last, after the steps read the unbuilt tree"
+    );
     let steps: Vec<(PathBuf, Vec<String>, &Path, Duration)> = lint
         .seen
         .iter()
-        .skip(1)
+        .take(2)
         .map(|seen| {
             (
                 seen.program.clone(),
@@ -926,5 +967,120 @@ fn a_step_that_cannot_start_is_a_gate_error() -> Result<(), Box<dyn Error>> {
     let ran = run(&pr, &mut lint)?;
 
     assert_matches!(ran, Err(TemperError::Lint { .. }));
+    Ok(())
+}
+
+#[test]
+fn baseline_check_that_cannot_start_is_a_gate_error() -> Result<(), Box<dyn Error>> {
+    let pr = Pr::new()?;
+    let mut lint = FakeLint::leaving(DIFF_TOTALS);
+    lint.cannot_start = Some("baseline".to_owned());
+
+    let ran = run(&pr, &mut lint)?;
+
+    assert_matches!(ran, Err(TemperError::Lint { ref process, .. }) if process == "temper baseline --check");
+    Ok(())
+}
+
+#[test]
+fn a_step_that_does_not_exit_is_that_gate_error() -> Result<(), Box<dyn Error>> {
+    let pr = Pr::new()?;
+    let cases = [
+        (Termination::Signalled, GateError::Signal),
+        (Termination::OutputTooLarge, GateError::OutputTooLarge),
+    ];
+    for (termination, expected) in cases {
+        let mut lint = FakeLint::leaving(DIFF_TOTALS).step_ends("fmt", termination);
+
+        let (outcome, _) = outcome(&pr, &mut lint)?;
+
+        assert_eq!(outcome, GateOutcome::Error(expected), "{termination:?}");
+        assert_eq!(lint.seen.len(), 1, "{termination:?}: nothing runs after it");
+    }
+    Ok(())
+}
+
+/// The diff+totals fixture with a finding on line 2 of `src/lib.rs`, which head holds.
+fn cited_in_head(pr: &mut Pr) -> Result<String, Box<dyn Error>> {
+    pr.set(
+        Revision::Head,
+        "src/lib.rs",
+        "fn a() {}\nfn b() { x.unwrap() }\n",
+    );
+    edited(|document| {
+        new_code(
+            document,
+            &clippy("clippy::unwrap_used", ("src/lib.rs", 2), "must"),
+        )
+    })
+}
+
+#[test]
+fn an_evidence_tree_that_cannot_be_listed_is_a_gate_error() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    let document = cited_in_head(&mut pr)?;
+    pr.revisions.failing_tree = Some(Revision::Head);
+    let mut lint = FakeLint::ending(Termination::Exited(1), Leaves::File(document.into_bytes()));
+
+    let ran = run(&pr, &mut lint)?;
+
+    assert_matches!(
+        ran,
+        Err(TemperError::Revision {
+            revision: Revision::Head,
+            path: ".",
+            ..
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn an_evidence_blob_that_cannot_be_read_is_a_gate_error() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    let document = cited_in_head(&mut pr)?;
+    pr.revisions.failing_read = Some("src/lib.rs".to_owned());
+    let mut lint = FakeLint::ending(Termination::Exited(1), Leaves::File(document.into_bytes()));
+
+    let ran = run(&pr, &mut lint)?;
+
+    assert_matches!(
+        ran,
+        Err(TemperError::Revision {
+            revision: Revision::Head,
+            path: ".",
+            ..
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn failures_past_the_cap_still_fail_and_report_only_the_cap() -> Result<(), Box<dyn Error>> {
+    const MAX_REPORTED: usize = 1_000;
+    let pr = Pr::new()?;
+    let document = edited(|document| {
+        let raised = ratchet(document)?.get_mut("raised")?.as_array_mut()?;
+        raised.extend((0..=MAX_REPORTED).map(|index| {
+            serde_json::json!({
+                "crate": format!("crate-{index}"), "lint": "clippy::too_many_lines",
+                "from": 2, "to": 3
+            })
+        }));
+        Some(())
+    })?;
+
+    let (outcome, document) = outcome(&pr, &mut FakeLint::leaving(&document))?;
+
+    let rules: Vec<String> = shown(document).into_iter().map(|seen| seen.0).collect();
+    assert_eq!(
+        (
+            outcome,
+            rules.len(),
+            rules.iter().all(|rule| rule == "raised")
+        ),
+        (FAILED, MAX_REPORTED, true),
+        "one raised entry past the cap"
+    );
     Ok(())
 }

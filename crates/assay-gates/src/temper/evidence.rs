@@ -1,7 +1,7 @@
 //! Step 6: the evidence of a `gates-lint` finding is the line at its `file:line`, read by the
-//! adapter from the head commit, or from base when head does not hold that line
-//! (`docs/architecture/03-contracts.md` §2.1). Never temper's own text, and never the checkout
-//! on disk, which a build script could have rewritten.
+//! adapter from the head commit, or from base when head does not hold the file at all (a
+//! deleted line, `docs/architecture/03-contracts.md` §2.1). Never temper's own text, and never
+//! the checkout on disk, which a build script could have rewritten.
 //!
 //! Each side's tree is listed once and the cited files are read in one batch, within a byte
 //! budget charged by listed size; a file past it keeps a synthesised quote.
@@ -37,7 +37,7 @@ impl Lines<'_> {
     }
 }
 
-/// Reads the lines `wanted` cites: head first, then base for the lines head does not hold.
+/// Reads the lines `wanted` cites: head first, then base for the files head does not hold.
 ///
 /// # Errors
 ///
@@ -59,19 +59,25 @@ pub(super) fn gather<'w, R: RevisionFiles>(
         }
         let failed = |error| (revision, error);
         let entries = revisions.list(revision, None).map_err(failed)?;
-        let cited = entries.iter().filter(|entry| {
-            entry.kind == EntryKind::File && pending.contains_key(entry.path.as_str())
-        });
-        let chosen = within_budget(cited, &mut left);
+        let present: Vec<&TreeEntry> = entries
+            .iter()
+            .filter(|entry| pending.contains_key(entry.path.as_str()))
+            .collect();
+        let files = present
+            .iter()
+            .copied()
+            .filter(|entry| entry.kind == EntryKind::File);
+        let chosen = within_budget(files, &mut left);
         let blobs = revisions.read(&chosen).map_err(failed)?;
         for (entry, bytes) in chosen.iter().zip(blobs) {
-            let Some((file, needed)) = pending.remove_entry(entry.path.as_str()) else {
-                continue;
-            };
-            let unread = quote_into(&mut lines, (file, side), needed, &bytes);
-            if !unread.is_empty() {
-                pending.insert(file, unread);
+            if let Some((file, needed)) = pending.get_key_value(entry.path.as_str()) {
+                quote_into(&mut lines, (file, side), needed, &bytes);
             }
+        }
+        // A file this side holds is answered here, quoted or not: base is read only for the
+        // files head does not hold at all (03 §2.1 step 6, deleted lines).
+        for entry in present {
+            pending.remove(entry.path.as_str());
         }
     }
     Ok(lines)
@@ -94,14 +100,18 @@ fn within_budget<'e>(
         .collect()
 }
 
-/// Quotes the `needed` lines of `bytes` into `lines` for `file` on `side`, and returns those
-/// past its end. A line that is there but blank is quoted by nobody: the finding falls back.
+/// Quotes the `needed` lines of `bytes` into `lines` for `file` on `side`, in one pass that
+/// stops at the last one. A line past the end, or there but blank, is quoted by nobody: its
+/// finding falls back.
 fn quote_into<'w>(
     lines: &mut Lines<'w>,
     (file, side): (&'w str, Side),
-    mut needed: BTreeSet<NonZeroU64>,
+    needed: &BTreeSet<NonZeroU64>,
     bytes: &[u8],
-) -> BTreeSet<NonZeroU64> {
+) {
+    let Some(&last) = needed.last() else {
+        return;
+    };
     let text = String::from_utf8_lossy(bytes);
     for (index, line) in text.lines().enumerate() {
         let number = u64::try_from(index)
@@ -111,16 +121,15 @@ fn quote_into<'w>(
         let Some(number) = number else {
             break;
         };
-        if needed.remove(&number)
+        if needed.contains(&number)
             && let Some(evidence) = line_evidence(line)
         {
             lines.0.insert((file, number), (side, evidence));
         }
-        if needed.is_empty() {
+        if number >= last {
             break;
         }
     }
-    needed
 }
 
 #[cfg(test)]
@@ -154,25 +163,28 @@ mod tests {
     }
 
     #[test]
-    fn quotes_only_the_lines_asked_for_and_returns_those_past_the_end() {
+    fn quotes_only_the_lines_asked_for_and_none_past_the_end() {
         let mut lines = Lines::default();
         let needed: BTreeSet<NonZeroU64> =
             [1, 3, 9].into_iter().filter_map(NonZeroU64::new).collect();
 
-        let unread = quote_into(
+        quote_into(
             &mut lines,
             ("f.rs", Side::Right),
-            needed,
-            b"one\n\n  three  \n",
+            &needed,
+            b"one\ntwo\n  three  \n",
         );
 
-        let three = NonZeroU64::new(3).map(|line| lines.spot("f.rs", line, "x").evidence);
+        let mut quoted: Vec<(u64, String)> = lines
+            .0
+            .into_iter()
+            .map(|((_, line), (_, evidence))| (line.get(), evidence))
+            .collect();
+        quoted.sort();
         assert_eq!(
-            (
-                unread.into_iter().map(NonZeroU64::get).collect::<Vec<_>>(),
-                three
-            ),
-            (vec![9], Some("three".to_owned()))
+            quoted,
+            [(1, "one".to_owned()), (3, "three".to_owned())],
+            "line 2 was not asked for and line 9 is past the end"
         );
     }
 }

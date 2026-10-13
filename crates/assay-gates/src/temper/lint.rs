@@ -1,8 +1,8 @@
 //! The temper adapter in `gates-lint`, zone Z2b (`docs/architecture/03-contracts.md` §2.1 steps
-//! 5-7): the base's pinned `temper baseline --check --locked --base <base_sha> --findings-out
-//! target/temper/findings.json` from the head checkout, its ratchet believed only against the
-//! merge base Z2s computed, then the plugin's declared `lint` steps (`fmt`, `deny`) under their
-//! own timeouts.
+//! 5-7): first the plugin's declared `lint` steps (`fmt`, `deny`) under their own timeouts,
+//! before any build script or proc-macro has run in the tree; then the base's pinned `temper
+//! baseline --check --locked --base <base_sha> --findings-out target/temper/findings.json` from
+//! the head checkout, its ratchet believed only against the merge base Z2s computed.
 //!
 //! A run that does not exit (timeout, signal, output cap), or a `baseline --check` exit other
 //! than 0 or 1, is handed to the gate use case as that termination, so it is the matching
@@ -20,10 +20,10 @@ use super::evidence::{self, MAX_EVIDENCE_BYTES};
 use super::exceptions::Allowlist;
 use super::lint_findings::{self, Shown};
 use super::ratchet::{self, Checked, Refused};
-use super::{ErrorOf, TREE, TemperAdapter, TemperError, TemperSettings, baseline};
+use super::{ErrorOf, TREE, TemperAdapter, TemperError, TemperSettings};
 use crate::capture::CaptureSupervisor;
 use crate::exec::{ProcessSpec, read_document, resolve};
-use crate::revision::{Revision, RevisionFiles};
+use crate::revision::RevisionFiles;
 
 /// Where `baseline --check` writes its collection and ratchet, relative to the head tree; temper
 /// accepts only paths under `target/` or `.temper/`.
@@ -58,8 +58,18 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             return Err(TemperError::NoRatchetBase);
         };
         let allowlist = self.allowlist()?;
+        // The steps read the tree before `baseline --check` builds it (build scripts and
+        // proc-macros run there).
+        let mut failed = false;
+        for step in steps.iter().filter(|step| step.job() == BuildJob::Lint) {
+            match self.step(step)? {
+                Termination::Exited(0) => {}
+                Termination::Exited(_) => failed = true,
+                other => return Ok(stopped(other)),
+            }
+        }
         let out = self.settings.head_tree.join(FINDINGS_OUT);
-        remove_stale(&out)?;
+        remove_stale(&self.settings.head_tree, Path::new(FINDINGS_OUT))?;
         let run = capture(
             &mut self.supervisor,
             &self.settings,
@@ -77,14 +87,7 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
                 detail: "temper's exit code disagrees with ratchet.ok".to_owned(),
             });
         }
-        let mut failed = exit_failed;
-        for step in steps.iter().filter(|step| step.job() == BuildJob::Lint) {
-            match self.step(step)? {
-                Termination::Exited(0) => {}
-                Termination::Exited(_) => failed = true,
-                other => return Ok(stopped(other)),
-            }
-        }
+        failed |= exit_failed;
         let findings = self.lint_findings(&checked, &allowlist)?;
         failed |= findings.failing;
         let conclusion = if failed {
@@ -133,12 +136,8 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
         checked: &Checked,
         allowlist: &Allowlist,
     ) -> Result<LintFindings, ErrorOf<S, R>> {
-        let head_baseline = self.read(Revision::Head, baseline::PATH)?;
-        let text = head_baseline
-            .as_deref()
-            .and_then(|bytes| str::from_utf8(bytes).ok());
-        let mut findings = lint_findings::failures(checked, allowlist, text);
-        let failing = !findings.is_empty();
+        let failures = lint_findings::failures(checked, allowlist);
+        let mut findings = failures.findings;
         let shown = lint_findings::shown(checked, findings.len());
         let lines = evidence::gather(
             &self.revisions,
@@ -156,7 +155,10 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
                 .map(|shown| lint_findings::display(shown, &lines)),
         );
         findings.truncate(lint_findings::MAX_REPORTED);
-        Ok(LintFindings { failing, findings })
+        Ok(LintFindings {
+            failing: failures.failing,
+            findings,
+        })
     }
 }
 
@@ -193,15 +195,33 @@ struct LintFindings {
 }
 
 /// Removes a findings document an earlier run or a restored `target/` left, so only this run's
-/// can be read. Nothing there is fine; anything that cannot be removed is an error.
-fn remove_stale<S, R>(out: &Path) -> Result<(), TemperError<S, R>> {
-    match fs::remove_file(out) {
+/// can be read. Nothing there is fine; anything that cannot be removed is an error, and so is a
+/// symlink at any directory between `head_tree` and the document (`target`, `target/temper`),
+/// which would point the removal, and temper's write, out of the tree. `relative` is the
+/// document's path below `head_tree`.
+fn remove_stale<S, R>(head_tree: &Path, relative: &Path) -> Result<(), TemperError<S, R>> {
+    let refused = |path: &Path, source| TemperError::FindingsOut {
+        path: path.to_path_buf(),
+        source,
+    };
+    let out = head_tree.join(relative);
+    let mut directory = head_tree.to_path_buf();
+    for component in relative.parent().into_iter().flat_map(Path::components) {
+        directory.push(component);
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let symlink = io::Error::new(io::ErrorKind::InvalidInput, "a symlink");
+                return Err(refused(&directory, symlink));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => return Err(refused(&directory, source)),
+        }
+    }
+    match fs::remove_file(&out) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(TemperError::FindingsOut {
-            path: out.to_path_buf(),
-            source,
-        }),
+        Err(source) => Err(refused(&out, source)),
     }
 }
 
@@ -258,15 +278,55 @@ mod tests {
     #[test]
     fn removing_a_directory_in_the_documents_place_fails() -> Result<(), Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
-        let out = dir.path().join("findings.json");
-        fs::create_dir(&out)?;
+        fs::create_dir_all(dir.path().join(FINDINGS_OUT))?;
 
-        let removed: Result<(), TemperError<io::Error, io::Error>> = remove_stale(&out);
+        let removed: Result<(), TemperError<io::Error, io::Error>> =
+            remove_stale(dir.path(), Path::new(FINDINGS_OUT));
 
         assert!(
             matches!(removed, Err(TemperError::FindingsOut { .. })),
             "{removed:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_symlinked_directory_on_the_way_to_the_document_is_refused() -> Result<(), Box<dyn Error>> {
+        for linked in ["target", "target/temper"] {
+            let dir = tempfile::tempdir()?;
+            let elsewhere = dir.path().join("elsewhere");
+            fs::create_dir(&elsewhere)?;
+            fs::write(elsewhere.join("findings.json"), b"{}")?;
+            let head = dir.path().join("head");
+            let link = head.join(linked);
+            if let Some(parent) = link.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            std::os::unix::fs::symlink(&elsewhere, &link)?;
+
+            let removed: Result<(), TemperError<io::Error, io::Error>> =
+                remove_stale(&head, Path::new(FINDINGS_OUT));
+
+            assert!(
+                matches!(&removed, Err(TemperError::FindingsOut { path, .. }) if *path == link),
+                "{linked}: {removed:?}"
+            );
+            assert!(
+                elsewhere.join("findings.json").exists(),
+                "{linked}: nothing outside the tree is removed"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nothing_on_the_way_to_the_document_is_fine() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+
+        let removed: Result<(), TemperError<io::Error, io::Error>> =
+            remove_stale(dir.path(), Path::new(FINDINGS_OUT));
+
+        assert!(removed.is_ok(), "{removed:?}");
         Ok(())
     }
 }

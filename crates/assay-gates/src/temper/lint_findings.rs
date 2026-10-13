@@ -39,15 +39,30 @@ const WAIVABLE: [&str; 5] = [
 /// Rule of a compile error.
 const COMPILE_ERROR: &str = "compile-error";
 
-/// The `raised` and unadmitted `exception` findings: each fails the gate.
-pub(super) fn failures(
-    checked: &Checked,
-    allowlist: &Allowlist,
-    head_baseline: Option<&str>,
-) -> Vec<Finding> {
+/// The `raised` and unadmitted `exception` entries, which fail the gate.
+pub(super) struct Failures {
+    /// Whether there is any: decided over every entry, never over the reported ones.
+    pub(super) failing: bool,
+    /// At most [`MAX_REPORTED`] of their findings, `raised` first.
+    pub(super) findings: Vec<Finding>,
+}
+
+/// The `raised` and unadmitted `exception` entries of `checked`.
+///
+/// A `raised` finding's spot is synthesised at the baseline rather than located in the head
+/// baseline, which the PR controls: locating each would scan the file once per entry.
+pub(super) fn failures(checked: &Checked, allowlist: &Allowlist) -> Failures {
+    let mut unadmitted = checked
+        .findings
+        .iter()
+        .filter_map(|hit| Some((hit, hit.exception.as_deref()?)))
+        .filter(|(hit, lint)| !allowlist.admits_exception(&hit.file, lint))
+        .peekable();
+    let failing = !checked.raised.is_empty() || unadmitted.peek().is_some();
     let raises: Vec<Raise<'_>> = checked
         .raised
         .iter()
+        .take(MAX_REPORTED)
         .map(|raised| Raise {
             krate: &raised.krate,
             lint: &raised.lint,
@@ -56,25 +71,22 @@ pub(super) fn failures(
             to: raised.to,
         })
         .collect();
-    let mut found = findings::raised(&raises, head_baseline);
-    found.extend(
-        checked
-            .findings
-            .iter()
-            .filter_map(|hit| Some((hit, hit.exception.as_deref()?)))
-            .filter(|(hit, lint)| !allowlist.admits_exception(&hit.file, lint))
-            .map(|(hit, lint)| {
-                // The request, and then the document, own the path and the lint.
-                findings::unadmitted(Request {
-                    file: hit.file.clone(),
-                    attribute: hit.lint == EXPECT_ATTR,
-                    line: hit.line,
-                    lint: Some(lint.to_owned()),
-                    text: None,
-                })
-            }),
-    );
-    found
+    let mut found = findings::raised(&raises, None);
+    let room = MAX_REPORTED.saturating_sub(found.len());
+    found.extend(unadmitted.take(room).map(|(hit, lint)| {
+        // The request, and then the document, own the path and the lint.
+        findings::unadmitted(Request {
+            file: hit.file.clone(),
+            attribute: hit.lint == EXPECT_ATTR,
+            line: hit.line,
+            lint: Some(lint.to_owned()),
+            text: None,
+        })
+    }));
+    Failures {
+        failing,
+        findings: found,
+    }
 }
 
 /// One finding to display, before its evidence is read.

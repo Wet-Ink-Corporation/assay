@@ -225,6 +225,14 @@ pub(super) fn check(bytes: &[u8], merge_base: &str) -> Result<Checked, Refused> 
     if ratchet.base.as_deref() != Some(merge_base) {
         return Err(Refused::Degraded(RatchetDegradation::Base));
     }
+    // temper 1.3.0's `ratchet` sets `ok` to exactly this; any other value is not its writing.
+    let clean =
+        ratchet.new_code.is_empty() && ratchet.increases.is_empty() && ratchet.errors.is_empty();
+    if ratchet.ok != clean {
+        return Err(Refused::Malformed(
+            "ratchet.ok disagrees with new_code, increases and errors".to_owned(),
+        ));
+    }
     Ok(Checked {
         ok: ratchet.ok,
         findings: dto.findings,
@@ -276,6 +284,25 @@ mod tests {
         let text = ratchet("diff+totals", &format!("\"{MERGE_BASE}\""), note);
 
         assert_eq!(check(text.as_bytes(), MERGE_BASE).map(|c| c.ok), Ok(true));
+    }
+
+    #[test]
+    fn an_ok_that_disagrees_with_what_temper_computes_it_from_is_malformed() {
+        let base = format!("\"{MERGE_BASE}\"");
+        let not_ok = ratchet("diff+totals", &base, "").replace("\"ok\": true", "\"ok\": false");
+        let increase = r#""increases": [{"crate": "c", "lint": "l", "baseline": 1, "current": 2}]"#;
+        let ok_with_increase =
+            ratchet("diff+totals", &base, "").replace("\"increases\": []", increase);
+
+        for text in [not_ok, ok_with_increase] {
+            assert!(
+                matches!(
+                    check(text.as_bytes(), MERGE_BASE),
+                    Err(Refused::Malformed(_))
+                ),
+                "{text}"
+            );
+        }
     }
 
     #[test]
