@@ -1,0 +1,14 @@
+{
+  "schema": "assay.status/1",
+  "source": "local",
+  "local_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "tree": null,
+  "local_tree": "dddddddddddddddddddddddddddddddddddddddd",
+  "stale": true,
+  "check": null,
+  "decision": null,
+  "tier": null,
+  "gates": [],
+  "findings": [],
+  "fetched_at": "2026-10-13T09:30:00Z"
+}

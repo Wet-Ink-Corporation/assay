@@ -5,7 +5,8 @@
 use std::error::Error;
 
 use assay_app::{
-    ChangedFiles, CheckPorts, LocalReport, MAX_DIFF_BYTES, PatchBudget, ReviewStatus, check_local,
+    ChangedFiles, CheckPorts, LocalReport, MAX_DIFF_BYTES, NoEvents, PatchBudget, ReviewStatus,
+    check_local,
 };
 use assay_domain::{FileChange, Lines, Tier};
 
@@ -27,6 +28,7 @@ fn check_with(
         patches,
         gates: &mut FakeGates::passing(),
         model,
+        events: &mut NoEvents,
     };
     Ok(check_local(&setup.request(), ports, &validator()?)?)
 }

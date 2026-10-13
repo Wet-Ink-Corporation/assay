@@ -1,6 +1,7 @@
 //! `assay status [--json] [--pr <n>] [--full]` (#126): the arguments and the wiring of
 //! [`assay_app::status`] over its ports, generic so it is tested with fakes until the GitHub
-//! adapter (#53) exists.
+//! adapter (#53) exists. `assay status [--json] --local` (#130) shows the local check's result
+//! instead; [`StatusCommand`] tells the two apart.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -42,6 +43,8 @@ pub enum StatusUsage {
     Repeated(&'static str),
     /// `--pr` without a positive number after it.
     PrNumber,
+    /// A PR's argument (`--pr`, `--full`) beside `--local`.
+    NotLocal(&'static str),
 }
 
 impl fmt::Display for StatusUsage {
@@ -50,6 +53,7 @@ impl fmt::Display for StatusUsage {
             Self::Unknown => "unknown argument",
             Self::Repeated(flag) => return write!(f, "{flag} given twice; {USAGE}"),
             Self::PrNumber => "--pr needs a PR number",
+            Self::NotLocal(flag) => return write!(f, "{flag} does not go with --local; {USAGE}"),
         };
         write!(f, "{why}; {USAGE}")
     }
@@ -58,7 +62,48 @@ impl fmt::Display for StatusUsage {
 impl std::error::Error for StatusUsage {}
 
 /// The usage line.
-const USAGE: &str = "usage: assay status [--json] [--pr <n>] [--full]";
+const USAGE: &str =
+    "usage: assay status [--json] [--pr <n>] [--full], or assay status [--json] --local";
+
+/// What `assay status` is asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusCommand {
+    /// A PR's status.
+    Pull(StatusArgs),
+    /// `--local`: the local check's result, written as `format` says.
+    Local(Format),
+}
+
+impl StatusCommand {
+    /// Parses the arguments after `status`: [`StatusArgs`], or `--local` with `--json` at most.
+    ///
+    /// # Errors
+    ///
+    /// [`StatusUsage`] as [`StatusArgs::parse`] refuses, for `--local` given twice, and for
+    /// `--pr` or `--full` beside `--local`.
+    pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Self, StatusUsage> {
+        let mut local = None;
+        let mut rest = Vec::new();
+        for arg in args {
+            if arg == "--local" {
+                set(&mut local, (), "--local")?;
+            } else {
+                rest.push(arg);
+            }
+        }
+        let parsed = StatusArgs::parse(rest)?;
+        if local.is_none() {
+            return Ok(Self::Pull(parsed));
+        }
+        if parsed.pr.is_some() {
+            return Err(StatusUsage::NotLocal("--pr"));
+        }
+        if parsed.detail == Detail::Full {
+            return Err(StatusUsage::NotLocal("--full"));
+        }
+        Ok(Self::Local(parsed.format))
+    }
+}
 
 impl StatusArgs {
     /// Parses the arguments after `status`, each flag at most once.

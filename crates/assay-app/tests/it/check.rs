@@ -7,8 +7,8 @@ use std::error::Error;
 use assay_app::CheckPorts;
 use assay_app::{
     BaseConfigError, ChangedFiles, CheckError, Contract, ContractValidator, GateJob,
-    MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES, ModelOutcome, PlanError, ReadContractError, ReviewStatus,
-    Structured, check_local,
+    MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES, ModelOutcome, NoEvents, PlanError, ReadContractError,
+    ReviewStatus, Structured, check_local,
 };
 use assay_domain::{Conclusion, FileChange, Lines, ReasonCode, Severity, Tier};
 use serde_json::{Value, json};
@@ -35,6 +35,7 @@ pub(crate) fn check(
         patches: &patches,
         gates,
         model,
+        events: &mut NoEvents,
     };
     Ok(check_local(&setup.request(), ports, &validator()?)?)
 }
@@ -61,7 +62,7 @@ fn a_dirty_tree_is_planned_gated_reviewed_and_decided() -> Result<(), Box<dyn Er
             .review()
             .findings
             .iter()
-            .map(|finding| (finding.title.as_str(), finding.line.get()))
+            .map(|finding| (finding.finding.title.as_str(), finding.finding.line.get()))
             .collect::<Vec<_>>(),
         [("unwrap on user input panics", 2)]
     );
@@ -154,6 +155,7 @@ fn a_base_without_config_is_refused_by_plan() -> Result<(), Box<dyn Error>> {
         patches: &FakePatches::lib(),
         gates: &mut FakeGates::passing(),
         model: &model,
+        events: &mut NoEvents,
     };
 
     let result = check_local(&setup.request(), ports, &validator()?);
@@ -214,7 +216,10 @@ fn a_failing_gate_reports_its_findings() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         gate.findings
             .iter()
-            .map(|finding| (finding.rule.as_deref(), finding.evidence.as_str()))
+            .map(|finding| (
+                finding.finding.rule.as_deref(),
+                finding.finding.evidence.as_str()
+            ))
             .collect::<Vec<_>>(),
         [(Some("H-02"), "    input.parse().unwrap()")],
         "a verified gate finding keeps its rule and quotes the tree's line"
@@ -478,7 +483,7 @@ fn a_model_written_source_is_replaced_so_the_role_ceiling_holds() -> Result<(), 
             .review()
             .findings
             .iter()
-            .map(|finding| finding.severity)
+            .map(|finding| finding.finding.severity)
             .collect::<Vec<_>>(),
         [Severity::Major],
         "combined-micro's findings are capped at major whatever role the model claims"
@@ -500,6 +505,7 @@ fn a_context_pack_holding_a_nul_is_not_sent() -> Result<(), Box<dyn Error>> {
         patches: &patches,
         gates: &mut FakeGates::passing(),
         model: &model,
+        events: &mut NoEvents,
     };
 
     let report = check_local(&setup.request(), ports, &validator()?)?;
@@ -530,6 +536,7 @@ pub(crate) fn prompt_with(patches: &FakePatches, pr: &FakePr) -> Result<String, 
         patches,
         gates: &mut FakeGates::passing(),
         model: &model,
+        events: &mut NoEvents,
     };
     check_local(&setup.request(), ports, &validator()?)?;
     let calls = model.calls.borrow();
@@ -650,6 +657,7 @@ fn a_patch_port_failure_fails_the_check() -> Result<(), Box<dyn Error>> {
         patches: &patches,
         gates: &mut FakeGates::passing(),
         model: &FakeModel::default(),
+        events: &mut NoEvents,
     };
 
     let result = check_local(&setup.request(), ports, &validator()?);
@@ -671,6 +679,7 @@ fn a_patch_list_of_the_wrong_length_fails_the_check() -> Result<(), Box<dyn Erro
         patches: &patches,
         gates: &mut FakeGates::passing(),
         model: &FakeModel::default(),
+        events: &mut NoEvents,
     };
 
     let result = check_local(&setup.request(), ports, &validator()?);
@@ -699,6 +708,7 @@ fn an_unreadable_changed_file_fails_the_check() -> Result<(), Box<dyn Error>> {
         patches: &FakePatches::lib(),
         gates: &mut FakeGates::passing(),
         model: &FakeModel::default(),
+        events: &mut NoEvents,
     };
 
     let result = check_local(&setup.request(), ports, &validator()?);
@@ -721,6 +731,7 @@ fn a_short_read_of_the_changed_files_fails_the_check() -> Result<(), Box<dyn Err
         patches: &FakePatches::lib(),
         gates: &mut FakeGates::passing(),
         model: &FakeModel::default(),
+        events: &mut NoEvents,
     };
 
     let result = check_local(&setup.request(), ports, &validator()?);
@@ -741,6 +752,7 @@ fn a_rubric_that_does_not_parse_fails_the_check_first() -> Result<(), Box<dyn Er
         patches: &FakePatches::lib(),
         gates: &mut gates,
         model: &model,
+        events: &mut NoEvents,
     };
 
     let result = check_local(&setup.request(), ports, &validator()?);
@@ -784,7 +796,7 @@ fn ci_refuses_the_local_report_as_every_contract() -> Result<(), Box<dyn Error>>
     let value: Value = serde_json::from_slice(&json)?;
     assert_eq!(
         (&value["schema"], &value["advisory"]),
-        (&json!("assay.local-check/1"), &json!(true))
+        (&json!("assay.local-check/2"), &json!(true))
     );
     Ok(())
 }

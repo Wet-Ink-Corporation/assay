@@ -1,5 +1,6 @@
-//! `assay check --local [--base <branch>] [--claude <program>]` (#107, 02 §6): the pipeline's
-//! advisory verdict on the working tree, run from the repository's root.
+//! `assay check --local [--base <branch>] [--claude <program>] [--events <path|->]` (#107,
+//! #130, 02 §6): the pipeline's advisory verdict on the working tree, run from the repository's
+//! root.
 //!
 //! The working tree is snapshotted into a scratch object-only repository that borrows the
 //! developer's objects (their repository is never written), planned against
@@ -8,11 +9,17 @@
 //! checkout of the snapshot, and decided. The report goes to `<git dir>/assay/<tree>.json` and
 //! the terminal. It is advisory: CI never reads it, and no contract accepts it.
 //!
+//! With `--events`, every `assay.event/1` envelope of the run is written as it happens, one
+//! JSON line each, flushed per line: to a new file at `<path>` (an existing path is refused,
+//! never overwritten), or to stdout for `-`, the terminal report then going to stderr. The file
+//! is created after the snapshot, so this run does not check it; inside the working tree and
+//! not ignored, it is part of the next snapshot.
+//!
 //! Exit 0 when the decision is `success` or `neutral`, 1 otherwise, 2 when the check cannot run.
 
 use std::ffi::OsString;
 use std::fmt;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -27,7 +34,8 @@ use assay_app::{
 use assay_cli::{ForgeObjectsError, ForgePullRequest, ForgeSupervisor};
 use assay_domain::{Conclusion, ContentHash, RunUid};
 use assay_forge::git::{
-    CommitSha, GitEnvironment, GitError, GitLimits, ObjectRepo, TreeLimits, UserDirs, WorkingTree,
+    CommitSha, GitEnvironment, GitError, GitLimits, ObjectRepo, Snapshot, TreeLimits, UserDirs,
+    WorkingTree,
 };
 use assay_forge::process::{GroupKiller, KillerError};
 use assay_gates::{
@@ -35,13 +43,17 @@ use assay_gates::{
     Supervisor,
 };
 use assay_runner::{ClaudeHeadless, EnvVarError, HeadlessEnv, Workdir, WorkdirError};
-use tempfile::{NamedTempFile, TempDir};
+use tempfile::TempDir;
 
+use self::events::{EventWriteError, JsonlEvents};
 use crate::doctor::write_chain;
+
+mod events;
+pub(crate) mod store;
 
 /// The directory under the git directory that holds local reports: `.git/assay`. Nothing in CI
 /// reads it (`tests/it/check.rs` pins that no workflow and no other module names it).
-const REPORT_DIR: &str = "assay";
+pub(crate) const REPORT_DIR: &str = "assay";
 
 /// The base branch when `--base` is not given.
 const DEFAULT_BASE: &str = "main";
@@ -70,6 +82,14 @@ const LOCAL_REPO: &str = "local/working-tree";
 
 /// The environment `check` reads, gathered by `main` (ARC-11).
 pub(crate) struct CheckVariables {
+    /// Where the working tree is and how git runs there.
+    pub(crate) tree: TreeVariables,
+    /// Every variable, for the gates' allowlist.
+    pub(crate) vars: Vec<(OsString, OsString)>,
+}
+
+/// The environment that opens and snapshots the working tree, gathered by `main` (ARC-11).
+pub(crate) struct TreeVariables {
     /// The working directory: the repository's root.
     pub(crate) cwd: io::Result<PathBuf>,
     /// `PATH`, for git, the gates and the CLI.
@@ -78,8 +98,6 @@ pub(crate) struct CheckVariables {
     pub(crate) home: Option<OsString>,
     /// `XDG_CONFIG_HOME`, where git also looks for the developer's user config.
     pub(crate) xdg_config_home: Option<OsString>,
-    /// Every variable, for the gates' allowlist.
-    pub(crate) vars: Vec<(OsString, OsString)>,
 }
 
 /// Why the check could not be run.
@@ -117,8 +135,12 @@ pub(crate) enum CheckCliError {
     Objects(ForgeObjectsError),
     /// The contract schemas did not compile.
     Contracts(ContractSchemaError),
+    /// The `--events` path already exists.
+    EventsExist(PathBuf),
+    /// The `--events` file could not be created.
+    EventsOpen { path: PathBuf, source: io::Error },
     /// The check stopped.
-    Check(CheckError<ForgeObjectsError, ForgeObjectsError>),
+    Check(CheckError<ForgeObjectsError, ForgeObjectsError, EventWriteError>),
     /// The report could not be encoded.
     Encode(serde_json::Error),
     /// The report could not be written.
@@ -157,6 +179,16 @@ impl fmt::Display for CheckCliError {
             Self::Commit(source) => write_chain(f, source),
             Self::Objects(source) => write_chain(f, source),
             Self::Contracts(source) => write_chain(f, source),
+            Self::EventsExist(path) => write!(
+                f,
+                "{} already exists: --events writes a new file, or - for stdout (a file in the \
+                 working tree is part of the next snapshot: use -, or a path outside the tree or \
+                 ignored)",
+                path.display()
+            ),
+            Self::EventsOpen { path, source } => {
+                write!(f, "cannot create {}: {source}", path.display())
+            }
             Self::Check(source) => write_chain(f, source),
             Self::Encode(source) => write!(f, "cannot encode the report: {source}"),
             Self::Write { path, source } => {
@@ -168,12 +200,22 @@ impl fmt::Display for CheckCliError {
 
 impl std::error::Error for CheckCliError {}
 
-/// What the check produced: the report, where it was written, and the scratch directory if it
-/// could not be removed.
+/// What the check produced: the report, where it was written, the scratch directory if it
+/// could not be removed, and where the terminal report goes.
 pub(crate) struct Checked {
     pub(crate) report: LocalReport,
     pub(crate) path: PathBuf,
     pub(crate) scratch_left: Option<ScratchLeft>,
+    pub(crate) report_to: ReportTo,
+}
+
+/// Where the terminal report goes: stdout, unless the event stream holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReportTo {
+    /// stdout.
+    Stdout,
+    /// stderr: `--events -` streams the events on stdout.
+    Stderr,
 }
 
 /// The scratch directory (a 0700 copy of the snapshot) could not be removed.
@@ -215,23 +257,37 @@ impl Checked {
 struct Args {
     base: String,
     claude: Option<PathBuf>,
+    events: Option<EventsTo>,
 }
 
-/// `--local`, then `--base <branch>` and `--claude <program>` at most once each.
+/// Where `--events` writes.
+#[derive(Debug, PartialEq, Eq)]
+enum EventsTo {
+    /// `-`.
+    Stdout,
+    /// A new file.
+    File(PathBuf),
+}
+
+/// `--local`, then `--base <branch>`, `--claude <program>` and `--events <path|->` at most once
+/// each. An `--events` path that is empty or starts with `-` (other than `-` itself) is a usage
+/// error, so a forgotten value never names a file after the next flag.
 fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, CheckCliError> {
     if args.next().as_deref() != Some("--local".as_ref()) {
         return Err(CheckCliError::Usage);
     }
-    let (mut base, mut claude) = (None, None);
+    let (mut base, mut claude, mut events) = (None, None, None);
     while let Some(flag) = args.next() {
         let value = args.next().ok_or(CheckCliError::Usage)?;
         let slot = match flag.to_str() {
             Some("--base") if base.is_none() => &mut base,
             Some("--claude") if claude.is_none() => &mut claude,
+            Some("--events") if events.is_none() => &mut events,
             _ => return Err(CheckCliError::Usage),
         };
         *slot = Some(value);
     }
+    let events = events.map(events_to).transpose()?;
     let base = match base {
         None => DEFAULT_BASE.to_owned(),
         Some(base) => base
@@ -244,7 +300,43 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, CheckCliError
     Ok(Args {
         base,
         claude: claude.map(PathBuf::from),
+        events,
     })
+}
+
+/// `--events`' value: `-`, or a path that is not empty and does not start with `-`.
+fn events_to(value: OsString) -> Result<EventsTo, CheckCliError> {
+    if value == "-" {
+        return Ok(EventsTo::Stdout);
+    }
+    if value.is_empty() || value.as_encoded_bytes().starts_with(b"-") {
+        return Err(CheckCliError::Usage);
+    }
+    Ok(EventsTo::File(PathBuf::from(value)))
+}
+
+/// The event stream `events` asks for. A file is created new, so an existing path, a symlink
+/// included, is refused rather than overwritten.
+fn open_events(
+    events: Option<EventsTo>,
+) -> Result<(JsonlEvents<Box<dyn Write>>, ReportTo), CheckCliError> {
+    match events {
+        None => Ok((JsonlEvents::none(), ReportTo::Stdout)),
+        Some(EventsTo::Stdout) => Ok((
+            JsonlEvents::to(Box::new(io::stdout().lock())),
+            ReportTo::Stderr,
+        )),
+        Some(EventsTo::File(path)) => {
+            let file: File = match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    return Err(CheckCliError::EventsExist(path));
+                }
+                Err(source) => return Err(CheckCliError::EventsOpen { path, source }),
+            };
+            Ok((JsonlEvents::to(Box::new(file)), ReportTo::Stdout))
+        }
+    }
 }
 
 /// Whether `name` is a plain branch name: segments of ASCII letters, digits, `.`, `_` and `-`
@@ -281,38 +373,38 @@ fn claude_program(
         .ok_or(CheckCliError::NoClaude)
 }
 
+/// The commit of `origin/<branch>`, which the check plans against.
+fn resolve_base(worktree: &WorkingTree, branch: &str) -> Result<CommitSha, CheckCliError> {
+    match worktree.resolve(&["refs/remotes/origin/", branch].concat()) {
+        Ok(base) => Ok(base),
+        // The error owns the branch it names.
+        Err(GitError::UnknownRevision { .. }) => Err(CheckCliError::NoBase(branch.to_owned())),
+        Err(error) => Err(CheckCliError::Git(error)),
+    }
+}
+
 /// Runs the check on the working tree at the working directory and writes its report.
 pub(crate) fn run(
     args: impl Iterator<Item = OsString>,
     variables: CheckVariables,
 ) -> Result<Checked, CheckCliError> {
     let args = parse(args)?;
-    let program = claude_program(args.claude, variables.path.as_ref())?;
-    let root = variables.cwd.map_err(CheckCliError::Cwd)?;
-    let killer = GroupKiller::system().map_err(CheckCliError::Killer)?;
-    // git and the CLI each own a `PATH`. Without one git is not found, and opening the working
-    // tree fails with that error.
-    let path = variables.path.clone().unwrap_or_default();
-    // A cheap handle (the `kill` program's path), owned by each process runner.
-    let git = GitEnvironment::new(path, killer.clone());
-    let limits = GitLimits::default();
-    // The user dirs own their copy of `HOME`; the CLI's environment below owns its own.
-    let user = UserDirs::new(variables.home.clone(), variables.xdg_config_home);
-    // The working tree and the scratch repository each own an environment.
-    let worktree =
-        WorkingTree::open(root, git.clone(), &user, limits).map_err(CheckCliError::Git)?;
+    let tree = variables.tree;
+    let program = claude_program(args.claude, tree.path.as_ref())?;
+    // The CLI's environment below owns its own `HOME` and `PATH`.
+    let (home, path) = (tree.home.clone(), tree.path.clone());
+    let Opened {
+        worktree,
+        git,
+        killer,
+    } = open_worktree(tree)?;
     let head = worktree.resolve("HEAD").map_err(CheckCliError::Git)?;
-    let base = match worktree.resolve(&["refs/remotes/origin/", &args.base].concat()) {
-        Ok(base) => base,
-        Err(GitError::UnknownRevision { .. }) => return Err(CheckCliError::NoBase(args.base)),
-        Err(error) => return Err(CheckCliError::Git(error)),
-    };
+    let base = resolve_base(&worktree, &args.base)?;
     let scratch = Scratch::new()?;
-    let repo =
-        ObjectRepo::init(scratch.path("objects"), git, limits).map_err(CheckCliError::Git)?;
-    let snapshot = repo
-        .snapshot(&worktree, &head)
-        .map_err(CheckCliError::Git)?;
+    let (repo, snapshot) = scratch.snapshot(&worktree, &head, git)?;
+    // Opened after the snapshot, so a stream written inside the working tree is not part of
+    // the tree this run checks.
+    let (mut events, report_to) = open_events(args.events)?;
     repo.checkout(&snapshot, &scratch.path("tree"))
         .map_err(CheckCliError::Git)?;
     let (bundle, system_prompt_file) = scratch.bundle()?;
@@ -334,7 +426,7 @@ pub(crate) fn run(
     // As above: each runner owns its handle on the killer.
     let environment = gate_environment(&variables.vars, &plan.pull_request);
     let mut gates = scratch.gates(worktree.root(), environment, killer.clone())?;
-    let env = logged_in(variables.home, variables.path)?;
+    let env = logged_in(home, path)?;
     let model = scratch.model(program, env, killer)?;
     let validator = ContractValidator::new().map_err(CheckCliError::Contracts)?;
     let ports = CheckPorts {
@@ -342,13 +434,47 @@ pub(crate) fn run(
         patches: &objects,
         gates: &mut gates,
         model: &model,
+        events: &mut events,
     };
     let report = check_local(&request, ports, &validator).map_err(CheckCliError::Check)?;
-    let path = write_report(&worktree.git_dir().join(REPORT_DIR), &report)?;
+    let json = report.to_json().map_err(CheckCliError::Encode)?;
+    let path = store::write_report(&worktree.git_dir().join(REPORT_DIR), report.tree(), &json)
+        .map_err(|error| CheckCliError::Write {
+            path: error.path,
+            source: error.source,
+        })?;
     Ok(Checked {
         report,
         path,
         scratch_left: scratch.close(),
+        report_to,
+    })
+}
+
+/// The developer's working tree, opened read-only, with the git environment and the
+/// process-group killer that ran it.
+pub(crate) struct Opened {
+    pub(crate) worktree: WorkingTree,
+    pub(crate) git: GitEnvironment,
+    pub(crate) killer: GroupKiller,
+}
+
+/// Opens the working tree at the working directory of `variables`.
+pub(crate) fn open_worktree(variables: TreeVariables) -> Result<Opened, CheckCliError> {
+    let root = variables.cwd.map_err(CheckCliError::Cwd)?;
+    let killer = GroupKiller::system().map_err(CheckCliError::Killer)?;
+    // Without a `PATH` git is not found, and opening the working tree fails with that error.
+    let path = variables.path.unwrap_or_default();
+    // A cheap handle (the `kill` program's path), owned by each process runner.
+    let git = GitEnvironment::new(path, killer.clone());
+    let user = UserDirs::new(variables.home, variables.xdg_config_home);
+    // The working tree and the scratch repository each own an environment.
+    let worktree = WorkingTree::open(root, git.clone(), &user, GitLimits::default())
+        .map_err(CheckCliError::Git)?;
+    Ok(Opened {
+        worktree,
+        git,
+        killer,
     })
 }
 
@@ -432,34 +558,30 @@ fn git_file_list(
     })
 }
 
-/// Writes `report` to `<dir>/<tree>.json` through a temporary file in `dir`, so a reader never
-/// sees half a report.
-fn write_report(dir: &Path, report: &LocalReport) -> Result<PathBuf, CheckCliError> {
-    let path = dir.join([report.tree(), ".json"].concat());
-    let failed = |source| CheckCliError::Write {
-        // The error names the file it could not write.
-        path: path.clone(),
-        source,
-    };
-    let json = report.to_json().map_err(CheckCliError::Encode)?;
-    fs::create_dir_all(dir).map_err(failed)?;
-    let mut file = NamedTempFile::new_in(dir).map_err(failed)?;
-    file.write_all(&json).map_err(failed)?;
-    file.persist(&path).map_err(|error| failed(error.error))?;
-    Ok(path)
-}
-
 /// The scratch directory: the snapshot's repository and checkout, the CLI's empty working
 /// directory, the gates' output and the system prompt. Removed when dropped.
-struct Scratch {
+pub(crate) struct Scratch {
     dir: TempDir,
 }
 
 impl Scratch {
-    fn new() -> Result<Self, CheckCliError> {
+    pub(crate) fn new() -> Result<Self, CheckCliError> {
         Ok(Self {
             dir: tempfile::tempdir().map_err(CheckCliError::Scratch)?,
         })
+    }
+
+    /// `worktree` snapshotted on `head` into an object repository here, run with `git`.
+    pub(crate) fn snapshot(
+        &self,
+        worktree: &WorkingTree,
+        head: &CommitSha,
+        git: GitEnvironment,
+    ) -> Result<(ObjectRepo, Snapshot), CheckCliError> {
+        let repo = ObjectRepo::init(self.path("objects"), git, GitLimits::default())
+            .map_err(CheckCliError::Git)?;
+        let snapshot = repo.snapshot(worktree, head).map_err(CheckCliError::Git)?;
+        Ok((repo, snapshot))
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -467,7 +589,7 @@ impl Scratch {
     }
 
     /// Removes the directory, saying where it is left when it cannot be removed.
-    fn close(self) -> Option<ScratchLeft> {
+    pub(crate) fn close(self) -> Option<ScratchLeft> {
         let path = self.dir.path().to_path_buf();
         self.dir
             .close()

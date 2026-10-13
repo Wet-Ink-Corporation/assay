@@ -26,10 +26,10 @@ const READ_BATCH_BYTES: u64 = 8 << 20;
 ///
 /// [`CheckError::Objects`] when a batch cannot be read, and [`CheckError::ShortRead`] when the
 /// port returns another number of blobs than asked for.
-pub(super) fn snapshot_texts<O: PullRequestObjects, P>(
+pub(super) fn snapshot_texts<O: PullRequestObjects, P, E>(
     objects: &O,
     head: &[TreeEntry],
-) -> Result<Vec<Vec<u8>>, CheckError<O::Error, P>> {
+) -> Result<Vec<Vec<u8>>, CheckError<O::Error, P, E>> {
     let mut texts = Vec::new();
     for batch in batches(head) {
         let read = objects.read(&batch).map_err(CheckError::Objects)?;

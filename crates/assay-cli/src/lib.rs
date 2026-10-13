@@ -15,6 +15,7 @@ mod supervisor;
 pub use pull_request::{ForgeObjectsError, ForgePullRequest};
 pub use revisions::ForgeRevisions;
 pub use status::{
-    Format, StatusArgs, StatusContext, StatusRunError, StatusUsage, run as run_status,
+    Format, StatusArgs, StatusCommand, StatusContext, StatusRunError, StatusUsage,
+    run as run_status,
 };
 pub use supervisor::ForgeSupervisor;

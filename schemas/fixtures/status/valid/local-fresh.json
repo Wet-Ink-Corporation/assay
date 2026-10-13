@@ -1,0 +1,60 @@
+{
+  "schema": "assay.status/1",
+  "source": "local",
+  "local_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "tree": "cccccccccccccccccccccccccccccccccccccccc",
+  "local_tree": "cccccccccccccccccccccccccccccccccccccccc",
+  "stale": false,
+  "check": {
+    "conclusion": "failure",
+    "status": "completed"
+  },
+  "decision": {
+    "conclusion": "failure",
+    "reasons": [
+      {
+        "code": "gate-failed",
+        "detail": "unit"
+      }
+    ],
+    "reasons_digest": "sha256:edfab635b96543711e1a2662a111f30252334d5a72e82c9d11bb62e35ad7e231",
+    "counts": {
+      "blocker": 0,
+      "major": 1,
+      "minor": 1,
+      "nit": 0
+    },
+    "degraded": [],
+    "advisory_blockers": []
+  },
+  "tier": "micro",
+  "gates": [
+    {
+      "plugin": "unit",
+      "conclusion": "failure"
+    }
+  ],
+  "findings": [
+    {
+      "fp": "e6797c4be6ba1efd",
+      "finding_id": "e6797c4be6ba1efd",
+      "severity": "minor",
+      "class": "docs",
+      "title": "`parse` has no doc comment",
+      "file": "src/lib.rs",
+      "line": 1,
+      "waivable": false
+    },
+    {
+      "fp": "55164a4e3022c146",
+      "finding_id": "55164a4e3022c146",
+      "severity": "major",
+      "class": "error-handling",
+      "title": "unwrap on user input panics",
+      "file": "src/lib.rs",
+      "line": 2,
+      "waivable": false
+    }
+  ],
+  "fetched_at": "2026-10-13T09:30:00Z"
+}

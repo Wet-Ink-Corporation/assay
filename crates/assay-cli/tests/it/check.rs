@@ -32,12 +32,12 @@ printf '{\"schema\":\"assay.findings/1\",\"source\":{\"kind\":\"gate\",\"name\":
 
 /// A repository whose `main` is also `origin/main`, with a dirty working tree, and a stand-in
 /// `claude` that records the tree it was given.
-struct Scene {
+pub(crate) struct Scene {
     root: TempDir,
 }
 
 impl Scene {
-    fn new() -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn new() -> Result<Self, Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         let work = root.path().join("work");
         plain_git(root.path(), &["init", "--quiet", "-b", "main", "work"])?;
@@ -58,7 +58,7 @@ impl Scene {
         Ok(scene)
     }
 
-    fn path(&self, name: &str) -> PathBuf {
+    pub(crate) fn path(&self, name: &str) -> PathBuf {
         self.root.path().join(name)
     }
 
@@ -90,7 +90,7 @@ impl Scene {
         Ok(())
     }
 
-    fn check(&self, args: &[&str]) -> Result<Outcome, Box<dyn Error>> {
+    pub(crate) fn check(&self, args: &[&str]) -> Result<Outcome, Box<dyn Error>> {
         self.check_in(&self.path("work"), args)
     }
 
@@ -105,8 +105,27 @@ impl Scene {
         path: Option<OsString>,
         args: &[&str],
     ) -> Result<Outcome, Box<dyn Error>> {
+        self.assay(cwd, path, &[&["check"], args].concat())
+    }
+
+    /// `assay status <args>` from the working tree, with only `HOME` and `PATH`.
+    pub(crate) fn status(&self, args: &[&str]) -> Result<Outcome, Box<dyn Error>> {
+        self.assay(
+            &self.path("work"),
+            env::var_os("PATH"),
+            &[&["status"], args].concat(),
+        )
+    }
+
+    /// `assay <args>` from `cwd`, with only `HOME` and `path` as `PATH`.
+    fn assay(
+        &self,
+        cwd: &Path,
+        path: Option<OsString>,
+        args: &[&str],
+    ) -> Result<Outcome, Box<dyn Error>> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_assay"));
-        command.env_clear().current_dir(cwd).arg("check").args(args);
+        command.env_clear().current_dir(cwd).args(args);
         if let Some(path) = path {
             command.env("PATH", path);
         }
@@ -118,7 +137,7 @@ impl Scene {
         })
     }
 
-    fn claude(&self) -> Result<String, Box<dyn Error>> {
+    pub(crate) fn claude(&self) -> Result<String, Box<dyn Error>> {
         Ok(self
             .path("claude")
             .to_str()
@@ -128,10 +147,10 @@ impl Scene {
 }
 
 #[derive(Debug)]
-struct Outcome {
-    code: Option<i32>,
-    stdout: String,
-    stderr: String,
+pub(crate) struct Outcome {
+    pub(crate) code: Option<i32>,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
 }
 
 #[test]
@@ -148,7 +167,7 @@ fn a_dirty_tree_is_checked_and_its_report_written_under_the_git_dir() -> Result<
     let report: Value = serde_json::from_slice(&fs::read(&report_path)?)?;
     assert_eq!(
         (&report["schema"], &report["advisory"], &report["tree"]),
-        (&json!("assay.local-check/1"), &json!(true), &json!(tree)),
+        (&json!("assay.local-check/2"), &json!(true), &json!(tree)),
         "{outcome:?}"
     );
     assert_eq!(
@@ -343,9 +362,10 @@ fn a_relative_claude_program_is_refused() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// No workflow and no production module but local mode's own names the local report, so no CI
-/// path can read it; `assay_app`'s `ci_refuses_the_local_report_as_every_contract` shows the
-/// contract validator refuses it too.
+/// No workflow and no production module but local mode's own names the local report, and no
+/// workflow runs local mode, its event stream or its status (`--local`, `--events`, #130), so no
+/// CI path can read any of them; `assay_app`'s `ci_refuses_the_local_report_as_every_contract`
+/// shows the contract validator refuses the report too.
 #[test]
 fn nothing_in_ci_names_the_local_report() -> Result<(), Box<dyn Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -363,10 +383,12 @@ fn nothing_in_ci_names_the_local_report() -> Result<(), Box<dyn Error>> {
             }
             let text = fs::read(&file)?;
             let text = String::from_utf8_lossy(&text);
-            if ["assay.local-check", ".git/assay"]
-                .iter()
-                .any(|name| text.contains(name))
-            {
+            let names: &[&str] = if dir == ".github" {
+                &["assay.local-check", ".git/assay", "--local", "--events"]
+            } else {
+                &["assay.local-check", ".git/assay"]
+            };
+            if names.iter().any(|name| text.contains(name)) {
                 naming.push(relative);
             }
         }
@@ -395,7 +417,7 @@ fn files(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
 }
 
 /// The tree `git add --all` would write for `work`, computed in a throwaway index.
-fn snapshot_tree(work: &Path) -> Result<String, Box<dyn Error>> {
+pub(crate) fn snapshot_tree(work: &Path) -> Result<String, Box<dyn Error>> {
     let index = work.join(".git/test-snapshot-index");
     let index_env = index.to_str().ok_or("scratch path is not UTF-8")?;
     plain_git_env(work, &["read-tree", "HEAD"], index_env)?;
@@ -405,7 +427,7 @@ fn snapshot_tree(work: &Path) -> Result<String, Box<dyn Error>> {
     Ok(tree.trim().to_owned())
 }
 
-fn write(root: &Path, path: &str, contents: &str) -> Result<(), Box<dyn Error>> {
+pub(crate) fn write(root: &Path, path: &str, contents: &str) -> Result<(), Box<dyn Error>> {
     let path = root.join(path);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

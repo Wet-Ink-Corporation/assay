@@ -13,7 +13,9 @@ use assay_app::{
     Identities, PullView, ReviewCommentView, StatusForge, StatusPorts, StatusRepository,
     StoredBundle, UserId, Viewer,
 };
-use assay_cli::{Format, StatusArgs, StatusContext, StatusRunError, StatusUsage, run_status};
+use assay_cli::{
+    Format, StatusArgs, StatusCommand, StatusContext, StatusRunError, StatusUsage, run_status,
+};
 use assay_domain::{Rubric, RunUid};
 
 const HEAD: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -274,4 +276,49 @@ fn the_binary_refuses_bad_arguments_and_names_the_missing_adapter() -> Result<()
     let message = String::from_utf8(unwired.stderr)?;
     assert!(message.contains("(#53)"), "{message}");
     Ok(())
+}
+
+#[test]
+fn local_is_asked_for_with_text_or_json() {
+    let asked = [
+        &["--local"][..],
+        &["--json", "--local"],
+        &["--local", "--json"],
+    ]
+    .map(|words| StatusCommand::parse(args(words)));
+
+    assert_eq!(
+        asked,
+        [
+            Ok(StatusCommand::Local(Format::Text)),
+            Ok(StatusCommand::Local(Format::Json)),
+            Ok(StatusCommand::Local(Format::Json)),
+        ]
+    );
+}
+
+#[test]
+fn without_local_a_prs_arguments_are_read() {
+    let asked = StatusCommand::parse(args(&["--json", "--pr", "42"]));
+
+    assert_eq!(
+        asked,
+        Ok(StatusCommand::Pull(StatusArgs {
+            format: Format::Json,
+            pr: NonZeroU64::new(42),
+            detail: Detail::Summary,
+        }))
+    );
+}
+
+#[test]
+fn local_with_a_prs_argument_or_given_twice_is_a_usage_error() {
+    for (words, usage) in [
+        (&["--local", "--pr", "4"][..], StatusUsage::NotLocal("--pr")),
+        (&["--full", "--local"], StatusUsage::NotLocal("--full")),
+        (&["--local", "--local"], StatusUsage::Repeated("--local")),
+        (&["--local", "--bogus"], StatusUsage::Unknown),
+    ] {
+        assert_eq!(StatusCommand::parse(args(words)), Err(usage), "{words:?}");
+    }
 }

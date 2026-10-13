@@ -20,14 +20,14 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 49] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 54] = [
     (
         Contract::Status,
         "unknown-field",
         Rejection::Violation("", "additionalProperties"),
     ),
     (Contract::Status, "unknown-version", Rejection::Version(2)),
-    // `ci` or the reserved `local` (#126), nothing else.
+    // `ci` or `local` (#130), nothing else.
     (
         Contract::Status,
         "unknown-source",
@@ -69,6 +69,34 @@ const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 49] = [
         Contract::Status,
         "viewer-login-not-a-login",
         Rejection::Violation("/viewer/login", "pattern"),
+    ),
+    // A local status (#130) has no viewer, no check page and nothing waivable, and a CI status
+    // carries no local tree.
+    (
+        Contract::Status,
+        "local-with-viewer",
+        Rejection::Violation("/viewer", "falseSchema"),
+    ),
+    (
+        Contract::Status,
+        "local-check-with-url",
+        Rejection::Violation("/check", "oneOf"),
+    ),
+    (
+        Contract::Status,
+        "local-waivable-finding",
+        Rejection::Violation("/findings/0/waivable", "const"),
+    ),
+    // Stale only against a local result: with no `tree` there is nothing to be stale.
+    (
+        Contract::Status,
+        "local-stale-without-result",
+        Rejection::Violation("/stale", "const"),
+    ),
+    (
+        Contract::Status,
+        "ci-with-local-tree",
+        Rejection::Violation("/local_tree", "falseSchema"),
     ),
     (
         Contract::Findings,

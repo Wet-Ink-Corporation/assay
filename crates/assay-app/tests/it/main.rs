@@ -3,6 +3,7 @@
 mod builtins;
 mod check;
 mod check_egress;
+mod check_events;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod check_fakes;
 mod check_patches;
@@ -58,6 +59,7 @@ mod specialists_fakes;
 mod status;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod status_fakes;
+mod status_local;
 mod status_refusals;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod support;
