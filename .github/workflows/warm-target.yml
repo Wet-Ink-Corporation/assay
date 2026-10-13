@@ -1,0 +1,207 @@
+# Warm target/: on every push to main, a trusted job builds the workspace's dependencies and
+# publishes target/ with the cargo registry cache to GHCR as an OCI artifact, by digest (ADR-21,
+# 06 §3, 05 T6). Base `.assay/plugins.toml` `[assay] warm_target` names that digest; Z2b jobs
+# restore it with .github/actions/warm-target, which verifies the digest, unpacks only target/
+# and registry/{index,cache}, and runs `cargo clean -p <workspace crates>` before any build. A
+# stale digest only costs time. Runbook: docs/operations/warm-target.md.
+#
+# Never the Actions cache, here or in any decision-bearing job: it can be pre-seeded under the
+# base scope with a run's runtime token, and a poisoned entry outlives the merge (T6). This
+# workflow restores nothing and builds cold; crates/assay-cli/tests/it/workflow_cache.rs holds
+# every decision-bearing job to an allowlist of cache-free actions.
+#
+# A-29: cargo fingerprints hold absolute paths, so the build runs at the fixed path $WORKSPACE,
+# where Z2b builds too, with the runner image's CARGO_HOME.
+#
+# Least privilege: every job defaults to `contents: read`; only `publish` may write packages, and
+# it runs no repository code. Actions are pinned by full commit SHA.
+name: warm-target
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warm-target
+  cancel-in-progress: true     # a newer main supersedes; a published digest stays valid
+
+env:
+  CARGO_TERM_COLOR: always
+  WORKSPACE: /work/ws
+  ARCHIVE: warm-target.tar.zst
+  ARTIFACT_TYPE: application/vnd.wet-ink.assay.warm-target.v1
+  LAYER_TYPE: application/vnd.wet-ink.assay.warm-target.layer.v1.tar+zstd
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      artifact: ${{ steps.pack.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-28
+        with:
+          toolchain: "1.98.1"  # keep in sync with rust-toolchain.toml
+          components: clippy
+      - name: Place the workspace at the fixed path (A-29)
+        shell: bash
+        run: |
+          sudo install -d -o "$(id -u)" -g "$(id -g)" -- "$(dirname "$WORKSPACE")"
+          mkdir -- "$WORKSPACE"
+          cp -a -- "$GITHUB_WORKSPACE/." "$WORKSPACE/"
+      # What Z2b compiles: clippy and rustdoc in gates-lint, tests and doctests in gates-test.
+      - name: Build the dependencies as Z2b does
+        shell: bash
+        working-directory: ${{ env.WORKSPACE }}
+        run: |
+          cargo clippy --locked --workspace --all-targets --all-features
+          cargo test --locked --workspace --all-features --no-run
+          cargo doc --locked --workspace --no-deps --all-features
+      - name: Clean the workspace crates and pack
+        id: pack
+        shell: bash
+        env:
+          SCRIPT: ${{ github.workspace }}/.github/actions/warm-target/warm-target.sh
+        run: |
+          bash "$SCRIPT" clean "$WORKSPACE"
+          mkdir dist
+          bash "$SCRIPT" pack "$WORKSPACE" "${CARGO_HOME:-$HOME/.cargo}" "dist/$ARCHIVE"
+          sum=$(sha256sum < "dist/$ARCHIVE")
+          # A per-job nonce artifact name (02 §1); its sha256 travels in this job's outputs.
+          echo "artifact=warm-target-$(openssl rand -hex 8)" >> "$GITHUB_OUTPUT"
+          echo "sha256=sha256:${sum%% *}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.pack.outputs.artifact }}
+          path: dist/${{ env.ARCHIVE }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      packages: write
+    outputs:
+      repository: ${{ steps.push.outputs.repository }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: dist
+      - name: The artifact is the archive the build job hashed
+        shell: bash
+        env:
+          EXPECTED: ${{ needs.build.outputs.sha256 }}
+        run: |
+          sum=$(sha256sum < "dist/$ARCHIVE")
+          if [ "sha256:${sum%% *}" != "$EXPECTED" ]; then
+            echo "::error::artifact digest sha256:${sum%% *} does not match the build output $EXPECTED"
+            exit 1
+          fi
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        with:
+          version: 1.3.4
+      - name: Push to GHCR
+        id: push
+        shell: bash
+        working-directory: dist
+        env:
+          OWNER: ${{ github.repository_owner }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ github.token }}
+        run: |
+          repository="ghcr.io/${OWNER,,}/assay-warm-target"
+          # The tag is a name for humans; consumers pin the digest. The source annotation links
+          # the package to this repository (GHCR package access).
+          printf '%s' "$TOKEN" | oras push --username "$ACTOR" --password-stdin \
+            --artifact-type "$ARTIFACT_TYPE" \
+            --annotation "org.opencontainers.image.source=$SOURCE" \
+            --annotation "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --export-manifest "$RUNNER_TEMP/manifest.json" \
+            "$repository:$GITHUB_SHA" "$ARCHIVE:$LAYER_TYPE"
+          # The digest is the sha256 of the exact manifest bytes pushed.
+          sum=$(sha256sum < "$RUNNER_TEMP/manifest.json")
+          digest="sha256:${sum%% *}"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Warm target/ for $GITHUB_SHA published"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Repository | \`$repository\` |"
+            echo "| Digest | \`$digest\` |"
+            echo
+            echo "Pin it in base \`.assay/plugins.toml\` (a trust-path change):"
+            echo
+            echo '```toml'
+            echo '[assay]'
+            echo "warm_target = \"$digest\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Pulls the artifact back through the consumer mechanism: proves the digest resolves and
+  # verifies, that the bytes are the ones the build job hashed, and that the warm-target action
+  # restores it end to end (allowlisted unpack, cargo clean) into a workspace that then builds
+  # offline from the restored registry.
+  verify:
+    needs: [build, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: fetch
+        uses: ./.github/actions/fetch-by-digest
+        with:
+          repository: ${{ needs.publish.outputs.repository }}
+          digest: ${{ needs.publish.outputs.digest }}
+          artifact-type: ${{ env.ARTIFACT_TYPE }}
+          out-dir: ${{ runner.temp }}/warm-target
+          mode: "0644"
+      - name: The fetched archive is the one that was built
+        shell: bash
+        env:
+          DIR: ${{ steps.fetch.outputs.dir }}
+          EXPECTED: ${{ needs.build.outputs.sha256 }}
+        run: |
+          sum=$(sha256sum < "$DIR/$ARCHIVE")
+          if [ "sha256:${sum%% *}" != "$EXPECTED" ]; then
+            echo "::error::fetched archive sha256:${sum%% *} differs from the build output $EXPECTED"
+            exit 1
+          fi
+          rm -rf -- "$DIR"
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-28
+        with:
+          toolchain: "1.98.1"  # keep in sync with rust-toolchain.toml
+          components: clippy
+      - name: Place the workspace at the fixed path (A-29)
+        shell: bash
+        run: |
+          sudo install -d -o "$(id -u)" -g "$(id -g)" -- "$(dirname "$WORKSPACE")"
+          mkdir -- "$WORKSPACE"
+          cp -a -- "$GITHUB_WORKSPACE/." "$WORKSPACE/"
+      - uses: ./.github/actions/warm-target
+        with:
+          repository: ${{ needs.publish.outputs.repository }}
+          digest: ${{ needs.publish.outputs.digest }}
+          workspace: ${{ env.WORKSPACE }}
+      - name: The restored registry builds the workspace offline
+        shell: bash
+        working-directory: ${{ env.WORKSPACE }}
+        run: cargo clippy --locked --offline --workspace --all-targets --all-features

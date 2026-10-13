@@ -5,28 +5,11 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
 
-fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
+use super::workflow::{action_files, job_body, jobs, permissions, top_level_block, workflow};
 
 fn release_workflow() -> io::Result<String> {
-    fs::read_to_string(repository_root().join(".github/workflows/release.yml"))
-}
-
-/// The lines of the top-level mapping `key:`, from its header to the next top-level key.
-fn top_level_block<'a>(text: &'a str, key: &str) -> Vec<&'a str> {
-    let header = format!("{key}:");
-    text.lines()
-        .skip_while(|line| *line != header)
-        .enumerate()
-        .take_while(|&(index, line)| {
-            index == 0 || line.is_empty() || line.starts_with(' ') || line.starts_with('#')
-        })
-        .map(|(_, line)| line)
-        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
-        .collect()
+    workflow("release.yml")
 }
 
 #[test]
@@ -55,48 +38,6 @@ fn workflow_default_permission_is_contents_read() -> Result<(), io::Error> {
         "release.yml must default every job to `contents: read`"
     );
     Ok(())
-}
-
-/// Each job under `jobs:` with the lines of its body, comments and blank lines dropped.
-fn jobs(workflow: &str) -> Vec<(&str, Vec<&str>)> {
-    let mut jobs: Vec<(&str, Vec<&str>)> = Vec::new();
-    for line in top_level_block(workflow, "jobs").into_iter().skip(1) {
-        if let Some(job) = line
-            .strip_prefix("  ")
-            .filter(|rest| !rest.starts_with(' '))
-            .and_then(|rest| rest.strip_suffix(':'))
-        {
-            jobs.push((job, Vec::new()));
-        } else if let Some((_, body)) = jobs.last_mut() {
-            body.push(line);
-        }
-    }
-    jobs
-}
-
-/// A job's `permissions:` entries as `scope: level`; `None` when it inherits the workflow's.
-/// An inline value (`permissions: write-all`, `permissions: {...}`) is one `inline:` entry.
-fn permissions(body: &[&str]) -> Option<Vec<String>> {
-    let mut lines = body
-        .iter()
-        .skip_while(|line| !line.starts_with("    permissions:"));
-    let header = lines.next()?;
-    let inline = header.trim_start_matches("    permissions:").trim();
-    if !inline.is_empty() {
-        return Some(vec![format!("inline: {inline}")]);
-    }
-    Some(
-        lines
-            .take_while(|line| line.starts_with("      "))
-            .map(|line| line.trim().to_owned())
-            .collect(),
-    )
-}
-
-fn job_body<'a>(jobs: &'a [(&str, Vec<&'a str>)], name: &str) -> &'a [&'a str] {
-    jobs.iter()
-        .find(|(job, _)| *job == name)
-        .map_or(&[], |(_, body)| body.as_slice())
 }
 
 #[test]
@@ -180,24 +121,6 @@ fn build_checks_the_tag_is_on_main_before_building() -> Result<(), io::Error> {
         "the ancestry check must precede `cargo build`: {ancestry:?}, {compile:?}"
     );
     Ok(())
-}
-
-/// Workflows and composite actions: every YAML file under `.github/workflows` and
-/// `.github/actions/*/action.yml`.
-fn action_files() -> io::Result<Vec<PathBuf>> {
-    let github = repository_root().join(".github");
-    let mut files = Vec::new();
-    for entry in fs::read_dir(github.join("workflows"))? {
-        files.push(entry?.path());
-    }
-    for entry in fs::read_dir(github.join("actions"))? {
-        let action = entry?.path().join("action.yml");
-        if action.is_file() {
-            files.push(action);
-        }
-    }
-    files.sort();
-    Ok(files)
 }
 
 /// Whether a `uses:` value is a local action or `owner/repo[/path]@<40 hex> # <tag>`.
