@@ -15,3 +15,4 @@ mod temper_lint;
 mod temper_manifest;
 #[cfg(test)]
 mod temper_support;
+mod temper_test;

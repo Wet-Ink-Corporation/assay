@@ -11,7 +11,6 @@
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::time::Duration;
 
 use assay_app::{BuildJob, GateDocument, GateRun, Plugin, Step, Termination};
 use assay_domain::{Finding, GateConclusion};
@@ -20,9 +19,10 @@ use super::evidence::{self, MAX_EVIDENCE_BYTES};
 use super::exceptions::Allowlist;
 use super::lint_findings::{self, Shown};
 use super::ratchet::{self, Checked, Refused};
-use super::{ErrorOf, TREE, TemperAdapter, TemperError, TemperSettings};
+use super::steps::{capture, stopped};
+use super::{ErrorOf, TREE, TemperAdapter, TemperError};
 use crate::capture::CaptureSupervisor;
-use crate::exec::{ProcessSpec, read_document, resolve};
+use crate::exec::read_document;
 use crate::revision::RevisionFiles;
 
 /// Where `baseline --check` writes its collection and ratchet, relative to the head tree; temper
@@ -32,19 +32,8 @@ pub(super) const FINDINGS_OUT: &str = "target/temper/findings.json";
 /// Largest findings document read, in bytes; a larger one is refused unparsed (H-13).
 pub(super) const MAX_FINDINGS_OUT_BYTES: u64 = 64 << 20;
 
-/// Most bytes of stdout (and, separately, stderr) of `baseline --check` and of each step.
-const MAX_LINT_OUTPUT_BYTES: usize = 16 << 20;
-
 /// How `baseline --check` is named in errors.
 const BASELINE_CHECK: &str = "temper baseline --check";
-
-/// A process run that ended without exiting: the gate use case reports its termination.
-fn stopped(termination: Termination) -> GateRun {
-    GateRun {
-        termination,
-        document: GateDocument::Missing,
-    }
-}
 
 impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
     /// Runs `gates-lint` for `plugin`, whose declared steps are `steps`.
@@ -114,22 +103,6 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
         })
     }
 
-    /// Runs one declared step from the head tree with the gate environment.
-    fn step(&mut self, step: &Step) -> Result<Termination, ErrorOf<S, R>> {
-        let program = resolve(&self.settings.head_tree, step.command().program());
-        let command = (
-            step.name().as_str(),
-            program.as_path(),
-            step.command().args(),
-        );
-        capture(
-            &mut self.supervisor,
-            &self.settings,
-            command,
-            step.timeout(),
-        )
-    }
-
     /// The failures and the display findings of `checked`, with evidence from the trees.
     fn lint_findings(
         &self,
@@ -160,31 +133,6 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             findings,
         })
     }
-}
-
-/// Runs `(process, program, args)` from the head tree with the gate environment under
-/// `timeout`; `process` names it in errors.
-fn capture<S: CaptureSupervisor, R>(
-    supervisor: &mut S,
-    settings: &TemperSettings,
-    (process, program, args): (&str, &Path, &[String]),
-    timeout: Duration,
-) -> Result<Termination, TemperError<S::Error, R>> {
-    let spec = ProcessSpec {
-        program,
-        args,
-        cwd: &settings.head_tree,
-        env: &settings.scan_env,
-        timeout,
-        max_output_bytes: MAX_LINT_OUTPUT_BYTES,
-    };
-    supervisor
-        .capture(&spec)
-        .map(|run| run.termination)
-        .map_err(|source| TemperError::Lint {
-            process: process.to_owned(),
-            source,
-        })
 }
 
 /// The findings of one `gates-lint` run.
