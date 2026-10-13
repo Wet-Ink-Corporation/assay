@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use assay_app::{
-    BundleFiles, FindingRef, ModelCall, ModelOutcome, ModelResult, ModelRunner, Placement,
-    PromptBundle, Structured, ValidFinding, VerifierTier, VerifyRequest,
+    BundleFiles, FindingRef, InitReadError, ModelCall, ModelOutcome, ModelResult, ModelRunner,
+    Placement, PromptBundle, Structured, ValidFinding, VerifierTier, VerifyRequest,
 };
 use assay_domain::{Aeu, Class, Confidence, Finding, FindingKind, Severity};
 use serde_json::{Value, json};
@@ -78,6 +78,7 @@ pub(crate) fn result(outcome: ModelOutcome, micros: u64) -> ModelResult {
         outcome,
         cost: Aeu::from_micros(micros),
         rate_limits: Vec::new(),
+        init: Err(InitReadError::Missing),
     }
 }
 

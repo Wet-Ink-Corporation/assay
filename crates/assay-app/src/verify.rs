@@ -76,9 +76,9 @@ pub struct VerifyRequest<'a> {
 /// use std::time::Duration;
 ///
 /// use assay_app::{
-///     BundleFiles, Change, ContractValidator, Inputs, ModelCall, ModelOutcome, ModelResult,
-///     ModelRunner, PromptBundle, Structured, SuppressRules, VerifierTier, VerifyRequest,
-///     validate, verify,
+///     BundleFiles, Change, ContractValidator, InitReadError, Inputs, ModelCall, ModelOutcome,
+///     ModelResult, ModelRunner, PromptBundle, Structured, SuppressRules, VerifierTier,
+///     VerifyRequest, validate, verify,
 /// };
 /// use assay_domain::{Aeu, Finding, Severity, SupportOutcome, VerifierVerdict};
 /// use serde_json::json;
@@ -103,6 +103,7 @@ pub struct VerifyRequest<'a> {
 ///             outcome: ModelOutcome::Ok(Structured::new(verdict)),
 ///             cost: Aeu::from_micros(20_000),
 ///             rate_limits: Vec::new(),
+///             init: Err(InitReadError::Missing),
 ///         })
 ///     }
 /// }
