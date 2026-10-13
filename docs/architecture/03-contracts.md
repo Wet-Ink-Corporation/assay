@@ -187,6 +187,8 @@ Envelope `{schema, job, idx, ts, run_key, run_uid, stage, kind, data}`. Each job
 
 `RunRequested`, `PlanComputed`, `Admitted{slot, reserved_aeu}`, `PreflightPassed|Failed{auth_method, cli_version, init_clean, builtins?}`, `GateStarted|Finished{plugin, exit, conclusion, duration_ms}`, `SpecialistStarted|Finished|Failed|BudgetExhausted{role, model, input_tokens, output_tokens, cache_read_tokens, cost_aeu, duration_ms, turns, stop_reason}`, `CoordinatorFinished`, `StageDegraded{stage, reason}`, `RateLimitObserved{status: allowed_warning|rejected, resets_at?}`, `FindingRaised`, `FindingVerified{verdict: confirmed|refuted|unclear}`, `FindingDisposed{code, from?, to?}`, `FindingPublished{url}`, `DecisionMade`, `CheckPublished`, `BundlePersisted{sha256}`, `WaiverApplied{who, fp}`, `OverrideApplied{who, reason}`, `FeedbackReceived{signal: reaction|dismiss|self-dismiss|resolved|anchor-changed}`, `RunSuperseded`, `BudgetDeferred`, `SlotBusy`, `LedgerWritten`, `SlotReleased`, `SlotReaped{run_uid}`, `PushRecorded{before, after, sender_id, forced}`, `CommandRecorded{command, actor_id, comment_id}`, `CommandRejected{command, actor_id, reason}`, `CommandVoided{comment_id, reason: edited|deleted|hash}`, `RetryGranted{role}`, `EvidenceReused{evidence_key}`.
 
+In `PreflightPassed|Failed`, `auth_method` and `cli_version` are what `claude auth status` and `claude --version` (or, once read, the first call's `system/init`) reported, and `unknown` when the preflight failed before observing them (#83); `init_clean` is `false` on every `PreflightFailed`.
+
 These streams support audit, metrics and the cost ledger (`06 §1`). They are an audit record, not an event-sourced aggregate (the domain `Decider` pattern applies inside `decide`, not across jobs). The verifier's live reject rate (QA-12) is computed from `FindingVerified`.
 
 ## 6a. Persisted run inputs (`assay.run-inputs/1`)
@@ -211,6 +213,8 @@ pub struct ModelCall {
 }
 pub enum ModelOutcome { Ok(Structured), BudgetExhausted, TurnsExhausted, Timeout, QuotaExhausted, Malformed }
 ```
+
+**Preflight as built (#83).** The sketch's `preflight` is two steps in `assay-app`, not a method of `ModelRunner`. `preflight(variables, &impl CliProbe, pinned)` runs before any call: it fails on any job variable named `ANTHROPIC_*`, `CLAUDE_CODE_USE_*`, `AWS_*`, `GOOGLE_*`, `CLOUD_ML_*` or `VERTEX_*` (set, even empty), then asks the CLI (`CliProbe`, implemented by `ClaudeHeadless` under the calls' own environment and empty working directory, 30 s and 64 KiB per command) for `claude --version` (one line `<version> (Claude Code)`, which must equal `claude_cli`) and `claude auth status` (one JSON object, no repeated key, requiring `loggedIn: true`, `authMethod: "oauth_token"` and `apiProvider: "firstParty"`), giving an `AuthProof`. Every `ModelResult` carries its call's `system/init` as read; `AuthProof::check_first_call` judges the first call's with the clean-init rule (§8), and that call's output is not used unless it passes. Every failure is the LLM-unavailable policy (`infra-llm-unavailable`) with a `PreflightFailed` event; a pass gives `PreflightPassed`.
 
 `BudgetExhausted`/`TurnsExhausted` are distinct, non-retried outcomes: the CLI returns no structured output on them, but the `error_max_budget_usd` / `error_max_turns` `result` messages **do** carry `total_cost_usd` and `modelUsage`, so the real cost is ledgered (F2). The role is marked degraded and visible in the check summary. Adapters: `ClaudeHeadless` (OAuth), `ClaudeApi` (API key, same CLI), `Replay` (recorded outputs).
 

@@ -3,12 +3,29 @@
 
 use std::error::Error;
 
-use assay_app::{ModelOutcome, ModelResult, ModelRunner, RateLimitObserved, Structured};
+use assay_app::{
+    InitParts, InitReadError, ModelOutcome, ModelResult, ModelRunner, RateLimitObserved,
+    SessionInit, Structured,
+};
 use assay_domain::{Aeu, RateLimitStatus};
 use assay_runner::{Recording, Replay, ReplayError};
 use serde_json::json;
 
 use crate::support::{BUDGET, call, stream};
+
+/// The `system/init` every outcome fixture opens with: 2.1.296, the three read-only tools and
+/// nothing else.
+fn bare_init() -> Result<SessionInit, InitReadError> {
+    let names = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
+    SessionInit::new(InitParts {
+        cli_version: "2.1.296".to_owned(),
+        tools: names(&["Read", "Grep", "Glob"]),
+        mcp_servers: Vec::new(),
+        plugins: Vec::new(),
+        skills: Vec::new(),
+        agents: Vec::new(),
+    })
+}
 
 /// Replays the completed stream `name` once.
 fn replay(name: &str) -> Result<ModelResult, Box<dyn Error>> {
@@ -28,6 +45,7 @@ fn a_successful_result_yields_its_structured_output_and_cost() -> Result<(), Box
             }))),
             cost: Aeu::from_micros(421_300),
             rate_limits: Vec::new(),
+            init: bare_init(),
         }
     );
     Ok(())
@@ -64,6 +82,7 @@ fn a_usage_limit_refusal_is_quota_exhausted() -> Result<(), Box<dyn Error>> {
                 status: RateLimitStatus::Rejected,
                 resets_at: Some(1_791_240_000),
             }],
+            init: bare_init(),
         }
     );
     Ok(())
@@ -155,6 +174,7 @@ fn a_timed_out_recording_is_charged_the_cap_and_keeps_its_rate_limits() -> Resul
                 status: RateLimitStatus::AllowedWarning,
                 resets_at: None,
             }],
+            init: bare_init(),
         }
     );
     Ok(())
@@ -188,5 +208,28 @@ fn recordings_are_replayed_in_order_and_then_run_out() -> Result<(), Box<dyn Err
     assert_eq!(first, ModelOutcome::Malformed);
     assert_eq!(second, Aeu::from_micros(421_300));
     assert_eq!(third, Err(ReplayError::Exhausted { recorded: 2 }));
+    Ok(())
+}
+
+#[test]
+fn a_replayed_call_carries_the_session_init_its_transcript_opens_with() -> Result<(), Box<dyn Error>>
+{
+    let result = replay("init_2_1_296")?;
+
+    assert_eq!(
+        result.init.map(|init| init.cli_version().to_owned()),
+        Ok("2.1.296".to_owned())
+    );
+    Ok(())
+}
+
+#[test]
+fn a_transcript_that_does_not_open_with_an_init_carries_why() -> Result<(), Box<dyn Error>> {
+    let result_line = br#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"structured_output":{"findings":[]}}"#;
+    let runner = Replay::new([Recording::Completed(result_line.to_vec())]);
+
+    let result = runner.run(&call()?)?;
+
+    assert_eq!(result.init, Err(InitReadError::Missing));
     Ok(())
 }

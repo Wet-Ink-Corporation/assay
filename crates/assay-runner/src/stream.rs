@@ -26,7 +26,7 @@ pub(crate) enum Ending {
     OutputCapped,
 }
 
-/// The outcome, cost and rate limits of the call behind `transcript`.
+/// The outcome, cost, rate limits and session init of the call behind `transcript`.
 ///
 /// The cost is the last `result`'s `total_cost_usd`, or `budget` when the call timed out, was
 /// cut short, or reported no readable cost (03 §8: on timeout the cap is charged).
@@ -49,6 +49,7 @@ pub(crate) fn classify(transcript: &[u8], ending: Ending, budget: Aeu) -> ModelR
         outcome,
         cost,
         rate_limits,
+        init: read_session_init(transcript),
     }
 }
 

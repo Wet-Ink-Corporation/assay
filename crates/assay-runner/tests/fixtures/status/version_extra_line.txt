@@ -1,0 +1,2 @@
+2.1.296 (Claude Code)
+update available: 2.1.297

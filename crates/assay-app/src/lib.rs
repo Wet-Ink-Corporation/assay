@@ -14,6 +14,7 @@ mod gate;
 mod golden;
 mod model_runner;
 mod plan;
+mod preflight;
 mod prompt_bundle;
 mod publish;
 mod session_init;
@@ -22,6 +23,11 @@ mod tiering;
 pub use doctor::{
     CanaryProbe, CanaryRun, CanaryToken, Check, CheckFailure, CheckResult, DoctorError,
     DoctorReport, doctor,
+};
+pub use preflight::{
+    AuthProof, CliProbe, CliStatus, FIRST_PARTY_PROVIDER, OAUTH_TOKEN_METHOD, PreflightFailed,
+    PreflightFailure, PreflightPassed, StatusParts, StatusReadError, UNOBSERVED,
+    is_provider_variable, preflight,
 };
 pub use session_init::{
     AllowlistDrift, InitParts, InitPlugin, InitReadError, InitUnclean, SessionInit,

@@ -3,6 +3,7 @@
 mod canary;
 mod env;
 mod group;
+mod status;
 mod supervise;
 mod workdir;
 
@@ -18,6 +19,7 @@ use assay_domain::Aeu;
 pub use canary::{CanaryError, ClaudeCanary};
 pub use env::{EnvVarError, HeadlessEnv};
 pub use group::GroupKill;
+pub use status::{StatusCommand, StatusError};
 pub use workdir::{Workdir, WorkdirError};
 
 use crate::stream;
@@ -52,6 +54,7 @@ pub struct ClaudeHeadless<K> {
     env: HeadlessEnv,
     killer: K,
     max_output_bytes: u64,
+    status_timeout: Duration,
 }
 
 /// Why a headless call could not be made or supervised.
@@ -124,6 +127,7 @@ impl<K> ClaudeHeadless<K> {
             env,
             killer,
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+            status_timeout: status::DEFAULT_STATUS_TIMEOUT,
         }
     }
 
