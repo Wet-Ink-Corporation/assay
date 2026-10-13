@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use assay_app::{
-    BundleFiles, FindingRef, InitReadError, ModelCall, ModelOutcome, ModelResult, ModelRunner,
-    Placement, PromptBundle, Structured, ValidFinding, VerifierTier, VerifyRequest,
+    BundleFiles, CarriedFinding, FindingRef, InitReadError, ModelCall, ModelOutcome, ModelResult,
+    ModelRunner, Placement, PromptBundle, Structured, ValidFinding, VerifierTier, VerifyRequest,
 };
 use assay_domain::{Aeu, Class, Confidence, Finding, FindingKind, Severity};
 use serde_json::{Value, json};
@@ -102,16 +102,27 @@ pub(crate) fn bundle() -> Result<PromptBundle, Box<dyn Error>> {
     })?)
 }
 
-/// A request to verify `findings` in `tier`.
+/// A request to verify `findings` in `tier`, nothing carried.
 pub(crate) fn request<'a>(
     tier: VerifierTier,
     findings: &'a [ValidFinding],
+    bundle: &'a PromptBundle,
+) -> VerifyRequest<'a> {
+    request_carrying(tier, findings, &[], bundle)
+}
+
+/// A request to verify `findings` and the `carried` findings of earlier runs in `tier`.
+pub(crate) fn request_carrying<'a>(
+    tier: VerifierTier,
+    findings: &'a [ValidFinding],
+    carried: &'a [CarriedFinding],
     bundle: &'a PromptBundle,
 ) -> VerifyRequest<'a> {
     VerifyRequest {
         tier,
         repository: REPOSITORY,
         findings,
+        carried,
         bundle,
         system_prompt_file: PathBuf::from("/base/plugin/prompts/v1/system.md"),
         add_dir: PathBuf::from("/work/pr"),
@@ -163,4 +174,34 @@ pub(crate) fn finding_sure(
     let mut found = finding(index, severity)?;
     found.finding.confidence = confidence;
     Ok(found)
+}
+
+/// A finding of `severity` open from an earlier run, titled `carried <index>`, now at line 40 of
+/// `src/moved.rs`.
+pub(crate) fn carried(index: usize, severity: Severity) -> Result<CarriedFinding, Box<dyn Error>> {
+    let mut earlier = finding(index, severity)?.finding;
+    earlier.line = NonZeroU64::new(40).ok_or("40 is not zero")?;
+    earlier.title = format!("carried {index}");
+    earlier.trigger = Some("an empty list reaches the index".to_owned());
+    Ok(CarriedFinding {
+        finding: earlier,
+        file_at_head: "src/moved.rs".to_owned(),
+    })
+}
+
+/// The `claim` of each call `runner` was given, in order.
+pub(crate) fn claims(runner: &Scripted) -> Vec<String> {
+    runner
+        .calls
+        .borrow()
+        .iter()
+        .map(|call| {
+            call.user_prompt
+                .as_str()
+                .split_once("\n\n")
+                .and_then(|(claim, _)| serde_json::from_str::<Value>(claim).ok())
+                .and_then(|claim| claim["claim"].as_str().map(str::to_owned))
+                .unwrap_or_default()
+        })
+        .collect()
 }

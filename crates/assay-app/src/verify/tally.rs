@@ -38,6 +38,7 @@ pub struct VerdictTally {
 impl VerdictTally {
     /// Counts the `FindingVerified` events among `events` by verdict, and the distinct runs
     /// (`run_uid`) that emitted one. Other kinds are skipped.
+    #[must_use]
     pub fn of<'a>(events: impl IntoIterator<Item = &'a Event>) -> Self {
         let mut tally = Self::default();
         let mut runs: BTreeSet<RunUid> = BTreeSet::new();

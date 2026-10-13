@@ -103,6 +103,7 @@ fn verify_with(transcripts: &[&str]) -> Result<Verification<ReplayError>, Box<dy
             tier: VerifierTier::Lite,
             repository: REPOSITORY,
             findings: &findings,
+            carried: &[],
             bundle: &bundle,
             system_prompt_file: PathBuf::from("/base/plugin/prompts/v1/system.md"),
             add_dir: PathBuf::from("/work/pr"),
