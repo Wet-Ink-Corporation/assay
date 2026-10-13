@@ -940,6 +940,46 @@ fn a_symlinked_manifest_fails() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn a_symlinked_member_manifest_fails() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(
+        Revision::Head,
+        "manifests/x.toml",
+        "[package]\nname = \"x\"\n",
+    );
+    pr.link(
+        Revision::Head,
+        "crates/x/Cargo.toml",
+        "../../manifests/x.toml",
+    );
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![blind("crates/x/Cargo.toml", 1)]),
+        "a manifest is matched by its file name at any depth (#177)"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_file_named_only_dot_rs_fails() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(Revision::Head, "src/.rs", "fn f() {}\n");
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![blind("src/.rs", 1)]),
+        "temper's `*.rs` walk scans it, a target `path` can compile it, and it has no \
+         extension to lex it by (#177)"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_macro_forwarding_whole_attributes_passes() -> Result<(), Box<dyn Error>> {
     let mut pr = Pr::new()?;
     pr.set(

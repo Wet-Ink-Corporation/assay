@@ -124,15 +124,15 @@ fn settings_refuse_a_path_with_a_relative_entry() -> Result<(), Box<dyn Error>> 
 }
 
 #[test]
-fn refuses_every_job_but_gates_static_before_running_anything() -> Result<(), Box<dyn Error>> {
+fn refuses_gates_test_before_running_anything() -> Result<(), Box<dyn Error>> {
     let mut pr = Pr::new()?;
 
-    let result = pr.run(GateJob::Build(BuildJob::Lint))?;
+    let result = pr.run(GateJob::Build(BuildJob::Test))?;
 
     assert_matches!(
         result,
-        Err(TemperError::OutsideStatic {
-            job: GateJob::Build(BuildJob::Lint)
+        Err(TemperError::UnsupportedJob {
+            job: GateJob::Build(BuildJob::Test)
         })
     );
     assert_eq!(pr.scan.seen, Vec::new(), "nothing ran");

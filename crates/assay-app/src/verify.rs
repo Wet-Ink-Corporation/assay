@@ -1,10 +1,13 @@
 //! The blind verifier (`docs/architecture/04-pipeline.md` §3, §4 step 8): one model call per
 //! candidate finding that tries to refute it, seeing only `{file, line, class, claim, trigger}`.
 //!
-//! It runs after Z3's mechanical validation, so it only ever judges [`ValidFinding`]s. The
-//! caller gives it its own [`ModelRunner`], configured on a different model tier from the
-//! specialists' (04 §3, `A-14`): the port's calls carry no model of their own.
+//! It runs after Z3's mechanical validation, so of this run's findings it only ever judges
+//! [`ValidFinding`]s; findings carried from earlier runs ([`CarriedFinding`]) share its calls
+//! and go first (04 §7). The caller gives it its own [`ModelRunner`], configured on a different
+//! model tier from the specialists' (04 §3, `A-14`): the port's calls carry no model of their
+//! own.
 
+mod candidate;
 mod outcome;
 mod tally;
 mod tier;
@@ -14,17 +17,18 @@ use std::num::NonZeroU8;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use assay_domain::{Aeu, CallFailure, Confidence, Severity};
-use serde_json::json;
+use assay_domain::{Aeu, CallFailure, Severity};
 
+pub use candidate::{CarriedFinding, ClaimRef};
 pub use outcome::{Verification, VerifiedFinding, VerifierFailure, VerifierStatus};
 pub use tally::{REJECT_RATE_MIN_RUNS, RejectRate, VerdictTally};
 pub use tier::{UnsupportedTier, VerifierTier};
-pub use verdict::{Judgement, MAX_REASON_CHARS, VERDICT_SCHEMA, VerdictReason};
+pub use verdict::{Judgement, MAX_REASON_CHARS, VERDICT_SCHEMA, VerdictReason, VerdictRefusal};
 
-use crate::model_runner::{InvalidPrompt, ModelCall, ModelOutcome, ModelRunner, Prompt};
+use self::candidate::{Candidate, Slot, candidates, is_candidate};
+use crate::model_runner::{ModelCall, ModelOutcome, ModelRunner};
 use crate::prompt_bundle::PromptBundle;
-use crate::validation::{FindingRef, ValidFinding};
+use crate::validation::ValidFinding;
 
 /// The verifier's turn limit per call (04 §3 roster).
 pub const VERIFIER_MAX_TURNS: NonZeroU8 = match NonZeroU8::new(8) {
@@ -47,6 +51,9 @@ pub struct VerifyRequest<'a> {
     pub repository: &'a str,
     /// The findings Z3's validation kept, in its order.
     pub findings: &'a [ValidFinding],
+    /// The findings open from earlier runs of the PR, to judge again at head (04 §7); empty
+    /// until re-review (#99) supplies them.
+    pub carried: &'a [CarriedFinding],
     /// The prompt bundle, whose verifier instruction follows each claim.
     pub bundle: &'a PromptBundle,
     /// The base-sourced system prompt file (absolute path), as for every role.
@@ -57,15 +64,20 @@ pub struct VerifyRequest<'a> {
     pub timeout: Duration,
 }
 
-/// Verifies the candidates among `request.findings` through `runner` (04 §4 step 8).
+/// Verifies the carried findings and the candidates among `request.findings` through `runner`
+/// (04 §4 step 8, §7).
 ///
-/// A candidate is a finding of at least `major`. In `lite` at most three are judged, blockers
-/// first, then majors by confidence, then in order; `micro` makes no call. Each call sees one
-/// claim and the verifier instruction, with an 8-turn limit and a $0.08 cap. Malformed output,
-/// or a verdict outside the exact shape, is retried once and is otherwise `malformed`. The
-/// first call that ends without a verdict stops the stage: findings judged so far keep their
-/// verdicts and every other candidate is unverified, shown as a major at most. Total: every
-/// failure is an outcome in the returned [`Verification`].
+/// Every carried finding is a candidate, and goes first, by severity then in order; then the
+/// raised findings of at least `major`, blockers first, then by confidence, then in order. At
+/// most five are judged in `full` and three in `lite`; `micro` makes no call, and a candidate
+/// past the cap keeps its severity, unverified. Each call sees one claim and the verifier
+/// instruction, with an 8-turn limit and a $0.08 cap, and the stage as a whole spends at most
+/// $0.08 per call ([`VerifierTier::budget`]): an attempt gets only what is left, and none left
+/// stops the stage as `cap`. Malformed output, or a verdict outside the exact shape, is retried
+/// once and is otherwise `malformed`. The first call that ends without a verdict stops the
+/// stage: findings judged so far keep their verdicts and the candidates not yet judged are
+/// unverified, shown as a major at most. Total: every failure is an outcome in the returned
+/// [`Verification`].
 ///
 /// # Examples
 ///
@@ -145,6 +157,7 @@ pub struct VerifyRequest<'a> {
 ///     tier: VerifierTier::Lite,
 ///     repository: "owner/repo",
 ///     findings: &validated.findings,
+///     carried: &[],
 ///     bundle: &bundle,
 ///     system_prompt_file: PathBuf::from("/base/system.md"),
 ///     add_dir: PathBuf::from("/work/pr"),
@@ -164,25 +177,20 @@ pub fn verify<R: ModelRunner>(runner: &R, request: VerifyRequest<'_>) -> Verific
         tier,
         repository,
         findings,
+        carried,
         bundle,
         system_prompt_file,
         add_dir,
         timeout,
     } = request;
-    let mut verification = Verification {
-        findings: findings.iter().map(|found| unjudged(found, tier)).collect(),
-        failure: None,
-        attempts: 0,
-        cost: Aeu::ZERO,
-        rate_limits: Vec::new(),
-    };
-    let picked = candidates(findings, tier);
-    let Some(&(_, first)) = picked.first() else {
+    let mut verification = unjudged_all(tier, findings, carried);
+    let picked = candidates(tier, carried, findings);
+    let Some(first) = picked.first() else {
         return verification;
     };
     let instruction = bundle.verifier_instruction();
-    // One call, its prompt replaced per candidate: the paths move in once.
-    let mut call = match claim_prompt(first, instruction) {
+    // One call, its prompt and budget replaced per attempt: the paths move in once.
+    let mut call = match first.prompt(instruction) {
         Ok(user_prompt) => ModelCall {
             system_prompt_file,
             user_prompt,
@@ -192,86 +200,80 @@ pub fn verify<R: ModelRunner>(runner: &R, request: VerifyRequest<'_>) -> Verific
             budget: VERIFIER_CAP,
             timeout,
         },
-        Err(_) => return verification.stopped(unpromptable(first.at)),
+        Err(_) => return verification.stopped(unpromptable(first.at), slots(&picked)),
     };
-    for (position, &(index, found)) in picked.iter().enumerate() {
+    let stage = Stage {
+        repository,
+        budget: tier.budget(),
+    };
+    for (position, candidate) in picked.iter().enumerate() {
+        let unreached = || slots(&picked).skip(position);
         if position > 0 {
-            match claim_prompt(found, instruction) {
+            match candidate.prompt(instruction) {
                 Ok(user_prompt) => call.user_prompt = user_prompt,
-                Err(_) => return verification.stopped(unpromptable(found.at)),
+                Err(_) => return verification.stopped(unpromptable(candidate.at), unreached()),
             }
         }
-        match judge(runner, &call, repository, &mut verification) {
-            Ok(judgement) => verification.record(index, judgement),
-            Err(ended) => return verification.stopped(ended.at(found.at)),
+        match stage.judge(runner, &mut call, &mut verification) {
+            Ok(judgement) => verification.record(candidate.slot, judgement),
+            Err(ended) => return verification.stopped(ended.at(candidate.at), unreached()),
         }
     }
     verification
 }
 
-/// A finding before any call: not a candidate, no verifier, or a candidate not yet reached.
-fn unjudged(found: &ValidFinding, tier: VerifierTier) -> VerifiedFinding {
-    let raised = found.finding.severity;
-    let status = if raised < Severity::Major {
-        VerifierStatus::NotCandidate
-    } else if tier == VerifierTier::Micro {
-        VerifierStatus::NoVerifier
-    } else {
-        VerifierStatus::OverCap
+/// The stage before any call: every finding [`unjudged`], nothing spent.
+fn unjudged_all<E>(
+    tier: VerifierTier,
+    findings: &[ValidFinding],
+    carried: &[CarriedFinding],
+) -> Verification<E> {
+    Verification {
+        findings: findings
+            .iter()
+            .map(|found| unjudged(ClaimRef::Raised(found.at), found.finding.severity, tier))
+            .collect(),
+        carried: carried
+            .iter()
+            .enumerate()
+            .map(|(index, found)| {
+                unjudged(ClaimRef::Carried { index }, found.finding.severity, tier)
+            })
+            .collect(),
+        failure: None,
+        attempts: 0,
+        cost: Aeu::ZERO,
+        rate_limits: Vec::new(),
+        refusals: Vec::new(),
+    }
+}
+
+/// A finding before any call: a raised finding below `major` is not a candidate, nothing is in
+/// `micro`, and any other is a candidate past the cap until it is judged.
+fn unjudged(at: ClaimRef, raised: Severity, tier: VerifierTier) -> VerifiedFinding {
+    let status = match at {
+        ClaimRef::Raised(_) if !is_candidate(raised) => VerifierStatus::NotCandidate,
+        ClaimRef::Raised(_) | ClaimRef::Carried { .. } if tier == VerifierTier::Micro => {
+            VerifierStatus::NoVerifier
+        }
+        ClaimRef::Raised(_) | ClaimRef::Carried { .. } => VerifierStatus::OverCap,
     };
     VerifiedFinding {
-        at: found.at,
+        at,
         raised,
         severity: raised,
         status,
     }
 }
 
-/// The candidates the tier verifies, with their positions in `findings`, in the order they are
-/// judged.
-fn candidates(findings: &[ValidFinding], tier: VerifierTier) -> Vec<(usize, &ValidFinding)> {
-    let mut candidates: Vec<(usize, &ValidFinding)> = findings
-        .iter()
-        .enumerate()
-        .filter(|(_, found)| found.finding.severity >= Severity::Major)
-        .collect();
-    // Stable: equal keys keep their input order.
-    candidates.sort_by_key(|(_, found)| {
-        (
-            std::cmp::Reverse(found.finding.severity),
-            confidence_rank(found.finding.confidence),
-        )
-    });
-    candidates.truncate(tier.calls());
-    candidates
-}
-
-/// Higher confidence first; a finding that states none goes last.
-const fn confidence_rank(confidence: Option<Confidence>) -> u8 {
-    match confidence {
-        Some(Confidence::High) => 0,
-        Some(Confidence::Medium) => 1,
-        Some(Confidence::Low) => 2,
-        None => 3,
-    }
-}
-
-/// The verifier's user prompt for `found`: the claim as one JSON object of exactly the five
-/// fields the verifier may see, a blank line, then the instruction (04 §3 "Blindness").
-fn claim_prompt(found: &ValidFinding, instruction: &str) -> Result<Prompt, InvalidPrompt> {
-    let claim = json!({
-        "file": found.file_at_head,
-        "line": found.finding.line,
-        "class": found.finding.class.code(),
-        "claim": found.finding.title,
-        "trigger": found.finding.trigger,
-    });
-    Prompt::new(format!("{claim}\n\n{instruction}"))
+/// Where each of `candidates` is recorded.
+fn slots<'a>(candidates: &'a [Candidate<'_>]) -> impl Iterator<Item = Slot> + 'a {
+    candidates.iter().map(|candidate| candidate.slot)
 }
 
 /// The failure of a claim that is not a valid prompt: no model could be asked. A JSON object
 /// starts with `{` and escapes NUL, and the bundle refuses NUL, so this does not happen.
-const fn unpromptable<E>(at: FindingRef) -> VerifierFailure<E> {
+const fn unpromptable<E>(at: ClaimRef) -> VerifierFailure<E> {
     VerifierFailure::Call {
         at,
         reason: CallFailure::Unavailable,
@@ -285,7 +287,7 @@ enum Ended<E> {
 }
 
 impl<E> Ended<E> {
-    fn at(self, at: FindingRef) -> VerifierFailure<E> {
+    fn at(self, at: ClaimRef) -> VerifierFailure<E> {
         match self {
             Self::Call(reason) => VerifierFailure::Call { at, reason },
             Self::Runner(source) => VerifierFailure::Runner { at, source },
@@ -293,40 +295,59 @@ impl<E> Ended<E> {
     }
 }
 
-/// Makes `call` until it yields a verdict, at most [`ATTEMPTS`] times, charging every attempt to
-/// `spent`. Only malformed output and a refused verdict are retried.
-fn judge<R: ModelRunner>(
-    runner: &R,
-    call: &ModelCall,
-    repository: &str,
-    spent: &mut Verification<R::Error>,
-) -> Result<Judgement, Ended<R::Error>> {
-    for _ in 0..ATTEMPTS {
-        spent.attempts = spent.attempts.saturating_add(1);
-        let result = match runner.run(call) {
-            Ok(result) => result,
-            Err(source) => {
-                // The model may have started; its cost is unknown, so the cap is charged.
-                spent.cost = spent.cost.saturating_add(call.budget);
-                return Err(Ended::Runner(source));
+/// What every call of the stage shares: the repository for the reasons' injection screen and
+/// the stage budget.
+struct Stage<'a> {
+    repository: &'a str,
+    budget: Aeu,
+}
+
+impl Stage<'_> {
+    /// Makes `call` until it yields a verdict, at most [`ATTEMPTS`] times, each attempt with the
+    /// smaller of [`VERIFIER_CAP`] and what is left of the stage budget, charging every attempt
+    /// to `spent`. Only malformed output and a refused verdict are retried; nothing left is
+    /// `cap`, with no call.
+    fn judge<R: ModelRunner>(
+        &self,
+        runner: &R,
+        call: &mut ModelCall,
+        spent: &mut Verification<R::Error>,
+    ) -> Result<Judgement, Ended<R::Error>> {
+        for _ in 0..ATTEMPTS {
+            let left = Aeu::from_micros(self.budget.micros().saturating_sub(spent.cost.micros()));
+            if left == Aeu::ZERO {
+                return Err(Ended::Call(CallFailure::Cap));
             }
-        };
-        spent.cost = spent.cost.saturating_add(result.cost);
-        spent.rate_limits.extend(result.rate_limits);
-        let failure = match result.outcome {
-            ModelOutcome::Ok(structured) => {
-                match verdict::read(structured.into_value(), repository) {
-                    Ok(judgement) => return Ok(judgement),
-                    Err(_) => continue,
+            call.budget = left.min(VERIFIER_CAP);
+            spent.attempts = spent.attempts.saturating_add(1);
+            let result = match runner.run(call) {
+                Ok(result) => result,
+                Err(source) => {
+                    // The model may have started; its cost is unknown, so its budget is charged.
+                    spent.cost = spent.cost.saturating_add(call.budget);
+                    return Err(Ended::Runner(source));
                 }
-            }
-            ModelOutcome::Malformed => continue,
-            ModelOutcome::BudgetExhausted => CallFailure::Cap,
-            ModelOutcome::TurnsExhausted => CallFailure::Turns,
-            ModelOutcome::Timeout => CallFailure::Timeout,
-            ModelOutcome::QuotaExhausted => CallFailure::Unavailable,
-        };
-        return Err(Ended::Call(failure));
+            };
+            spent.cost = spent.cost.saturating_add(result.cost);
+            spent.rate_limits.extend(result.rate_limits);
+            let failure = match result.outcome {
+                ModelOutcome::Ok(structured) => {
+                    match verdict::read(structured.into_value(), self.repository) {
+                        Ok(judgement) => return Ok(judgement),
+                        Err(refusal) => {
+                            spent.refusals.push(refusal);
+                            continue;
+                        }
+                    }
+                }
+                ModelOutcome::Malformed => continue,
+                ModelOutcome::BudgetExhausted => CallFailure::Cap,
+                ModelOutcome::TurnsExhausted => CallFailure::Turns,
+                ModelOutcome::Timeout => CallFailure::Timeout,
+                ModelOutcome::QuotaExhausted => CallFailure::Unavailable,
+            };
+            return Err(Ended::Call(failure));
+        }
+        Err(Ended::Call(CallFailure::Malformed))
     }
-    Err(Ended::Call(CallFailure::Malformed))
 }

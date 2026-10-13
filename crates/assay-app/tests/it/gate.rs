@@ -438,3 +438,48 @@ fn gate_errors_display_as_their_reason_code() {
         ]
     );
 }
+
+/// Fails every run with an error it classifies as a degraded ratchet.
+#[derive(Debug, Default)]
+struct DegradedRunner;
+
+impl GateRunner for DegradedRunner {
+    type Error = FakeFailure;
+
+    fn run(&mut self, _plugin: &Plugin, _job: GateJob) -> Result<GateRun, FakeFailure> {
+        Err(FakeFailure)
+    }
+
+    fn gate_error(_error: &FakeFailure) -> GateError {
+        GateError::RatchetDegraded
+    }
+}
+
+#[test]
+fn a_runner_error_is_recorded_as_the_gate_error_its_runner_names() -> Result<(), Box<dyn Error>> {
+    let config = config()?;
+    let validator = ContractValidator::new()?;
+
+    let reports = run_gates(&config, GateJob::Static, &mut DegradedRunner, &validator);
+
+    let outcomes: Vec<(&str, GateOutcome)> = reports
+        .iter()
+        .map(|report| (report.plugin.as_str(), report.outcome))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("temper", GateOutcome::Error(GateError::RatchetDegraded)),
+            ("weigh-in", GateOutcome::Error(GateError::RatchetDegraded)),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_degraded_ratchet_displays_as_its_reason_code() {
+    assert_eq!(
+        GateError::RatchetDegraded.to_string(),
+        "gate-error:ratchet-degraded"
+    );
+}

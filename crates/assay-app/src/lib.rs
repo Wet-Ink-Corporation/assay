@@ -17,6 +17,7 @@ mod plan;
 mod preflight;
 mod prompt_bundle;
 mod publish;
+mod replay;
 mod session_init;
 mod specialists;
 mod tiering;
@@ -82,6 +83,10 @@ pub use publish::{
     SUMMARY_MARKER, Stale, SummaryComment, Target, Unlock, Verdict, VerdictForge, Written, publish,
     publish_findings,
 };
+pub use replay::{
+    BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
+    ReplayRequest, Replayed, RunField, StoredBundle, replay_decision,
+};
 pub use specialists::{
     HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport, Specialists,
     SpecialistsRequest, run_specialists,
@@ -99,7 +104,8 @@ pub use validation::{
 
 mod verify;
 pub use verify::{
-    Judgement, MAX_REASON_CHARS, REJECT_RATE_MIN_RUNS, RejectRate, UnsupportedTier, VERDICT_SCHEMA,
-    VERIFIER_CAP, VERIFIER_MAX_TURNS, VerdictReason, VerdictTally, Verification, VerifiedFinding,
-    VerifierFailure, VerifierStatus, VerifierTier, VerifyRequest, verify,
+    CarriedFinding, ClaimRef, Judgement, MAX_REASON_CHARS, REJECT_RATE_MIN_RUNS, RejectRate,
+    UnsupportedTier, VERDICT_SCHEMA, VERIFIER_CAP, VERIFIER_MAX_TURNS, VerdictReason,
+    VerdictRefusal, VerdictTally, Verification, VerifiedFinding, VerifierFailure, VerifierStatus,
+    VerifierTier, VerifyRequest, verify,
 };
