@@ -16,7 +16,7 @@ use super::ports::RunArtifacts;
 use super::recompute::AuthenticPlan;
 use super::refusal::{OutputsProblem, PlanMismatch, Refusal};
 use super::request::{DecideRequest, GateJobOutputs, JobResult, Reported, UpstreamJob};
-use super::{Halt, Reader, RunDocument};
+use super::{DecideError, Halt, Reader, RunDocument};
 use crate::config::{Plugin, Sha256Digest};
 use crate::contract::{Contract, ContractValidator};
 use crate::gate::{BuildJob, Conclusion, GateError, GateJob, scheduled};
@@ -268,7 +268,8 @@ fn anchored<O: PullRequestObjects, S, A>(
         (&pull_request.base_sha, &pull_request.head_sha),
         &plan.recomputed.files,
         &cited,
-    )?;
+    )
+    .map_err(DecideError::from)?;
     let mut anchors = Anchors::new(&texts);
     let mut gates = Gates::default();
     for gate in pending {

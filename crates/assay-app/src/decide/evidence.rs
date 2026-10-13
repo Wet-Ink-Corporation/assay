@@ -12,7 +12,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use assay_domain::{FileChange, Finding, Fingerprint, Side, normalise};
 
-use super::DecideError;
 use crate::config::CommitId;
 use crate::plan::{EntryKind, PullRequestObjects, TreeEntry};
 use crate::validation::enclosing_functions;
@@ -35,7 +34,7 @@ const MAX_EVIDENCE_CHARS: usize = 400;
 
 /// The texts gate findings cite, as far as the budget reads, with renames resolved.
 #[derive(Debug, Default)]
-pub(super) struct Texts {
+pub(crate) struct Texts {
     head: BTreeMap<String, String>,
     base: BTreeMap<String, String>,
     /// Head path by base path, for files the change renamed.
@@ -44,30 +43,51 @@ pub(super) struct Texts {
 
 /// The paths gate findings cite, by side.
 #[derive(Debug, Default)]
-pub(super) struct Cited<'f> {
+pub(crate) struct Cited<'f> {
     head: BTreeSet<&'f str>,
     base: BTreeSet<&'f str>,
 }
 
 impl<'f> Cited<'f> {
     /// Adds the file `finding` cites on its side (head unless it says base).
-    pub(super) fn add(&mut self, finding: &'f Finding) {
-        let paths = match finding.side.unwrap_or(Side::Right) {
+    pub(crate) fn add(&mut self, finding: &'f Finding) {
+        self.add_path(finding.side.unwrap_or(Side::Right), finding.file.as_str());
+    }
+
+    /// Adds `path` on `side`.
+    pub(crate) fn add_path(&mut self, side: Side, path: &'f str) {
+        let paths = match side {
             Side::Right => &mut self.head,
             Side::Left => &mut self.base,
         };
-        paths.insert(finding.file.as_str());
+        paths.insert(path);
     }
+}
+
+impl Texts {
+    /// The texts read, head then base, each by path.
+    pub(crate) fn into_sides(self) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+        (self.head, self.base)
+    }
+}
+
+/// Why the cited texts could not be read.
+#[derive(Debug)]
+pub(crate) enum ReadFailure<E> {
+    /// The objects port failed.
+    Objects(E),
+    /// The port returned another number of blobs than it was asked for.
+    ShortRead { asked: usize, returned: usize },
 }
 
 /// Reads the files `cited` names on each side, head first and in path order, until the budget
 /// is spent.
-pub(super) fn read_texts<O: PullRequestObjects, S, A>(
+pub(crate) fn read_texts<O: PullRequestObjects>(
     objects: &O,
     (base, head): (&CommitId, &CommitId),
     files: &[FileChange],
     cited: &Cited<'_>,
-) -> Result<Texts, DecideError<O::Error, S, A>> {
+) -> Result<Texts, ReadFailure<O::Error>> {
     let mut budget = Budget {
         files: MAX_EVIDENCE_FILES,
         bytes: MAX_EVIDENCE_BYTES,
@@ -96,17 +116,17 @@ struct Budget {
 }
 
 /// The UTF-8 regular files among `paths` at `commit` that fit the budget, read in one batch.
-fn side_texts<'p, O: PullRequestObjects, S, A>(
+fn side_texts<'p, O: PullRequestObjects>(
     objects: &O,
     commit: &CommitId,
     paths: impl Iterator<Item = &'p str>,
     budget: &mut Budget,
-) -> Result<BTreeMap<String, String>, DecideError<O::Error, S, A>> {
+) -> Result<BTreeMap<String, String>, ReadFailure<O::Error>> {
     let mut paths = paths.peekable();
     if paths.peek().is_none() {
         return Ok(BTreeMap::new());
     }
-    let listed = objects.list(commit, None).map_err(DecideError::Objects)?;
+    let listed = objects.list(commit, None).map_err(ReadFailure::Objects)?;
     let by_path: BTreeMap<&str, &TreeEntry> = listed
         .iter()
         .filter(|entry| entry.kind == EntryKind::File)
@@ -128,9 +148,9 @@ fn side_texts<'p, O: PullRequestObjects, S, A>(
     if wanted.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let blobs = objects.read(&wanted).map_err(DecideError::Objects)?;
+    let blobs = objects.read(&wanted).map_err(ReadFailure::Objects)?;
     if blobs.len() != wanted.len() {
-        return Err(DecideError::ShortRead {
+        return Err(ReadFailure::ShortRead {
             asked: wanted.len(),
             returned: blobs.len(),
         });
@@ -192,14 +212,14 @@ impl<'t> Indexed<'t> {
 }
 
 /// Anchors gate findings against the texts, indexing each file once.
-pub(super) struct Anchors<'t> {
+pub(crate) struct Anchors<'t> {
     texts: &'t Texts,
     /// Each cited file's index, or `None` for a file that cannot be indexed.
     indexed: HashMap<(Side, &'t str), Option<Indexed<'t>>>,
 }
 
 impl<'t> Anchors<'t> {
-    pub(super) fn new(texts: &'t Texts) -> Self {
+    pub(crate) fn new(texts: &'t Texts) -> Self {
         Self {
             texts,
             indexed: HashMap::new(),
@@ -208,7 +228,7 @@ impl<'t> Anchors<'t> {
 
     /// `finding`'s fingerprint, with its evidence replaced and its rule kept when it is verified
     /// and its rule dropped otherwise; `None` when not even its own evidence has content.
-    pub(super) fn anchor(&mut self, finding: &mut Finding) -> Option<Fingerprint> {
+    pub(crate) fn anchor(&mut self, finding: &mut Finding) -> Option<Fingerprint> {
         let side = finding.side.unwrap_or(Side::Right);
         let (function, occurrence) =
             if let Some((line, function, occurrence)) = self.verified(side, finding) {

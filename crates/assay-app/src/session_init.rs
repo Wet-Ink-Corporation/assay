@@ -18,7 +18,7 @@ use crate::config::{
 };
 
 /// The tools of a clean session, sorted (03 §8: `--tools Read,Grep,Glob`).
-const CLEAN_TOOLS: [&str; 3] = ["Glob", "Grep", "Read"];
+pub(crate) const CLEAN_TOOLS: [&str; 3] = ["Glob", "Grep", "Read"];
 
 /// The `path` of a plugin the CLI ships.
 const BUILTIN_PATH: &str = "builtin";
