@@ -129,6 +129,7 @@ pub struct SpecialistsRequest<'a> {
 ///     combined: text("combined"),
 ///     combined_micro: text("micro"),
 ///     verifier: text("verifier"),
+///     verifier_carried: text("verifier-carried"),
 ///     coordinator: text("coordinator"),
 /// })?;
 /// let roles = [RequiredRole::Bugs, RequiredRole::Security, RequiredRole::Design];

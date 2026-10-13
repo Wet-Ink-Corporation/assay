@@ -18,24 +18,28 @@ pub enum VerifierTier {
 impl VerifierTier {
     /// How many candidates the tier verifies, one call each (04 §3).
     #[must_use]
-    pub const fn calls(self) -> usize {
-        match self {
-            Self::Full => 5,
-            Self::Lite => 3,
-            Self::Micro => 0,
-        }
+    pub fn calls(self) -> usize {
+        usize::from(self.call_count())
     }
 
     /// What the whole stage may spend, retries included: [`VERIFIER_CAP`] per call
     /// ($0.40 in `full`, $0.24 in `lite`, 04 §3).
     #[must_use]
-    pub const fn budget(self) -> Aeu {
-        let calls: u64 = match self {
+    pub fn budget(self) -> Aeu {
+        Aeu::from_micros(
+            VERIFIER_CAP
+                .micros()
+                .saturating_mul(u64::from(self.call_count())),
+        )
+    }
+
+    /// The tier's calls, the one place both [`Self::calls`] and [`Self::budget`] read.
+    const fn call_count(self) -> u8 {
+        match self {
             Self::Full => 5,
             Self::Lite => 3,
             Self::Micro => 0,
-        };
-        Aeu::from_micros(VERIFIER_CAP.micros().saturating_mul(calls))
+        }
     }
 }
 

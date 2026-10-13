@@ -10,6 +10,7 @@ mod change;
 mod egress;
 mod evidence;
 mod index;
+mod reanchor;
 mod screen;
 mod steps;
 mod symbol;
@@ -26,6 +27,7 @@ pub use egress::{
     EgressHit, EgressKind, EgressScan, EgressToken, EgressTokenError, FreeTextField, KnownRuns,
     KnownRunsError, MAX_INDEXED_BYTES, MAX_TOKEN_BYTES,
 };
+pub(crate) use reanchor::{EvidenceIndex, head_file, is_invisible, is_searchable_evidence};
 pub(crate) use symbol::enclosing_functions;
 
 /// Whether the injection screen of step 5 flags `text`, for a change to `repository`

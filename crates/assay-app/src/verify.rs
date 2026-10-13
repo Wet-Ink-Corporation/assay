@@ -1,11 +1,12 @@
 //! The blind verifier (`docs/architecture/04-pipeline.md` §3, §4 step 8): one model call per
 //! candidate finding that tries to refute it, seeing only `{file, line, class, claim, trigger}`.
 //!
-//! It runs after Z3's mechanical validation, so of this run's findings it only ever judges
-//! [`ValidFinding`]s; findings carried from earlier runs ([`CarriedFinding`]) share its calls
-//! and go first (04 §7). The caller gives it its own [`ModelRunner`], configured on a different
-//! model tier from the specialists' (04 §3, `A-14`): the port's calls carry no model of their
-//! own.
+//! It runs after Z3's mechanical validation, so this run's findings reach it only as
+//! [`ValidFinding`]s. Findings carried from earlier runs ([`CarriedFinding`]) are the caller's:
+//! read from findings already published, as untrusted text, by the re-review's intake
+//! ([`read_carried`](crate::read_carried), 04 §7). They share its calls and go first. The
+//! caller gives it its own [`ModelRunner`], configured on a different model tier from the
+//! specialists' (04 §3, `A-14`): the port's calls carry no model of their own.
 
 mod candidate;
 mod outcome;
@@ -19,7 +20,7 @@ use std::time::Duration;
 
 use assay_domain::{Aeu, CallFailure, Severity};
 
-pub use candidate::{CarriedFinding, ClaimRef};
+pub use candidate::ClaimRef;
 pub use outcome::{Verification, VerifiedFinding, VerifierFailure, VerifierStatus};
 pub use tally::{REJECT_RATE_MIN_RUNS, RejectRate, VerdictTally};
 pub use tier::{UnsupportedTier, VerifierTier};
@@ -28,6 +29,7 @@ pub use verdict::{Judgement, MAX_REASON_CHARS, VERDICT_SCHEMA, VerdictReason, Ve
 use self::candidate::{Candidate, Slot, candidates, is_candidate};
 use crate::model_runner::{ModelCall, ModelOutcome, ModelRunner};
 use crate::prompt_bundle::PromptBundle;
+use crate::rereview::CarriedFinding;
 use crate::validation::ValidFinding;
 
 /// The verifier's turn limit per call (04 §3 roster).
@@ -51,10 +53,11 @@ pub struct VerifyRequest<'a> {
     pub repository: &'a str,
     /// The findings Z3's validation kept, in its order.
     pub findings: &'a [ValidFinding],
-    /// The findings open from earlier runs of the PR, to judge again at head (04 §7); empty
-    /// until re-review (#99) supplies them.
+    /// The findings open from earlier runs of the PR, to judge again at head (04 §7), as the
+    /// re-review's intake read them and its anchor re-check placed them.
     pub carried: &'a [CarriedFinding],
-    /// The prompt bundle, whose verifier instruction follows each claim.
+    /// The prompt bundle, whose verifier instruction follows each raised claim and whose
+    /// carried-verifier instruction ("is this defect still present at head?") each carried one.
     pub bundle: &'a PromptBundle,
     /// The base-sourced system prompt file (absolute path), as for every role.
     pub system_prompt_file: PathBuf,
@@ -71,9 +74,10 @@ pub struct VerifyRequest<'a> {
 /// raised findings of at least `major`, blockers first, then by confidence, then in order. At
 /// most five are judged in `full` and three in `lite`; `micro` makes no call, and a candidate
 /// past the cap keeps its severity, unverified. Each call sees one claim and the verifier
-/// instruction, with an 8-turn limit and a $0.08 cap, and the stage as a whole spends at most
-/// $0.08 per call ([`VerifierTier::budget`]): an attempt gets only what is left, and none left
-/// stops the stage as `cap`. Malformed output, or a verdict outside the exact shape, is retried
+/// instruction (for a carried claim, the carried-verifier instruction), with an 8-turn limit
+/// and a $0.08 cap, and the stage as a whole spends at most $0.08 per call
+/// ([`VerifierTier::budget`]): an attempt gets only what is left, and none left stops the
+/// stage as `cap`. Malformed output, or a verdict outside the exact shape, is retried
 /// once and is otherwise `malformed`. The first call that ends without a verdict stops the
 /// stage: findings judged so far keep their verdicts and the candidates not yet judged are
 /// unverified, shown as a major at most. Total: every failure is an outcome in the returned
@@ -151,6 +155,7 @@ pub struct VerifyRequest<'a> {
 ///     combined: "combined".to_owned(),
 ///     combined_micro: "micro".to_owned(),
 ///     verifier: "verifier".to_owned(),
+///     verifier_carried: "verifier-carried".to_owned(),
 ///     coordinator: "coordinator".to_owned(),
 /// })?;
 ///
@@ -189,9 +194,8 @@ pub fn verify<R: ModelRunner>(runner: &R, request: VerifyRequest<'_>) -> Verific
     let Some(first) = picked.first() else {
         return verification;
     };
-    let instruction = bundle.verifier_instruction();
     // One call, its prompt and budget replaced per attempt: the paths move in once.
-    let mut call = match first.prompt(instruction) {
+    let mut call = match first.prompt(bundle) {
         Ok(user_prompt) => ModelCall {
             system_prompt_file,
             user_prompt,
@@ -210,7 +214,7 @@ pub fn verify<R: ModelRunner>(runner: &R, request: VerifyRequest<'_>) -> Verific
     for (position, candidate) in picked.iter().enumerate() {
         let unreached = || slots(&picked).skip(position);
         if position > 0 {
-            match candidate.prompt(instruction) {
+            match candidate.prompt(bundle) {
                 Ok(user_prompt) => call.user_prompt = user_prompt,
                 Err(_) => return verification.stopped(unpromptable(candidate.at), unreached()),
             }
@@ -237,9 +241,7 @@ fn unjudged_all<E>(
         carried: carried
             .iter()
             .enumerate()
-            .map(|(index, found)| {
-                unjudged(ClaimRef::Carried { index }, found.finding.severity, tier)
-            })
+            .map(|(index, found)| unjudged(ClaimRef::Carried(index), found.severity(), tier))
             .collect(),
         failure: None,
         attempts: 0,
@@ -254,10 +256,10 @@ fn unjudged_all<E>(
 fn unjudged(at: ClaimRef, raised: Severity, tier: VerifierTier) -> VerifiedFinding {
     let status = match at {
         ClaimRef::Raised(_) if !is_candidate(raised) => VerifierStatus::NotCandidate,
-        ClaimRef::Raised(_) | ClaimRef::Carried { .. } if tier == VerifierTier::Micro => {
+        ClaimRef::Raised(_) | ClaimRef::Carried(_) if tier == VerifierTier::Micro => {
             VerifierStatus::NoVerifier
         }
-        ClaimRef::Raised(_) | ClaimRef::Carried { .. } => VerifierStatus::OverCap,
+        ClaimRef::Raised(_) | ClaimRef::Carried(_) => VerifierStatus::OverCap,
     };
     VerifiedFinding {
         at,

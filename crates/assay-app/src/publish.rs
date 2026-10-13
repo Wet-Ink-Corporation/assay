@@ -12,6 +12,7 @@ mod bundle;
 mod findings;
 mod ports;
 mod render;
+mod resolution;
 mod sanitise;
 mod write;
 
@@ -33,6 +34,7 @@ pub use self::render::SUMMARY_MARKER;
 pub(crate) use self::render::read::read_text;
 use self::render::{Projection, Summary};
 pub(crate) use self::render::{clean, is_hidden};
+pub(crate) use self::resolution::resolution_note;
 pub(crate) use self::sanitise::Repository;
 use self::write::Pending;
 use crate::config::Sha256Digest;

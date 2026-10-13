@@ -100,6 +100,7 @@ fn coordinate_with(
         combined: "COMBINED".to_owned(),
         combined_micro: "MICRO".to_owned(),
         verifier: "VERIFIER".to_owned(),
+        verifier_carried: "VERIFIER-CARRIED".to_owned(),
         coordinator: "COORDINATOR".to_owned(),
     })?;
     let runner = Replay::new(recordings);

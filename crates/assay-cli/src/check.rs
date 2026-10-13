@@ -51,6 +51,7 @@ const SYSTEM_PROMPT: &str = include_str!("../../../plugin/prompts/v1/system.md")
 const COMBINED: &str = include_str!("../../../plugin/prompts/v1/combined.md");
 const COMBINED_MICRO: &str = include_str!("../../../plugin/prompts/v1/combined-micro.md");
 const VERIFIER: &str = include_str!("../../../plugin/prompts/v1/verifier.md");
+const VERIFIER_CARRIED: &str = include_str!("../../../plugin/prompts/v1/verifier-carried.md");
 const COORDINATOR: &str = include_str!("../../../plugin/prompts/v1/coordinator.md");
 const BUGS: &str = include_str!("../../../plugin/prompts/v1/bugs.md");
 const SECURITY: &str = include_str!("../../../plugin/prompts/v1/security.md");
@@ -503,6 +504,7 @@ impl Scratch {
             combined: COMBINED.to_owned(),
             combined_micro: COMBINED_MICRO.to_owned(),
             verifier: VERIFIER.to_owned(),
+            verifier_carried: VERIFIER_CARRIED.to_owned(),
             coordinator: COORDINATOR.to_owned(),
         })
         .map_err(CheckCliError::Bundle)?;

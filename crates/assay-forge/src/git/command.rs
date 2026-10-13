@@ -66,6 +66,12 @@ pub enum GitOperation {
     ReadBlobs,
     /// `git hash-object --no-filters --stdin`: the blob id of some bytes, nothing written.
     HashBlob,
+    /// `git merge-base --is-ancestor`: whether one commit is an ancestor of another.
+    IsAncestor,
+    /// `git range-diff`, with notes, external diff drivers and textconv disabled.
+    RangeDiff,
+    /// `git rev-list --count`: how many commits a range holds.
+    RevListCount,
     /// `git rev-parse`: a revision's commit, or a path inside a developer's repository (local
     /// mode, 02 §6).
     RevParse,
@@ -108,6 +114,15 @@ impl GitOperation {
             Self::ListTree => &["ls-tree", "-r", "-z", "-l"],
             Self::ReadBlobs => &["cat-file", "--batch"],
             Self::HashBlob => &["hash-object", "--no-filters", "--stdin"],
+            Self::IsAncestor => &["merge-base", "--is-ancestor"],
+            Self::RangeDiff => &[
+                "range-diff",
+                "--no-color",
+                "--no-notes",
+                "--no-ext-diff",
+                "--no-textconv",
+            ],
+            Self::RevListCount => &["rev-list", "--count"],
             Self::RevParse => &["rev-parse"],
             Self::ReadTree => &["read-tree"],
             Self::AddAll => &["add", "--all"],
@@ -169,6 +184,9 @@ impl fmt::Display for GitOperation {
             Self::ListTree => "ls-tree",
             Self::ReadBlobs => "cat-file --batch",
             Self::HashBlob => "hash-object",
+            Self::IsAncestor => "merge-base --is-ancestor",
+            Self::RangeDiff => "range-diff",
+            Self::RevListCount => "rev-list --count",
             Self::RevParse => "rev-parse",
             Self::ReadTree => "read-tree",
             Self::AddAll => "add",
@@ -336,7 +354,7 @@ mod tests {
     use crate::process::{Limits, run};
 
     /// Every operation.
-    const ALL: [GitOperation; 17] = [
+    const ALL: [GitOperation; 20] = [
         GitOperation::Init,
         GitOperation::Fetch,
         GitOperation::VerifyCommit,
@@ -345,6 +363,9 @@ mod tests {
         GitOperation::ListTree,
         GitOperation::ReadBlobs,
         GitOperation::HashBlob,
+        GitOperation::IsAncestor,
+        GitOperation::RangeDiff,
+        GitOperation::RevListCount,
         GitOperation::RevParse,
         GitOperation::ReadTree,
         GitOperation::AddAll,
@@ -598,7 +619,7 @@ mod tests {
             .map(|operation| (operation, operation.leading_args()))
             .collect();
 
-        let expected: [(GitOperation, &[&str]); 17] = [
+        let expected: [(GitOperation, &[&str]); 20] = [
             (GitOperation::Init, &["init", "--bare", "--quiet"]),
             (
                 GitOperation::Fetch,
@@ -624,6 +645,18 @@ mod tests {
                 GitOperation::HashBlob,
                 &["hash-object", "--no-filters", "--stdin"],
             ),
+            (GitOperation::IsAncestor, &["merge-base", "--is-ancestor"]),
+            (
+                GitOperation::RangeDiff,
+                &[
+                    "range-diff",
+                    "--no-color",
+                    "--no-notes",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                ],
+            ),
+            (GitOperation::RevListCount, &["rev-list", "--count"]),
             (GitOperation::RevParse, &["rev-parse"]),
             (GitOperation::ReadTree, &["read-tree"]),
             (GitOperation::AddAll, &["add", "--all"]),

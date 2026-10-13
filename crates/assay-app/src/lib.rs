@@ -21,6 +21,7 @@ mod preflight;
 mod prompt_bundle;
 mod publish;
 mod replay;
+mod rereview;
 mod session_init;
 mod specialists;
 mod status;
@@ -102,6 +103,13 @@ pub use replay::{
     BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
     ReplayRequest, Replayed, RunField, StoredBundle, replay_decision,
 };
+pub use rereview::{
+    Ancestry, CarriedAnchor, CarriedField, CarriedFinding, CarriedOutcome, CarriedParts,
+    CarriedProblem, CarriedRefusal, CarriedState, Carry, CarryRefused, CarryReset, Cumulative,
+    Increment, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, MAX_RANGE_DIFF_BYTES, NotReverified,
+    PriorHistory, RangeDiff, RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError,
+    TargetRequest, read_carried, recheck_anchors, review_target, settle_carried,
+};
 pub use specialists::{
     HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport, Specialists,
     SpecialistsRequest, run_specialists,
@@ -125,8 +133,8 @@ pub use validation::{
 
 mod verify;
 pub use verify::{
-    CarriedFinding, ClaimRef, Judgement, MAX_REASON_CHARS, REJECT_RATE_MIN_RUNS, RejectRate,
-    UnsupportedTier, VERDICT_SCHEMA, VERIFIER_CAP, VERIFIER_MAX_TURNS, VerdictReason,
-    VerdictRefusal, VerdictTally, Verification, VerifiedFinding, VerifierFailure, VerifierStatus,
-    VerifierTier, VerifyRequest, verify,
+    ClaimRef, Judgement, MAX_REASON_CHARS, REJECT_RATE_MIN_RUNS, RejectRate, UnsupportedTier,
+    VERDICT_SCHEMA, VERIFIER_CAP, VERIFIER_MAX_TURNS, VerdictReason, VerdictRefusal, VerdictTally,
+    Verification, VerifiedFinding, VerifierFailure, VerifierStatus, VerifierTier, VerifyRequest,
+    verify,
 };
