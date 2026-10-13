@@ -20,14 +20,19 @@ pub enum BundleFile {
     System,
     /// A role's instruction, sent after the context pack.
     Instruction(Role),
+    /// The blind verifier's instruction, sent after the one claim it judges (04 §3, §4 step 8).
+    /// The verifier is not a [`Role`]: it writes verdicts, never findings, so validation must
+    /// not accept a findings document in its name.
+    Verifier,
 }
 
 impl BundleFile {
     /// Every file, in the order the bundle hash covers them.
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 4] = [
         Self::System,
         Self::Instruction(Role::Combined),
         Self::Instruction(Role::CombinedMicro),
+        Self::Verifier,
     ];
 
     /// The file's path relative to `plugin/prompts/`, starting with the bundle version. The
@@ -38,6 +43,7 @@ impl BundleFile {
             Self::System => "v1/system.md",
             Self::Instruction(Role::Combined) => "v1/combined.md",
             Self::Instruction(Role::CombinedMicro) => "v1/combined-micro.md",
+            Self::Verifier => "v1/verifier.md",
         }
     }
 }
@@ -52,6 +58,8 @@ pub struct BundleFiles {
     pub combined: String,
     /// The instruction of [`Role::CombinedMicro`].
     pub combined_micro: String,
+    /// [`BundleFile::Verifier`].
+    pub verifier: String,
 }
 
 impl BundleFiles {
@@ -60,6 +68,7 @@ impl BundleFiles {
             BundleFile::System => &self.system,
             BundleFile::Instruction(Role::Combined) => &self.combined,
             BundleFile::Instruction(Role::CombinedMicro) => &self.combined_micro,
+            BundleFile::Verifier => &self.verifier,
         }
     }
 }
@@ -167,6 +176,12 @@ impl PromptBundle {
     #[must_use]
     pub fn instruction(&self, role: Role) -> &str {
         self.files.text(BundleFile::Instruction(role))
+    }
+
+    /// The blind verifier's instruction, sent after the claim it judges (04 §4 step 8).
+    #[must_use]
+    pub fn verifier_instruction(&self) -> &str {
+        self.files.text(BundleFile::Verifier)
     }
 
     /// The user prompt of a call in `role`: the context pack first, then a blank line, then the
