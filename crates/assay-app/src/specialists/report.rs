@@ -17,6 +17,10 @@ pub struct Specialists<E> {
     pub roles: Vec<RoleReport<E>>,
     /// The run cap the calls were held to: the sum of the roles' caps (06 §1).
     pub run_cap: Aeu,
+    /// Why the stage stopped starting calls, if it did: the run cap, a pause for a rate limit
+    /// or quota, or a runner's panic. A paused or stopped stage starts no later shard
+    /// ([`run_shards`](crate::run_shards)).
+    pub halt: Option<Halt>,
 }
 
 impl<E> Specialists<E> {
@@ -85,6 +89,9 @@ pub enum RoleFailure<E> {
     /// The runner panicked, a bug in the adapter; the call is charged at its budget and no
     /// further call starts.
     Panicked,
+    /// The fan-out lost track of the call's thread, a bug in assay's bookkeeping that its
+    /// construction rules out; the call is charged at its budget.
+    Lost,
 }
 
 impl<E> RoleFailure<E> {
@@ -94,7 +101,9 @@ impl<E> RoleFailure<E> {
     pub const fn reason(&self) -> CallFailure {
         match self {
             Self::Call(reason) => *reason,
-            Self::Runner(_) | Self::Spawn(_) | Self::Panicked => CallFailure::Unavailable,
+            Self::Runner(_) | Self::Spawn(_) | Self::Panicked | Self::Lost => {
+                CallFailure::Unavailable
+            }
         }
     }
 }

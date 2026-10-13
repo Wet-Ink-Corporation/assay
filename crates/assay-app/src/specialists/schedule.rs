@@ -20,6 +20,9 @@ pub(super) enum Joined<E> {
     Returned(Result<ModelResult, E>),
     /// The runner panicked.
     Panicked,
+    /// The fan-out lost the call's thread: a slot posted with no handle to join. Its cost is
+    /// unknown, so it is charged its budget.
+    Lost,
 }
 
 /// A call the schedule starts: the slot and role it is for, and its cap (`--max-budget-usd`).
@@ -108,7 +111,10 @@ pub(super) struct Schedule<E> {
     /// The first attempts among the calls in flight: only they make a retry wait (#217).
     first_in_flight: usize,
     ledger: Ledger,
+    /// The strongest reason the stage stopped starting calls (see [`raise`]).
     halt: Option<Halt>,
+    /// The first reason: what the roles still due were skipped for.
+    skipped: Option<Halt>,
 }
 
 impl<E> Schedule<E> {
@@ -144,7 +150,16 @@ impl<E> Schedule<E> {
                 reserved: Aeu::ZERO,
             },
             halt: None,
+            skipped: None,
         }
+    }
+
+    /// A schedule for `roles` that starts nothing: the stage halted for `halt` before it.
+    pub(super) fn halted(roles: &[Role], halt: Halt) -> Self {
+        let mut schedule = Self::new(roles);
+        schedule.halt = Some(halt);
+        schedule.skipped = Some(halt);
+        schedule
     }
 
     /// The calls in flight.
@@ -204,6 +219,7 @@ impl<E> Schedule<E> {
             FirstAttempt::Start(slot)
         } else if self.in_flight == 0 {
             self.halt = Some(Halt::RunCap);
+            self.skipped = Some(Halt::RunCap);
             FirstAttempt::NoneLeft
         } else {
             FirstAttempt::Wait
@@ -263,7 +279,14 @@ impl<E> Schedule<E> {
                 self.ledger.settle(budget, budget);
                 report.cost = report.cost.saturating_add(budget);
                 entry.state = State::Done(RoleOutcome::Failed(RoleFailure::Panicked));
-                self.halt.get_or_insert(Halt::Panicked);
+                self.halt = Some(raise(self.halt, Halt::Panicked));
+                self.skipped.get_or_insert(Halt::Panicked);
+                return;
+            }
+            Joined::Lost => {
+                self.ledger.settle(budget, budget);
+                report.cost = report.cost.saturating_add(budget);
+                entry.state = State::Done(RoleOutcome::Failed(RoleFailure::Lost));
                 return;
             }
             Joined::Returned(Err(source)) => {
@@ -278,7 +301,8 @@ impl<E> Schedule<E> {
         self.ledger.settle(budget, result.cost);
         report.cost = report.cost.saturating_add(result.cost);
         if !result.rate_limits.is_empty() || result.outcome == ModelOutcome::QuotaExhausted {
-            self.halt.get_or_insert(Halt::RateLimited);
+            self.halt = Some(raise(self.halt, Halt::RateLimited));
+            self.skipped.get_or_insert(Halt::RateLimited);
         }
         report.rate_limits.extend(result.rate_limits);
         report.init = Some(result.init);
@@ -306,7 +330,7 @@ impl<E> Schedule<E> {
     /// flight, so the run cap stands in only for a caller that stopped early. A retry the
     /// paused or stopped stage never made leaves the role with its malformed answer.
     pub(super) fn finish(self) -> Specialists<E> {
-        let skipped = self.halt.unwrap_or(Halt::RunCap);
+        let skipped = self.skipped.unwrap_or(Halt::RunCap);
         let roles = self
             .entries
             .into_iter()
@@ -327,7 +351,25 @@ impl<E> Schedule<E> {
         Specialists {
             roles,
             run_cap: self.ledger.cap,
+            halt: self.halt,
         }
+    }
+}
+
+/// The stronger of the stage's halt so far and `halt`: a run-cap halt is a reason to start no
+/// first attempt, but a pause or panic after it (in a retry) must still stop later shards, so
+/// `RunCap < RateLimited < Panicked` (#98 review).
+const fn raise(current: Option<Halt>, halt: Halt) -> Halt {
+    const fn rank(halt: Halt) -> u8 {
+        match halt {
+            Halt::RunCap => 0,
+            Halt::RateLimited => 1,
+            Halt::Panicked => 2,
+        }
+    }
+    match current {
+        Some(current) if rank(current) >= rank(halt) => current,
+        _ => halt,
     }
 }
 
