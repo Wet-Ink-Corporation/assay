@@ -7,7 +7,7 @@
 use std::io;
 use std::path::Path;
 
-use super::workflow::{action_files, jobs, uses};
+use super::workflow::{action_files, action_files_in, is_local_action, jobs, uses};
 
 /// Jobs no assay decision reads. `rust.yml` is the repository's own developer feedback; assay's
 /// Z2b re-runs the gates from base configuration because a PR can edit it (`06 §3`).
@@ -30,7 +30,7 @@ const CACHE_FREE_ACTIONS: &[&str] = &[
 /// repository (which [`composite_actions_use_only_cache_free_actions`] scans in turn).
 fn is_cache_free(uses: &str) -> bool {
     if let Some(local) = uses.strip_prefix("./.github/actions/") {
-        return !local.is_empty() && !local.contains("..");
+        return is_local_action(local);
     }
     uses.split_once('@')
         .is_some_and(|(action, _)| CACHE_FREE_ACTIONS.contains(&action))
@@ -195,6 +195,82 @@ fn every_cache_exempt_job_exists() -> Result<(), io::Error> {
         stale,
         Vec::<&(&str, &str)>::new(),
         "exemptions for missing jobs"
+    );
+    Ok(())
+}
+
+#[test]
+fn accepts_a_local_action_only_as_one_segment_naming_an_existing_action() {
+    let judged = [
+        "./.github/actions/fetch-by-digest",
+        "./.github/actions/warm-target",
+        "./.github/actions/missing",
+        "./.github/actions/fetch-by-digest/sub",
+        "./.github/actions/../workflows",
+        "./.github/actions/",
+        "./.github/actions/.",
+    ]
+    .map(|uses| (uses, is_cache_free(uses)));
+
+    assert_eq!(
+        judged,
+        [
+            ("./.github/actions/fetch-by-digest", true),
+            ("./.github/actions/warm-target", true),
+            ("./.github/actions/missing", false),
+            ("./.github/actions/fetch-by-digest/sub", false),
+            ("./.github/actions/../workflows", false),
+            ("./.github/actions/", false),
+            ("./.github/actions/.", false),
+        ]
+    );
+}
+
+/// A scratch `.github` with an empty `workflows/` and one action directory `actions/x`
+/// holding `files`.
+fn scratch_github(test: &str, files: &[&str]) -> io::Result<std::path::PathBuf> {
+    let github = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("workflow-cache")
+        .join(test);
+    match std::fs::remove_dir_all(&github) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
+    std::fs::create_dir_all(github.join("workflows"))?;
+    std::fs::create_dir_all(github.join("actions/x"))?;
+    for file in files {
+        std::fs::write(github.join("actions/x").join(file), "name: x\n")?;
+    }
+    Ok(github)
+}
+
+#[test]
+fn the_scan_fails_on_an_action_directory_it_cannot_read_whole() -> io::Result<()> {
+    let cases = [
+        ("yaml-only", &["action.yaml"][..]),
+        ("both", &["action.yml", "action.yaml"][..]),
+        ("neither", &[][..]),
+        ("yml-only", &["action.yml"][..]),
+    ];
+
+    let scanned = cases
+        .iter()
+        .map(|(test, files)| {
+            Ok((
+                *test,
+                action_files_in(&scratch_github(test, files)?).is_ok(),
+            ))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+
+    assert_eq!(
+        scanned,
+        [
+            ("yaml-only", false),
+            ("both", false),
+            ("neither", false),
+            ("yml-only", true),
+        ]
     );
     Ok(())
 }

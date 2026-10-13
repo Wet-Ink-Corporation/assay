@@ -68,6 +68,7 @@ runs:
           DIGEST=$(bash "$FETCH" digest-from-config "$CONFIG" assay.warm_target)
         fi
         out=$(mktemp -d "$RUNNER_TEMP/warm-target.XXXXXX")
+        trap 'rm -rf -- "$out"' EXIT
         bash "$FETCH" fetch "$REPOSITORY" "$DIGEST" "$out"
         bash "$SCRIPT" unpack "$out/warm-target.tar.zst" "$WORKSPACE" "${CARGO_HOME_INPUT:-${CARGO_HOME:-$HOME/.cargo}}"
         rm -rf -- "$out"

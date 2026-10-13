@@ -42,14 +42,14 @@ require() {
 # Reads a tar stream on stdin. `check` validates every entry; `extract` validates again and
 # extracts. Entries: regular files and directories only, names relative with no empty, `.` or
 # `..` component and no control character, under an allowlisted prefix; at most MAX_ENTRIES
-# entries and MAX_BYTES of content (H-13).
+# entries and MAX_BYTES of content (H-13). Tests lower the caps with
+# WARM_TARGET_TEST_MAX_ENTRIES and WARM_TARGET_TEST_MAX_BYTES; a value can only lower a cap.
 read -r -d '' TAR_PY << 'PY' || true
+import os
 import sys
 import tarfile
 
 mode, workspace, cargo_home = sys.argv[1], sys.argv[2], sys.argv[3]
-MAX_ENTRIES = 2_000_000
-MAX_BYTES = 16 * 1024**3
 ALLOWED = (("target",), ("registry", "index"), ("registry", "cache"))
 ROOTS = {"target": workspace, "registry": cargo_home}
 
@@ -60,7 +60,20 @@ def fail(message):
 
 
 if not hasattr(tarfile, "data_filter"):
-    fail("python3 with tarfile extraction filters (3.12, or 3.11.4 and later) is required")
+    fail("python3 3.11.4 or later (tarfile extraction filters) is required")
+
+
+def cap(default, variable):
+    text = os.environ.get(variable)
+    if text is None:
+        return default
+    if not text.isascii() or not text.isdigit():
+        fail(f"{variable} is not a decimal count")
+    return min(default, int(text))
+
+
+MAX_ENTRIES = cap(2_000_000, "WARM_TARGET_TEST_MAX_ENTRIES")
+MAX_BYTES = cap(16 * 1024**3, "WARM_TARGET_TEST_MAX_BYTES")
 
 
 def components(name):
@@ -106,7 +119,9 @@ pack() {
   for dir in "$workspace/target" "$cargo_home/registry/index" "$cargo_home/registry/cache"; do
     [[ -d $dir && ! -L $dir ]] || die 1 "$dir is not a directory"
   done
-  tar --create --file=- --directory="$workspace" target \
+  # --hard-dereference: cargo hardlinks build outputs (build scripts, uplifts); each name is
+  # stored as a regular file, since unpack accepts no hardlink entry.
+  tar --create --hard-dereference --file=- --directory="$workspace" target \
     --directory="$cargo_home" registry/index registry/cache \
     | zstd -T0 -3 -q -c > "$archive"
 }

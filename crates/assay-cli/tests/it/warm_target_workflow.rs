@@ -152,3 +152,53 @@ fn restore_verifies_then_unpacks_then_cleans_workspace_crates() -> Result<(), io
     );
     Ok(())
 }
+
+#[test]
+fn restore_removes_its_download_directory_on_every_exit() -> Result<(), io::Error> {
+    let action =
+        fs::read_to_string(repository_root().join(".github/actions/warm-target/action.yml"))?;
+    let lines = action.lines().collect::<Vec<_>>();
+
+    let made = position(
+        &lines,
+        r#"out=$(mktemp -d "$RUNNER_TEMP/warm-target.XXXXXX")"#,
+    );
+    let trapped = position(&lines, r#"trap 'rm -rf -- "$out"' EXIT"#);
+
+    assert!(
+        matches!((made, trapped), (Some(made), Some(trap)) if trap == made + 1),
+        "the EXIT trap must follow mktemp directly: {made:?}, {trapped:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn verify_restores_the_published_digest_through_the_warm_target_action() -> Result<(), io::Error> {
+    let workflow = warm_target_workflow()?;
+    let jobs = jobs(&workflow);
+    let verify = job_body(&jobs, "verify");
+
+    let restore = position(verify, "uses: ./.github/actions/warm-target");
+    // The action's `with:` block: the lines after `uses:` up to the next step.
+    let with = restore.map_or(&[][..], |at| verify.get(at + 1..).unwrap_or_default());
+    let with = with
+        .iter()
+        .take_while(|line| !line.trim_start().starts_with("- "))
+        .map(|line| line.trim())
+        .collect::<Vec<_>>();
+    let steps = [
+        position(verify, r#"cp -a -- "$GITHUB_WORKSPACE/." "$WORKSPACE/""#),
+        restore,
+        position(verify, "cargo clippy --locked --offline"),
+    ];
+
+    assert!(
+        steps.iter().all(Option::is_some) && steps.is_sorted(),
+        "place, restore, then build offline: {steps:?}"
+    );
+    assert!(
+        with.contains(&"digest: ${{ needs.publish.outputs.digest }}"),
+        "the restore must take the freshly published digest: {with:?}"
+    );
+    Ok(())
+}

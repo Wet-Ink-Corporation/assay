@@ -152,8 +152,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Pulls the artifact back through the consumer mechanism: proves the digest resolves and
-  # verifies, that the bytes are the ones the build job hashed, and that every entry passes the
-  # restore allowlist.
+  # verifies, that the bytes are the ones the build job hashed, and that the warm-target action
+  # restores it end to end (allowlisted unpack, cargo clean) into a workspace that then builds
+  # offline from the restored registry.
   verify:
     needs: [build, publish]
     runs-on: ubuntu-24.04
@@ -173,7 +174,7 @@ jobs:
           artifact-type: ${{ env.ARTIFACT_TYPE }}
           out-dir: ${{ runner.temp }}/warm-target
           mode: "0644"
-      - name: The fetched archive is the one that was built, and it unpacks
+      - name: The fetched archive is the one that was built
         shell: bash
         env:
           DIR: ${{ steps.fetch.outputs.dir }}
@@ -184,6 +185,23 @@ jobs:
             echo "::error::fetched archive sha256:${sum%% *} differs from the build output $EXPECTED"
             exit 1
           fi
-          mkdir "$RUNNER_TEMP/ws"
-          bash .github/actions/warm-target/warm-target.sh unpack "$DIR/$ARCHIVE" \
-            "$RUNNER_TEMP/ws" "$RUNNER_TEMP/cargo-home"
+          rm -rf -- "$DIR"
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-28
+        with:
+          toolchain: "1.98.1"  # keep in sync with rust-toolchain.toml
+          components: clippy
+      - name: Place the workspace at the fixed path (A-29)
+        shell: bash
+        run: |
+          sudo install -d -o "$(id -u)" -g "$(id -g)" -- "$(dirname "$WORKSPACE")"
+          mkdir -- "$WORKSPACE"
+          cp -a -- "$GITHUB_WORKSPACE/." "$WORKSPACE/"
+      - uses: ./.github/actions/warm-target
+        with:
+          repository: ${{ needs.publish.outputs.repository }}
+          digest: ${{ needs.publish.outputs.digest }}
+          workspace: ${{ env.WORKSPACE }}
+      - name: The restored registry builds the workspace offline
+        shell: bash
+        working-directory: ${{ env.WORKSPACE }}
+        run: cargo clippy --locked --offline --workspace --all-targets --all-features

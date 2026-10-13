@@ -95,6 +95,11 @@ impl Sandbox {
     }
 
     fn run(&self, args: &[&Path]) -> io::Result<Output> {
+        self.run_with(args, &[])
+    }
+
+    /// Runs the script with `env` added; the test-only cap variables are otherwise unset.
+    fn run_with(&self, args: &[&Path], env: &[(&str, &str)]) -> io::Result<Output> {
         let mut path = vec![self.path("bin")];
         path.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
@@ -107,16 +112,30 @@ impl Sandbox {
             .env("PATH", path)
             .env("FAKE_CARGO_LOG", self.path("cargo.log"))
             .env("FAKE_CARGO_METADATA", self.path("metadata.json"))
+            .env_remove("WARM_TARGET_TEST_MAX_ENTRIES")
+            .env_remove("WARM_TARGET_TEST_MAX_BYTES")
+            .envs(env.iter().copied())
             .output()
     }
 
     fn unpack(&self, archive: &Path) -> io::Result<Output> {
-        self.run(&[
-            Path::new("unpack"),
-            archive,
-            &self.path("ws"),
-            &self.path("cargo-home"),
-        ])
+        self.unpack_with(archive, &[])
+    }
+
+    fn unpack_with(&self, archive: &Path, env: &[(&str, &str)]) -> io::Result<Output> {
+        self.run_with(
+            &[
+                Path::new("unpack"),
+                archive,
+                &self.path("ws"),
+                &self.path("cargo-home"),
+            ],
+            env,
+        )
+    }
+
+    fn nothing_written(&self) -> io::Result<bool> {
+        Ok(files(&self.path("ws"))?.is_empty() && files(&self.path("cargo-home"))?.is_empty())
     }
 
     /// A plain tar (the fake `zstd` passes it through) built from `MAKE_TAR` specs.
@@ -206,6 +225,150 @@ fn pack_then_unpack_restores_target_and_the_registry_cache_but_not_sources()
         fs::read_to_string(sandbox.path("ws/target/debug/deps/libdep.rlib"))?,
         "rlib"
     );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash; Miri cannot run processes")]
+fn pack_turns_cargo_hardlinks_into_regular_files_and_keeps_the_exec_bit()
+-> Result<(), Box<dyn std::error::Error>> {
+    // cargo hardlinks a build script's binary to its uplift; tar would store the second name as
+    // a hardlink entry, which unpack refuses.
+    let sandbox = Sandbox::new("hardlinks")?;
+    let build = "ws/target/debug/build/x";
+    sandbox.write(&format!("{build}/build_script_build-0123"), "script")?;
+    fs::set_permissions(
+        sandbox.path(&format!("{build}/build_script_build-0123")),
+        fs::Permissions::from_mode(0o755),
+    )?;
+    fs::hard_link(
+        sandbox.path(&format!("{build}/build_script_build-0123")),
+        sandbox.path(&format!("{build}/build-script-build")),
+    )?;
+    sandbox.write("cargo-home/registry/index/idx/config.json", "{}")?;
+    sandbox.write("cargo-home/registry/cache/idx/dep-1.0.0.crate", "crate")?;
+    let archive = sandbox.path("warm-target.tar.zst");
+    let packed = sandbox.run(&[
+        Path::new("pack"),
+        &sandbox.path("ws"),
+        &sandbox.path("cargo-home"),
+        &archive,
+    ])?;
+    assert_eq!(packed.status.code(), Some(0), "{}", stderr(&packed));
+    fs::remove_dir_all(sandbox.path("ws"))?;
+    fs::create_dir(sandbox.path("ws"))?;
+
+    let unpacked = sandbox.unpack(&archive)?;
+
+    assert_eq!(unpacked.status.code(), Some(0), "{}", stderr(&unpacked));
+    for name in ["build_script_build-0123", "build-script-build"] {
+        let path = sandbox.path(&format!("{build}/{name}"));
+        let metadata = fs::symlink_metadata(&path)?;
+        assert!(metadata.is_file(), "{name} is not a regular file");
+        assert_eq!(fs::read_to_string(&path)?, "script", "{name} bytes");
+        assert_eq!(
+            metadata.permissions().mode() & 0o111,
+            0o111,
+            "{name} exec bit"
+        );
+    }
+    Ok(())
+}
+
+/// Unpacks an archive of `specs` with the test-only cap `variable` lowered to `cap`, and
+/// returns `(exit code, nothing written)`.
+fn unpack_under_cap(
+    test: &str,
+    specs: &[&str],
+    variable: &str,
+    cap: &str,
+) -> io::Result<(Option<i32>, bool)> {
+    let sandbox = Sandbox::new(test)?;
+    let archive = sandbox.archive(specs)?;
+
+    let output = sandbox.unpack_with(&archive, &[(variable, cap)])?;
+
+    Ok((output.status.code(), sandbox.nothing_written()?))
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash and python3; Miri cannot run processes")]
+fn accepts_an_archive_at_the_entry_cap_and_refuses_one_more_entry_writing_nothing() -> io::Result<()>
+{
+    let at_cap = ["dir:target:", "file:target/a:a", "file:target/b:b"];
+    let over_cap = [at_cap.as_slice(), &["file:target/c:c"]].concat();
+
+    let accepted = unpack_under_cap(
+        "entries-at-cap",
+        &at_cap,
+        "WARM_TARGET_TEST_MAX_ENTRIES",
+        "3",
+    )?;
+    let refused = unpack_under_cap(
+        "entries-over-cap",
+        &over_cap,
+        "WARM_TARGET_TEST_MAX_ENTRIES",
+        "3",
+    )?;
+
+    assert_eq!(
+        accepted,
+        (Some(0), false),
+        "three entries under a cap of three"
+    );
+    assert_eq!(
+        refused,
+        (Some(1), true),
+        "four entries under a cap of three"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash and python3; Miri cannot run processes")]
+fn accepts_an_archive_at_the_byte_cap_and_refuses_one_more_byte_writing_nothing() -> io::Result<()>
+{
+    let accepted = unpack_under_cap(
+        "bytes-at-cap",
+        &["file:target/ok:x", "file:target/a:123456789"],
+        "WARM_TARGET_TEST_MAX_BYTES",
+        "10",
+    )?;
+    let refused = unpack_under_cap(
+        "bytes-over-cap",
+        &["file:target/ok:x", "file:target/a:1234567890"],
+        "WARM_TARGET_TEST_MAX_BYTES",
+        "10",
+    )?;
+
+    assert_eq!(accepted, (Some(0), false), "ten bytes under a cap of ten");
+    assert_eq!(refused, (Some(1), true), "eleven bytes under a cap of ten");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash and python3; Miri cannot run processes")]
+fn refuses_an_empty_archive() -> io::Result<()> {
+    let sandbox = Sandbox::new("empty")?;
+    let archive = sandbox.archive(&[])?;
+
+    let output = sandbox.unpack(&archive)?;
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(sandbox.nothing_written()?, "nothing may be written");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns bash and python3; Miri cannot run processes")]
+fn refuses_a_cap_variable_that_is_not_a_count() -> io::Result<()> {
+    let sandbox = Sandbox::new("cap-not-a-number")?;
+    let archive = sandbox.archive(&["file:target/ok:ok"])?;
+
+    let output = sandbox.unpack_with(&archive, &[("WARM_TARGET_TEST_MAX_BYTES", "-1")])?;
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(sandbox.nothing_written()?, "nothing may be written");
     Ok(())
 }
 

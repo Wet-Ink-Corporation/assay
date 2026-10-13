@@ -12,12 +12,14 @@ pre-seed under the base scope so that a poisoned entry outlives the merge (ADR-2
    --no-run`, `cargo doc`, all `--locked --workspace --all-features`), runs
    `cargo clean -p <workspace crates>` so only dependency artifacts remain, and packs `target/`
    with `$CARGO_HOME/registry/index` and `registry/cache` into `warm-target.tar.zst`
-   (`.github/actions/warm-target/warm-target.sh pack`). Nothing is restored; the build is cold.
+   (`.github/actions/warm-target/warm-target.sh pack`, with `--hard-dereference`: cargo hardlinks
+   build outputs, and unpack accepts no hardlink entry). Nothing is restored; the build is cold.
 2. **Publish.** `publish`, the only job with `packages: write`, checks the archive against the
    sha256 in `build`'s outputs and pushes it to `ghcr.io/<owner>/assay-warm-target`, tagged with
    the commit SHA for humans. The job summary shows the digest and the TOML line to pin it.
-3. **Verify.** `verify` pulls it back by digest with `fetch-by-digest`, compares the bytes with
-   the build's sha256, and unpacks it through the restore allowlist.
+3. **Verify.** `verify` pulls it back by digest with `fetch-by-digest` and compares the bytes with
+   the build's sha256, then restores the same digest at `/work/ws` through
+   `.github/actions/warm-target` and runs `cargo clippy --locked --offline` on the restored registry.
 4. **Pin.** The owner copies the digest into base `.assay/plugins.toml`:
 
    ```toml
@@ -34,7 +36,7 @@ pre-seed under the base scope so that a poisoned entry outlives the merge (ADR-2
    reads the pin from the base checkout, fetches and verifies it, unpacks it (any entry that is
    not a regular file or directory under `target/`, `registry/index/` or `registry/cache/`, or
    that has an empty, `.` or `..` component, refuses the whole archive before anything is
-   written; at most 2,000,000 entries and 16 GiB), then runs `cargo clean --locked -p` for every
+   written; at most 2,000,000 entries and 16 GiB; the runner needs `python3` 3.11.4 or later), then runs `cargo clean --locked -p` for every
    workspace package `cargo metadata --no-deps` lists, each name checked against
    `[A-Za-z0-9][A-Za-z0-9_-]*`.
 

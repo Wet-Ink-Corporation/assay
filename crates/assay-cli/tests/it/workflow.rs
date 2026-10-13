@@ -90,17 +90,43 @@ pub(crate) fn uses<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<&'a str>
 /// Workflows and composite actions: every YAML file under `.github/workflows` and
 /// `.github/actions/*/action.yml`.
 pub(crate) fn action_files() -> io::Result<Vec<PathBuf>> {
-    let github = repository_root().join(".github");
+    action_files_in(&repository_root().join(".github"))
+}
+
+/// [`action_files`] under `github`. Every entry of `actions/` must be a directory holding an
+/// `action.yml` and no `action.yaml`, which GitHub would also run but no scan would read.
+pub(crate) fn action_files_in(github: &Path) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in fs::read_dir(github.join("workflows"))? {
         files.push(entry?.path());
     }
     for entry in fs::read_dir(github.join("actions"))? {
-        let action = entry?.path().join("action.yml");
-        if action.is_file() {
-            files.push(action);
+        let dir = entry?.path();
+        let action = dir.join("action.yml");
+        if !action.is_file() || dir.join("action.yaml").exists() {
+            return Err(io::Error::other(format!(
+                "{} must hold action.yml and no action.yaml",
+                dir.display()
+            )));
         }
+        files.push(action);
     }
     files.sort();
     Ok(files)
+}
+
+/// Whether `name` is one plain path segment naming a composite action of this repository,
+/// `.github/actions/<name>/action.yml`.
+pub(crate) fn is_local_action(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        && repository_root()
+            .join(".github/actions")
+            .join(name)
+            .join("action.yml")
+            .is_file()
 }
