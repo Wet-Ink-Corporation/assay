@@ -5,6 +5,8 @@
 //! `full` by `combined`; a `full` PR's specialist roster is the review job's (#85), and the
 //! decision reports those roles missing.
 
+use std::mem;
+
 use assay_domain::{
     Aeu, CallFailure, Disposition, EventPayload, Finding, FindingsSchema, RequiredRole, SourceKind,
     SpecialistRun, Tier,
@@ -145,8 +147,13 @@ pub(super) fn started(role: LocalRole) -> EventPayload {
 
 /// How `role`'s call ended (`SpecialistFinished`, `SpecialistBudgetExhausted` or
 /// `SpecialistFailed`, with a `StageDegraded` unless it completed), then each disposition
-/// validation made and a `FindingRaised` per finding it kept, in order.
-pub(super) fn ended(role: LocalRole, reviewed: &Reviewed, duration_ms: u64) -> Vec<EventPayload> {
+/// validation made and a `FindingRaised` per finding it kept, in order. The dispositions are
+/// moved into the stream: nothing reads them after it.
+pub(super) fn ended(
+    role: LocalRole,
+    reviewed: &mut Reviewed,
+    duration_ms: u64,
+) -> Vec<EventPayload> {
     let run = specialist(role, aeu_number(reviewed.cost), Some(duration_ms));
     let degraded = |reason: &str| EventPayload::StageDegraded {
         stage: REVIEW_STAGE.to_owned(),
@@ -155,8 +162,7 @@ pub(super) fn ended(role: LocalRole, reviewed: &Reviewed, duration_ms: u64) -> V
     match &reviewed.stage {
         Stage::Completed(kept) => [EventPayload::SpecialistFinished(run)]
             .into_iter()
-            // The stream owns its copy of each disposition, which holds no text.
-            .chain(reviewed.disposed.iter().cloned())
+            .chain(mem::take(&mut reviewed.disposed))
             .chain(kept.iter().map(|_| EventPayload::FindingRaised {}))
             .collect(),
         Stage::Degraded(CallFailure::Cap) => vec![

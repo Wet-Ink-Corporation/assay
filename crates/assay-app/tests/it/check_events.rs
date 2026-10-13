@@ -109,10 +109,20 @@ fn check_into(
     Ok(check_local(&setup.request(), ports, &validator()?))
 }
 
-/// The stream of a passing `unit` gate and a review that keeps the `unwrap` finding.
+/// The `unwrap` finding citing evidence that is not on its line, which validation disposes of.
+fn misplaced_finding() -> serde_json::Value {
+    let mut finding = unwrap_finding();
+    if let Some(evidence) = finding.get_mut("evidence") {
+        *evidence = serde_json::json!("this text is not in the file");
+    }
+    finding
+}
+
+/// The stream of a passing `unit` gate and a review that keeps the `unwrap` finding and
+/// disposes of a misplaced one.
 fn recorded() -> Result<FakeEvents, Box<dyn Error>> {
     let mut events = FakeEvents::new();
-    let model = FakeModel::finding(&[unwrap_finding()]);
+    let model = FakeModel::finding(&[unwrap_finding(), misplaced_finding()]);
     check_into(
         &dirty_tree(),
         &mut FakeGates::passing(),
@@ -146,7 +156,8 @@ fn a_local_run_streams_each_stage_numbered_from_zero_in_each_job() -> Result<(),
         ("gates-test", 1, "GateFinished"),
         ("review", 0, "SpecialistStarted"),
         ("review", 1, "SpecialistFinished"),
-        ("review", 2, "FindingRaised"),
+        ("review", 2, "FindingDisposed"),
+        ("review", 3, "FindingRaised"),
         ("decide", 0, "DecisionMade"),
     ]
     .map(|(job, idx, kind)| (job.to_owned(), idx, kind.to_owned()));
@@ -231,7 +242,7 @@ fn every_line_of_the_fixture_is_a_valid_assay_event() -> Result<(), Box<dyn Erro
     for line in &lines {
         validator.read(Contract::Event, line.as_bytes())?;
     }
-    assert_eq!(lines.len(), 7);
+    assert_eq!(lines.len(), 8);
     Ok(())
 }
 
@@ -253,6 +264,40 @@ fn review_events(
         .filter(|event| event.job == "review" && event.idx > 0)
         .map(|event| Ok(serde_json::to_value(&event.payload)?))
         .collect()
+}
+
+#[test]
+fn a_completed_review_reports_each_disposition_then_each_kept_finding() -> Result<(), Box<dyn Error>>
+{
+    let model = FakeModel::finding(&[misplaced_finding(), unwrap_finding(), misplaced_finding()]);
+    let mut events = FakeEvents::new();
+    check_into(
+        &dirty_tree(),
+        &mut FakeGates::passing(),
+        &model,
+        &mut events,
+    )??;
+
+    let review: Vec<serde_json::Value> = events
+        .events
+        .iter()
+        .filter(|event| event.job == "review" && event.idx > 0)
+        .map(|event| serde_json::to_value(&event.payload))
+        .collect::<Result<_, _>>()?;
+
+    let disposed =
+        serde_json::json!({"kind": "FindingDisposed", "data": {"code": "evidence-missing"}});
+    assert_eq!(
+        review,
+        [
+            serde_json::json!({"kind": "SpecialistFinished", "data": {
+                "role": "combined-micro", "cost_aeu": 0.12, "duration_ms": 250}}),
+            disposed.clone(),
+            disposed,
+            serde_json::json!({"kind": "FindingRaised", "data": {}}),
+        ]
+    );
+    Ok(())
 }
 
 #[test]

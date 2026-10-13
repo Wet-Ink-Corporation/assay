@@ -10,10 +10,11 @@ use std::num::NonZeroU64;
 
 use assay_domain::{Class, Decision, Fingerprint, Severity, Tier};
 use serde::Deserialize;
+use serde_json::Value;
 use thiserror::Error;
 
 use super::outcome::LocalOutcome;
-use super::report::{ReviewStatus, SCHEMA};
+use super::report::{OLDER_SCHEMA, ReviewStatus, SCHEMA};
 use crate::contract::{MAX_DOCUMENT_BYTES, parse_json_strict};
 
 /// Why a stored local report was not read.
@@ -31,6 +32,10 @@ pub enum LocalReportError {
     /// It names another schema, or is not advisory.
     #[error("the file is not an advisory local report")]
     NotLocal,
+    /// It is a report in the format before #130 (version 1), which a rerun of the
+    /// check replaces.
+    #[error("the local report is in an older format ({OLDER_SCHEMA}); rerun assay check --local")]
+    OlderFormat,
 }
 
 /// The parts of a stored report the local status shows.
@@ -108,13 +113,17 @@ pub(crate) struct StoredFinding {
 ///
 /// # Errors
 ///
-/// [`LocalReportError`] when it is over the cap, does not parse strictly into the report's
-/// shape, or is not an advisory local report.
+/// [`LocalReportError`] when it is over the cap, is a report of the older format, does not
+/// parse strictly into the report's shape, or is not an advisory local report.
 pub(crate) fn read(bytes: &[u8]) -> Result<StoredReport, LocalReportError> {
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(LocalReportError::TooLarge { size: bytes.len() });
     }
     let value = parse_json_strict(bytes).map_err(LocalReportError::Malformed)?;
+    // Named before its shape is read: an older report does not have this one.
+    if value.get("schema").and_then(Value::as_str) == Some(OLDER_SCHEMA) {
+        return Err(LocalReportError::OlderFormat);
+    }
     let stored: Stored = serde_json::from_value(value).map_err(LocalReportError::Malformed)?;
     if stored.schema != SCHEMA || !stored.advisory {
         return Err(LocalReportError::NotLocal);

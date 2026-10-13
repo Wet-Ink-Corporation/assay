@@ -98,7 +98,9 @@ fn an_existing_events_path_is_refused_and_left_as_it_was() -> Result<(), Box<dyn
         (
             Some(2),
             format!(
-                "assay: {stream_arg} already exists: --events writes a new file, or - for stdout\n"
+                "assay: {stream_arg} already exists: --events writes a new file, or - for stdout \
+                 (a file in the working tree is part of the next snapshot: use -, or a path \
+                 outside the tree or ignored)\n"
             )
             .as_str()
         )
@@ -131,6 +133,39 @@ fn an_events_value_that_is_missing_empty_or_a_flag_is_a_usage_error() -> Result<
             "{args:?}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn a_stream_written_inside_the_working_tree_makes_the_result_stale_and_a_rerun_is_refused()
+-> Result<(), Box<dyn Error>> {
+    let scene = Scene::new()?;
+    let claude = scene.claude()?;
+    let args = [
+        "--local",
+        "--claude",
+        claude.as_str(),
+        "--events",
+        "events.jsonl",
+    ];
+
+    let first = scene.check(&args)?;
+    let status = local_status(&scene)?;
+    let rerun = scene.check(&args)?;
+
+    assert_eq!(first.code, Some(1), "{first:?}");
+    assert_eq!(
+        status.get("stale"),
+        Some(&Value::from(true)),
+        "the stream is a new untracked file: {status}"
+    );
+    assert_eq!(rerun.code, Some(2), "{rerun:?}");
+    assert!(
+        rerun
+            .stderr
+            .starts_with("assay: events.jsonl already exists"),
+        "{rerun:?}"
+    );
     Ok(())
 }
 

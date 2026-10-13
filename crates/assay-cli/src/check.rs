@@ -181,7 +181,9 @@ impl fmt::Display for CheckCliError {
             Self::Contracts(source) => write_chain(f, source),
             Self::EventsExist(path) => write!(
                 f,
-                "{} already exists: --events writes a new file, or - for stdout",
+                "{} already exists: --events writes a new file, or - for stdout (a file in the \
+                 working tree is part of the next snapshot: use -, or a path outside the tree or \
+                 ignored)",
                 path.display()
             ),
             Self::EventsOpen { path, source } => {

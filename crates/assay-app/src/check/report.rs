@@ -1,7 +1,7 @@
 //! The local report: what `assay check --local` writes to `.git/assay/<tree>.json` and shows in
 //! the terminal.
 //!
-//! It is not a contract. Its `schema` is `assay.local-check/1`, which no schema in `schemas/`
+//! It is not a contract. Its `schema` is `assay.local-check/2`, which no schema in `schemas/`
 //! describes and [`ContractValidator`](crate::ContractValidator) refuses for every contract, and
 //! it says `advisory: true`: CI never reads it (R-10, P9).
 
@@ -14,7 +14,11 @@ use crate::prompt_bundle::Role;
 use crate::publish::clean;
 
 /// The local report's own schema name: never a contract's.
-pub(super) const SCHEMA: &str = "assay.local-check/1";
+pub(super) const SCHEMA: &str = "assay.local-check/2";
+
+/// The schema name of reports written before #130, whose findings carry no fingerprint and
+/// whose gate outcomes were free text: refused on read as an older format.
+pub(super) const OLDER_SCHEMA: &str = "assay.local-check/1";
 
 /// The terminal report's first line.
 const BANNER: &str = "assay check --local: advisory, CI never reads this report";

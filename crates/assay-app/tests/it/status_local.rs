@@ -315,6 +315,32 @@ fn a_file_that_is_not_an_advisory_local_report_is_refused() -> Result<(), Box<dy
     Ok(())
 }
 
+#[test]
+fn a_report_written_before_fingerprints_is_refused_as_an_older_format() -> Result<(), Box<dyn Error>>
+{
+    // The pre-#130 shape: version 1, no `fp` on its findings, any outcome text.
+    let mut older = report_value()?;
+    older["schema"] = json!("assay.local-check/1");
+    for gate in older["gates"].as_array_mut().into_iter().flatten() {
+        gate["outcome"] = json!("evidence-missing");
+    }
+
+    let error = refusal(&serde_json::to_vec(&older)?)?;
+
+    assert!(
+        matches!(
+            error,
+            LocalStatusError::Report(LocalReportError::OlderFormat)
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        LocalReportError::OlderFormat.to_string(),
+        "the local report is in an older format (assay.local-check/1); rerun assay check --local"
+    );
+    Ok(())
+}
+
 /// `bytes` padded with trailing spaces to `size`.
 fn padded(mut bytes: Vec<u8>, size: usize) -> Vec<u8> {
     bytes.resize(size, b' ');

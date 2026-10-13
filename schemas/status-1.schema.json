@@ -254,6 +254,8 @@
       "if": { "properties": { "source": { "const": "local" } } },
       "then": {
         "required": ["tree", "local_tree"],
+        "if": { "properties": { "tree": { "type": "null" } } },
+        "then": { "properties": { "stale": { "const": false } } },
         "properties": {
           "repo": false,
           "pr": false,

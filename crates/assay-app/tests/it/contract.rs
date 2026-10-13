@@ -20,7 +20,7 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 53] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 54] = [
     (
         Contract::Status,
         "unknown-field",
@@ -86,6 +86,12 @@ const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 53] = [
         Contract::Status,
         "local-waivable-finding",
         Rejection::Violation("/findings/0/waivable", "const"),
+    ),
+    // Stale only against a local result: with no `tree` there is nothing to be stale.
+    (
+        Contract::Status,
+        "local-stale-without-result",
+        Rejection::Violation("/stale", "const"),
     ),
     (
         Contract::Status,

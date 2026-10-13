@@ -252,10 +252,14 @@ fn recorded<S: EventSink, O, P>(
 ) -> Result<Reviewed, CheckError<O, P, S::Error>> {
     let started = recorder.now();
     recorder.emit_at(Job::Review, review::started(role), started)?;
-    let outcome = review().map_err(CheckError::Encode)?;
+    let mut outcome = review().map_err(CheckError::Encode)?;
     let ended = recorder.now();
     let elapsed = events::millis_since(started, ended);
-    recorder.emit_all_at(Job::Review, review::ended(role, &outcome, elapsed), ended)?;
+    recorder.emit_all_at(
+        Job::Review,
+        review::ended(role, &mut outcome, elapsed),
+        ended,
+    )?;
     Ok(outcome)
 }
 

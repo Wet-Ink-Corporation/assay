@@ -167,7 +167,7 @@ fn a_dirty_tree_is_checked_and_its_report_written_under_the_git_dir() -> Result<
     let report: Value = serde_json::from_slice(&fs::read(&report_path)?)?;
     assert_eq!(
         (&report["schema"], &report["advisory"], &report["tree"]),
-        (&json!("assay.local-check/1"), &json!(true), &json!(tree)),
+        (&json!("assay.local-check/2"), &json!(true), &json!(tree)),
         "{outcome:?}"
     );
     assert_eq!(

@@ -79,14 +79,27 @@ pub(super) fn run<G: GateRunner, S: EventSink>(
     for job in JOBS {
         let mut observer = GateEvents::new(recorder, job);
         let mut reports = gate::run_observed(config, runner, validator, &mut observer)?;
-        let ran_count = reports.len();
-        account_for_required(config, job, &mut reports);
-        for report in reports.iter().skip(ran_count) {
-            observer.ended(report, None)?;
-        }
+        account_and_record(config, &mut reports, &mut observer)?;
         ran.extend(reports.into_iter().map(read));
     }
     Ok(ran)
+}
+
+/// Appends a `gate-error:skipped` report for each required gate of the observer's job that
+/// `reports` lacks, and records its end (it never started). `run_observed` reports every gate
+/// it schedules, so this finds none today; it keeps a missing required gate from reading as a
+/// pass, as in CI.
+fn account_and_record<O: GateObserver>(
+    config: &PluginsConfig,
+    reports: &mut Vec<gate::GateReport>,
+    observer: &mut O,
+) -> Result<(), O::Error> {
+    let ran_count = reports.len();
+    account_for_required(config, observer.job(), reports);
+    reports
+        .iter()
+        .skip(ran_count)
+        .try_for_each(|report| observer.ended(report, None))
 }
 
 /// A report with its validated document read as findings.
@@ -180,5 +193,89 @@ const fn job_name(job: GateJob) -> &'static str {
         GateJob::Static => "gates-static",
         GateJob::Build(BuildJob::Lint) => "gates-lint",
         GateJob::Build(BuildJob::Test) => "gates-test",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+
+    use crate::config::{Plugin, PluginsConfig};
+    use crate::gate::{BuildJob, GateError, GateJob, GateObserver, GateOutcome, GateReport};
+
+    use super::account_and_record;
+
+    /// One required `exec` gate, `unit`, in the test job.
+    const CONFIG: &str = r#"
+[assay]
+digest = "sha256:dc7c1d8e3ccab68cfdb828ce40a446c3913f7172f899ffe3f439839cfd917a8b"
+protected_bases = ["main"]
+
+[[plugin]]
+name = "unit"
+adapter = "exec"
+exec = ["./scripts/test.sh"]
+job = "test"
+required = true
+"#;
+
+    /// Keeps each ended gate's plugin, outcome and exit.
+    #[derive(Default)]
+    struct Ended(Vec<(String, GateOutcome, Option<i32>)>);
+
+    impl GateObserver for Ended {
+        type Error = Infallible;
+
+        fn job(&self) -> GateJob {
+            GateJob::Build(BuildJob::Test)
+        }
+
+        fn started(&mut self, _plugin: &Plugin) -> Result<(), Infallible> {
+            Ok(())
+        }
+
+        fn ended(&mut self, report: &GateReport, exit: Option<i32>) -> Result<(), Infallible> {
+            // The fake keeps its own copy of the plugin's name.
+            let seen = (report.plugin.as_str().to_owned(), report.outcome, exit);
+            self.0.push(seen);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_required_gate_with_no_report_is_skipped_and_its_end_recorded()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config: PluginsConfig = CONFIG.parse()?;
+        let mut reports = Vec::new();
+        let mut observer = Ended::default();
+
+        let Ok(()) = account_and_record(&config, &mut reports, &mut observer);
+
+        assert_eq!(
+            observer.0,
+            [(
+                "unit".to_owned(),
+                GateOutcome::Error(GateError::Skipped),
+                None
+            )]
+        );
+        assert_eq!(reports.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_required_gate_that_reported_is_not_recorded_again()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config: PluginsConfig = CONFIG.parse()?;
+        let mut reports = Vec::new();
+        let mut first = Ended::default();
+        let Ok(()) = account_and_record(&config, &mut reports, &mut first);
+        let mut observer = Ended::default();
+
+        let Ok(()) = account_and_record(&config, &mut reports, &mut observer);
+
+        assert_eq!(observer.0, []);
+        assert_eq!(reports.len(), 1);
+        Ok(())
     }
 }

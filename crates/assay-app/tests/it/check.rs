@@ -796,7 +796,7 @@ fn ci_refuses_the_local_report_as_every_contract() -> Result<(), Box<dyn Error>>
     let value: Value = serde_json::from_slice(&json)?;
     assert_eq!(
         (&value["schema"], &value["advisory"]),
-        (&json!("assay.local-check/1"), &json!(true))
+        (&json!("assay.local-check/2"), &json!(true))
     );
     Ok(())
 }
