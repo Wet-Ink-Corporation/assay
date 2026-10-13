@@ -287,7 +287,7 @@ pub fn validate(
                     }
                 }
             }
-            Err(code) => run.reject(FindingRef::Document { document }, code),
+            Err(code) => run.reject_document(FindingRef::Document { document }, bytes, code),
         }
     }
     run.finish()

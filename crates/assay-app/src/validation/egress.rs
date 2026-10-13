@@ -9,17 +9,17 @@
 //! is the catch-all, so what is not provably the tree's own text is a hit (wi-b5affa).
 
 mod encoding;
+mod views;
 
 use std::collections::HashSet;
 use std::fmt;
 
 use assay_domain::Finding;
-use serde_json::Value;
 use thiserror::Error;
 
 use super::FindingRef;
 use super::screen;
-use crate::contract::parse_json_strict;
+use crate::config::CommitId;
 
 /// How many normalised characters of the token a window holds (03 §3: at least 12). A longer
 /// match holds a window of this length, so only this length is looked for.
@@ -45,6 +45,10 @@ pub enum EgressKind {
     /// A run of 20 or more alphanumeric (or invisible) characters found in neither the tree nor
     /// base `REVIEW.md`.
     UnexplainedRun,
+    /// A character drawn like an ASCII letter or digit from a block normalisation cannot read
+    /// back: mathematical alphanumerics, enclosed alphanumerics, superscripts and subscripts,
+    /// small capitals and modifier letters, and any non-ASCII numeric character.
+    Obfuscated,
     /// In an artifact: a token-shaped string the tree does not explain (a credential prefix, a
     /// private key header, an AWS access key id, or a long run mixing letters and digits that
     /// is not a hex digest).
@@ -72,6 +76,8 @@ pub enum FreeTextField {
     Rule,
     /// An interaction's `caller.evidence`, as the reviewer quoted it.
     CallerEvidence,
+    /// A whole document that failed its schema, scanned raw and decoded for the token (Z3).
+    RejectedDocument,
 }
 
 /// One finding the egress scan dropped: the first field it hit in, and what it found.
@@ -160,11 +166,12 @@ impl EgressToken {
         Ok(Self { windows })
     }
 
-    /// Whether normalised text holds one of the token's windows.
-    fn is_in(&self, normalised: &[u8]) -> bool {
-        normalised
-            .array_windows::<WINDOW>()
-            .any(|window| self.windows.contains(window))
+    /// Whether `text` holds one of the token's windows, normalised or read as per-byte hex.
+    fn is_in(&self, text: &str) -> bool {
+        [normalise(text), views::hex_view(text)].iter().any(|view| {
+            view.array_windows::<WINDOW>()
+                .any(|window| self.windows.contains(window))
+        })
     }
 }
 
@@ -214,6 +221,14 @@ impl<'t> KnownRuns<'t> {
         Ok(Self { runs })
     }
 
+    /// Adds the run's own base and head commits, which assay knows and the model did not
+    /// choose, so a permalink to them is explained. Equality is exact: a commit id is one run.
+    #[must_use]
+    pub fn with_commits(mut self, commits: impl IntoIterator<Item = &'t CommitId>) -> Self {
+        self.runs.extend(commits.into_iter().map(CommitId::as_str));
+        self
+    }
+
     fn explains(&self, run: &str) -> bool {
         self.runs.contains(run)
     }
@@ -245,23 +260,27 @@ impl<'t> EgressScan<'t> {
     }
 
     /// Scans an artifact before the review job uploads it (05 §5): its bytes as text and, if it
-    /// is JSON, every key and string decoded, so escapes cannot split a token. The run rule is
-    /// not applied: artifacts carry digests and keys that assay stamps itself.
+    /// is strict JSON, every key and string decoded; if not, its text with the escapes read back,
+    /// so escapes cannot split a token either way. An escape that cannot be read back is
+    /// `TokenShaped`, and a lookalike alphanumeric `Obfuscated`, as in a finding (wi-b5affa). The run rule is not applied: artifacts carry digests and keys
+    /// that assay stamps itself.
     ///
     /// Cost: linear in `artifact`, plus one parse.
     #[must_use]
     pub fn scan_artifact(&self, artifact: &[u8]) -> Option<EgressKind> {
-        let raw = String::from_utf8_lossy(artifact);
-        let parsed = parse_json_strict(artifact);
-        let decoded = match &parsed {
-            Ok(value) => json_strings(value),
-            // Not JSON: there are no strings to decode, and the raw text is scanned regardless.
-            Err(_) => Vec::new(),
-        };
-        [raw.as_ref()]
-            .into_iter()
-            .chain(decoded)
-            .find_map(|text| self.artifact_text(text))
+        views::scan_views(artifact, |text| self.artifact_text(text))
+            .unwrap_or(Some(EgressKind::TokenShaped))
+    }
+
+    /// Scans a document that failed its schema for the token alone (Z3 only: without the token
+    /// there is nothing to look for, and the document's stamped fields would trip the other
+    /// rules), raw and decoded as [`EgressScan::scan_artifact`] reads it.
+    pub(super) fn scan_rejected(&self, document: &[u8]) -> Option<EgressKind> {
+        let token = self.token?;
+        views::scan_views(document, |text| {
+            token.is_in(text).then_some(EgressKind::Token)
+        })
+        .unwrap_or(Some(EgressKind::TokenShaped))
     }
 
     /// The first field of `finding` the reviewer wrote that holds a hit, and what it holds.
@@ -272,6 +291,8 @@ impl<'t> EgressScan<'t> {
     fn scan_text(&self, text: &str) -> Option<EgressKind> {
         if self.holds_token(text) {
             Some(EgressKind::Token)
+        } else if text.chars().any(views::is_obfuscated) {
+            Some(EgressKind::Obfuscated)
         } else if long_runs(text).any(|run| !self.known.explains(run)) {
             Some(EgressKind::UnexplainedRun)
         } else {
@@ -282,6 +303,8 @@ impl<'t> EgressScan<'t> {
     fn artifact_text(&self, text: &str) -> Option<EgressKind> {
         if self.holds_token(text) {
             Some(EgressKind::Token)
+        } else if text.chars().any(views::is_obfuscated) {
+            Some(EgressKind::Obfuscated)
         } else if screen::token_shaped(text, |run| self.known.explains(run)) {
             Some(EgressKind::TokenShaped)
         } else {
@@ -290,8 +313,7 @@ impl<'t> EgressScan<'t> {
     }
 
     fn holds_token(&self, text: &str) -> bool {
-        self.token
-            .is_some_and(|token| token.is_in(&normalise(text)))
+        self.token.is_some_and(|token| token.is_in(text))
     }
 }
 
@@ -341,26 +363,6 @@ fn model_text(finding: &Finding) -> impl Iterator<Item = (FreeTextField, &str)> 
     ]
     .into_iter()
     .filter_map(|(field, text)| Some((field, text?)))
-}
-
-/// Every object key and string in `value`, walked with an explicit stack.
-fn json_strings(value: &Value) -> Vec<&str> {
-    let mut strings = Vec::new();
-    let mut pending = vec![value];
-    while let Some(value) = pending.pop() {
-        match value {
-            Value::String(text) => strings.push(text.as_str()),
-            Value::Array(items) => pending.extend(items),
-            Value::Object(fields) => {
-                for (key, field) in fields {
-                    strings.push(key.as_str());
-                    pending.push(field);
-                }
-            }
-            Value::Null | Value::Bool(_) | Value::Number(_) => {}
-        }
-    }
-    strings
 }
 
 #[cfg(test)]

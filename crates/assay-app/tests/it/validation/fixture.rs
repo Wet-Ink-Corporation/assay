@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use assay_app::{
-    Change, ContractSchemaError, ContractValidator, DiffPaths, EgressScan, EgressToken, FileDiff,
-    Hunk, Inputs, KnownRuns, KnownRunsError, LineSpan, SuppressRules, Validated, validate,
+    Change, CommitId, ContractSchemaError, ContractValidator, DiffPaths, EgressScan, EgressToken,
+    FileDiff, Hunk, Inputs, KnownRuns, KnownRunsError, LineSpan, SuppressRules, Validated,
+    validate,
 };
 use assay_domain::{Dismissal, Finding};
 use serde_json::{Value, json};
@@ -132,6 +133,8 @@ pub(crate) struct Run<'a> {
     pub(crate) token: Option<EgressToken>,
     /// Base `REVIEW.md`, whose long runs explain a finding's as the tree's do (03 §3).
     pub(crate) review_md: String,
+    /// The run's base and head commits, which explain themselves.
+    pub(crate) commits: Vec<CommitId>,
 }
 
 impl Default for Run<'_> {
@@ -143,6 +146,7 @@ impl Default for Run<'_> {
             gate_findings: Vec::new(),
             token: None,
             review_md: String::new(),
+            commits: Vec::new(),
         }
     }
 }
@@ -174,7 +178,7 @@ impl Run<'_> {
             .chain(self.change.base_files.values())
             .chain([&self.review_md])
             .map(String::as_bytes);
-        let known = KnownRuns::index(tree)?;
+        let known = KnownRuns::index(tree)?.with_commits(&self.commits);
         let egress = match &self.token {
             Some(token) => EgressScan::with_token(token, known),
             None => EgressScan::without_token(known),

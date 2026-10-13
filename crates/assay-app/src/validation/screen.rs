@@ -346,7 +346,7 @@ fn unconfuse(c: char) -> char {
         'ԝ' => 'w',
         'х' | 'χ' => 'x',
         'у' | 'ү' => 'y',
-        '\u{ff41}'..='\u{ff5a}' => u32::from(c)
+        '\u{ff10}'..='\u{ff19}' | '\u{ff41}'..='\u{ff5a}' => u32::from(c)
             .checked_sub(0xfee0)
             .and_then(char::from_u32)
             .unwrap_or(c),
