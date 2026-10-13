@@ -96,7 +96,7 @@ Jobs communicate through (a) job `outputs` for integrity data and small control 
 
 Six crates. Dependencies point inward: `domain ← app ← {forge, runner, gates} ← cli`. Domain depends on `serde`, `thiserror`, `sha2` only. assay **does not** link `weighin-core` or any temper code (P8).
 
-Plugin directory (`plugin/`): `commands/` (`/assay:check`, `/assay:replay`, `/assay:report`), `prompts/` (reviewer bundles, content-addressed, versioned), `hooks/` (pre-push helper). In CI, prompts are delivered with `--append-system-prompt-file` from the base checkout (not `--plugin-dir`). Following temper's own rule, the assay repo carries no root `CLAUDE.md` that duplicates `AGENTS.md`.
+Plugin directory (`plugin/`): `commands/` (`/assay:check`, `/assay:replay`, `/assay:report`), `prompts/` (reviewer bundles, content-addressed, versioned), `hooks/` (pre-push helper, and the assay mod `hooks/register.tsx`, an in-session view over `assay.status/1` and `assay.event/1`, ADR-25). In CI, prompts are delivered with `--append-system-prompt-file` from the base checkout (not `--plugin-dir`). Following temper's own rule, the assay repo carries no root `CLAUDE.md` that duplicates `AGENTS.md`.
 
 ## 3. Trust zones and job classes (P2, P3)
 
@@ -167,12 +167,13 @@ assay/
   AGENTS.md                    charter (temper template), decisions log
   Cargo.toml  rust-toolchain.toml  deny.toml
   crates/{assay-domain,assay-app,assay-forge,assay-runner,assay-gates,assay-cli}
-  plugin/                      Claude Code plugin (commands, prompts, hooks)
+  plugin/                      Claude Code plugin (commands, prompts, hooks) and the assay mod
+                               (hooks/register.tsx, types/, tests/; a view, not a gate, ADR-25)
   workflows/{assay.yml,assay-decide.yml}.tmpl   installed into consumer repos (all actions SHA-pinned)
   rubric/v1.toml
   schemas/                     JSON Schemas for every versioned contract
   corpus/{dev,test,inject}/    eval fixtures (labelled diffs, injection cases)
-  docs/architecture/  docs/review/  docs/decisions/
+  docs/architecture/  docs/review/  docs/decisions/  docs/design/
   .claude/temper*, .github/workflows/rust.yml   temper CI (dogfood)
 ```
 
