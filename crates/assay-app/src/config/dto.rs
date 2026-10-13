@@ -6,6 +6,7 @@ use serde::Deserialize;
 use super::assay::{
     InfraFailurePolicy, PrClass, Promotion, RunnerKind, default_block_on_infra_for,
 };
+use super::builtins::BuiltinsDto;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,6 +24,7 @@ pub(super) struct AssayDto {
     pub(super) digest: String,
     pub(super) warm_target: Option<String>,
     pub(super) claude_cli: Option<String>,
+    pub(super) claude_cli_builtins: Option<BuiltinsDto>,
     pub(super) runner: Option<RunnerKind>,
     #[serde(default)]
     pub(super) protected_bases: Vec<String>,

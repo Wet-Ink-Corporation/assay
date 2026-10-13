@@ -20,7 +20,7 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 38] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 39] = [
     (
         Contract::Findings,
         "reviewer-without-role",
@@ -93,6 +93,11 @@ const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 38] = [
         Contract::Event,
         "push-recorded-unknown-data-field",
         Rejection::Violation("/data", "additionalProperties"),
+    ),
+    (
+        Contract::Event,
+        "preflight-builtins-unknown-field",
+        Rejection::Violation("/data/builtins", "additionalProperties"),
     ),
     (
         Contract::Event,

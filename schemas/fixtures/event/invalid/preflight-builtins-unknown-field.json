@@ -1,0 +1,25 @@
+{
+  "schema": "assay.event/1",
+  "job": "review",
+  "idx": 4,
+  "ts": "2026-10-11T06:20:00Z",
+  "run_key": "run-42-1",
+  "run_uid": {
+    "repo_id": 840213377,
+    "run_id": 18342009871,
+    "run_attempt": 1
+  },
+  "stage": "S3",
+  "kind": "PreflightPassed",
+  "data": {
+    "auth_method": "oauth_token",
+    "cli_version": "2.1.296",
+    "init_clean": true,
+    "builtins": {
+      "plugins": [],
+      "skills": [],
+      "agents": [],
+      "mcp_servers": []
+    }
+  }
+}

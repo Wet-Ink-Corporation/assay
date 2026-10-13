@@ -71,8 +71,27 @@ pub struct Preflight {
     pub auth_method: String,
     /// The CLI version found.
     pub cli_version: String,
-    /// Whether the `system/init` message showed no MCP server, plugin, skill or agent.
+    /// Whether the `system/init` message was clean: no MCP server, the three read-only tools,
+    /// and only built-in plugins, skills and agents on the allowlist pinned next to the CLI
+    /// version (03 §8).
     pub init_clean: bool,
+    /// The plugins, skills and agents the `system/init` message listed, as observed; absent
+    /// when the message could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtins: Option<BuiltinSet>,
+}
+
+/// The plugins, skills and agents a Claude Code session loaded, by name, as its `system/init`
+/// message listed them (03 §8). On a clean session these are the CLI's built-ins.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuiltinSet {
+    /// Plugin (mod) names.
+    pub plugins: Vec<String>,
+    /// Skill names.
+    pub skills: Vec<String>,
+    /// Agent type names.
+    pub agents: Vec<String>,
 }
 
 /// The data of `GateStarted` and `GateFinished`; only `plugin` is required, the rest describes
