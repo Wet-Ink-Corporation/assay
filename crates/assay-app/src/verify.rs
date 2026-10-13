@@ -144,6 +144,10 @@ pub struct VerifyRequest<'a> {
 /// let validated = validate(&ContractValidator::new()?, &inputs, &[document]);
 /// let bundle = PromptBundle::new(BundleFiles {
 ///     system: "system".to_owned(),
+///     bugs: "bugs".to_owned(),
+///     security: "security".to_owned(),
+///     design: "design".to_owned(),
+///     meta: "meta".to_owned(),
 ///     combined: "combined".to_owned(),
 ///     combined_micro: "micro".to_owned(),
 ///     verifier: "verifier".to_owned(),

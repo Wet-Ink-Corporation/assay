@@ -88,6 +88,10 @@ fn verify_with(transcripts: &[&str]) -> Result<Verification<ReplayError>, Box<dy
     let findings = validated_major()?;
     let bundle = PromptBundle::new(BundleFiles {
         system: "SYSTEM".to_owned(),
+        bugs: "BUGS".to_owned(),
+        security: "SECURITY".to_owned(),
+        design: "DESIGN".to_owned(),
+        meta: "META".to_owned(),
         combined: "COMBINED".to_owned(),
         combined_micro: "MICRO".to_owned(),
         verifier: "VERIFIER".to_owned(),
