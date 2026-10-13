@@ -50,22 +50,46 @@ impl Scene {
 }
 
 /// What `assay doctor` printed and how it exited.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Outcome {
     code: Option<i32>,
     stdout: String,
     stderr: String,
 }
 
+/// The variable recording the token's expiry (#93).
+const EXPIRES_ON: &str = "ASSAY_TOKEN_EXPIRES_ON";
+
+/// `assay doctor` with no recorded expiry.
 fn doctor(args: &[&Path], token: Option<&str>) -> Result<Outcome, Box<dyn Error>> {
+    outcome(command(args, token))
+}
+
+/// `assay doctor` with `expires_on` as the recorded expiry.
+fn doctor_expiring(
+    args: &[&Path],
+    token: Option<&str>,
+    expires_on: &OsStr,
+) -> Result<Outcome, Box<dyn Error>> {
+    let mut command = command(args, token);
+    command.env(EXPIRES_ON, expires_on);
+    outcome(command)
+}
+
+fn command(args: &[&Path], token: Option<&str>) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_assay"));
     command
         .arg("doctor")
         .args(args)
-        .env_remove("CLAUDE_CODE_OAUTH_TOKEN");
+        .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
+        .env_remove(EXPIRES_ON);
     if let Some(token) = token {
         command.env("CLAUDE_CODE_OAUTH_TOKEN", token);
     }
+    command
+}
+
+fn outcome(mut command: Command) -> Result<Outcome, Box<dyn Error>> {
     let output = command.output()?;
     Ok(Outcome {
         code: output.status.code(),
@@ -339,6 +363,88 @@ fn an_error_names_every_cause_down_to_the_os() -> Result<(), Box<dyn Error>> {
         outcome.stderr,
         "assay: the canary could not be run: the claude CLI could not be started: \
          No such file or directory (os error 2)\n"
+    );
+    Ok(())
+}
+
+/// The lines of a run in which every session check passes.
+const CLEAN: &str = "ok clean-init\nok builtin-allowlist\nok mod-canary\nok agents-md-canary\n";
+
+/// The runbook every expiry line links.
+const RUNBOOK: &str =
+    "https://github.com/Wet-Ink-Corporation/assay/blob/main/docs/operations/token-rotation.md";
+
+#[test]
+fn a_distant_or_empty_expiry_adds_nothing_to_a_clean_run() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new("")?;
+    let args = [&*scene.path("plugins.toml"), &*scene.program()];
+    let clean = Outcome {
+        code: Some(0),
+        stdout: CLEAN.to_owned(),
+        stderr: String::new(),
+    };
+
+    let distant = doctor_expiring(&args, Some("t"), OsStr::new("9999-12-31"))?;
+    let empty = doctor_expiring(&args, Some("t"), OsStr::new(""))?;
+
+    assert_eq!((distant, empty), (clean.clone(), clean));
+    Ok(())
+}
+
+#[test]
+fn an_expired_token_fails_doctor_with_the_runbook_and_exits_1() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new("")?;
+
+    let outcome = doctor_expiring(
+        &[&scene.path("plugins.toml"), &scene.program()],
+        Some("t"),
+        OsStr::new("2000-01-01"),
+    )?;
+
+    let line = outcome
+        .stdout
+        .strip_prefix(CLEAN)
+        .ok_or("the session checks are reported first")?;
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (Some(1), ""));
+    assert!(
+        line.starts_with("FAIL token-expiry: the OAuth token expired on 2000-01-01, ")
+            && line.ends_with(&format!(" days ago; rotate it: {RUNBOOK}\n")),
+        "{line:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unreadable_expiry_is_refused_without_echoing_it() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new("")?;
+
+    let outcome = doctor_expiring(
+        &[&scene.path("plugins.toml"), &scene.program()],
+        Some("t"),
+        OsStr::new("sk-ant-oat01-pasted-here"),
+    )?;
+
+    assert_eq!(
+        outcome,
+        refused("ASSAY_TOKEN_EXPIRES_ON: the date is not written YYYY-MM-DD")
+    );
+    assert!(!scene.path("bin/argv").exists(), "the canary did not run");
+    Ok(())
+}
+
+#[test]
+fn an_expiry_that_is_not_unicode_is_refused() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new("")?;
+
+    let outcome = doctor_expiring(
+        &[&scene.path("plugins.toml"), &scene.program()],
+        Some("t"),
+        OsStr::from_bytes(b"2027-01-0\xff"),
+    )?;
+
+    assert_eq!(
+        outcome,
+        refused("ASSAY_TOKEN_EXPIRES_ON: the date is not written YYYY-MM-DD")
     );
     Ok(())
 }

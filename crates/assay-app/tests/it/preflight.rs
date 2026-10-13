@@ -12,7 +12,8 @@ use std::os::unix::ffi::OsStrExt;
 use assay_app::{
     AuthProof, BuiltinKind, CliProbe, CliStatus, Contract, ContractValidator, InitParts,
     InitReadError, InitUnclean, MAX_BUILTIN_NAME_BYTES, PreflightFailed, PreflightFailure,
-    SessionInit, StatusParts, StatusReadError, UNOBSERVED, is_provider_variable, preflight,
+    SessionInit, StatusParts, StatusReadError, TOKEN_ROTATION_RUNBOOK, UNOBSERVED,
+    is_provider_variable, preflight,
 };
 use assay_domain::{BuiltinSet, Deferral, Event, EventPayload, EventSchema, Preflight, RunUid};
 
@@ -526,5 +527,148 @@ fn both_preflight_events_satisfy_the_event_schema() -> Result<(), Box<dyn Error>
         let bytes = serde_json::to_vec(&event(payload)?)?;
         validator.read(Contract::Event, &bytes)?;
     }
+    Ok(())
+}
+
+#[test]
+fn the_runbook_the_link_names_covers_setup_token_and_the_environment_secret() {
+    let runbook = include_str!("../../../../docs/operations/token-rotation.md");
+
+    assert!(
+        TOKEN_ROTATION_RUNBOOK.ends_with("/docs/operations/token-rotation.md"),
+        "the link names the file read here: {TOKEN_ROTATION_RUNBOOK}"
+    );
+
+    for needle in [
+        "claude setup-token",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "assay-review",
+        "ASSAY_TOKEN_EXPIRES_ON",
+    ] {
+        assert!(runbook.contains(needle), "the runbook names {needle}");
+    }
+}
+
+#[test]
+fn a_session_that_is_not_logged_in_links_the_rotation_runbook() -> Result<(), Box<dyn Error>> {
+    let failed = failure_with(StatusParts {
+        logged_in: false,
+        auth_method: "none".to_owned(),
+        ..oauth_parts()
+    })?;
+
+    assert_eq!(
+        failed.reason().to_string(),
+        format!(
+            "the CLI is not logged in; rotate the OAuth token: \
+             {TOKEN_ROTATION_RUNBOOK}"
+        )
+    );
+    assert_eq!(failed.reason().runbook(), Some(TOKEN_ROTATION_RUNBOOK));
+    Ok(())
+}
+
+#[test]
+fn a_session_on_another_auth_method_links_the_rotation_runbook() -> Result<(), Box<dyn Error>> {
+    let failed = failure_with(StatusParts {
+        auth_method: "claude.ai".to_owned(),
+        ..oauth_parts()
+    })?;
+
+    assert_eq!(
+        failed.reason().to_string(),
+        format!(
+            "the CLI authenticates with \"claude.ai\", not oauth_token; \
+             rotate the OAuth token: {TOKEN_ROTATION_RUNBOOK}"
+        )
+    );
+    assert_eq!(failed.reason().runbook(), Some(TOKEN_ROTATION_RUNBOOK));
+    Ok(())
+}
+
+#[test]
+fn failures_that_rotation_does_not_fix_link_no_runbook() -> Result<(), Box<dyn Error>> {
+    let (version, _) = pinned()?;
+    let variable = preflight(["ANTHROPIC_API_KEY"], &probe(oauth_parts())?, &version)
+        .err()
+        .ok_or("a provider variable fails")?;
+    let provider = failure_with(StatusParts {
+        api_provider: "bedrock".to_owned(),
+        ..oauth_parts()
+    })?;
+    let version = failure_with(StatusParts {
+        version: "2.1.297".to_owned(),
+        ..oauth_parts()
+    })?;
+    let init = first_call_failure(Err(InitReadError::Repeated))?;
+
+    assert_eq!(
+        [
+            variable.reason().runbook(),
+            provider.reason().runbook(),
+            version.reason().runbook(),
+            init.reason().runbook(),
+        ],
+        [None; 4]
+    );
+    assert!(
+        !variable
+            .reason()
+            .to_string()
+            .contains(TOKEN_ROTATION_RUNBOOK),
+        "{variable}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_failed_preflight_leaves_its_reason_to_its_source() -> Result<(), Box<dyn Error>> {
+    let failed = failure_with(StatusParts {
+        logged_in: false,
+        ..oauth_parts()
+    })?;
+
+    let shown = failed.to_string();
+    let source = failed.source().map(ToString::to_string);
+
+    assert_eq!(
+        (shown.as_str(), source),
+        ("preflight failed", Some(failed.reason().to_string()))
+    );
+    Ok(())
+}
+
+#[test]
+fn a_failed_preflight_names_its_reason_as_its_source() -> Result<(), Box<dyn Error>> {
+    let failed = proof_with(&FakeProbe(Err(ProbeDown)))?
+        .err()
+        .ok_or("the probe failed")?;
+
+    let source = failed.source().map(ToString::to_string);
+    let cause = failed
+        .source()
+        .and_then(Error::source)
+        .map(ToString::to_string);
+
+    assert_eq!(
+        (source.as_deref(), cause.as_deref()),
+        (
+            Some("the CLI's version and auth status could not be read"),
+            Some("the CLI could not be started")
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unclean_first_init_is_the_llm_unavailable_policy() -> Result<(), Box<dyn Error>> {
+    let parts = InitParts {
+        mcp_servers: vec!["github".to_owned()],
+        ..observed()
+    };
+
+    let failed = first_call_failure(Ok(SessionInit::new(parts)?))?;
+
+    assert_eq!(failed.deferral(), Deferral::InfraLlmUnavailable);
     Ok(())
 }

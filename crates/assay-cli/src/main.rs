@@ -13,6 +13,7 @@ mod self_gate;
 use std::env;
 use std::io::{self, Write};
 use std::process::ExitCode;
+use std::time::SystemTime;
 
 use assay_domain::GateConclusion;
 
@@ -49,20 +50,23 @@ fn main() -> ExitCode {
     }
 }
 
-/// `assay doctor`: exit 0 when every check passes, 1 when one fails, 2 when they cannot run.
+/// `assay doctor`: exit 0 when every check passes, 1 when one fails or the token is past its
+/// recorded expiry, 2 when they cannot run.
 fn run_doctor(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let variables = doctor::DoctorVariables {
         token: env::var_os(doctor::OAUTH_TOKEN),
         path: env::var_os("PATH"),
+        expires_on: env::var_os(doctor::TOKEN_EXPIRES_ON),
+        now: SystemTime::now(),
     };
-    let report = match doctor::run(args, variables) {
-        Ok(report) => report,
+    let outcome = match doctor::run(args, variables) {
+        Ok(outcome) => outcome,
         Err(error) => return report(&error),
     };
-    if let Err(error) = doctor::write_report(&report, io::stdout().lock()) {
-        return self::report(&error);
+    if let Err(error) = doctor::write_report(&outcome, io::stdout().lock()) {
+        return report(&error);
     }
-    if report.passed() {
+    if outcome.passed() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

@@ -3,18 +3,24 @@
 //! drift between the observed built-ins and `claude_cli_builtins`, a loaded mod and a followed
 //! AGENTS.md/CLAUDE.md instruction.
 //!
+//! When `ASSAY_TOKEN_EXPIRES_ON` records the OAuth token's expiry (`YYYY-MM-DD`, 05 §5, #93),
+//! a last line warns from 30 days before it (`warn token-expiry`) and fails from the date on
+//! (`FAIL token-expiry`), linking the rotation runbook.
+//!
 //! The binary prints one line per check and exits 0 when all pass, 1 when any fails, and 2 when
-//! the checks could not be run (a usage error, an unreadable or unpinned config, no token, a CLI
-//! that could not be started).
+//! the checks could not be run (a usage error, an unreadable or unpinned config, no token, an
+//! unreadable expiry, a CLI that could not be started).
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt::{self, Write as _};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use assay_app::{
-    ArtifactNonce, ConfigError, DoctorError, DoctorReport, NonceSource, PluginsConfig, doctor,
+    ArtifactNonce, CalendarDate, CalendarDateError, ConfigError, DoctorError, DoctorReport,
+    ExpiryWarning, NonceSource, PluginsConfig, doctor, token_expiry_warning,
 };
 use assay_cli::ForgeSupervisor;
 use assay_forge::process::{GroupKiller, KillerError};
@@ -22,6 +28,10 @@ use assay_runner::{CanaryError, ClaudeCanary, EnvVarError, HeadlessEnv};
 
 /// The variable carrying the OAuth token, read by `main` (ARC-11).
 pub(crate) const OAUTH_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/// The variable recording the token's expiry, read by `main` (ARC-11). Not a secret: the
+/// `assay-review` environment holds it next to the token (`docs/operations/token-rotation.md`).
+pub(crate) const TOKEN_EXPIRES_ON: &str = "ASSAY_TOKEN_EXPIRES_ON";
 
 /// Largest `plugins.toml` read, in bytes: 1 MiB (H-13).
 const MAX_CONFIG_BYTES: u64 = 1 << 20;
@@ -38,6 +48,30 @@ pub(crate) struct DoctorVariables {
     pub(crate) token: Option<OsString>,
     /// `PATH`, passed on to the CLI when set.
     pub(crate) path: Option<OsString>,
+    /// `ASSAY_TOKEN_EXPIRES_ON`; unset or empty when no expiry is recorded.
+    pub(crate) expires_on: Option<OsString>,
+    /// The wall clock, read once by `main`.
+    pub(crate) now: SystemTime,
+}
+
+/// What `doctor` found: the session checks and the token's expiry.
+pub(crate) struct DoctorOutcome {
+    /// The session checks.
+    pub(crate) report: DoctorReport,
+    /// The expiry warning, when an expiry is recorded and near or past.
+    pub(crate) expiry: Option<ExpiryWarning>,
+}
+
+impl DoctorOutcome {
+    /// Whether every check passed and the token is not past its recorded expiry.
+    pub(crate) fn passed(&self) -> bool {
+        self.report.passed() && !expiry_fails(self.expiry.as_ref())
+    }
+}
+
+/// Whether the expiry judgement fails the run: only an expired token does; a near one warns.
+fn expiry_fails(expiry: Option<&ExpiryWarning>) -> bool {
+    expiry.is_some_and(ExpiryWarning::is_expired)
 }
 
 /// Why the checks could not be run.
@@ -51,6 +85,10 @@ pub(crate) enum DoctorCliError {
     Token,
     /// The token is not valid Unicode.
     TokenNotUnicode,
+    /// The recorded expiry is not a date; the value is not kept.
+    ExpiresOn(CalendarDateError),
+    /// The clock is outside the dates the expiry can be compared with.
+    Clock(CalendarDateError),
     /// The config could not be read.
     Read { path: PathBuf, source: io::Error },
     /// The config is over [`MAX_CONFIG_BYTES`].
@@ -84,6 +122,8 @@ impl fmt::Display for DoctorCliError {
             ),
             Self::Token => write!(f, "{OAUTH_TOKEN} is not set"),
             Self::TokenNotUnicode => write!(f, "{OAUTH_TOKEN} is not valid Unicode"),
+            Self::ExpiresOn(source) => write!(f, "{TOKEN_EXPIRES_ON}: {source}"),
+            Self::Clock(source) => write!(f, "the system clock: {source}"),
             Self::Read { path, source } => write!(f, "cannot read {}: {source}", path.display()),
             Self::TooLarge { path } => write!(
                 f,
@@ -118,11 +158,11 @@ fn write_chain(f: &mut fmt::Formatter<'_>, error: &dyn std::error::Error) -> fmt
 
 impl std::error::Error for DoctorCliError {}
 
-/// Reads the config and runs the checks against `program`.
+/// Reads the config and the recorded expiry, and runs the checks against `program`.
 pub(crate) fn run(
     mut args: impl Iterator<Item = OsString>,
     variables: DoctorVariables,
-) -> Result<DoctorReport, DoctorCliError> {
+) -> Result<DoctorOutcome, DoctorCliError> {
     let (Some(config), Some(program), None) = (args.next(), args.next(), args.next()) else {
         return Err(DoctorCliError::Usage);
     };
@@ -139,6 +179,7 @@ pub(crate) fn run(
             Err(_) => return Err(DoctorCliError::TokenNotUnicode),
         },
     };
+    let expiry = judge_expiry(variables.expires_on.as_deref(), variables.now)?;
     let config: PluginsConfig = read_config(Path::new(&config))?
         .parse()
         .map_err(DoctorCliError::Config)?;
@@ -150,19 +191,48 @@ pub(crate) fn run(
     }
     let supervisor = ForgeSupervisor::new(GroupKiller::system().map_err(DoctorCliError::Killer)?);
     let canary = ClaudeCanary::new(program, env, &supervisor);
-    doctor(&canary, &mut Urandom, pinned, &assay.claude_cli_builtins)
-        .map_err(DoctorCliError::Doctor)
+    let report = doctor(&canary, &mut Urandom, pinned, &assay.claude_cli_builtins)
+        .map_err(DoctorCliError::Doctor)?;
+    Ok(DoctorOutcome { report, expiry })
 }
 
-/// Writes one line per check: `ok <check>` or `FAIL <check>: <why>`.
-pub(crate) fn write_report(report: &DoctorReport, mut out: impl Write) -> io::Result<()> {
-    for result in report.results() {
+/// The warning for the recorded expiry `expires_on` on the day of `now`; `None` when no
+/// expiry is recorded (unset or empty) or it is more than 30 days away.
+fn judge_expiry(
+    expires_on: Option<&OsStr>,
+    now: SystemTime,
+) -> Result<Option<ExpiryWarning>, DoctorCliError> {
+    let Some(expires_on) = expires_on.filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    // A value that is not Unicode is no `YYYY-MM-DD` either.
+    let expires_on = expires_on
+        .to_str()
+        .ok_or(CalendarDateError::Shape)
+        .and_then(str::parse::<CalendarDate>)
+        .map_err(DoctorCliError::ExpiresOn)?;
+    let today = CalendarDate::from_system_time(now).map_err(DoctorCliError::Clock)?;
+    Ok(token_expiry_warning(expires_on, today))
+}
+
+/// Writes one line per check, `ok <check>` or `FAIL <check>: <why>`, then the expiry line.
+pub(crate) fn write_report(outcome: &DoctorOutcome, mut out: impl Write) -> io::Result<()> {
+    for result in outcome.report.results() {
         match &result.failure {
             None => writeln!(out, "ok {}", result.check)?,
             Some(failure) => writeln!(out, "FAIL {}: {failure}", result.check)?,
         }
     }
+    if let Some(warning) = &outcome.expiry {
+        write_expiry(warning, &mut out)?;
+    }
     out.flush()
+}
+
+/// `warn token-expiry: <why>` before the expiry, `FAIL token-expiry: <why>` from it on.
+fn write_expiry(warning: &ExpiryWarning, mut out: impl Write) -> io::Result<()> {
+    let level = if warning.is_expired() { "FAIL" } else { "warn" };
+    writeln!(out, "{level} token-expiry: {warning}")
 }
 
 /// `path` as text, read through a [`MAX_CONFIG_BYTES`] limit.
@@ -203,5 +273,89 @@ impl NonceSource for Urandom {
             write!(hex, "{byte:02x}").map_err(io::Error::other)?;
         }
         hex.parse().map_err(io::Error::other)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// 2026-10-13, 20,739 days after the epoch.
+    fn on_2026_10_13() -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_hours(20_739 * 24)
+    }
+
+    #[test]
+    fn an_expiry_a_day_out_is_a_warning() -> Result<(), Box<dyn std::error::Error>> {
+        let judged = judge_expiry(Some(OsStr::new("2026-10-14")), on_2026_10_13())?;
+
+        assert_eq!(
+            judged,
+            Some(ExpiryWarning::ExpiresSoon {
+                expires_on: "2026-10-14".parse()?,
+                days_left: 1,
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_clock_before_the_epoch_is_refused() {
+        let before = SystemTime::UNIX_EPOCH - Duration::from_secs(1);
+
+        let judged = judge_expiry(Some(OsStr::new("2026-10-14")), before);
+
+        assert!(
+            matches!(
+                judged,
+                Err(DoctorCliError::Clock(CalendarDateError::OutOfRange))
+            ),
+            "{judged:?}"
+        );
+    }
+
+    #[test]
+    fn only_an_expired_token_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        let soon = ExpiryWarning::ExpiresSoon {
+            expires_on: "2026-11-12".parse()?,
+            days_left: 30,
+        };
+        let expired = ExpiryWarning::Expired {
+            expires_on: "2026-10-13".parse()?,
+            days_ago: 0,
+        };
+
+        assert_eq!(
+            [
+                expiry_fails(None),
+                expiry_fails(Some(&soon)),
+                expiry_fails(Some(&expired))
+            ],
+            [false, false, true]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_token_near_its_expiry_is_a_warning_line() -> Result<(), Box<dyn std::error::Error>> {
+        let warning = ExpiryWarning::ExpiresSoon {
+            expires_on: "2026-11-12".parse()?,
+            days_left: 30,
+        };
+        let mut out = Vec::new();
+
+        write_expiry(&warning, &mut out)?;
+
+        assert_eq!(
+            String::from_utf8(out)?,
+            format!(
+                "warn token-expiry: the OAuth token expires on 2026-11-12, in 30 days; \
+                 rotate it: {}\n",
+                assay_app::TOKEN_ROTATION_RUNBOOK
+            )
+        );
+        Ok(())
     }
 }

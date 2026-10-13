@@ -42,6 +42,7 @@ mod status_refusals;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod support;
 mod tiering;
+mod token_expiry;
 mod validation;
 mod verify;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
