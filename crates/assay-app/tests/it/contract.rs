@@ -20,18 +20,29 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 47] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 49] = [
     (
         Contract::Status,
         "unknown-field",
         Rejection::Violation("", "additionalProperties"),
     ),
     (Contract::Status, "unknown-version", Rejection::Version(2)),
-    // `local` is reserved for the local-run events story (#126).
+    // `ci` or the reserved `local` (#126), nothing else.
     (
         Contract::Status,
-        "local-source",
-        Rejection::Violation("/source", "const"),
+        "unknown-source",
+        Rejection::Violation("/source", "enum"),
+    ),
+    // One Weigh-In state: the retired booleans cannot sit beside it.
+    (
+        Contract::Status,
+        "weigh-in-two-claims",
+        Rejection::Violation("/weigh_in", "additionalProperties"),
+    ),
+    (
+        Contract::Status,
+        "weigh-in-unknown-state",
+        Rejection::Violation("/weigh_in/state", "enum"),
     ),
     (
         Contract::Status,

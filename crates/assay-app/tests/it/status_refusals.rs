@@ -7,9 +7,9 @@ use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    BundleProblem, CheckStatus, CheckView, Detail, MAX_CHECK_RUNS, MAX_FINDINGS,
-    MAX_PRIOR_COMMENTS, MAX_REASONS, ObservedConclusion, PullSelector, ReviewCommentView,
-    StatusError, StatusReport, StatusStep, StatusUnreadable,
+    BundleProblem, CheckStatus, CheckView, Detail, FetchedAt, InvalidFetchedAt, MAX_BUNDLE_BYTES,
+    MAX_CHECK_RUNS, MAX_FINDINGS, MAX_PRIOR_COMMENTS, MAX_REASONS, ObservedConclusion,
+    PullSelector, ReviewCommentView, StatusError, StatusReport, StatusStep, StatusUnreadable,
 };
 use assay_domain::{GateConclusion, GateFinding, GateOutcome, GateReport, Rubric, Severity};
 use serde_json::Value;
@@ -30,13 +30,6 @@ fn refused(github: &FakeGitHub) -> Result<Outcome, Box<dyn Error>> {
 fn unreadable(outcome: &Outcome) -> Option<StatusUnreadable> {
     match outcome {
         Err(StatusError::Unreadable(what)) => Some(*what),
-        _ => None,
-    }
-}
-
-fn bundle_problem(outcome: Outcome) -> Option<String> {
-    match outcome {
-        Err(StatusError::Bundle(problem)) => Some(format!("{problem:?}")),
         _ => None,
     }
 }
@@ -79,10 +72,7 @@ fn a_branch_with_two_open_prs_is_refused() -> Result<(), Box<dyn Error>> {
         ..Ask::new()
     };
 
-    assert_matches!(
-        report(&github, &ask)?,
-        Err(StatusError::AmbiguousBranch { count: 2 })
-    );
+    assert_matches!(report(&github, &ask)?, Err(StatusError::AmbiguousBranch));
     Ok(())
 }
 
@@ -300,16 +290,30 @@ fn a_gate_check_from_another_app_is_ignored() -> Result<(), Box<dyn Error>> {
 #[test]
 fn a_bundle_the_store_cannot_give_is_refused() -> Result<(), Box<dyn Error>> {
     let cases = [
-        (Stored::Missing, "Missing"),
-        (Stored::Expired, "Expired"),
-        (Stored::TooLarge, "TooLarge"),
-        (Stored::Fails, "Fetch(FakeError)"),
+        Stored::Missing,
+        Stored::Expired,
+        Stored::TooLarge,
+        Stored::Fails,
+        Stored::Bytes(vec![b' '; MAX_BUNDLE_BYTES + 1]),
     ];
-    for (stored, expected) in cases {
+    for stored in cases {
         let mut github = success_world()?;
         github.bundle = stored;
 
-        assert_eq!(bundle_problem(refused(&github)?).as_deref(), Some(expected));
+        let outcome = refused(&github)?;
+
+        let expected = match &github.bundle {
+            Stored::Missing => matches!(outcome, Err(StatusError::Bundle(BundleProblem::Missing))),
+            Stored::Expired => matches!(outcome, Err(StatusError::Bundle(BundleProblem::Expired))),
+            Stored::TooLarge | Stored::Bytes(_) => {
+                matches!(outcome, Err(StatusError::Bundle(BundleProblem::TooLarge)))
+            }
+            Stored::Fails => matches!(
+                outcome,
+                Err(StatusError::Bundle(BundleProblem::Fetch(FakeError)))
+            ),
+        };
+        assert!(expected, "{:?} gave {outcome:?}", github.bundle);
     }
     Ok(())
 }
@@ -331,7 +335,7 @@ fn a_bundle_is_fetched_once_for_the_pointers_run_under_its_cap() -> Result<(), B
             file.as_str(),
             *limit
         ),
-        (7, 1, assay_app::BUNDLE_FILE, assay_app::MAX_BUNDLE_BYTES)
+        (7, 1, assay_app::BUNDLE_FILE, MAX_BUNDLE_BYTES)
     );
     Ok(())
 }
@@ -344,7 +348,10 @@ fn a_bundle_that_does_not_hash_to_the_pointer_is_refused() -> Result<(), Box<dyn
     };
     bytes.push(b' ');
 
-    assert_eq!(bundle_problem(refused(&github)?).as_deref(), Some("Digest"));
+    assert_matches!(
+        refused(&github)?,
+        Err(StatusError::Bundle(BundleProblem::Digest))
+    );
     Ok(())
 }
 
@@ -360,7 +367,10 @@ fn a_pointer_to_a_rerun_is_refused_before_any_fetch() -> Result<(), Box<dyn Erro
 
     let outcome = refused(&github)?;
 
-    assert_eq!(bundle_problem(outcome).as_deref(), Some("NotFirstAttempt"));
+    assert_matches!(
+        outcome,
+        Err(StatusError::Bundle(BundleProblem::NotFirstAttempt))
+    );
     assert_eq!(github.fetches.borrow().len(), 0);
     Ok(())
 }
@@ -384,9 +394,9 @@ fn a_bundle_of_another_run_is_refused() -> Result<(), Box<dyn Error>> {
     bundle["run_uid"]["run_id"] = Value::from(8);
     github.repoint(serde_json::to_vec(&bundle)?);
 
-    assert_eq!(
-        bundle_problem(refused(&github)?).as_deref(),
-        Some("Inconsistent")
+    assert_matches!(
+        refused(&github)?,
+        Err(StatusError::Bundle(BundleProblem::Inconsistent))
     );
     Ok(())
 }
@@ -399,9 +409,23 @@ fn a_bundle_whose_decision_is_not_the_checks_is_refused() -> Result<(), Box<dyn 
         Value::from("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
     github.repoint(serde_json::to_vec(&bundle)?);
 
-    assert_eq!(
-        bundle_problem(refused(&github)?).as_deref(),
-        Some("Decision")
+    assert_matches!(
+        refused(&github)?,
+        Err(StatusError::Bundle(BundleProblem::Decision))
+    );
+    Ok(())
+}
+
+#[test]
+fn a_bundle_whose_decision_is_not_a_decision_is_refused() -> Result<(), Box<dyn Error>> {
+    let mut github = success_world()?;
+    let mut bundle = github.bundle_value();
+    bundle["decision"] = Value::from("not a decision");
+    github.repoint(serde_json::to_vec(&bundle)?);
+
+    assert_matches!(
+        refused(&github)?,
+        Err(StatusError::Bundle(BundleProblem::Decision))
     );
     Ok(())
 }
@@ -414,7 +438,10 @@ fn a_bundle_decided_under_another_rubric_version_is_refused() -> Result<(), Box<
 
     let outcome = report_with(&success_world()?, &Ask::new(), &rubric)?;
 
-    assert_eq!(bundle_problem(outcome).as_deref(), Some("RubricVersion"));
+    assert_matches!(
+        outcome,
+        Err(StatusError::Bundle(BundleProblem::RubricVersion))
+    );
     Ok(())
 }
 
@@ -440,10 +467,48 @@ fn a_viewer_login_that_is_not_a_github_login_is_refused() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn a_fetched_at_that_is_not_rfc_3339_fails_the_schema() -> Result<(), Box<dyn Error>> {
-    let outcome = crate::status::report_fetched_at(&FakeGitHub::new(), "yesterday")?;
+fn a_fetched_at_that_is_not_a_utc_rfc_3339_time_is_refused_before_any_read() {
+    let refused = [
+        "",
+        "yesterday",
+        "2026-10-13",
+        "2026-10-13T09:30:00",
+        "2026-10-13T09:30:00+02:00",
+        "2026-10-13t09:30:00z",
+        "2026-10-13 09:30:00Z",
+        "2026-13-13T09:30:00Z",
+        "2026-00-13T09:30:00Z",
+        "2026-02-29T09:30:00Z",
+        "2026-04-31T09:30:00Z",
+        "2026-10-00T09:30:00Z",
+        "2026-10-13T24:00:00Z",
+        "2026-10-13T09:60:00Z",
+        "2026-10-13T09:30:60Z",
+        "2026-10-13T09:30:00.Z",
+        "2026-10-13T09:30:00.1234567890Z",
+        "+2026-10-13T09:30:00Z",
+        "２026-10-13T09:30:00Z",
+    ];
+    for text in refused {
+        assert_eq!(text.parse::<FetchedAt>(), Err(InvalidFetchedAt), "{text:?}");
+    }
+}
 
-    assert_matches!(outcome, Err(StatusError::Invalid(_)));
+#[test]
+fn a_utc_rfc_3339_fetched_at_is_kept_as_written() -> Result<(), Box<dyn Error>> {
+    for text in [
+        "2026-10-13T09:30:00Z",
+        "2028-02-29T23:59:59Z",
+        "2000-02-29T00:00:00Z",
+        "2026-10-13T09:30:00.5Z",
+        "2026-10-13T09:30:00.123456789Z",
+    ] {
+        assert_eq!(text.parse::<FetchedAt>()?.as_str(), text);
+    }
+    assert_eq!(
+        "2100-02-29T00:00:00Z".parse::<FetchedAt>(),
+        Err(InvalidFetchedAt)
+    );
     Ok(())
 }
 
@@ -531,7 +596,62 @@ fn a_published_body_over_its_cap_is_left_out() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+fn a_published_body_of_exactly_its_cap_is_kept() -> Result<(), Box<dyn Error>> {
+    let mut github = failure_world()?;
+    let at_cap = COMMENT.replace("The retry path records the event again\\.", "");
+    let fill = 16_384 - published_rest(&at_cap)?.chars().count();
+    let long = at_cap.replace(
+        "**Event recorded twice**\n\n",
+        &format!("**Event recorded twice**\n\n{}", "x".repeat(fill)),
+    );
+    github.comments = Vec::new();
+    let github = github.with_comment(&long, ("src/lib.rs", 12), 501);
+    let ask = Ask {
+        detail: Detail::Full,
+        ..Ask::new()
+    };
+
+    let status = document(&github, &ask)?;
+
+    let body = status
+        .pointer("/findings/2/body")
+        .and_then(Value::as_str)
+        .ok_or("the body at its cap is kept")?;
+    assert_eq!(body.chars().count(), 16_384);
+    Ok(())
+}
+
+/// What follows a published comment's title paragraph: the part `--full` shows.
+fn published_rest(comment: &str) -> Result<&str, Box<dyn Error>> {
+    Ok(comment
+        .split_once("**Event recorded twice**\n\n")
+        .ok_or("a titled comment")?
+        .1)
+}
+
 // --- caps (H-13), each at the cap and one past it ---
+
+#[test]
+fn every_list_is_read_under_one_more_than_its_cap() -> Result<(), Box<dyn Error>> {
+    let github = failure_world()?;
+    let ask = Ask {
+        pull: PullSelector::Branch(crate::status_fakes::BRANCH),
+        ..Ask::new()
+    };
+
+    report(&github, &ask)??;
+
+    assert_eq!(
+        *github.limits.borrow(),
+        [
+            (StatusStep::OpenPulls, 2),
+            (StatusStep::CheckRuns, MAX_CHECK_RUNS + 1),
+            (StatusStep::ReviewComments, MAX_PRIOR_COMMENTS + 1),
+        ]
+    );
+    Ok(())
+}
 
 fn filler_check(index: usize) -> CheckView {
     CheckView {
@@ -641,6 +761,35 @@ fn reasons_at_the_cap_are_listed_and_one_more_is_refused() -> Result<(), Box<dyn
     );
 
     let outcome = refused(&gates_world(&vec![0; MAX_REASONS + 1])?)?;
+
+    assert_matches!(
+        outcome,
+        Err(StatusError::TooManyReasons { count }) if count == MAX_REASONS + 1
+    );
+    Ok(())
+}
+
+#[test]
+fn degraded_roles_at_the_cap_are_listed_and_one_more_is_refused() -> Result<(), Box<dyn Error>> {
+    let degraded = |count: usize| -> Result<FakeGitHub, Box<dyn Error>> {
+        let mut github = success_world()?;
+        let mut bundle = github.bundle_value();
+        bundle["decision"]["degraded"] = (0..count)
+            .map(|index| serde_json::json!({ "role": format!("role-{index}"), "reason": "cap" }))
+            .collect();
+        github.repoint(serde_json::to_vec(&bundle)?);
+        Ok(github)
+    };
+    let status = document(&degraded(MAX_REASONS)?, &Ask::new())?;
+    assert_eq!(
+        status
+            .pointer("/decision/degraded")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(MAX_REASONS)
+    );
+
+    let outcome = refused(&degraded(MAX_REASONS + 1)?)?;
 
     assert_matches!(
         outcome,

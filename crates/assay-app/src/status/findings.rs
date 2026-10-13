@@ -137,7 +137,11 @@ fn comments<F: StatusForge, B>(
     pull: &PullView,
 ) -> Result<BTreeMap<Fingerprint, Published>, StatusError<F::Error, B>> {
     let views = forge
-        .review_comments(pull.number, request.app)
+        .review_comments(
+            pull.number,
+            request.app,
+            MAX_PRIOR_COMMENTS.saturating_add(1),
+        )
         .map_err(|source| StatusError::Forge {
             step: StatusStep::ReviewComments,
             source,

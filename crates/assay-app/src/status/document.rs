@@ -10,7 +10,7 @@ use super::ports::{ObservedConclusion, PullView, Viewer};
 use super::verdict::{Check, Observed};
 use super::{MAX_REASONS, StatusError, StatusRequest, StatusUnreadable};
 use crate::CommitId;
-use crate::publish::{CheckStatus, clean};
+use crate::publish::{CheckStatus, clean, is_hidden};
 
 /// The longest GitHub login, before a `[bot]` suffix.
 const MAX_LOGIN_BYTES: usize = 39;
@@ -93,10 +93,11 @@ struct FindingEntry {
     body: Option<String>,
 }
 
+/// What the required Weigh-In gate reported, as the domain's code: `clear`, `open-blocking`,
+/// `pending-triage` or `no-evidence` (one state, so no two can be claimed at once).
 #[derive(Debug, Serialize)]
 struct WeighInEntry {
-    blocking: bool,
-    pending_triage: bool,
+    state: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -164,7 +165,7 @@ impl<'a> Document<'a> {
             findings: findings.into_iter().map(finding_entry).collect(),
             weigh_in,
             viewer: viewer_entry(request, viewer).map_err(StatusError::Unreadable)?,
-            fetched_at: request.fetched_at,
+            fetched_at: request.fetched_at.as_str(),
         })
     }
 
@@ -199,13 +200,14 @@ impl<'a> Document<'a> {
             )
         }));
         lines.push(heading("Findings", self.findings.is_empty()));
-        lines.extend(self.findings.iter().map(finding_line));
+        for finding in &self.findings {
+            lines.push(finding_line(finding));
+            if let Some(body) = &finding.body {
+                body_lines(&mut lines, body);
+            }
+        }
         if let Some(weigh_in) = &self.weigh_in {
-            lines.push(format!(
-                "Weigh-In: blocking {}, pending triage {}",
-                yes_no(weigh_in.blocking),
-                yes_no(weigh_in.pending_triage)
-            ));
+            lines.push(format!("Weigh-In: {}", weigh_in.state));
         }
         let role = match (self.viewer.is_owner, self.viewer.is_agent) {
             (true, _) => "owner",
@@ -285,8 +287,22 @@ fn finding_line(finding: &FindingEntry) -> String {
     parts.join(" ")
 }
 
-fn yes_no(flag: bool) -> &'static str {
-    if flag { "yes" } else { "no" }
+/// A `--full` body under its finding, each line indented six spaces with every control and
+/// format character (escape sequences and carriage returns included) shown as U+FFFD, so the
+/// published text cannot drive the terminal; a blank line stays blank. Not cut: the body is
+/// already capped at `MAX_BODY_CHARS`.
+fn body_lines(lines: &mut Vec<String>, body: &str) {
+    lines.extend(body.split('\n').map(|line| {
+        if line.is_empty() {
+            String::new()
+        } else {
+            let shown: String = line
+                .chars()
+                .map(|c| if is_hidden(c) { '\u{fffd}' } else { c })
+                .collect();
+            ["      ", &shown].concat()
+        }
+    }));
 }
 
 fn check_entry(check: Check) -> CheckEntry {
@@ -337,13 +353,13 @@ fn decision<E, B>(decision: &Decision) -> Result<DecisionEntry, StatusError<E, B
     })
 }
 
+/// The Weigh-In entry: none when the gate is not required, else its state by the domain's code.
 fn weigh_in(weigh_in: WeighIn) -> Option<WeighInEntry> {
     match weigh_in {
         WeighIn::NotRequired => None,
         WeighIn::Clear | WeighIn::OpenBlocking | WeighIn::PendingTriage | WeighIn::NoEvidence => {
             Some(WeighInEntry {
-                blocking: weigh_in == WeighIn::OpenBlocking,
-                pending_triage: weigh_in == WeighIn::PendingTriage,
+                state: weigh_in.code(),
             })
         }
     }

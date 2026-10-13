@@ -12,6 +12,7 @@
 //! not have exactly the shape assay or GitHub writes is refused (wi-b5affa).
 
 mod document;
+mod fetched_at;
 mod findings;
 mod ports;
 mod verdict;
@@ -22,6 +23,7 @@ use std::num::NonZeroU64;
 use assay_domain::Rubric;
 use thiserror::Error;
 
+pub use self::fetched_at::{FetchedAt, InvalidFetchedAt};
 pub use self::ports::{
     AppId, CheckView, ObservedConclusion, PullView, ReviewCommentView, StatusForge, UserId, Viewer,
 };
@@ -40,6 +42,9 @@ pub const MAX_FINDINGS: usize = 4096;
 
 /// The most reasons, and the most degraded roles, one status lists; more are refused (H-13).
 pub const MAX_REASONS: usize = 1024;
+
+/// How many open PRs of a branch are read: one more than the one accepted.
+const OPEN_PULLS_READ: usize = 2;
 
 /// The longest head branch name accepted, in bytes (the schema's cap).
 const MAX_BRANCH_BYTES: usize = 255;
@@ -100,8 +105,8 @@ pub struct StatusRequest<'a> {
     pub rubric: &'a Rubric,
     /// The base P10 identity lists.
     pub identities: &'a Identities,
-    /// When the state was read, RFC 3339 (`2026-10-13T09:30:00Z`).
-    pub fetched_at: &'a str,
+    /// When the state was read.
+    pub fetched_at: &'a FetchedAt,
 }
 
 /// The ports `status` reads through, borrowed for one call.
@@ -256,12 +261,9 @@ pub enum StatusError<F, B> {
     /// No open PR has the branch as its head.
     #[error("no open PR has the branch as its head; name one with --pr")]
     NoOpenPull,
-    /// Several open PRs have the branch as their head.
-    #[error("{count} open PRs have the branch as their head; name one with --pr")]
-    AmbiguousBranch {
-        /// How many.
-        count: usize,
-    },
+    /// Several open PRs have the branch as their head (the list is read only to the second).
+    #[error("more than one open PR has the branch as its head; name one with --pr")]
+    AmbiguousBranch,
     /// GitHub returned something that does not read.
     #[error("GitHub returned a {} that does not read", .0.describe())]
     Unreadable(StatusUnreadable),
@@ -307,8 +309,8 @@ pub enum StatusError<F, B> {
     /// The document could not be encoded: a defect in this crate.
     #[error("could not encode the status")]
     Encode(#[source] serde_json::Error),
-    /// The document does not satisfy `status-1.schema.json`: a defect in this crate, or a
-    /// `fetched_at` that is not RFC 3339.
+    /// The document does not satisfy `status-1.schema.json`: a defect in this crate (every
+    /// input it copies is parsed first, [`FetchedAt`] included).
     #[error("the status does not satisfy its schema")]
     Invalid(#[source] ReadContractError),
 }
@@ -399,7 +401,7 @@ fn pull<F: StatusForge, B>(
             .ok_or(StatusError::NoSuchPull { number })?,
         PullSelector::Branch(branch) => {
             let mut open = forge
-                .open_pulls(branch)
+                .open_pulls(branch, OPEN_PULLS_READ)
                 .map_err(|source| StatusError::Forge {
                     step: StatusStep::OpenPulls,
                     source,
@@ -407,7 +409,7 @@ fn pull<F: StatusForge, B>(
             match open.len() {
                 0 => return Err(StatusError::NoOpenPull),
                 1 => open.pop().ok_or(StatusError::NoOpenPull)?,
-                count => return Err(StatusError::AmbiguousBranch { count }),
+                _ => return Err(StatusError::AmbiguousBranch),
             }
         }
     };

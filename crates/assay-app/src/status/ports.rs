@@ -19,24 +19,28 @@ pub trait StatusForge {
     /// [`Self::Error`] when the PR cannot be read.
     fn pull(&self, number: NonZeroU64) -> Result<Option<PullView>, Self::Error>;
 
-    /// The open PRs of the repository whose head is `branch` of the repository itself.
+    /// The open PRs of the repository whose head is `branch` of the repository itself, at
+    /// most `limit` of them: the adapter stops paging once it has `limit`. `status` passes one
+    /// more than it accepts, so a list cut at `limit` is refused, never read as complete.
     ///
     /// # Errors
     ///
     /// [`Self::Error`] when the PRs cannot be listed.
-    fn open_pulls(&self, branch: &str) -> Result<Vec<PullView>, Self::Error>;
+    fn open_pulls(&self, branch: &str, limit: usize) -> Result<Vec<PullView>, Self::Error>;
 
-    /// Every check run on `head`, of any app, across all pages, each with the id of the app
-    /// that created it. `status` keeps only the configured App's.
+    /// The check runs on `head`, of any app, across pages up to `limit` of them, each with the
+    /// id of the app that created it. `status` keeps only the configured App's, and passes one
+    /// more than its cap so that a cut list is refused.
     ///
     /// # Errors
     ///
     /// [`Self::Error`] when the check runs cannot be listed.
-    fn check_runs(&self, head: &CommitId) -> Result<Vec<CheckView>, Self::Error>;
+    fn check_runs(&self, head: &CommitId, limit: usize) -> Result<Vec<CheckView>, Self::Error>;
 
-    /// The review comments on PR `number` authored by App `app`, across all pages. A comment by
-    /// anyone else is never returned; `status` checks each one's [`ReviewCommentView::app`]
-    /// again.
+    /// The review comments on PR `number` authored by App `app`, across pages up to `limit` of
+    /// them. A comment by anyone else is never returned; `status` checks each one's
+    /// [`ReviewCommentView::app`] again, and passes one more than its cap so that a cut list is
+    /// refused.
     ///
     /// # Errors
     ///
@@ -45,6 +49,7 @@ pub trait StatusForge {
         &self,
         number: NonZeroU64,
         app: AppId,
+        limit: usize,
     ) -> Result<Vec<ReviewCommentView>, Self::Error>;
 
     /// The authenticated `gh` user running the command.

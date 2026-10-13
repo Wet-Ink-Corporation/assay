@@ -58,7 +58,7 @@ pub(super) fn observe<F: StatusForge, B: BundleSource>(
 ) -> Result<Observed, StatusError<F::Error, B::Error>> {
     let runs = ports
         .forge
-        .check_runs(&pull.head_sha)
+        .check_runs(&pull.head_sha, MAX_CHECK_RUNS.saturating_add(1))
         .map_err(|source| StatusError::Forge {
             step: StatusStep::CheckRuns,
             source,

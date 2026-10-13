@@ -54,6 +54,9 @@
       "waivable": false
     }
   ],
+  "weigh_in": {
+    "state": "clear"
+  },
   "viewer": {
     "login": "ryan-britton",
     "is_owner": true,

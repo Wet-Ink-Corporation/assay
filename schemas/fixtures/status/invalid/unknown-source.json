@@ -1,6 +1,6 @@
 {
   "schema": "assay.status/1",
-  "source": "local",
+  "source": "remote",
   "repo": "Wet-Ink-Corporation/assay",
   "pr": 42,
   "branch": "feature/status",

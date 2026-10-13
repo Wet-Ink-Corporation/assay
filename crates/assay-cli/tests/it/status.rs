@@ -9,9 +9,9 @@ use std::num::NonZeroU64;
 use std::process::Command;
 
 use assay_app::{
-    AppId, BundleSource, CheckView, CommitId, Contract, ContractValidator, Detail, Identities,
-    PullView, ReviewCommentView, StatusForge, StatusPorts, StatusRepository, StoredBundle, UserId,
-    Viewer,
+    AppId, BundleSource, CheckView, CommitId, Contract, ContractValidator, Detail, FetchedAt,
+    Identities, PullView, ReviewCommentView, StatusForge, StatusPorts, StatusRepository,
+    StoredBundle, UserId, Viewer,
 };
 use assay_cli::{Format, StatusArgs, StatusContext, StatusRunError, StatusUsage, run_status};
 use assay_domain::{Rubric, RunUid};
@@ -104,7 +104,7 @@ impl StatusForge for FakeGitHub {
         Ok((number == self.pull.number).then(|| self.pull.clone()))
     }
 
-    fn open_pulls(&self, branch: &str) -> Result<Vec<PullView>, FakeError> {
+    fn open_pulls(&self, branch: &str, _limit: usize) -> Result<Vec<PullView>, FakeError> {
         Ok(if branch == self.pull.head_ref {
             vec![self.pull.clone()]
         } else {
@@ -112,7 +112,7 @@ impl StatusForge for FakeGitHub {
         })
     }
 
-    fn check_runs(&self, _head: &CommitId) -> Result<Vec<CheckView>, FakeError> {
+    fn check_runs(&self, _head: &CommitId, _limit: usize) -> Result<Vec<CheckView>, FakeError> {
         Ok(Vec::new())
     }
 
@@ -120,6 +120,7 @@ impl StatusForge for FakeGitHub {
         &self,
         _number: NonZeroU64,
         _app: AppId,
+        _limit: usize,
     ) -> Result<Vec<ReviewCommentView>, FakeError> {
         Ok(Vec::new())
     }
@@ -176,6 +177,7 @@ fn run(words: &[&str], branch: &str, out: impl Write) -> Result<Outcome, Box<dyn
     };
     let local: CommitId = HEAD.parse()?;
     let validator = ContractValidator::new()?;
+    let fetched_at: FetchedAt = "2026-10-13T09:30:00Z".parse()?;
     let context = StatusContext {
         repository: &repository,
         app: AppId(NonZeroU64::new(424_242).ok_or("not zero")?),
@@ -183,7 +185,7 @@ fn run(words: &[&str], branch: &str, out: impl Write) -> Result<Outcome, Box<dyn
         local_head: Some(&local),
         rubric: &rubric,
         identities: &identities,
-        fetched_at: "2026-10-13T09:30:00Z",
+        fetched_at: &fetched_at,
         validator: &validator,
     };
     let github = FakeGitHub::new()?;

@@ -12,8 +12,8 @@
   "properties": {
     "schema": { "const": "assay.status/1" },
     "source": {
-      "description": "Where the state was read: `ci`, the published verdict. `local` is reserved for the local-run events story and is not accepted by this version.",
-      "const": "ci"
+      "description": "Where the state was read: `ci`, the published verdict. `local` is reserved for the local-run events story; `assay status` writes only `ci` until it lands.",
+      "enum": ["ci", "local"]
     },
     "repo": {
       "description": "The repository, `owner/name`.",
@@ -56,7 +56,7 @@
       ]
     },
     "decision": {
-      "description": "The decision the check's evidence pointer names (assay.decision/1, 03 §5), or null when the check carries none: no check, a run still in progress, or a decision whose bundle was not persisted.",
+      "description": "The decision the check's evidence pointer names (assay.decision/1, 03 §5). Null only when there is none to read: no App verdict check, a check carrying `open`'s `pending:<run>:<seq>` stamp (a run in progress), or a decided check whose run persisted no bundle. A completed `pending` verdict, such as a budget deferral, carries its decision.",
       "oneOf": [
         {
           "type": "object",
@@ -190,13 +190,12 @@
       }
     },
     "weigh_in": {
-      "description": "What the required Weigh-In gate reported; absent when it is not required.",
+      "description": "What the required Weigh-In gate reported, as the domain's code (03 §2.2, 04 §9): `clear` (nothing blocks), `open-blocking` (an open blocking item), `pending-triage` (items awaiting triage) or `no-evidence` (no evidence for the change; the decision fails on it). Absent when the gate is not required or there is no decision.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["blocking", "pending_triage"],
+      "required": ["state"],
       "properties": {
-        "blocking": { "type": "boolean" },
-        "pending_triage": { "type": "boolean" }
+        "state": { "enum": ["clear", "open-blocking", "pending-triage", "no-evidence"] }
       }
     },
     "aeu": {
@@ -218,7 +217,11 @@
         "is_agent": { "type": "boolean" }
       }
     },
-    "fetched_at": { "type": "string", "format": "date-time" }
+    "fetched_at": {
+      "description": "When the state was read: an RFC 3339 date-time; `assay status` writes UTC with a `Z`.",
+      "type": "string",
+      "format": "date-time"
+    }
   },
   "$defs": {
     "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },

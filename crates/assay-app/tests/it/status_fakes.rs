@@ -66,6 +66,9 @@ pub(crate) struct FakeGitHub {
     pub(crate) unfiltered: bool,
     /// Every bundle fetch: the run, the file and the limit.
     pub(crate) fetches: RefCell<Vec<(RunUid, String, usize)>>,
+    /// Every list read and the limit it was read under, in order. Each list is cut at its
+    /// limit, as an adapter that stops paging there would.
+    pub(crate) limits: RefCell<Vec<(StatusStep, usize)>>,
 }
 
 impl FakeGitHub {
@@ -84,6 +87,7 @@ impl FakeGitHub {
             failing: None,
             unfiltered: false,
             fetches: RefCell::new(Vec::new()),
+            limits: RefCell::new(Vec::new()),
         }
     }
 
@@ -163,6 +167,12 @@ impl FakeGitHub {
         self
     }
 
+    /// Records a list read under `limit`, failing it if it is the failing step.
+    fn read(&self, step: StatusStep, limit: usize) -> Result<(), FakeError> {
+        self.limits.borrow_mut().push((step, limit));
+        self.fail(step)
+    }
+
     fn fail(&self, step: StatusStep) -> Result<(), FakeError> {
         if self.failing == Some(step) {
             Err(FakeError)
@@ -202,32 +212,35 @@ impl StatusForge for FakeGitHub {
             .cloned())
     }
 
-    fn open_pulls(&self, branch: &str) -> Result<Vec<PullView>, FakeError> {
-        self.fail(StatusStep::OpenPulls)?;
+    fn open_pulls(&self, branch: &str, limit: usize) -> Result<Vec<PullView>, FakeError> {
+        self.read(StatusStep::OpenPulls, limit)?;
         Ok(self
             .pulls
             .iter()
             .filter(|pull| pull.head_ref == branch)
+            .take(limit)
             .cloned()
             .collect())
     }
 
-    fn check_runs(&self, head: &CommitId) -> Result<Vec<CheckView>, FakeError> {
-        self.fail(StatusStep::CheckRuns)?;
+    fn check_runs(&self, head: &CommitId, limit: usize) -> Result<Vec<CheckView>, FakeError> {
+        self.read(StatusStep::CheckRuns, limit)?;
         assert_eq!(head.as_str(), HEAD, "checks are read on the PR's head");
-        Ok(self.checks.clone())
+        Ok(self.checks.iter().take(limit).cloned().collect())
     }
 
     fn review_comments(
         &self,
         _number: NonZeroU64,
         app: AppId,
+        limit: usize,
     ) -> Result<Vec<ReviewCommentView>, FakeError> {
-        self.fail(StatusStep::ReviewComments)?;
+        self.read(StatusStep::ReviewComments, limit)?;
         Ok(self
             .comments
             .iter()
             .filter(|comment| self.unfiltered || comment.app == Some(app))
+            .take(limit)
             .cloned()
             .collect())
     }

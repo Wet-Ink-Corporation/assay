@@ -8,13 +8,13 @@ use std::fs;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    CommitId, ContractValidator, Detail, Identities, ObservedConclusion, PullSelector, StatusError,
-    StatusPorts, StatusReport, StatusRepository, StatusRequest, status,
+    CommitId, ContractValidator, Detail, FetchedAt, Identities, ObservedConclusion, PullSelector,
+    StatusError, StatusPorts, StatusReport, StatusRepository, StatusRequest, status,
 };
 use assay_domain::{
     Deferral, Disposition, FindingDisposition, GateConclusion, GateFinding, GateOutcome,
     GateReport, LlmStage, OwnerApproval, PrClass, ReviewedFinding, Rubric, Severity,
-    StepAttribution, VerifierVerdict,
+    StepAttribution, VerifierVerdict, WeighIn,
 };
 use serde_json::Value;
 
@@ -80,7 +80,7 @@ pub(crate) fn report_with(
     ask: &Ask,
     rubric: &Rubric,
 ) -> Result<Result<StatusReport, StatusError<FakeError, FakeError>>, Box<dyn Error>> {
-    report_as(github, ask, rubric, Place::new(REPO, FETCHED_AT))
+    report_as(github, ask, rubric, REPO)
 }
 
 /// [`report`] for a repository named `name`.
@@ -88,51 +88,21 @@ pub(crate) fn report_named(
     github: &FakeGitHub,
     name: &str,
 ) -> Result<Result<StatusReport, StatusError<FakeError, FakeError>>, Box<dyn Error>> {
-    report_as(
-        github,
-        &Ask::new(),
-        &rubric_v1()?,
-        Place::new(name, FETCHED_AT),
-    )
-}
-
-/// [`report`] read at `fetched_at`.
-pub(crate) fn report_fetched_at(
-    github: &FakeGitHub,
-    fetched_at: &str,
-) -> Result<Result<StatusReport, StatusError<FakeError, FakeError>>, Box<dyn Error>> {
-    report_as(
-        github,
-        &Ask::new(),
-        &rubric_v1()?,
-        Place::new(REPO, fetched_at),
-    )
-}
-
-/// The repository's name and the time the state is read at.
-#[derive(Clone, Copy)]
-struct Place<'a> {
-    name: &'a str,
-    fetched_at: &'a str,
-}
-
-impl<'a> Place<'a> {
-    const fn new(name: &'a str, fetched_at: &'a str) -> Self {
-        Self { name, fetched_at }
-    }
+    report_as(github, &Ask::new(), &rubric_v1()?, name)
 }
 
 fn report_as(
     github: &FakeGitHub,
     ask: &Ask,
     rubric: &Rubric,
-    place: Place<'_>,
+    name: &str,
 ) -> Result<Result<StatusReport, StatusError<FakeError, FakeError>>, Box<dyn Error>> {
     let repository = StatusRepository {
         id: NonZeroU64::new(840_213_377).ok_or("not zero")?,
-        name: place.name.to_owned(),
+        name: name.to_owned(),
         default_branch: "main".to_owned(),
     };
+    let fetched_at: FetchedAt = FETCHED_AT.parse()?;
     let identities = Identities {
         privileged: BTreeSet::from([user(OWNER)]),
         agents: BTreeSet::from([user(AGENT)]),
@@ -145,7 +115,7 @@ fn report_as(
         detail: ask.detail,
         rubric,
         identities: &identities,
-        fetched_at: place.fetched_at,
+        fetched_at: &fetched_at,
     };
     let ports = StatusPorts {
         forge: github,
@@ -195,9 +165,11 @@ fn reviewer_blocker() -> Result<ReviewedFinding, Box<dyn Error>> {
     })
 }
 
-/// The default run with one published reviewer blocker, decided `success` (advisory).
+/// The default run with one published reviewer blocker and a clear Weigh-In, decided `success`
+/// (the blocker is advisory).
 pub(crate) fn success_world() -> Result<FakeGitHub, Box<dyn Error>> {
     let mut run = Run::new()?;
+    run.inputs.weigh_in = WeighIn::Clear;
     run.inputs.findings = vec![reviewer_blocker()?];
     run.inputs.dispositions = vec![FindingDisposition {
         fp: fp("00000000000000ab")?,
@@ -485,5 +457,120 @@ fn the_text_states_the_same_facts() -> Result<(), Box<dyn Error>> {
              Fetched: {FETCHED_AT}\n"
         )
     );
+    Ok(())
+}
+
+// --- Weigh-In: one state per code, as the domain names it ---
+
+/// The status of the default run whose Weigh-In gate reported `weigh_in`.
+fn weigh_in_report(weigh_in: WeighIn) -> Result<StatusReport, Box<dyn Error>> {
+    let mut run = Run::new()?;
+    run.inputs.weigh_in = weigh_in;
+    let world = stamped()?;
+    run.publish(&world)?;
+    Ok(report(&FakeGitHub::published(&world), &Ask::new())??)
+}
+
+/// Asserts the document's `weigh_in.state` and the text's `Weigh-In:` line are `state`, and
+/// both absent for `None`.
+fn assert_weigh_in(weigh_in: WeighIn, state: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let report = weigh_in_report(weigh_in)?;
+    let status: Value = serde_json::from_slice(report.json())?;
+
+    assert_eq!(
+        status.get("weigh_in"),
+        state
+            .map(|state| serde_json::json!({ "state": state }))
+            .as_ref(),
+        "the document's weigh_in for {weigh_in:?}"
+    );
+    let text = report.text();
+    let line = text.lines().find(|line| line.starts_with("Weigh-In:"));
+    assert_eq!(
+        line,
+        state.map(|state| format!("Weigh-In: {state}")).as_deref(),
+        "the text's Weigh-In line for {weigh_in:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_clear_weigh_in_is_reported_clear() -> Result<(), Box<dyn Error>> {
+    assert_weigh_in(WeighIn::Clear, Some("clear"))
+}
+
+#[test]
+fn an_open_blocking_weigh_in_is_reported_open_blocking() -> Result<(), Box<dyn Error>> {
+    assert_weigh_in(WeighIn::OpenBlocking, Some("open-blocking"))
+}
+
+#[test]
+fn a_weigh_in_pending_triage_is_reported_pending_triage() -> Result<(), Box<dyn Error>> {
+    assert_weigh_in(WeighIn::PendingTriage, Some("pending-triage"))
+}
+
+#[test]
+fn a_weigh_in_without_evidence_is_reported_as_such_not_as_clear() -> Result<(), Box<dyn Error>> {
+    assert_weigh_in(WeighIn::NoEvidence, Some("no-evidence"))
+}
+
+#[test]
+fn a_weigh_in_that_is_not_required_is_absent() -> Result<(), Box<dyn Error>> {
+    assert_weigh_in(WeighIn::NotRequired, None)
+}
+
+// --- --full as text ---
+
+#[test]
+fn with_full_the_text_shows_each_published_body_indented_under_its_finding()
+-> Result<(), Box<dyn Error>> {
+    let ask = Ask {
+        detail: Detail::Full,
+        ..Ask::new()
+    };
+
+    let text = report(&failure_world()?, &ask)??.text().to_owned();
+
+    let expected = "\x20 00000000000000ab blocker logic src/lib.rs:12 Event recorded twice\n\
+         \x20     The retry path records the event again\\.\n\
+         \n\
+         \x20     ```rust\n\
+         \x20     record_event(id);\n\
+         \x20     ```\n\
+         \n\
+         \x20     React with 👍 if this finding is useful or 👎 if it is not. Fingerprint \
+         `00000000000000ab`; an eligible owner can dismiss it with \
+         `/assay dismiss 00000000000000ab <reason>`.\n\
+         Viewer: claude-agent (agent)\n";
+    assert!(text.contains(expected), "{text}");
+    Ok(())
+}
+
+#[test]
+fn without_full_the_text_shows_no_body() -> Result<(), Box<dyn Error>> {
+    let text = report(&failure_world()?, &Ask::new())??.text().to_owned();
+
+    assert!(!text.contains("record_event"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_body_shown_as_text_carries_no_control_character() -> Result<(), Box<dyn Error>> {
+    let mut github = failure_world()?;
+    let body = COMMENT.replace("record_event(id);", "record_event(\u{1b}[2J\r);");
+    github.comments = Vec::new();
+    let github = github.with_comment(&body, ("src/lib.rs", 12), 501);
+    let ask = Ask {
+        detail: Detail::Full,
+        ..Ask::new()
+    };
+
+    let text = report(&github, &ask)??.text().to_owned();
+
+    assert!(
+        text.contains("\n      record_event(\u{fffd}[2J\u{fffd});\n"),
+        "{text}"
+    );
+    assert!(!text.contains('\u{1b}') && !text.contains('\r'), "{text}");
     Ok(())
 }

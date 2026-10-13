@@ -6,7 +6,7 @@
 //! `None` for that part rather than a guess (wi-b5affa): a title holding a blank line splits its
 //! paragraph and is not read, and neither is the rest after it.
 
-use assay_domain::{Class, Fingerprint};
+use assay_domain::{Class, Confidence, FindingKind, Fingerprint, Marker, Severity};
 
 use super::posted_fingerprint;
 
@@ -32,10 +32,7 @@ pub(crate) fn read_published(body: &str) -> Option<PublishedComment<'_>> {
         Some((header, after)) => (header, Some(after)),
         None => (after_marker.unwrap_or(""), None),
     };
-    let class = header
-        .split(" · ")
-        .nth(1)
-        .and_then(|word| Class::ALL.into_iter().find(|class| class.code() == word));
+    let class = read_class(header);
     let titled = after_header.and_then(read_title);
     Some(PublishedComment {
         fp,
@@ -43,6 +40,39 @@ pub(crate) fn read_published(body: &str) -> Option<PublishedComment<'_>> {
         title: titled.map(|(title, _)| title),
         rest: titled.and_then(|(_, rest)| rest),
     })
+}
+
+/// The class a header names, when the whole header is exactly what [`super::body`] writes:
+/// `<marker> **<severity>** · <class> · <kind> · confidence <confidence|unstated>`, then
+/// ` · pre-existing` exactly when the marker is the pre-existing one, each word from its closed
+/// vocabulary. Any other header names no class.
+fn read_class(header: &str) -> Option<Class> {
+    let mut fields = header.split(" · ");
+    let (lead, class, kind, confidence) = (
+        fields.next()?,
+        fields.next()?,
+        fields.next()?,
+        fields.next()?,
+    );
+    let pre_existing = match (fields.next(), fields.next()) {
+        (None, _) => false,
+        (Some("pre-existing"), None) => true,
+        (Some(_), _) => return None,
+    };
+    let lead_written = Severity::ALL.into_iter().any(|severity| {
+        lead.strip_prefix(Marker::of(severity, pre_existing).as_str())
+            .and_then(|rest| rest.strip_prefix(" **"))
+            .and_then(|rest| rest.strip_suffix("**"))
+            == Some(severity.code())
+    });
+    let kind_written = FindingKind::ALL.iter().any(|known| known.code() == kind);
+    let confidence_written = confidence.strip_prefix("confidence ").is_some_and(|word| {
+        word == "unstated" || Confidence::ALL.iter().any(|known| known.code() == word)
+    });
+    if !(lead_written && kind_written && confidence_written) {
+        return None;
+    }
+    Class::ALL.into_iter().find(|known| known.code() == class)
 }
 
 /// The `**<title>**` paragraph after the header's blank line, and what follows it. Every `*` of
@@ -150,5 +180,52 @@ mod tests {
         .expect("a marker");
 
         assert_eq!((read.class, read.title, read.rest), (None, Some("T"), None));
+    }
+
+    /// A finding comment whose header line is `header` and whose title is `T`.
+    fn with_header(header: &str) -> String {
+        format!("<!-- assay-finding 00000000000000ab -->\n{header}\n\n**T**")
+    }
+
+    #[test]
+    fn every_header_publish_writes_names_its_class() {
+        for header in [
+            "🔴 **blocker** · logic · defect · confidence high",
+            "🟡 **major** · security · omission · confidence unstated",
+            "🟡 (nit) **minor** · logic · defect · confidence low",
+            "🟡 (nit) **nit** · logic · defect · confidence medium",
+            "🟣 **major** · logic · defect · confidence high · pre-existing",
+        ] {
+            let comment = with_header(header);
+            let read = read_published(&comment).expect("a marker");
+
+            assert!(read.class.is_some(), "{header}");
+        }
+    }
+
+    #[test]
+    fn a_header_off_the_written_shape_names_no_class() {
+        for header in [
+            "🟡 **severe** · logic · defect · confidence high",
+            "🔴 **major** · logic · defect · confidence high",
+            "🟡 **minor** · logic · defect · confidence high",
+            "🟡 **major** · logic · defect · confidence high · pre-existing",
+            "🟣 **major** · logic · defect · confidence high",
+            "🟡 **major** · logic · bug · confidence high",
+            "🟡 **major** · logic · defect · confidence certain",
+            "🟡 **major** · logic · defect · high",
+            "🟡 **major** · logic · defect",
+            "🟡 **major** · logic · defect · confidence high · extra",
+            "🟡 **major** · logic · defect · confidence high · pre-existing · pre-existing",
+            " 🟡 **major** · logic · defect · confidence high",
+            "🟡 **major** · logic · defect · confidence high ",
+            "🟡 **major** ·  logic · defect · confidence high",
+        ] {
+            let comment = with_header(header);
+            let read = read_published(&comment).expect("a marker");
+
+            assert_eq!(read.class, None, "{header}");
+            assert_eq!(read.title, Some("T"), "the title still reads: {header}");
+        }
     }
 }

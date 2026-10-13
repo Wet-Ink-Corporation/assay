@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::num::NonZeroU64;
 
 use assay_app::{
-    AppId, BundleSource, CommitId, ContractValidator, Detail, Identities, PullSelector,
+    AppId, BundleSource, CommitId, ContractValidator, Detail, FetchedAt, Identities, PullSelector,
     StatusFailure, StatusForge, StatusPorts, StatusRepository, StatusRequest, status,
 };
 use assay_domain::Rubric;
@@ -127,8 +127,8 @@ pub struct StatusContext<'a> {
     pub rubric: &'a Rubric,
     /// The base P10 identity lists.
     pub identities: &'a Identities,
-    /// When the state is read, RFC 3339.
-    pub fetched_at: &'a str,
+    /// When the state is read.
+    pub fetched_at: &'a FetchedAt,
     /// The validator the document is checked against before it is written.
     pub validator: &'a ContractValidator,
 }
