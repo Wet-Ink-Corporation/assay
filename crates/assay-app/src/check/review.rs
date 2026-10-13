@@ -5,7 +5,9 @@
 //! `full` by `combined`; a `full` PR's specialist roster is the review job's (#85), and the
 //! decision reports those roles missing.
 
-use assay_domain::{Aeu, CallFailure, Disposition, Finding, FindingsSchema, SourceKind, Tier};
+use assay_domain::{
+    Aeu, CallFailure, Disposition, Finding, FindingsSchema, RequiredRole, SourceKind, Tier,
+};
 use serde_json::{Map, Value, json};
 
 use super::ReviewSetup;
@@ -23,11 +25,40 @@ use crate::validation::{
 /// The reviewer name local mode stamps on its document.
 const REVIEWER: &str = "assay-local";
 
+/// A role local mode can run: its one call is a combined pass, so the `full` specialists
+/// (`bugs`, `security`, `design`, `meta`) cannot be named here, and their absence is what the
+/// decision reports as missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LocalRole {
+    /// `combined`, for `lite` and `full`.
+    Combined,
+    /// `combined-micro`, for `micro`.
+    CombinedMicro,
+}
+
+impl LocalRole {
+    /// The bundle's role: its instruction, limits and code.
+    pub(super) const fn bundle(self) -> Role {
+        match self {
+            Self::Combined => Role::Combined,
+            Self::CombinedMicro => Role::CombinedMicro,
+        }
+    }
+
+    /// The roster role a completed call reports as.
+    pub(super) const fn required(self) -> RequiredRole {
+        match self {
+            Self::Combined => RequiredRole::Combined,
+            Self::CombinedMicro => RequiredRole::CombinedMicro,
+        }
+    }
+}
+
 /// The role that reviews `tier`; `None` for a tier without an LLM stage.
-pub(super) const fn role(tier: Tier) -> Option<Role> {
+pub(super) const fn role(tier: Tier) -> Option<LocalRole> {
     match tier {
-        Tier::Micro => Some(Role::CombinedMicro),
-        Tier::Lite | Tier::Full => Some(Role::Combined),
+        Tier::Micro => Some(LocalRole::CombinedMicro),
+        Tier::Lite | Tier::Full => Some(LocalRole::Combined),
         Tier::Trivial | Tier::NeedsSplit => None,
     }
 }
@@ -114,22 +145,14 @@ impl<M: ModelRunner> Reviewer<'_, M> {
     /// [`serde_json::Error`] when the stamped document cannot be encoded.
     pub(super) fn review(
         &self,
-        role: Role,
+        local: LocalRole,
         pack: &str,
         inputs: &Inputs<'_>,
     ) -> Result<Reviewed, serde_json::Error> {
-        let Ok(user_prompt) = self.setup.bundle.user_prompt(role, pack) else {
+        let role = local.bundle();
+        let Some(call) = self.call(role, pack) else {
             let note = "the context pack is not a valid prompt".to_owned();
             return Ok(Reviewed::unavailable(note, Aeu::ZERO));
-        };
-        let call = ModelCall {
-            system_prompt_file: self.setup.system_prompt_file.to_path_buf(),
-            user_prompt,
-            json_schema: Contract::Findings.schema_text().to_owned(),
-            add_dir: self.setup.tree_dir.to_path_buf(),
-            max_turns: role.max_turns(),
-            budget: role.cap(),
-            timeout: self.setup.timeout,
         };
         let attempts = match run_with_retry(self.model, &call) {
             Ok(attempts) => attempts,
@@ -178,6 +201,20 @@ impl<M: ModelRunner> Reviewer<'_, M> {
             stage: Stage::Completed(validated.findings),
             note: refused.then(|| "the model's document failed the findings schema".to_owned()),
             cost,
+        })
+    }
+
+    /// The call that reviews `pack` as `role`; `None` when the pack is not a valid prompt.
+    fn call(&self, role: Role, pack: &str) -> Option<ModelCall> {
+        let user_prompt = self.setup.bundle.user_prompt(role, pack).ok()?;
+        Some(ModelCall {
+            system_prompt_file: self.setup.system_prompt_file.to_path_buf(),
+            user_prompt,
+            json_schema: Contract::Findings.schema_text().to_owned(),
+            add_dir: self.setup.tree_dir.to_path_buf(),
+            max_turns: role.max_turns(),
+            budget: role.cap(),
+            timeout: self.setup.timeout,
         })
     }
 

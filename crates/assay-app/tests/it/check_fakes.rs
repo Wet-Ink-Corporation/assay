@@ -71,6 +71,10 @@ pub(crate) fn dirty_tree() -> FakePr {
 pub(crate) fn bundle() -> Result<PromptBundle, Box<dyn Error>> {
     Ok(PromptBundle::new(BundleFiles {
         system: "SYSTEM".to_owned(),
+        bugs: "INSTRUCTION bugs".to_owned(),
+        security: "INSTRUCTION security".to_owned(),
+        design: "INSTRUCTION design".to_owned(),
+        meta: "INSTRUCTION meta".to_owned(),
         combined: "INSTRUCTION combined".to_owned(),
         combined_micro: "INSTRUCTION combined-micro".to_owned(),
         verifier: "INSTRUCTION verifier".to_owned(),

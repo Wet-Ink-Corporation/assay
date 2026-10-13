@@ -9,7 +9,7 @@ use assay_domain::{Aeu, Decision, Finding, Tier};
 use serde::{Serialize, Serializer};
 
 use super::gates::LocalGate;
-use super::review::{Reviewed, Stage};
+use super::review::{LocalRole, Reviewed, Stage};
 use crate::prompt_bundle::Role;
 use crate::publish::clean;
 
@@ -196,7 +196,7 @@ impl LocalReport {
 }
 
 /// The review part of the report and the decision, from how the review went.
-pub(super) fn review(reviewed: Option<(Role, Reviewed)>) -> LocalReview {
+pub(super) fn review(reviewed: Option<(LocalRole, Reviewed)>) -> LocalReview {
     let Some((role, reviewed)) = reviewed else {
         return LocalReview {
             status: ReviewStatus::NotRun,
@@ -216,7 +216,7 @@ pub(super) fn review(reviewed: Option<(Role, Reviewed)>) -> LocalReview {
     };
     LocalReview {
         status,
-        role: Some(role),
+        role: Some(role.bundle()),
         note: reviewed.note,
         findings,
         cost: reviewed.cost,

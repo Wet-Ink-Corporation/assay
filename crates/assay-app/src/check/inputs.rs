@@ -14,10 +14,9 @@ use assay_domain::{
     Severity, SupportOutcome, Tier, Tiering, WeighIn,
 };
 
-use super::review::{Reviewed, Stage};
+use super::review::{LocalRole, Reviewed, Stage};
 use crate::config::{Adapter, PluginsConfig};
 use crate::plan::EvidenceKey;
-use crate::prompt_bundle::Role;
 
 /// What the decision reads besides the gates and the review.
 #[derive(Debug)]
@@ -36,7 +35,7 @@ impl Facts<'_> {
     pub(super) fn inputs(
         self,
         gates: Vec<GateReport>,
-        reviewed: Option<&(Role, Reviewed)>,
+        reviewed: Option<&(LocalRole, Reviewed)>,
     ) -> DecisionInputs {
         let tier = self.tiering.tier;
         let review = Review::of(reviewed);
@@ -85,7 +84,7 @@ struct Review {
 }
 
 impl Review {
-    fn of(reviewed: Option<&(Role, Reviewed)>) -> Self {
+    fn of(reviewed: Option<&(LocalRole, Reviewed)>) -> Self {
         let none = Self {
             llm: LlmStage::NotRun {
                 reason: NotRunReason::NoLlmTier,
@@ -106,19 +105,19 @@ impl Review {
                         fp: valid.fingerprint,
                         // Each finding is its own group: no coordinator groups them locally.
                         group_id: valid.fingerprint.to_string(),
-                        role: role.code().to_owned(),
+                        role: role.bundle().code().to_owned(),
                         severity: valid.finding.severity,
                         pre_existing: valid.finding.pre_existing,
                         verdict: None,
                     })
                     .collect(),
-                completed: BTreeSet::from([required(*role)]),
+                completed: BTreeSet::from([role.required()]),
                 degraded: Vec::new(),
             },
             Stage::Degraded(failure) => Self {
                 llm: LlmStage::Completed,
                 degraded: vec![DegradedRole {
-                    role: role.code().to_owned(),
+                    role: role.bundle().code().to_owned(),
                     reason: failure.code().to_owned(),
                 }],
                 ..none
@@ -130,14 +129,6 @@ impl Review {
                 ..none
             },
         }
-    }
-}
-
-/// The roster role `role` reports as.
-const fn required(role: Role) -> RequiredRole {
-    match role {
-        Role::Combined => RequiredRole::Combined,
-        Role::CombinedMicro => RequiredRole::CombinedMicro,
     }
 }
 
