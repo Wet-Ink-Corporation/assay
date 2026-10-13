@@ -49,7 +49,7 @@ pub struct RoleReport<E> {
     pub outcome: RoleOutcome<E>,
     /// Model calls made for it: 0 when skipped, 2 when a malformed answer was retried.
     pub attempts: u8,
-    /// What its attempts cost: each one's reported cost, or its cap when the cost is unknown
+    /// What its attempts cost: each one's reported cost, or its budget when the cost is unknown
     /// (a runner error or a panic after the model may have started).
     pub cost: Aeu,
     /// The rate-limit events of its attempts, in order.
@@ -74,16 +74,16 @@ pub enum RoleOutcome<E> {
 /// Why a role that was called produced nothing usable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoleFailure<E> {
-    /// The call ended without output: its own cap, turns or wall-clock limit, quota
-    /// (`unavailable`), or malformed output after the one retry, or with no room left under the
-    /// run cap for that retry.
+    /// The call ended without output: its own budget, turns or wall-clock limit, quota
+    /// (`unavailable`), or malformed output, either after the one retry or when nothing was left
+    /// of the run cap for that retry, or when the stage paused before making it.
     Call(CallFailure),
-    /// The runner could not make or supervise the call; it is charged at its cap.
+    /// The runner could not make or supervise the call; it is charged at its budget.
     Runner(E),
     /// The OS refused the thread for the call; nothing ran and nothing is charged.
     Spawn(io::ErrorKind),
-    /// The runner panicked, a bug in the adapter; the call is charged at its cap and no further
-    /// call starts.
+    /// The runner panicked, a bug in the adapter; the call is charged at its budget and no
+    /// further call starts.
     Panicked,
 }
 

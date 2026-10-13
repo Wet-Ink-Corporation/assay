@@ -3,7 +3,7 @@
 use assay_domain::{Aeu, CallFailure, RateLimitStatus};
 use serde_json::{Value, json};
 
-use super::{Joined, Schedule, stamp};
+use super::{Joined, Schedule, Start, stamp};
 use crate::model_runner::{ModelOutcome, ModelResult, RateLimitObserved, Structured};
 use crate::prompt_bundle::Role;
 use crate::session_init::InitReadError;
@@ -20,6 +20,15 @@ fn result(outcome: ModelOutcome, micros: u64) -> Joined<Error> {
         rate_limits: Vec::new(),
         init: Err(InitReadError::Missing),
     }))
+}
+
+/// The start of `slot`'s call for `role` with the role's whole cap.
+const fn first(slot: usize, role: Role) -> Start {
+    Start {
+        slot,
+        role,
+        budget: role.cap(),
+    }
 }
 
 fn output(micros: u64) -> Joined<Error> {
@@ -45,25 +54,25 @@ fn never_starts_a_fifth_call_while_four_are_in_flight() {
     assert_eq!(started.len(), 4);
     assert_eq!(schedule.in_flight(), 4);
     schedule.settle(0, output(0));
-    assert_eq!(schedule.next(), Some((4, Role::Combined)));
+    assert_eq!(schedule.next(), Some(first(4, Role::Combined)));
 }
 
 #[test]
 fn a_call_whose_cap_exactly_fills_the_run_cap_starts() {
     let mut schedule = Schedule::<Error>::new(&[Role::Bugs, Role::Security]);
-    assert_eq!(schedule.next(), Some((0, Role::Bugs)));
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
     // Bugs spent its whole 0.60: exactly security's 0.50 of the 1.10 run cap is left.
     schedule.settle(0, output(600_000));
 
     let next = schedule.next();
 
-    assert_eq!(next, Some((1, Role::Security)));
+    assert_eq!(next, Some(first(1, Role::Security)));
 }
 
 #[test]
 fn a_call_one_micro_over_the_run_cap_is_skipped() {
     let mut schedule = Schedule::<Error>::new(&[Role::Bugs, Role::Security]);
-    assert_eq!(schedule.next(), Some((0, Role::Bugs)));
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
     schedule.settle(0, output(600_001));
 
     let next = schedule.next();
@@ -78,39 +87,123 @@ fn a_call_one_micro_over_the_run_cap_is_skipped() {
 #[test]
 fn a_call_that_does_not_fit_waits_for_the_calls_in_flight_to_settle() {
     let mut schedule = Schedule::<Error>::new(&FULL);
-    assert_eq!(schedule.next(), Some((0, Role::Bugs)));
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
     schedule.settle(0, output(700_000));
-    assert_eq!(schedule.next(), Some((1, Role::Security)));
+    assert_eq!(schedule.next(), Some(first(1, Role::Security)));
 
     // 0.70 spent and 0.50 reserved: 0.50 more would pass 1.60, but security may settle lower.
     assert_eq!(schedule.next(), None);
     schedule.settle(1, output(300_000));
 
-    assert_eq!(schedule.next(), Some((2, Role::Design)));
+    assert_eq!(schedule.next(), Some(first(2, Role::Design)));
 }
 
 #[test]
-fn a_retry_starts_before_the_first_attempts_still_due() {
-    let mut schedule = Schedule::<Error>::new(&[Role::Bugs, Role::Security]);
-    assert_eq!(schedule.next(), Some((0, Role::Bugs)));
-    schedule.settle(0, result(ModelOutcome::Malformed, 0));
-
-    let order = [schedule.next(), schedule.next()];
-
-    assert_eq!(order, [Some((0, Role::Bugs)), Some((1, Role::Security))]);
-}
-
-#[test]
-fn a_retry_is_not_held_to_the_run_cap_that_skips_the_roles_left() {
+fn a_retry_waits_behind_the_roles_still_due_so_none_is_skipped() {
+    // Bugs 0.60, security and design 0.50 each: a 1.60 run cap.
     let mut schedule = Schedule::<Error>::new(&FULL);
-    assert_eq!(schedule.next(), Some((0, Role::Bugs)));
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
+    schedule.settle(0, result(ModelOutcome::Malformed, 500_000));
+
+    // A retry first would reserve 0.60 beside security's 0.50, leaving design no room.
+    let order = [schedule.next(), schedule.next(), schedule.next()];
+
+    assert_eq!(
+        order,
+        [
+            Some(first(1, Role::Security)),
+            Some(first(2, Role::Design)),
+            None
+        ]
+    );
+    schedule.settle(1, output(100_000));
+    schedule.settle(2, output(100_000));
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
+    schedule.settle(0, output(100_000));
+    assert!(
+        outcomes(schedule)
+            .iter()
+            .all(|(_, outcome)| matches!(outcome, RoleOutcome::Completed(_)))
+    );
+}
+
+#[test]
+fn a_retry_s_budget_is_cut_to_what_is_left_of_the_run_cap() {
+    let mut schedule = Schedule::<Error>::new(&[Role::Combined]);
+    assert_eq!(schedule.next(), Some(first(0, Role::Combined)));
+    schedule.settle(0, result(ModelOutcome::Malformed, 150_000));
+
+    let retry = schedule.next();
+
+    let left = Role::Combined.cap().micros() - 150_000;
+    assert_eq!(
+        retry,
+        Some(Start {
+            slot: 0,
+            role: Role::Combined,
+            budget: Aeu::from_micros(left),
+        })
+    );
+}
+
+#[test]
+fn a_retry_waits_for_the_calls_in_flight_before_it_takes_less_than_its_cap() {
+    let mut schedule = Schedule::<Error>::new(&FULL);
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
+    assert_eq!(schedule.next(), Some(first(1, Role::Security)));
+    assert_eq!(schedule.next(), Some(first(2, Role::Design)));
+    schedule.settle(0, result(ModelOutcome::Malformed, 100_000));
+
+    // 0.10 spent and 1.00 reserved: 0.50 left, less than bugs' 0.60.
+    assert_eq!(schedule.next(), None);
+    schedule.settle(1, output(500_000));
+
+    // 0.60 spent and 0.50 reserved: still 0.50, but design may settle low, so the retry waits.
+    assert_eq!(schedule.next(), None);
+    schedule.settle(2, output(100_000));
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
+}
+
+#[test]
+fn a_retry_with_nothing_left_of_the_run_cap_leaves_the_role_malformed() {
+    let mut schedule = Schedule::<Error>::new(&[Role::Combined]);
+    assert_eq!(schedule.next(), Some(first(0, Role::Combined)));
+    schedule.settle(
+        0,
+        result(ModelOutcome::Malformed, Role::Combined.cap().micros()),
+    );
+
+    assert_eq!(schedule.next(), None);
+
+    let report = schedule.finish().roles.pop();
+    let summary = report.map(|report| (report.outcome, report.attempts));
+    assert_eq!(
+        summary,
+        Some((
+            RoleOutcome::Failed(RoleFailure::Call(CallFailure::Malformed)),
+            1
+        ))
+    );
+}
+
+#[test]
+fn a_retry_after_the_run_cap_skipped_the_roles_left_gets_what_is_left() {
+    let mut schedule = Schedule::<Error>::new(&FULL);
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
     // 1.20 of 1.60 spent on a malformed answer: neither 0.50 role fits any more.
     schedule.settle(0, result(ModelOutcome::Malformed, 1_200_000));
 
     let retry = schedule.next();
     schedule.settle(0, output(100_000));
 
-    assert_eq!(retry, Some((0, Role::Bugs)));
+    assert_eq!(
+        retry,
+        Some(Start {
+            slot: 0,
+            role: Role::Bugs,
+            budget: Aeu::from_micros(400_000),
+        })
+    );
     assert_eq!(schedule.next(), None);
     let outcomes = outcomes(schedule);
     assert_eq!(
@@ -130,10 +223,23 @@ fn a_retry_is_not_held_to_the_run_cap_that_skips_the_roles_left() {
 }
 
 #[test]
+fn a_runner_error_on_a_retry_is_charged_at_the_retry_s_budget() {
+    let mut schedule = Schedule::<Error>::new(&[Role::Combined]);
+    assert_eq!(schedule.next(), Some(first(0, Role::Combined)));
+    schedule.settle(0, result(ModelOutcome::Malformed, 150_000));
+    assert!(schedule.next().is_some());
+
+    schedule.settle(0, Joined::Returned(Err("unreachable")));
+
+    let report = schedule.finish().roles.pop();
+    assert_eq!(report.map(|report| report.cost), Some(Role::Combined.cap()));
+}
+
+#[test]
 fn a_retry_the_paused_stage_never_makes_leaves_the_role_malformed() {
     let mut schedule = Schedule::<Error>::new(&[Role::Bugs, Role::Security]);
-    assert_eq!(schedule.next(), Some((0, Role::Bugs)));
-    assert_eq!(schedule.next(), Some((1, Role::Security)));
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
+    assert_eq!(schedule.next(), Some(first(1, Role::Security)));
     schedule.settle(0, result(ModelOutcome::Malformed, 0));
     schedule.settle(1, result(ModelOutcome::QuotaExhausted, 0));
 
@@ -151,9 +257,18 @@ fn a_retry_the_paused_stage_never_makes_leaves_the_role_malformed() {
 #[test]
 fn a_second_malformed_answer_fails_the_role_after_two_attempts() {
     let mut schedule = Schedule::<Error>::new(&[Role::Bugs]);
-    assert_eq!(schedule.next(), Some((0, Role::Bugs)));
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
     schedule.settle(0, result(ModelOutcome::Malformed, 10));
-    assert_eq!(schedule.next(), Some((0, Role::Bugs)));
+    // The lone role's retry gets what is left of its run cap, its own cap.
+    let left = Role::Bugs.cap().micros() - 10;
+    assert_eq!(
+        schedule.next(),
+        Some(Start {
+            slot: 0,
+            role: Role::Bugs,
+            budget: Aeu::from_micros(left),
+        })
+    );
     schedule.settle(0, result(ModelOutcome::Malformed, 20));
 
     let report = schedule.finish().roles.pop();
@@ -180,7 +295,7 @@ fn an_answer_without_output_is_its_call_failure_and_is_not_retried() {
 
     for (ending, failure) in endings {
         let mut schedule = Schedule::<Error>::new(&[Role::Meta]);
-        assert_eq!(schedule.next(), Some((0, Role::Meta)));
+        assert_eq!(schedule.next(), Some(first(0, Role::Meta)));
         schedule.settle(0, result(ending, 0));
 
         assert_eq!(schedule.next(), None);
@@ -194,7 +309,7 @@ fn an_answer_without_output_is_its_call_failure_and_is_not_retried() {
 #[test]
 fn a_rate_limit_warning_pauses_the_stage_but_keeps_the_answer() {
     let mut schedule = Schedule::<Error>::new(&[Role::Bugs, Role::Security]);
-    assert_eq!(schedule.next(), Some((0, Role::Bugs)));
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
     let warned = Joined::Returned(Ok(ModelResult {
         outcome: ModelOutcome::Ok(Structured::new(json!({}))),
         cost: Aeu::ZERO,
@@ -223,11 +338,11 @@ fn a_rate_limit_warning_pauses_the_stage_but_keeps_the_answer() {
 #[test]
 fn a_refused_thread_charges_nothing_and_the_next_role_starts() {
     let mut schedule = Schedule::<Error>::new(&[Role::Bugs, Role::Security]);
-    assert_eq!(schedule.next(), Some((0, Role::Bugs)));
+    assert_eq!(schedule.next(), Some(first(0, Role::Bugs)));
 
     schedule.refused(0, std::io::ErrorKind::WouldBlock);
 
-    assert_eq!(schedule.next(), Some((1, Role::Security)));
+    assert_eq!(schedule.next(), Some(first(1, Role::Security)));
     schedule.settle(1, output(0));
     let bugs = schedule.finish().roles.into_iter().next();
     let summary = bugs.map(|report| (report.outcome, report.attempts, report.cost));
@@ -244,7 +359,7 @@ fn a_refused_thread_charges_nothing_and_the_next_role_starts() {
 #[test]
 fn a_runner_error_is_charged_at_the_role_cap() {
     let mut schedule = Schedule::<Error>::new(&[Role::Design]);
-    assert_eq!(schedule.next(), Some((0, Role::Design)));
+    assert_eq!(schedule.next(), Some(first(0, Role::Design)));
 
     schedule.settle(0, Joined::Returned(Err("unreachable")));
 

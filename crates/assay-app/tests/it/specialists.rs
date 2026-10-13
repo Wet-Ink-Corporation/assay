@@ -189,16 +189,22 @@ fn only_design_and_meta_are_sent_the_intent_after_the_pack() -> Result<(), Box<d
 
 #[test]
 fn the_first_call_runs_alone_while_the_head_start_lasts() -> Result<(), Box<dyn Error>> {
-    let fake = Fake::answering();
+    // Bugs waits for a second call to start, but no longer than 100 ms: had the others not
+    // waited for the head start, security would have started and released it.
+    let fake =
+        Fake::new([], Hold::FirstUntilStarted(2)).with_hold_limit(Duration::from_millis(100));
 
-    run(&fake, &FULL, LONG)?;
+    let specialists = run(&fake, &FULL, LONG)?;
 
     let steps = fake.seen().steps.clone();
-    assert_eq!(
-        steps.get(..2),
-        Some([Step::Start(Role::Bugs), Step::End(Role::Bugs)].as_slice())
+    let at = |wanted: Step| steps.iter().position(|step| *step == wanted);
+    let (first_end, second_start) = (at(Step::End(Role::Bugs)), at(Step::Start(Role::Security)));
+    assert!(
+        first_end.is_some() && first_end < second_start,
+        "bugs ended at {first_end:?}, security started at {second_start:?}"
     );
-    assert_eq!(steps.len(), 6);
+    assert_eq!(steps.first(), Some(&Step::Start(Role::Bugs)));
+    assert_eq!(specialists.completed_roles().len(), 3);
     Ok(())
 }
 
@@ -335,6 +341,66 @@ fn a_panicking_runner_fails_its_role_and_nothing_more_is_started() -> Result<(),
     );
     assert_eq!(specialists.cost(), Role::Bugs.cap());
     assert_eq!(fake.seen().started, 1);
+    Ok(())
+}
+
+#[test]
+fn a_panic_while_others_are_in_flight_lets_them_finish() -> Result<(), Box<dyn Error>> {
+    // Bugs waits until all three have started, so security panics with bugs and design in
+    // flight.
+    let fake = Fake::new(
+        [(Role::Security, vec![Answer::Panics])],
+        Hold::FirstUntilStarted(3),
+    );
+
+    let specialists = run(&fake, &FULL, Duration::ZERO)?;
+
+    let summary: Vec<_> = outcomes(&specialists)
+        .into_iter()
+        .map(|(role, outcome)| (role, output(outcome).is_some(), outcome))
+        .collect();
+    assert!(matches!(
+        summary.as_slice(),
+        [
+            (Role::Bugs, true, _),
+            (
+                Role::Security,
+                false,
+                RoleOutcome::Failed(RoleFailure::Panicked)
+            ),
+            (Role::Design, true, _),
+        ]
+    ));
+    assert_eq!(fake.seen().started, 3);
+    Ok(())
+}
+
+#[test]
+fn a_retry_is_given_only_what_is_left_of_the_run_cap() -> Result<(), Box<dyn Error>> {
+    let fake = Fake::new(
+        [(
+            Role::Combined,
+            vec![Answer::Ran(ended(
+                ModelOutcome::Malformed,
+                Aeu::from_micros(150_000),
+            ))],
+        )],
+        Hold::Never,
+    );
+
+    let specialists = run(&fake, &[RequiredRole::Combined], LONG)?;
+
+    let budgets: Vec<Aeu> = fake
+        .calls_of(Role::Combined)
+        .iter()
+        .map(|call| call.budget)
+        .collect();
+    let left = Aeu::from_micros(Role::Combined.cap().micros() - 150_000);
+    assert_eq!(budgets, [Role::Combined.cap(), left]);
+    assert_eq!(
+        specialists.completed_roles(),
+        [RequiredRole::Combined].into()
+    );
     Ok(())
 }
 

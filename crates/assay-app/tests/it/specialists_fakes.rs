@@ -17,7 +17,8 @@ use assay_app::{
 use assay_domain::{Aeu, RequiredRole};
 use serde_json::{Value, json};
 
-/// The longest a held call waits for the calls it waits on; a correct fan-out never needs it.
+/// The longest a held call waits for the calls it waits on, unless a test sets its own; a
+/// correct fan-out never needs it.
 const HOLD_LIMIT: Duration = Duration::from_secs(30);
 
 /// The context pack every test sends.
@@ -86,6 +87,8 @@ pub(crate) struct Fake {
     /// Paired with `seen` only.
     changed: Condvar,
     hold: Hold,
+    /// The longest a held call waits before it answers anyway.
+    hold_limit: Duration,
 }
 
 impl Fake {
@@ -102,7 +105,15 @@ impl Fake {
             seen: Mutex::new(Seen::default()),
             changed: Condvar::new(),
             hold,
+            hold_limit: HOLD_LIMIT,
         }
+    }
+
+    /// This runner with held calls answering after `limit` at most, for a test whose held call
+    /// is meant to wait it out.
+    pub(crate) const fn with_hold_limit(mut self, limit: Duration) -> Self {
+        self.hold_limit = limit;
+        self
     }
 
     /// A runner that answers every call at once with the default answer.
@@ -152,7 +163,9 @@ impl ModelRunner for Fake {
         self.changed.notify_all();
         let (mut seen, _timed_out) = self
             .changed
-            .wait_timeout_while(self.seen(), HOLD_LIMIT, |seen| !self.released(role, seen))
+            .wait_timeout_while(self.seen(), self.hold_limit, |seen| {
+                !self.released(role, seen)
+            })
             .unwrap_or_else(PoisonError::into_inner);
         seen.in_flight -= 1;
         seen.steps.push(Step::End(role));

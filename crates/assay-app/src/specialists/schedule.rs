@@ -22,11 +22,20 @@ pub(super) enum Joined<E> {
     Panicked,
 }
 
+/// A call the schedule starts: the slot and role it is for, and its cap (`--max-budget-usd`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Start {
+    pub(super) slot: usize,
+    pub(super) role: Role,
+    /// The role's cap for a first attempt; for a retry, at most what is left of the run cap.
+    pub(super) budget: Aeu,
+}
+
 /// Where a role is.
 enum State<E> {
     /// Queued for its first attempt, or never started.
     Due,
-    /// A call is in flight.
+    /// A call is in flight, reserving its budget under the run cap.
     Running,
     /// Its first answer was malformed; the retry is queued.
     Retrying,
@@ -38,10 +47,23 @@ enum State<E> {
 struct Entry<E> {
     role: Role,
     state: State<E>,
+    /// The budget of its latest call: what that call reserves while in flight, and what it is
+    /// charged when its cost is unknown.
+    budget: Aeu,
     report: RoleReport<E>,
 }
 
-/// The run cap's accounting: what settled calls cost, and the caps of the calls in flight.
+/// What the queue of first attempts allows next.
+enum FirstAttempt {
+    /// This slot's first attempt fits under the run cap.
+    Start(usize),
+    /// The next one does not fit yet, and calls in flight may settle below their reservations.
+    Wait,
+    /// None is due: all started, or the run cap halted the rest.
+    NoneLeft,
+}
+
+/// The run cap's accounting: what settled calls cost, and the budgets of the calls in flight.
 #[derive(Debug, Clone, Copy)]
 struct Ledger {
     cap: Aeu,
@@ -50,13 +72,17 @@ struct Ledger {
 }
 
 impl Ledger {
-    /// Whether a call capped at `call` may start: everything settled, every cap in flight and
-    /// this cap together stay within the run cap.
+    /// What is left of the run cap beside what settled calls cost and what calls in flight
+    /// reserve.
+    fn left(self) -> Aeu {
+        let used = self.spent.saturating_add(self.reserved);
+        Aeu::from_micros(self.cap.micros().saturating_sub(used.micros()))
+    }
+
+    /// Whether a call capped at `call` may start: everything settled, every budget in flight
+    /// and this cap together stay within the run cap.
     fn fits(self, call: Aeu) -> bool {
-        self.spent
-            .saturating_add(self.reserved)
-            .saturating_add(call)
-            <= self.cap
+        call <= self.left()
     }
 
     fn reserve(&mut self, call: Aeu) {
@@ -75,7 +101,8 @@ pub(super) struct Schedule<E> {
     entries: Vec<Entry<E>>,
     /// Slots whose first attempt is due, in roster order.
     due: VecDeque<usize>,
-    /// Slots whose malformed first answer is to be retried, in the order the answers came back.
+    /// Slots whose malformed first answer is to be retried, in the order the answers came back;
+    /// they start only once no first attempt is due.
     retries: VecDeque<usize>,
     in_flight: usize,
     ledger: Ledger,
@@ -94,6 +121,7 @@ impl<E> Schedule<E> {
                 .map(|&role| Entry {
                     role,
                     state: State::Due,
+                    budget: role.cap(),
                     report: RoleReport {
                         role,
                         outcome: RoleOutcome::Skipped(Halt::RunCap),
@@ -121,47 +149,83 @@ impl<E> Schedule<E> {
         self.in_flight
     }
 
-    /// The next call to start, if one may, with its cap reserved: none while
+    /// The next call to start, if one may, with its budget reserved: none while
     /// [`MAX_MODEL_PROCESSES`] calls are in flight or once the stage paused or stopped.
     ///
-    /// A queued retry goes first and is not held to the run cap: 06 §1 skips remaining roles,
-    /// and a role already started keeps its one retry (03 §7). A first attempt starts only when
-    /// its cap fits under the run cap beside what is spent and reserved; while it does not,
-    /// none does, and when nothing is in flight to settle below its reservation, the run cap
-    /// halts every first attempt left.
-    pub(super) fn next(&mut self) -> Option<(usize, Role)> {
+    /// First attempts go first, in roster order, each with its role's cap, and only when that
+    /// cap fits under the run cap beside what is spent and reserved; while it does not, none
+    /// starts, and when nothing is in flight to settle below its reservation, the run cap halts
+    /// every first attempt left (06 §1). Retries queue behind every first attempt, so a retry
+    /// never takes the room of a role still due (03 §7).
+    pub(super) fn next(&mut self) -> Option<Start> {
         let stopped = matches!(self.halt, Some(Halt::RateLimited | Halt::Panicked));
         if stopped || self.in_flight >= MAX_MODEL_PROCESSES {
             return None;
         }
-        let slot = match self.retries.pop_front() {
-            Some(slot) => slot,
-            None => self.next_due()?,
+        let (slot, budget) = match self.next_due() {
+            FirstAttempt::Start(slot) => (slot, self.entries.get(slot)?.role.cap()),
+            FirstAttempt::Wait => return None,
+            FirstAttempt::NoneLeft => self.next_retry()?,
         };
         let entry = self.entries.get_mut(slot)?;
-        let cap = entry.role.cap();
-        self.ledger.reserve(cap);
+        self.ledger.reserve(budget);
         self.in_flight = self.in_flight.saturating_add(1);
         entry.state = State::Running;
+        entry.budget = budget;
         entry.report.attempts = entry.report.attempts.saturating_add(1);
-        Some((slot, entry.role))
+        Some(Start {
+            slot,
+            role: entry.role,
+            budget,
+        })
     }
 
     /// Takes the next first attempt if its cap fits under the run cap; halts on the run cap
     /// when it does not and nothing in flight could settle below its reservation.
-    fn next_due(&mut self) -> Option<usize> {
+    fn next_due(&mut self) -> FirstAttempt {
         if self.halt.is_some() {
-            return None;
+            return FirstAttempt::NoneLeft;
         }
-        let slot = *self.due.front()?;
-        let cap = self.entries.get(slot)?.role.cap();
-        if !self.ledger.fits(cap) {
-            if self.in_flight == 0 {
-                self.halt = Some(Halt::RunCap);
+        let Some((slot, cap)) = self
+            .due
+            .front()
+            .and_then(|&slot| Some((slot, self.entries.get(slot)?.role.cap())))
+        else {
+            return FirstAttempt::NoneLeft;
+        };
+        if self.ledger.fits(cap) {
+            self.due.pop_front();
+            FirstAttempt::Start(slot)
+        } else if self.in_flight == 0 {
+            self.halt = Some(Halt::RunCap);
+            FirstAttempt::NoneLeft
+        } else {
+            FirstAttempt::Wait
+        }
+    }
+
+    /// Takes the next retry with its budget, the smaller of its role's cap and what is left of
+    /// the run cap (as the verifier's retries, 04 §4 step 8). While the cap does not fit and
+    /// calls in flight may settle below their reservations, it waits; with nothing in flight it
+    /// starts with what is left, and with nothing left the role fails as malformed and the next
+    /// retry is looked at.
+    fn next_retry(&mut self) -> Option<(usize, Aeu)> {
+        while let Some(&slot) = self.retries.front() {
+            let entry = self.entries.get_mut(slot)?;
+            let cap = entry.role.cap();
+            let left = self.ledger.left();
+            if cap > left && self.in_flight > 0 {
+                return None;
             }
-            return None;
+            self.retries.pop_front();
+            if left > Aeu::ZERO {
+                return Some((slot, cap.min(left)));
+            }
+            entry.state = State::Done(RoleOutcome::Failed(RoleFailure::Call(
+                CallFailure::Malformed,
+            )));
         }
-        self.due.pop_front()
+        None
     }
 
     /// The thread for `slot`'s call could not be started: nothing ran, so nothing is charged
@@ -169,7 +233,7 @@ impl<E> Schedule<E> {
     pub(super) fn refused(&mut self, slot: usize, kind: std::io::ErrorKind) {
         self.in_flight = self.in_flight.saturating_sub(1);
         if let Some(entry) = self.entries.get_mut(slot) {
-            self.ledger.settle(entry.role.cap(), Aeu::ZERO);
+            self.ledger.settle(entry.budget, Aeu::ZERO);
             entry.report.attempts = entry.report.attempts.saturating_sub(1);
             entry.state = State::Done(RoleOutcome::Failed(RoleFailure::Spawn(kind)));
         }
@@ -183,26 +247,26 @@ impl<E> Schedule<E> {
         let Some(entry) = self.entries.get_mut(slot) else {
             return;
         };
-        let cap = entry.role.cap();
+        let budget = entry.budget;
         let report = &mut entry.report;
         let result = match joined {
             Joined::Panicked => {
-                self.ledger.settle(cap, cap);
-                report.cost = report.cost.saturating_add(cap);
+                self.ledger.settle(budget, budget);
+                report.cost = report.cost.saturating_add(budget);
                 entry.state = State::Done(RoleOutcome::Failed(RoleFailure::Panicked));
                 self.halt.get_or_insert(Halt::Panicked);
                 return;
             }
             Joined::Returned(Err(source)) => {
-                // The model may have started; its cost is unknown, so the cap is charged.
-                self.ledger.settle(cap, cap);
-                report.cost = report.cost.saturating_add(cap);
+                // The model may have started; its cost is unknown, so its budget is charged.
+                self.ledger.settle(budget, budget);
+                report.cost = report.cost.saturating_add(budget);
                 entry.state = State::Done(RoleOutcome::Failed(RoleFailure::Runner(source)));
                 return;
             }
             Joined::Returned(Ok(result)) => result,
         };
-        self.ledger.settle(cap, result.cost);
+        self.ledger.settle(budget, result.cost);
         report.cost = report.cost.saturating_add(result.cost);
         if !result.rate_limits.is_empty() || result.outcome == ModelOutcome::QuotaExhausted {
             self.halt.get_or_insert(Halt::RateLimited);

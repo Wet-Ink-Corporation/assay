@@ -5,9 +5,12 @@
 //! At most [`MAX_MODEL_PROCESSES`] calls are in flight. The first call (the first role in
 //! roster order) goes alone for a head start, [`HEAD_START`] in production, so the others hit
 //! the prompt cache entry it writes: every role shares the system prompt and starts its user
-//! prompt with the same context pack. The run cap is the sum of the roles' caps; a call starts
-//! only when its cap fits under it beside what is spent and the caps of the calls in flight,
-//! and when the next call can no longer fit, every call left is skipped.
+//! prompt with the same context pack. The run cap is the sum of the roles' caps; a role's first
+//! call starts only when its cap fits under it beside what is spent and the budgets of the
+//! calls in flight, and when the next one can no longer fit with nothing in flight, every role
+//! not yet started is skipped. A malformed answer's one retry waits behind every first attempt
+//! and gets the smaller of its role's cap and what is left of the run cap, so no call is
+//! budgeted past the run cap and a retry never takes a role's room.
 
 mod board;
 mod report;
@@ -23,7 +26,7 @@ use assay_domain::RequiredRole;
 pub use report::{Halt, RoleFailure, RoleOutcome, RoleReport, Specialists};
 
 use self::board::Board;
-use self::schedule::{Joined, Schedule};
+use self::schedule::{Joined, Schedule, Start};
 use crate::model_runner::{InvalidPrompt, ModelCall, ModelResult, ModelRunner};
 use crate::prompt_bundle::{PromptBundle, Role};
 
@@ -67,11 +70,16 @@ pub struct SpecialistsRequest<'a> {
 /// time, the first alone for `request.head_start`, under a run cap of the roles' summed caps.
 ///
 /// Each role makes one call with its own turn limit and cap, retried once if its output is
-/// malformed (03 §7); retries queue behind every first attempt and are held to the run cap
-/// too. A call that reports quota exhausted or a `rejected` or `allowed_warning` rate limit
-/// pauses the stage, and a runner that panics stops it: nothing more starts, and the roles
-/// left are [`Skipped`](RoleOutcome::Skipped). Every thread is joined before this returns.
-/// A completed role's output has `source.role` set to the role that ran.
+/// malformed (03 §7). Retries queue behind every first attempt, and a retry's budget is the
+/// smaller of its role's cap and what is left of the run cap (waiting, while calls are in
+/// flight, for them to settle below their reservations); with nothing left, the role is
+/// [`Failed`](RoleOutcome::Failed) as malformed without a second call. So no call is given a
+/// budget past the run cap, and a retry never costs a role still due its room. A call that
+/// reports quota exhausted or a `rejected` or `allowed_warning` rate limit pauses the stage,
+/// and a runner that panics stops it: nothing more starts, the roles not yet started are
+/// [`Skipped`](RoleOutcome::Skipped), and a retry not yet made leaves its role malformed.
+/// Every thread is joined before this returns. A completed role's output has `source.role` set
+/// to the role that ran.
 ///
 /// # Errors
 /// Returns [`InvalidPrompt`] before any call when a user prompt is not a valid prompt: the
@@ -164,7 +172,7 @@ where
         let mut workers = Workers {
             scope,
             runner,
-            calls: &calls,
+            calls: calls.into_iter().map(Some).collect(),
             board: &board,
             handles: roles.iter().map(|_| None).collect(),
         };
@@ -223,14 +231,18 @@ fn calls(roles: &[Role], request: SpecialistsRequest<'_>) -> Result<Vec<ModelCal
         .collect()
 }
 
-/// The thread of one call: the runner's answer, or its panic when joined.
-type Handle<'scope, R> = ScopedJoinHandle<'scope, Result<ModelResult, <R as ModelRunner>::Error>>;
+/// The thread of one call: the call handed back with the runner's answer, or the runner's
+/// panic when joined.
+type Handle<'scope, R> =
+    ScopedJoinHandle<'scope, (ModelCall, Result<ModelResult, <R as ModelRunner>::Error>)>;
 
 /// The worker threads of one fan-out, each joined by [`Workers::settle`] once it posts.
 struct Workers<'scope, 'env, R: ModelRunner> {
     scope: &'scope Scope<'scope, 'env>,
     runner: &'env R,
-    calls: &'env [ModelCall],
+    /// Each slot's call while no thread holds it: a thread takes it and hands it back when
+    /// joined, so a retry reuses it with its own budget.
+    calls: Vec<Option<ModelCall>>,
     board: &'env Board,
     /// The thread of each slot's call in flight.
     handles: Vec<Option<Handle<'scope, R>>>,
@@ -244,16 +256,20 @@ where
     /// Starts every call the schedule allows while fewer than `limit` are in flight.
     fn start(&mut self, schedule: &mut Schedule<R::Error>, limit: usize) {
         while schedule.in_flight() < limit {
-            let Some((slot, role)) = schedule.next() else {
+            let Some(Start { slot, role, budget }) = schedule.next() else {
                 return;
             };
-            let (Some(call), Some(handle)) = (self.calls.get(slot), self.handles.get_mut(slot))
-            else {
-                // Slots index `calls` and `handles`, both built from the same roles, so this
-                // does not happen; were it to, the call is reported as never started.
+            let calls = self.calls.get_mut(slot).and_then(Option::take);
+            let (Some(mut call), Some(handle)) = (calls, self.handles.get_mut(slot)) else {
+                // Slots index `calls` and `handles`, both built from the same roles, and a
+                // slot's call is back before the schedule starts it again, so this does not
+                // happen. Were it to, the role reports `Spawn(NotFound)`: its call never
+                // started, nothing ran and nothing was charged, as if the OS had refused the
+                // thread, but the fault is this bookkeeping, not the OS.
                 schedule.refused(slot, std::io::ErrorKind::NotFound);
                 continue;
             };
+            call.budget = budget;
             let (runner, board) = (self.runner, self.board);
             let spawned = thread::Builder::new()
                 .name(format!("assay-{}", role.code()))
@@ -261,7 +277,8 @@ where
                     // Posts when the call returns or the runner unwinds, so the coordinator
                     // never waits on a thread that is gone.
                     let _posted = board.poster(slot);
-                    runner.run(call)
+                    let returned = runner.run(&call);
+                    (call, returned)
                 });
             match spawned {
                 Ok(spawned) => *handle = Some(spawned),
@@ -276,7 +293,12 @@ where
             return;
         };
         let joined = match handle.join() {
-            Ok(returned) => Joined::Returned(returned),
+            Ok((call, returned)) => {
+                if let Some(place) = self.calls.get_mut(slot) {
+                    *place = Some(call);
+                }
+                Joined::Returned(returned)
+            }
             // The payload is the runner's panic message; the role reports the panic itself.
             Err(_payload) => Joined::Panicked,
         };
