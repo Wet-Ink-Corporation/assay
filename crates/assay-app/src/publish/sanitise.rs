@@ -6,10 +6,15 @@
 //! autolink, raw HTML, code span, fence, emphasis, table, heading, quote, list) can start. What
 //! GitHub turns live without punctuation is defanged by substitution: `@` (mentions, email
 //! autolinks) and `#` (cross-repository references) become their fullwidth forms, `://` and
-//! `www.` (extended autolinks) are written `[:]//` and `www[.]`. Lines lose their leading
+//! `www.` (extended autolinks) are written `[:]//` and `www[.]`, and `gh-` before a digit
+//! (GitHub's `GH-<n>` issue reference, any case) is written `gh[-]`. Lines lose their leading
 //! whitespace (no indented code) and control and format characters become U+FFFD. The only
 //! live links are the permalinks [`permalink`] builds and the only fences [`code_block`]'s,
 //! whose info string comes from the closed [`Info`] list, which has no `suggestion`.
+//!
+//! Accepted residual: GitHub still links a bare commit SHA to that commit in this repository,
+//! and a repository's own custom autolink references (configured by its admins) still match.
+//! Both stay inside the repository or its admins' configuration, so they are not defanged.
 
 use std::num::NonZeroU64;
 
@@ -82,6 +87,15 @@ fn escape_line_into(line: &str, out: &mut String) {
         {
             out.extend(www.chars().take(3));
             out.push_str(r"\[\.\]");
+            chars = after.chars();
+            continue;
+        }
+        if let Some((gh, after)) = rest.split_at_checked(3)
+            && gh.eq_ignore_ascii_case("gh-")
+            && after.starts_with(|next: char| next.is_ascii_digit())
+        {
+            out.extend(gh.chars().take(2));
+            out.push_str(r"\[\-\]");
             chars = after.chars();
             continue;
         }
@@ -222,8 +236,9 @@ fn valid_name(name: &str, allowed: impl Fn(u8) -> bool) -> bool {
 
 /// A live link to line `line` of `path` at `commit` in `repository`, its text `path:line`
 /// escaped as prose. A path that could leave the repository's tree once a browser resolves it
-/// (empty, `.` or `..` segments, a leading `/`) or is over [`MAX_PATH_BYTES`] gets no link,
-/// only the escaped text. Every path byte outside `A-Z a-z 0-9 - . _ ~ /` is percent-encoded,
+/// (empty, `.` or `..` segments, a leading `/`), holds a control or format character (a line
+/// feed would split the link text) or is over [`MAX_PATH_BYTES`] gets no link, only the
+/// escaped text. Every path byte outside `A-Z a-z 0-9 - . _ ~ /` is percent-encoded,
 /// so the destination holds no space, parenthesis or angle bracket.
 pub(super) fn permalink(
     repository: Repository<'_>,
@@ -234,6 +249,7 @@ pub(super) fn permalink(
     // `:` and up to 20 digits follow the path.
     let text = prose(&format!("{path}:{line}"), MAX_PATH_BYTES.saturating_add(21));
     let stays_in_tree = path.len() <= MAX_PATH_BYTES
+        && !path.chars().any(is_hidden)
         && path
             .split('/')
             .all(|segment| !matches!(segment, "" | "." | ".."));

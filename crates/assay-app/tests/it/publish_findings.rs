@@ -5,9 +5,9 @@ use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    CheckConclusion, CheckState, CommentStep, FindingRef, FindingsError, FindingsPublication,
-    FindingsPublished, FindingsWritten, MAX_PRIOR_COMMENTS, Placement, PullRequestEvent, Target,
-    Unlock, ValidFinding, publish_findings,
+    CheckConclusion, CheckRunId, CheckState, CheckStatus, CommentStep, FindingRef, FindingsError,
+    FindingsPublication, FindingsPublished, FindingsWritten, MAX_PRIOR_COMMENTS, Placement,
+    PullRequestEvent, Target, Unlock, ValidFinding, publish_findings,
 };
 use assay_domain::{
     Class, Finding, FindingKind, Fingerprint, GateConclusion, GateFinding, GateOutcome, GateReport,
@@ -15,7 +15,7 @@ use assay_domain::{
 };
 
 use crate::plan_fakes::{BASE, FakeError, HEAD, run_uid};
-use crate::publish_fakes::{Author, Call, FakeReviewComment, FakeWorld};
+use crate::publish_fakes::{Author, Call, FakeCheck, FakeReviewComment, FakeWorld};
 use crate::publish_support::{DEFAULT_BRANCH, KEY, NAME};
 
 type Outcome = Result<FindingsPublished<FakeError>, FindingsError<FakeError, FakeError>>;
@@ -549,5 +549,120 @@ fn a_completed_gate_check_of_this_decision_is_left_alone() -> Result<(), Box<dyn
     written(inputs.publish(&world)?)?;
 
     assert_eq!(world.writes(), [Call::Acquire, Call::Release]);
+    Ok(())
+}
+
+/// Publishes with the `nth` `call` failing and returns the step the error names, the lock's
+/// fate and how many review comments exist afterwards.
+fn failing_at(call: Call, nth: usize) -> Result<(Outcome, usize), Box<dyn Error>> {
+    let world = decided_world()?;
+    world.fail(call, nth);
+
+    let outcome = Inputs::new()?.publish(&world)?;
+
+    let comments = world.review_comments.borrow().len();
+    Ok((outcome, comments))
+}
+
+#[test]
+fn a_failed_verdict_check_read_posts_nothing() -> Result<(), Box<dyn Error>> {
+    let (outcome, comments) = failing_at(Call::FindCheck, 1)?;
+
+    assert!(
+        matches!(
+            outcome,
+            Err(FindingsError::Locked {
+                step: CommentStep::ReadCheck,
+                source: FakeError,
+                unlock: Unlock::Released
+            })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(comments, 0);
+    Ok(())
+}
+
+#[test]
+fn a_failed_comment_listing_posts_nothing() -> Result<(), Box<dyn Error>> {
+    let (outcome, comments) = failing_at(Call::ReadReviewComments, 1)?;
+
+    assert!(
+        matches!(
+            outcome,
+            Err(FindingsError::Locked {
+                step: CommentStep::ReadComments,
+                source: FakeError,
+                unlock: Unlock::Released
+            })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(comments, 0);
+    Ok(())
+}
+
+#[test]
+fn a_failed_gate_check_read_posts_nothing() -> Result<(), Box<dyn Error>> {
+    // The first read is the verdict check's, the second the gate check's.
+    let (outcome, comments) = failing_at(Call::FindCheck, 2)?;
+
+    assert!(
+        matches!(
+            outcome,
+            Err(FindingsError::Locked {
+                step: CommentStep::ReadGateCheck,
+                source: FakeError,
+                unlock: Unlock::Released
+            })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(comments, 0);
+    Ok(())
+}
+
+#[test]
+fn a_failed_gate_check_write_names_its_step() -> Result<(), Box<dyn Error>> {
+    let (outcome, comments) = failing_at(Call::CreateCheck, 1)?;
+
+    assert!(
+        matches!(
+            outcome,
+            Err(FindingsError::Locked {
+                step: CommentStep::WriteGateCheck,
+                source: FakeError,
+                unlock: Unlock::Released
+            })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(comments, 0, "gate checks are written before comments");
+    Ok(())
+}
+
+#[test]
+fn an_in_progress_gate_check_of_this_decision_is_completed() -> Result<(), Box<dyn Error>> {
+    let world = decided_world()?;
+    world.checks.borrow_mut().push(FakeCheck {
+        id: CheckRunId(NonZeroU64::new(77).ok_or("not zero")?),
+        head: HEAD.to_owned(),
+        name: GATE.to_owned(),
+        author: Author::App,
+        external_id: KEY.to_owned(),
+        status: CheckStatus::InProgress,
+        output: None,
+        annotations: 0,
+    });
+
+    written(Inputs::new()?.publish(&world)?)?;
+
+    let check = world.app_check(GATE)?;
+    assert_eq!(
+        (check.id.0.get(), check.status),
+        (77, CheckStatus::Completed)
+    );
+    assert!(world.writes().contains(&Call::UpdateCheck));
+    assert!(!world.writes().contains(&Call::CreateCheck));
     Ok(())
 }

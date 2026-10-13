@@ -17,7 +17,7 @@ fn inert(text: &str) -> String {
 }
 
 /// Each construct model prose might use, and how it is published (one fixture each).
-const FIXTURES: [(&str, &str, &str); 34] = [
+const FIXTURES: [(&str, &str, &str); 36] = [
     (
         "inline link",
         "see [docs](https://evil.example/x)",
@@ -104,6 +104,12 @@ const FIXTURES: [(&str, &str, &str); 34] = [
     ("CRLF line ending", "a\r\nb", "a\nb"),
     ("blank lines", "\n a\n\n\n\nb\n", "a\n\nb"),
     ("letters and symbols", "é 日本 ✓ —", "é 日本 ✓ —"),
+    (
+        "GH- issue reference in any case",
+        "see GH-26 and gh-1",
+        r"see GH\[\-\]26 and gh\[\-\]1",
+    ),
+    ("gh- without a digit", "gh-pages", r"gh\-pages"),
 ];
 
 #[test]
@@ -151,6 +157,9 @@ fn hostile() -> impl Strategy<Value = String> {
     let piece = prop_oneof![
         Just("www.".to_owned()),
         Just("WwW.".to_owned()),
+        Just("GH-".to_owned()),
+        Just("gH-".to_owned()),
+        "[0-9]",
         Just("://".to_owned()),
         Just(":/".to_owned()),
         Just("/".to_owned()),
@@ -178,6 +187,13 @@ proptest! {
         prop_assert!(!text.contains('#'), "{text:?}");
         prop_assert!(!text.contains("://"), "{text:?}");
         prop_assert!(!text.to_ascii_lowercase().contains("www."), "{text:?}");
+        let lower = text.to_ascii_lowercase();
+        prop_assert!(
+            !lower
+                .match_indices("gh-")
+                .any(|(at, _)| lower.get(at + 3..).is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))),
+            "{text:?}"
+        );
         prop_assert!(
             !text.chars().any(|c| c != '\n' && super::is_hidden(c)),
             "{text:?}"
@@ -389,4 +405,26 @@ fn a_path_past_the_cap_gets_no_link() {
     let text = permalink(repository(), &head(), &path, SEVEN);
 
     assert!(!text.contains("https"), "{text}");
+}
+
+#[test]
+fn a_path_with_a_hidden_character_gets_no_link() {
+    let texts = ["src/a\nb.rs", "src/\u{202e}x.rs", "src/a\rb.rs"]
+        .map(|path| permalink(repository(), &head(), path, SEVEN));
+
+    assert_eq!(
+        texts,
+        [
+            "src\\/a\nb\\.rs\\:7",
+            "src\\/\u{fffd}x\\.rs\\:7",
+            "src\\/a\u{fffd}b\\.rs\\:7"
+        ]
+    );
+}
+
+#[test]
+fn a_repository_name_of_the_cap_parses() {
+    let full_name = format!("{}/{}", "o".repeat(100), "n".repeat(100));
+
+    assert!(Repository::parse(&full_name).is_some());
 }
