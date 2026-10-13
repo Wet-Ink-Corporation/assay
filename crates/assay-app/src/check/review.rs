@@ -17,7 +17,7 @@ use crate::model_runner::{
 };
 use crate::plan::EvidenceKey;
 use crate::prompt_bundle::Role;
-use crate::session_init::{CLEAN_TOOLS, InitReadError, SessionInit};
+use crate::session_init::{InitReadError, SessionInit};
 use crate::validation::{
     Change, EgressScan, FindingRef, Inputs, SuppressRules, ValidFinding, validate,
 };
@@ -248,9 +248,7 @@ fn confined(init: &Result<SessionInit, InitReadError>) -> Result<(), String> {
     let init = init
         .as_ref()
         .map_err(|error| format!("the session's init could not be read: {error}"))?;
-    let mut tools: Vec<&str> = init.tools().iter().map(String::as_str).collect();
-    tools.sort_unstable();
-    if tools != CLEAN_TOOLS || !init.mcp_servers().is_empty() {
+    if !init.is_confined() {
         return Err("the session was not confined to Read, Grep and Glob".to_owned());
     }
     Ok(())

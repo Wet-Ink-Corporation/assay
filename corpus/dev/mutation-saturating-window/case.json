@@ -1,0 +1,8 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "mutation",
+  "labels": [
+    { "file": "src/lib.rs", "start_line": 8, "end_line": 8, "class": "logic" }
+  ]
+}

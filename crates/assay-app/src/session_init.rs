@@ -163,6 +163,14 @@ impl SessionInit {
         &self.parts.mcp_servers
     }
 
+    /// Whether the session was confined to `Read`, `Grep` and `Glob` with no MCP server: the
+    /// least a call's output needs before it is used.
+    pub(crate) fn is_confined(&self) -> bool {
+        let mut tools: Vec<&str> = self.tools().iter().map(String::as_str).collect();
+        tools.sort_unstable();
+        tools == CLEAN_TOOLS && self.mcp_servers().is_empty()
+    }
+
     /// `plugins`, as listed.
     #[must_use]
     pub fn plugins(&self) -> &[InitPlugin] {

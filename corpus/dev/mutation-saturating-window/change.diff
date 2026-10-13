@@ -1,0 +1,11 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 3b1c2a4..9e7d0f1 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -5,5 +5,5 @@
+ pub fn near(line: u64, first: u64, last: u64, window: u64) -> bool {
+     let from = first.saturating_sub(window);
+     let to = last.saturating_add(window);
+-    line >= from && line <= to
++    line >= from && line < to
+ }
