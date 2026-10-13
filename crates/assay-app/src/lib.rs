@@ -20,6 +20,7 @@ mod prompt_bundle;
 mod publish;
 mod replay;
 mod session_init;
+mod specialists;
 mod tiering;
 
 pub use calendar::{CalendarDate, CalendarDateError};
@@ -87,6 +88,10 @@ pub use publish::{
 pub use replay::{
     BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
     ReplayRequest, Replayed, RunField, StoredBundle, replay_decision,
+};
+pub use specialists::{
+    HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport, Specialists,
+    SpecialistsRequest, run_specialists,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};

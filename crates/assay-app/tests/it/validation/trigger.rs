@@ -2,12 +2,14 @@
 //! the finding is capped at `minor`.
 
 use std::error::Error;
+use std::time::Duration;
 
-use assay_app::{FindingRef, Transition};
-use assay_domain::{Disposition, Severity};
+use assay_app::{FindingRef, Role, RoleOutcome, Transition, run_specialists};
+use assay_domain::{Aeu, Disposition, RequiredRole, Severity};
 use serde_json::json;
 
 use super::fixture::{Run, document_by, finding_with, validate_one};
+use crate::specialists_fakes::{Answer, Fake, Hold, bundle, document_with, ran, request};
 
 #[test]
 fn caps_a_trigger_without_alphanumeric_content() -> Result<(), Box<dyn Error>> {
@@ -33,6 +35,44 @@ fn caps_a_combined_micro_blocker_at_its_role_s_ceiling() -> Result<(), Box<dyn E
     let blocker = finding_with(json!({ "severity": "blocker" }));
 
     let validated = Run::default().validate(&[document_by("combined-micro", &[blocker])])?;
+
+    let moves: Vec<_> = validated
+        .transitions
+        .iter()
+        .map(|t| (t.code, t.from, t.to))
+        .collect();
+    assert_eq!(
+        moves,
+        [(
+            Disposition::CapExceeded,
+            Some(Severity::Blocker),
+            Some(Severity::Major)
+        )]
+    );
+    Ok(())
+}
+
+// #173: the role ceiling holds only because the fan-out, not the model, writes `source.role`.
+#[test]
+fn a_micro_reviewer_claiming_combined_is_still_capped_at_major() -> Result<(), Box<dyn Error>> {
+    let blocker = finding_with(json!({ "severity": "blocker" }));
+    let claimed = document_with("combined", &[blocker]);
+    let fake = Fake::new(
+        [(
+            Role::CombinedMicro,
+            vec![Answer::Ran(ran(claimed, Aeu::ZERO))],
+        )],
+        Hold::Never,
+    );
+    let bundle = bundle()?;
+    let roles = [RequiredRole::CombinedMicro];
+    let specialists = run_specialists(&fake, request(&roles, &bundle, Duration::ZERO))?;
+    let document = match specialists.roles.first().map(|report| &report.outcome) {
+        Some(RoleOutcome::Completed(structured)) => structured.as_value().to_string(),
+        other => return Err(format!("micro did not complete: {other:?}").into()),
+    };
+
+    let validated = Run::default().validate(&[document.into_bytes()])?;
 
     let moves: Vec<_> = validated
         .transitions

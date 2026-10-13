@@ -96,6 +96,10 @@ pub(crate) fn verdict(code: &str, reason: &str) -> ModelOutcome {
 pub(crate) fn bundle() -> Result<PromptBundle, Box<dyn Error>> {
     Ok(PromptBundle::new(BundleFiles {
         system: "SYSTEM".to_owned(),
+        bugs: "BUGS".to_owned(),
+        security: "SECURITY".to_owned(),
+        design: "DESIGN".to_owned(),
+        meta: "META".to_owned(),
         combined: "COMBINED".to_owned(),
         combined_micro: "MICRO".to_owned(),
         verifier: "VERIFIER".to_owned(),

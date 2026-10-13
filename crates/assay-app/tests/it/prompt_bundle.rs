@@ -8,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use assay_app::{BundleFile, BundleFileError, BundleFiles, PromptBundle, Role};
-use assay_domain::{ContentHash, Severity, VerifierVerdict};
+use assay_domain::{ContentHash, RequiredRole, Severity, VerifierVerdict};
 
 fn prompts_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugin/prompts")
@@ -22,6 +22,10 @@ fn read(file: BundleFile) -> Result<String, Box<dyn Error>> {
 fn v1_files() -> Result<BundleFiles, Box<dyn Error>> {
     Ok(BundleFiles {
         system: read(BundleFile::System)?,
+        bugs: read(BundleFile::Instruction(Role::Bugs))?,
+        security: read(BundleFile::Instruction(Role::Security))?,
+        design: read(BundleFile::Instruction(Role::Design))?,
+        meta: read(BundleFile::Instruction(Role::Meta))?,
         combined: read(BundleFile::Instruction(Role::Combined))?,
         combined_micro: read(BundleFile::Instruction(Role::CombinedMicro))?,
         verifier: read(BundleFile::Verifier)?,
@@ -31,6 +35,10 @@ fn v1_files() -> Result<BundleFiles, Box<dyn Error>> {
 fn small_files() -> BundleFiles {
     BundleFiles {
         system: "SYSTEM".to_owned(),
+        bugs: "BUGS".to_owned(),
+        security: "SECURITY".to_owned(),
+        design: "DESIGN".to_owned(),
+        meta: "META".to_owned(),
         combined: "COMBINED".to_owned(),
         combined_micro: "MICRO".to_owned(),
         verifier: "VERIFIER".to_owned(),
@@ -41,6 +49,10 @@ fn small_files() -> BundleFiles {
 fn with_char_changed(mut files: BundleFiles, file: BundleFile, char_index: usize) -> BundleFiles {
     let text = match file {
         BundleFile::System => &mut files.system,
+        BundleFile::Instruction(Role::Bugs) => &mut files.bugs,
+        BundleFile::Instruction(Role::Security) => &mut files.security,
+        BundleFile::Instruction(Role::Design) => &mut files.design,
+        BundleFile::Instruction(Role::Meta) => &mut files.meta,
         BundleFile::Instruction(Role::Combined) => &mut files.combined,
         BundleFile::Instruction(Role::CombinedMicro) => &mut files.combined_micro,
         BundleFile::Verifier => &mut files.verifier,
@@ -98,10 +110,37 @@ fn only_combined_micro_findings_are_capped_at_major() {
     assert_eq!(
         ceilings,
         [
+            (Role::Bugs, Severity::Blocker),
+            (Role::Security, Severity::Blocker),
+            (Role::Design, Severity::Blocker),
+            (Role::Meta, Severity::Blocker),
             (Role::Combined, Severity::Blocker),
             (Role::CombinedMicro, Severity::Major)
         ]
     );
+}
+
+#[test]
+fn every_required_role_has_a_bundle_role_with_its_code_and_back() {
+    let round_trip = RequiredRole::ALL.map(|required| {
+        let role = Role::from(required);
+        (required.code(), role.code(), RequiredRole::from(role))
+    });
+
+    assert_eq!(
+        round_trip,
+        RequiredRole::ALL.map(|required| (required.code(), required.code(), required))
+    );
+}
+
+#[test]
+fn only_design_and_meta_see_the_pull_requests_intent() {
+    let seeing: Vec<Role> = Role::ALL
+        .into_iter()
+        .filter(|role| role.sees_intent())
+        .collect();
+
+    assert_eq!(seeing, [Role::Design, Role::Meta]);
 }
 
 #[test]
@@ -121,7 +160,17 @@ fn every_role_is_sent_the_same_system_prompt_and_its_own_instruction() -> Result
 
     let parts = Role::ALL.map(|role| (bundle.system_prompt(), bundle.instruction(role)));
 
-    assert_eq!(parts, [("SYSTEM", "COMBINED"), ("SYSTEM", "MICRO")]);
+    assert_eq!(
+        parts,
+        [
+            ("SYSTEM", "BUGS"),
+            ("SYSTEM", "SECURITY"),
+            ("SYSTEM", "DESIGN"),
+            ("SYSTEM", "META"),
+            ("SYSTEM", "COMBINED"),
+            ("SYSTEM", "MICRO")
+        ]
+    );
     Ok(())
 }
 
@@ -221,6 +270,10 @@ fn the_bundle_hash_is_the_content_hash_of_its_files_under_their_paths() -> Resul
     let files = v1_files()?;
     let expected = ContentHash::of_files([
         ("v1/system.md", files.system.as_bytes()),
+        ("v1/bugs.md", files.bugs.as_bytes()),
+        ("v1/security.md", files.security.as_bytes()),
+        ("v1/design.md", files.design.as_bytes()),
+        ("v1/meta.md", files.meta.as_bytes()),
         ("v1/combined.md", files.combined.as_bytes()),
         ("v1/combined-micro.md", files.combined_micro.as_bytes()),
         ("v1/verifier.md", files.verifier.as_bytes()),
@@ -254,21 +307,16 @@ fn changing_any_one_character_of_any_file_changes_the_bundle_hash() -> Result<()
 
 #[test]
 fn swapping_two_role_instructions_changes_the_bundle_hash() -> Result<(), Box<dyn Error>> {
-    let BundleFiles {
-        system,
-        combined,
-        combined_micro,
-        verifier,
-    } = small_files();
+    let files = small_files();
+    // A copy: `files` is the unswapped original the hash is compared with.
     let swapped = BundleFiles {
-        system,
-        combined: combined_micro,
-        combined_micro: combined,
-        verifier,
+        combined: files.combined_micro.clone(),
+        combined_micro: files.combined.clone(),
+        ..files.clone()
     };
 
     let (original, edited) = (
-        PromptBundle::new(small_files())?.hash(),
+        PromptBundle::new(files)?.hash(),
         PromptBundle::new(swapped)?.hash(),
     );
 
@@ -394,6 +442,77 @@ fn the_v1_combined_micro_instruction_states_its_ceiling() -> Result<(), Box<dyn 
     assert!(
         bundle.instruction(Role::CombinedMicro).contains(&ceiling),
         "combined-micro does not say {ceiling:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn every_v1_instruction_opens_with_its_role_heading_and_states_its_turns()
+-> Result<(), Box<dyn Error>> {
+    let bundle = PromptBundle::new(v1_files()?)?;
+
+    for role in Role::ALL {
+        let instruction = bundle.instruction(role);
+
+        let heading = format!("## Your role: {}", role.code());
+        assert_eq!(instruction.lines().next(), Some(heading.as_str()));
+        let turns = format!("{} turns", role.max_turns());
+        assert!(instruction.contains(&turns), "{heading} lacks {turns:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn every_v1_instruction_states_whether_the_role_sees_the_intent() -> Result<(), Box<dyn Error>> {
+    let blind = "not given the pull request's title, description or commit messages";
+    let envelope = "untrusted envelope";
+
+    let bundle = PromptBundle::new(v1_files()?)?;
+
+    for role in Role::ALL {
+        let instruction = bundle.instruction(role);
+        let says = (instruction.contains(blind), instruction.contains(envelope));
+        assert_eq!(
+            says,
+            (!role.sees_intent(), role.sees_intent()),
+            "{}: (blind, envelope)",
+            role.code()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_v1_full_tier_instructions_carry_their_roster_focus() -> Result<(), Box<dyn Error>> {
+    let focus = [
+        (Role::Bugs, "callers of every changed symbol"),
+        (Role::Security, "hostile"),
+        (Role::Design, "rule ID"),
+        (Role::Meta, "base to head"),
+    ];
+
+    let bundle = PromptBundle::new(v1_files()?)?;
+
+    for (role, phrase) in focus {
+        assert!(
+            bundle.instruction(role).contains(phrase),
+            "{} lacks {phrase:?}",
+            role.code()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_v1_system_prompt_says_the_role_instruction_is_the_last_section() -> Result<(), Box<dyn Error>>
+{
+    let bundle = PromptBundle::new(v1_files()?)?;
+
+    assert!(
+        bundle
+            .system_prompt()
+            .contains("last section of the user message, under `## Your role:`"),
+        "system.md does not say where the role instruction is"
     );
     Ok(())
 }
