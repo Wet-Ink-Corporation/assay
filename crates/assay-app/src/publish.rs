@@ -29,6 +29,7 @@ pub use self::ports::{
     InlineComment, LlmEvidence, PublishLedger, SummaryComment, VerdictForge,
 };
 pub use self::render::SUMMARY_MARKER;
+pub(crate) use self::render::clean;
 use self::render::{Projection, Summary};
 use self::write::Pending;
 use crate::config::Sha256Digest;

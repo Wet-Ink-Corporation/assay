@@ -230,7 +230,7 @@ pub(super) fn is_hidden(c: char) -> bool {
 
 /// `item` on one line: control and format characters (line breaks and bidi controls included)
 /// become U+FFFD, and past [`MAX_ITEM_CHARS`] characters it is cut and ends with `…`.
-fn clean(item: &str) -> String {
+pub(crate) fn clean(item: &str) -> String {
     let mut chars = item.chars();
     let mut cleaned: String = chars
         .by_ref()

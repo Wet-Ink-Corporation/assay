@@ -6,6 +6,7 @@
 //! Every versioned contract is validated on read through [`ContractValidator`]
 //! (`docs/architecture/03-contracts.md`). Base configuration is parsed into [`PluginsConfig`].
 
+mod check;
 mod config;
 mod contract;
 mod decide;
@@ -34,6 +35,10 @@ pub use session_init::{
     allowlist_drift, check_init,
 };
 
+pub use check::{
+    ChangePatches, CheckError, CheckPorts, CheckRequest, FilePatch, LocalGate, LocalReport,
+    LocalReview, MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES, ReviewSetup, ReviewStatus, check_local,
+};
 pub use config::{
     Adapter, Argv, AssaySettings, BuiltinAllowlist, BuiltinKind, BuiltinsError, CommitId,
     ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion, GateName, GlobsConfigError,

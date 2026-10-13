@@ -66,6 +66,19 @@ pub enum GitOperation {
     ReadBlobs,
     /// `git hash-object --no-filters --stdin`: the blob id of some bytes, nothing written.
     HashBlob,
+    /// `git rev-parse`: a revision's commit, or a path inside a developer's repository (local
+    /// mode, 02 §6).
+    RevParse,
+    /// `git read-tree`: load a commit's tree into a scratch index.
+    ReadTree,
+    /// `git add --all`: stage a working tree into a scratch index (local mode).
+    AddAll,
+    /// `git write-tree`: record a scratch index as a tree.
+    WriteTree,
+    /// `git commit-tree`: a commit of a recorded tree, with assay's fixed identity and date.
+    CommitTree,
+    /// `git checkout-index --all`: write a scratch index out, symlinks as plain files.
+    CheckoutIndex,
 }
 
 impl GitOperation {
@@ -88,9 +101,44 @@ impl GitOperation {
             Self::ListTree => &["ls-tree", "-r", "-z", "-l"],
             Self::ReadBlobs => &["cat-file", "--batch"],
             Self::HashBlob => &["hash-object", "--no-filters", "--stdin"],
+            Self::RevParse => &["rev-parse"],
+            Self::ReadTree => &["read-tree"],
+            Self::AddAll => &["add", "--all"],
+            Self::WriteTree => &["write-tree"],
+            Self::CommitTree => &["commit-tree"],
+            Self::CheckoutIndex => &["checkout-index", "--all"],
+        }
+    }
+
+    /// `-c` settings the operation adds to [`HARDENED_CONFIG`]: a checkout writes symlinks as
+    /// plain files holding their target, so nothing read from the written tree can follow one
+    /// out of it.
+    const fn extra_config(self) -> &'static [&'static str] {
+        match self {
+            Self::CheckoutIndex => &["core.symlinks=false"],
+            _ => &[],
+        }
+    }
+
+    /// Variables the operation adds to [`HARDENED_ENV`]: a snapshot commit has a fixed author,
+    /// committer and date, so its id depends only on its tree and parent.
+    const fn extra_env(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::CommitTree => &SNAPSHOT_IDENTITY,
+            _ => &[],
         }
     }
 }
+
+/// The identity and date of every snapshot commit (local mode, 02 §6).
+const SNAPSHOT_IDENTITY: [(&str, &str); 6] = [
+    ("GIT_AUTHOR_NAME", "assay"),
+    ("GIT_AUTHOR_EMAIL", "assay@localhost"),
+    ("GIT_AUTHOR_DATE", "@0 +0000"),
+    ("GIT_COMMITTER_NAME", "assay"),
+    ("GIT_COMMITTER_EMAIL", "assay@localhost"),
+    ("GIT_COMMITTER_DATE", "@0 +0000"),
+];
 
 impl fmt::Display for GitOperation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -103,6 +151,12 @@ impl fmt::Display for GitOperation {
             Self::ListTree => "ls-tree",
             Self::ReadBlobs => "cat-file --batch",
             Self::HashBlob => "hash-object",
+            Self::RevParse => "rev-parse",
+            Self::ReadTree => "read-tree",
+            Self::AddAll => "add",
+            Self::WriteTree => "write-tree",
+            Self::CommitTree => "commit-tree",
+            Self::CheckoutIndex => "checkout-index",
         };
         f.write_str(name)
     }
@@ -154,17 +208,36 @@ impl GitEnvironment {
     }
 }
 
-/// A hardened `git --git-dir <git_dir> -c ... <operation>` command; callers append the
-/// operation's remaining arguments.
-pub(super) fn git(
+/// Where a git process works besides its repository: a working tree and an index file, both
+/// absent for every operation on PR objects.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct Scope<'a> {
+    /// `--work-tree`: the tree `add` reads or `checkout-index` writes.
+    pub(super) work_tree: Option<&'a Path>,
+    /// `GIT_INDEX_FILE`: a scratch index, never a developer's own.
+    pub(super) index: Option<&'a Path>,
+}
+
+/// A hardened `git --git-dir <git_dir> [--work-tree <tree>] -c ... <operation>` command, with
+/// `GIT_INDEX_FILE` when `scope` names an index; callers append the operation's remaining
+/// arguments.
+pub(super) fn git_in(
     git_dir: &Path,
+    scope: Scope<'_>,
     environment: &GitEnvironment,
     operation: GitOperation,
 ) -> Command {
     let mut command = Command::new("git");
     harden_environment(&mut command, environment);
+    command.envs(operation.extra_env().iter().copied());
+    if let Some(index) = scope.index {
+        command.env("GIT_INDEX_FILE", index);
+    }
     command.arg("--git-dir").arg(git_dir);
-    for setting in HARDENED_CONFIG {
+    if let Some(work_tree) = scope.work_tree {
+        command.arg("--work-tree").arg(work_tree);
+    }
+    for setting in HARDENED_CONFIG.iter().chain(operation.extra_config()) {
         command.arg("-c").arg(setting);
     }
     command.args(operation.leading_args());
@@ -191,6 +264,11 @@ mod tests {
 
     use super::*;
     use crate::process::{Limits, run};
+
+    /// The command for `operation` with no scope, as every operation on PR objects builds it.
+    fn git(git_dir: &Path, environment: &GitEnvironment, operation: GitOperation) -> Command {
+        git_in(git_dir, Scope::default(), environment, operation)
+    }
 
     fn args(command: &Command) -> Vec<&OsStr> {
         command.get_args().collect()
@@ -224,24 +302,33 @@ mod tests {
             GitOperation::ListTree,
             GitOperation::ReadBlobs,
             GitOperation::HashBlob,
+            GitOperation::RevParse,
+            GitOperation::ReadTree,
+            GitOperation::AddAll,
+            GitOperation::WriteTree,
+            GitOperation::CommitTree,
+            GitOperation::CheckoutIndex,
         ] {
             let command = hardened(operation);
+            let mut expected = vec![
+                "core.hooksPath=/dev/null",
+                "protocol.allow=never",
+                "protocol.https.allow=always",
+                "transfer.fsckObjects=true",
+                "fetch.recurseSubmodules=false",
+                "fetch.fsckObjects=true",
+                "diff.renameLimit=1000",
+                "core.fsmonitor=false",
+                "http.lowSpeedLimit=1000",
+                "http.lowSpeedTime=30",
+                "attr.tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+            ];
+            // Only a checkout adds a setting, after the hardened ones (pinned below).
+            expected.extend(operation.extra_config());
 
             assert_eq!(
                 config(&command),
-                [
-                    "core.hooksPath=/dev/null",
-                    "protocol.allow=never",
-                    "protocol.https.allow=always",
-                    "transfer.fsckObjects=true",
-                    "fetch.recurseSubmodules=false",
-                    "fetch.fsckObjects=true",
-                    "diff.renameLimit=1000",
-                    "core.fsmonitor=false",
-                    "http.lowSpeedLimit=1000",
-                    "http.lowSpeedTime=30",
-                    "attr.tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904",
-                ],
+                expected,
                 "{operation} must run with the hardened config"
             );
             assert_eq!(
@@ -317,6 +404,98 @@ mod tests {
             None,
             "nothing unconfigured is inherited"
         );
+    }
+
+    #[test]
+    fn only_a_checkout_adds_config_and_it_writes_symlinks_as_files() {
+        let extras: Vec<(GitOperation, &[&str])> = [
+            GitOperation::Init,
+            GitOperation::Fetch,
+            GitOperation::VerifyCommit,
+            GitOperation::Diff,
+            GitOperation::CheckAttr,
+            GitOperation::ListTree,
+            GitOperation::ReadBlobs,
+            GitOperation::HashBlob,
+            GitOperation::RevParse,
+            GitOperation::ReadTree,
+            GitOperation::AddAll,
+            GitOperation::WriteTree,
+            GitOperation::CommitTree,
+            GitOperation::CheckoutIndex,
+        ]
+        .into_iter()
+        .map(|operation| (operation, operation.extra_config()))
+        .filter(|(_, extra)| !extra.is_empty())
+        .collect();
+
+        assert_eq!(
+            extras,
+            [(
+                GitOperation::CheckoutIndex,
+                ["core.symlinks=false"].as_slice()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_scope_names_its_work_tree_and_index_and_nothing_else() {
+        let command = git_in(
+            Path::new("/scratch.git"),
+            Scope {
+                work_tree: Some(Path::new("/home/dev/work")),
+                index: Some(Path::new("/scratch.git/snapshot-index")),
+            },
+            &host(),
+            GitOperation::AddAll,
+        );
+
+        let envs: BTreeMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            args(&command).get(..4),
+            Some(
+                [
+                    OsStr::new("--git-dir"),
+                    OsStr::new("/scratch.git"),
+                    OsStr::new("--work-tree"),
+                    OsStr::new("/home/dev/work"),
+                ]
+                .as_slice()
+            )
+        );
+        assert_eq!(
+            envs.get(OsStr::new("GIT_INDEX_FILE")),
+            Some(&Some(OsStr::new("/scratch.git/snapshot-index"))),
+            "a scratch index, never the developer's"
+        );
+        assert_eq!(
+            hardened(GitOperation::AddAll)
+                .get_envs()
+                .find(|(name, _)| *name == "GIT_INDEX_FILE"),
+            None,
+            "no index file without a scope"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_commit_has_a_fixed_identity_and_date() {
+        let command = hardened(GitOperation::CommitTree);
+
+        let envs: BTreeMap<_, _> = command.get_envs().collect();
+        for (name, value) in [
+            ("GIT_AUTHOR_NAME", "assay"),
+            ("GIT_AUTHOR_EMAIL", "assay@localhost"),
+            ("GIT_AUTHOR_DATE", "@0 +0000"),
+            ("GIT_COMMITTER_NAME", "assay"),
+            ("GIT_COMMITTER_EMAIL", "assay@localhost"),
+            ("GIT_COMMITTER_DATE", "@0 +0000"),
+        ] {
+            assert_eq!(
+                envs.get(OsStr::new(name)),
+                Some(&Some(OsStr::new(value))),
+                "{name} must be {value}, so the commit id depends only on tree and parent"
+            );
+        }
     }
 
     #[test]

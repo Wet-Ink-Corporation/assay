@@ -72,7 +72,7 @@ impl Contract {
     }
 
     /// The embedded JSON Schema of the supported version.
-    const fn schema_text(self) -> &'static str {
+    pub(crate) const fn schema_text(self) -> &'static str {
         match self {
             Self::Findings => include_str!("../../../schemas/findings-1.schema.json"),
             Self::Run => include_str!("../../../schemas/run-1.schema.json"),

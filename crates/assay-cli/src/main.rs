@@ -2,9 +2,11 @@
 //! and maps outcomes to exit codes (`docs/architecture/02-architecture.md` §2).
 //!
 //! Commands so far: `assay self-gate <corpus-dir> <rubric-file>`, the `assay-self` exec gate
-//! (02 §7, `05` T16), and `assay doctor <plugins-toml> <claude-program>`, the session checks of
-//! 03 §8 (#121). With no arguments it exits successfully without doing anything.
+//! (02 §7, `05` T16), `assay doctor <plugins-toml> <claude-program>`, the session checks of
+//! 03 §8 (#121), and `assay check --local`, the advisory check of a working tree (02 §6, #107).
+//! With no arguments it exits successfully without doing anything.
 
+mod check;
 mod doctor;
 mod self_gate;
 
@@ -24,6 +26,9 @@ fn main() -> ExitCode {
     };
     if command == "doctor" {
         return run_doctor(args);
+    }
+    if command == "check" {
+        return run_check(args);
     }
     if command != "self-gate" {
         return report(&self_gate::SelfGateError::Usage);
@@ -55,6 +60,29 @@ fn run_doctor(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         return self::report(&error);
     }
     if report.passed() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// `assay check --local`: exit 0 when the decision passes, 1 when it does not, 2 when the
+/// check cannot run.
+fn run_check(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = check::CheckVariables {
+        cwd: env::current_dir(),
+        path: env::var_os("PATH"),
+        home: env::var_os("HOME"),
+        vars: env::vars_os().collect(),
+    };
+    let checked = match check::run(args, variables) {
+        Ok(checked) => checked,
+        Err(error) => return report(&error),
+    };
+    if let Err(error) = checked.write(io::stdout().lock()) {
+        return report(&error);
+    }
+    if checked.passed() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

@@ -4,6 +4,8 @@
 mod architecture;
 mod binary;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod check;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod doctor;
 #[cfg(unix)] // process groups and Unix file modes
 mod exec_surface;
