@@ -142,6 +142,56 @@ pub(crate) fn forked_fixture(
     })
 }
 
+/// A force-pushed PR: the base holds the files of [`fixture`]; the earlier head (`previous`,
+/// committed as "previous") and the head that replaced it ("head") both sit on the base, so the
+/// earlier head is reachable but not an ancestor of the head.
+pub(crate) struct Forced {
+    pub(crate) fixture: Fixture,
+    pub(crate) previous: CommitSha,
+}
+
+pub(crate) fn forced_fixture() -> Result<Forced, Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    let work = scratch.path().join("work");
+    plain_git(scratch.path(), &["init", "--quiet", "work"])?;
+    write(&work, "README.md", b"# fixture\n")?;
+    write(&work, "src/lib.rs", b"pub fn one() -> u8 {\n    1\n}\n")?;
+    let base = commit(&work, "base")?;
+    write(&work, "src/lib.rs", b"pub fn one() -> u8 {\n    2\n}\n")?;
+    let previous = commit(&work, "previous")?;
+    plain_git(&work, &["branch", "earlier"])?;
+    plain_git(&work, &["reset", "--quiet", "--hard", base.as_str()])?;
+    write(&work, "src/lib.rs", b"pub fn one() -> u8 {\n    3\n}\n")?;
+    let head = commit(&work, "head")?;
+
+    let git_dir = scratch.path().join("objects.git");
+    let repo = ObjectRepo::init(
+        &git_dir,
+        GitEnvironment::from_process_env()?,
+        GitLimits::default(),
+    )?;
+    let destination = git_dir.to_str().ok_or("scratch path is not UTF-8")?;
+    plain_git(
+        &work,
+        &[
+            "push",
+            "--quiet",
+            destination,
+            "HEAD:refs/heads/pr",
+            "earlier:refs/heads/earlier",
+        ],
+    )?;
+    Ok(Forced {
+        fixture: Fixture {
+            _scratch: scratch,
+            repo,
+            base,
+            head,
+        },
+        previous,
+    })
+}
+
 pub(crate) fn write(work: &Path, path: &str, contents: &[u8]) -> Result<(), Box<dyn Error>> {
     let path = work.join(path);
     if let Some(parent) = path.parent() {

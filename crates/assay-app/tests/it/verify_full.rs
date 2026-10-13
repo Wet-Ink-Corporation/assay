@@ -175,10 +175,10 @@ fn a_carried_finding_past_the_cap_is_over_it() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         statuses,
         [
-            (ClaimRef::Carried { index: 0 }, confirmed),
-            (ClaimRef::Carried { index: 1 }, confirmed),
-            (ClaimRef::Carried { index: 2 }, confirmed),
-            (ClaimRef::Carried { index: 3 }, None),
+            (ClaimRef::Carried(0), confirmed),
+            (ClaimRef::Carried(1), confirmed),
+            (ClaimRef::Carried(2), confirmed),
+            (ClaimRef::Carried(3), None),
         ]
     );
     let last = verified.carried.last().ok_or("four carried out")?;
@@ -189,8 +189,10 @@ fn a_carried_finding_past_the_cap_is_over_it() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// #212: a carried claim is asked 04 §7's question, so it gets the carried-verifier instruction.
 #[test]
-fn a_carried_claim_is_the_same_blind_five_fields() -> Result<(), Box<dyn Error>> {
+fn a_carried_claim_is_the_same_blind_five_fields_then_the_carried_question()
+-> Result<(), Box<dyn Error>> {
     let carried = [carried(7, Severity::Minor)?];
     let bundle = bundle()?;
     let runner = confirming(1);
@@ -220,7 +222,35 @@ fn a_carried_claim_is_the_same_blind_five_fields() -> Result<(), Box<dyn Error>>
             "trigger": "an empty list reaches the index",
         })
     );
-    assert_eq!(instruction, "VERIFIER");
+    assert_eq!(instruction, "VERIFIER-CARRIED");
+    Ok(())
+}
+
+#[test]
+fn a_raised_claim_in_a_run_with_carried_ones_keeps_the_verifier_instruction()
+-> Result<(), Box<dyn Error>> {
+    let carried = [carried(0, Severity::Minor)?];
+    let findings = [finding(0, Severity::Major)?];
+    let bundle = bundle()?;
+    let runner = confirming(2);
+
+    verify(
+        &runner,
+        request_carrying(VerifierTier::Lite, &findings, &carried, &bundle),
+    );
+
+    let instructions: Vec<String> = runner
+        .calls
+        .borrow()
+        .iter()
+        .filter_map(|call| {
+            call.user_prompt
+                .as_str()
+                .split_once("\n\n")
+                .map(|(_, instruction)| instruction.to_owned())
+        })
+        .collect();
+    assert_eq!(instructions, ["VERIFIER-CARRIED", "VERIFIER"]);
     Ok(())
 }
 
@@ -245,7 +275,7 @@ fn carried_verdicts_change_severity_and_come_first_in_the_events() -> Result<(),
     assert_eq!(
         (gone.at, gone.raised, gone.severity, gone.verdict()),
         (
-            ClaimRef::Carried { index: 0 },
+            ClaimRef::Carried(0),
             Severity::Blocker,
             Severity::Minor,
             Some(VerifierVerdict::Refuted)
@@ -316,7 +346,7 @@ fn a_failure_on_a_carried_finding_names_it_and_leaves_later_picks_unverified()
     assert_eq!(
         verified.failure,
         Some(VerifierFailure::Call {
-            at: ClaimRef::Carried { index: 1 },
+            at: ClaimRef::Carried(1),
             reason: CallFailure::Timeout
         })
     );
@@ -418,6 +448,32 @@ fn a_spent_stage_budget_stops_the_stage_as_cap_without_a_call() -> Result<(), Bo
         (Severity::Major, &VerifierStatus::Unverified)
     );
     assert_eq!(verified.attempts, 1);
+    Ok(())
+}
+
+/// #212 F2: the budget runs out between a refused first attempt and its retry.
+#[test]
+fn a_refused_first_attempt_that_spends_the_budget_stops_before_its_retry_as_cap()
+-> Result<(), Box<dyn Error>> {
+    let findings = [finding(0, Severity::Major)?];
+    let bundle = bundle()?;
+    let runner = Scripted::answering([
+        (verdict("maybe", "a code outside the three"), 240_000),
+        (verdict("confirmed", "never asked"), 1),
+    ]);
+
+    let verified = verify(&runner, request(VerifierTier::Lite, &findings, &bundle));
+
+    assert_eq!(runner.call_count(), 1);
+    assert_eq!(
+        verified.failure,
+        Some(VerifierFailure::Call {
+            at: raised(0),
+            reason: CallFailure::Cap
+        })
+    );
+    assert_eq!(verified.attempts, 1);
+    assert_eq!(verified.refusals, [VerdictRefusal::Verdict]);
     Ok(())
 }
 

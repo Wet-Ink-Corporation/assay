@@ -2,26 +2,16 @@
 //! §7).
 
 use std::cmp::Reverse;
+use std::num::NonZeroU64;
 
-use assay_domain::{Confidence, Finding, Severity};
+use assay_domain::{Class, Confidence, Severity};
 use serde_json::json;
 
 use super::VerifierTier;
 use crate::model_runner::{InvalidPrompt, Prompt};
+use crate::prompt_bundle::PromptBundle;
+use crate::rereview::CarriedFinding;
 use crate::validation::{FindingRef, ValidFinding};
-
-/// A finding open from an earlier run of the PR, to be judged again at head (04 §7).
-///
-/// It goes to the verifier whatever its severity, ahead of this run's candidates, and shares
-/// the tier's calls with them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CarriedFinding {
-    /// The finding as it was last published, its `line` the line at head the caller anchored it
-    /// to; the verifier sees only its `line`, `class`, `title` and `trigger`.
-    pub finding: Finding,
-    /// Its file's path at head.
-    pub file_at_head: String,
-}
 
 /// Which claim a verifier result is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -31,10 +21,7 @@ pub enum ClaimRef {
     /// A finding carried from an earlier run: its position in [`VerifyRequest::carried`].
     ///
     /// [`VerifyRequest::carried`]: super::VerifyRequest::carried
-    Carried {
-        /// Its position among the carried findings given.
-        index: usize,
-    },
+    Carried(usize),
 }
 
 /// Where a candidate's result is recorded: its position among the raised or carried findings.
@@ -49,21 +36,45 @@ pub(super) enum Slot {
 pub(super) struct Candidate<'a> {
     pub(super) at: ClaimRef,
     pub(super) slot: Slot,
-    file_at_head: &'a str,
-    finding: &'a Finding,
+    claim: Claim<'a>,
+}
+
+/// What the verifier sees of a candidate (04 §3 "Blindness"), and how it is ranked.
+#[derive(Debug)]
+struct Claim<'a> {
+    file: &'a str,
+    line: NonZeroU64,
+    class: Class,
+    title: &'a str,
+    trigger: Option<&'a str>,
+    severity: Severity,
+    confidence: Option<Confidence>,
 }
 
 impl Candidate<'_> {
     /// The verifier's user prompt: the claim as one JSON object of exactly the five fields the
-    /// verifier may see, a blank line, then the instruction (04 §3 "Blindness").
-    pub(super) fn prompt(&self, instruction: &str) -> Result<Prompt, InvalidPrompt> {
+    /// verifier may see, a blank line, then the instruction (04 §3 "Blindness"): for a carried
+    /// finding the one asking whether the defect is still present at head (04 §7).
+    pub(super) fn prompt(&self, bundle: &PromptBundle) -> Result<Prompt, InvalidPrompt> {
+        let Claim {
+            file,
+            line,
+            class,
+            title,
+            trigger,
+            ..
+        } = self.claim;
         let claim = json!({
-            "file": self.file_at_head,
-            "line": self.finding.line,
-            "class": self.finding.class.code(),
-            "claim": self.finding.title,
-            "trigger": self.finding.trigger,
+            "file": file,
+            "line": line,
+            "class": class.code(),
+            "claim": title,
+            "trigger": trigger,
         });
+        let instruction = match self.slot {
+            Slot::Raised(_) => bundle.verifier_instruction(),
+            Slot::Carried(_) => bundle.carried_verifier_instruction(),
+        };
         Prompt::new(format!("{claim}\n\n{instruction}"))
     }
 }
@@ -85,14 +96,21 @@ pub(super) fn candidates<'a>(
         .iter()
         .enumerate()
         .map(|(index, found)| Candidate {
-            at: ClaimRef::Carried { index },
+            at: ClaimRef::Carried(index),
             slot: Slot::Carried(index),
-            file_at_head: &found.file_at_head,
-            finding: &found.finding,
+            claim: Claim {
+                file: found.file(),
+                line: found.line(),
+                class: found.class(),
+                title: found.title(),
+                trigger: found.trigger(),
+                severity: found.severity(),
+                confidence: None,
+            },
         })
         .collect();
     // Stable sorts: equal keys keep their input order.
-    carried.sort_by_key(|candidate| Reverse(candidate.finding.severity));
+    carried.sort_by_key(|candidate| Reverse(candidate.claim.severity));
     let mut raised: Vec<Candidate<'a>> = raised
         .iter()
         .enumerate()
@@ -100,14 +118,21 @@ pub(super) fn candidates<'a>(
         .map(|(index, found)| Candidate {
             at: ClaimRef::Raised(found.at),
             slot: Slot::Raised(index),
-            file_at_head: &found.file_at_head,
-            finding: &found.finding,
+            claim: Claim {
+                file: &found.file_at_head,
+                line: found.finding.line,
+                class: found.finding.class,
+                title: &found.finding.title,
+                trigger: found.finding.trigger.as_deref(),
+                severity: found.finding.severity,
+                confidence: found.finding.confidence,
+            },
         })
         .collect();
     raised.sort_by_key(|candidate| {
         (
-            Reverse(candidate.finding.severity),
-            confidence_rank(candidate.finding.confidence),
+            Reverse(candidate.claim.severity),
+            confidence_rank(candidate.claim.confidence),
         )
     });
     carried.extend(raised);

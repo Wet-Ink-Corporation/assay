@@ -66,6 +66,10 @@ pub enum GitOperation {
     ReadBlobs,
     /// `git hash-object --no-filters --stdin`: the blob id of some bytes, nothing written.
     HashBlob,
+    /// `git merge-base --is-ancestor`: whether one commit is an ancestor of another.
+    IsAncestor,
+    /// `git range-diff`, with notes, external diff drivers and textconv disabled.
+    RangeDiff,
 }
 
 impl GitOperation {
@@ -88,6 +92,14 @@ impl GitOperation {
             Self::ListTree => &["ls-tree", "-r", "-z", "-l"],
             Self::ReadBlobs => &["cat-file", "--batch"],
             Self::HashBlob => &["hash-object", "--no-filters", "--stdin"],
+            Self::IsAncestor => &["merge-base", "--is-ancestor"],
+            Self::RangeDiff => &[
+                "range-diff",
+                "--no-color",
+                "--no-notes",
+                "--no-ext-diff",
+                "--no-textconv",
+            ],
         }
     }
 }
@@ -103,6 +115,8 @@ impl fmt::Display for GitOperation {
             Self::ListTree => "ls-tree",
             Self::ReadBlobs => "cat-file --batch",
             Self::HashBlob => "hash-object",
+            Self::IsAncestor => "merge-base --is-ancestor",
+            Self::RangeDiff => "range-diff",
         };
         f.write_str(name)
     }

@@ -3,6 +3,7 @@
 mod attributes;
 mod changes;
 mod diff;
+mod history;
 #[cfg(unix)] // symlinks in fixtures
 mod manifest_copy;
 mod repository;

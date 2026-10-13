@@ -51,11 +51,11 @@ impl Default for GitLimits {
 
 /// One git invocation: the operation, its arguments, its stdin and its wall-clock limit.
 #[derive(Debug, Clone, Copy)]
-struct Call<'a> {
-    operation: GitOperation,
-    args: &'a [&'a str],
-    input: &'a [u8],
-    timeout: Duration,
+pub(super) struct Call<'a> {
+    pub(super) operation: GitOperation,
+    pub(super) args: &'a [&'a str],
+    pub(super) input: &'a [u8],
+    pub(super) timeout: Duration,
 }
 
 /// A bare repository holding PR objects as data, with no worktree, so nothing in it is ever
@@ -362,7 +362,7 @@ impl ObjectRepo {
     }
 
     /// A call of `operation` with `args`, no stdin and the repository's timeout.
-    fn call<'a>(&self, operation: GitOperation, args: &'a [&'a str]) -> Call<'a> {
+    pub(super) fn call<'a>(&self, operation: GitOperation, args: &'a [&'a str]) -> Call<'a> {
         Call {
             operation,
             args,
@@ -372,7 +372,7 @@ impl ObjectRepo {
     }
 
     /// Runs `call` within its timeout and the output cap; a non-zero exit is an error.
-    fn run(&self, call: Call<'_>) -> Result<Captured, GitError> {
+    pub(super) fn run(&self, call: Call<'_>) -> Result<Captured, GitError> {
         let Call {
             operation,
             args,
