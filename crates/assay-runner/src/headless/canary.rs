@@ -23,7 +23,7 @@ use tempfile::{Builder, TempDir};
 
 use super::supervise::{self, Bounds};
 use super::{DEFAULT_MAX_OUTPUT_BYTES, GroupKill, HeadlessEnv, HeadlessError, Invocation};
-use crate::stream::{self, read_session_init};
+use crate::stream;
 
 /// The user-scope mod, loaded only through `CLAUDE_CODE_PLUGIN_DIRS`.
 const USER_MOD: &str = "assay-canary-user";
@@ -199,9 +199,10 @@ impl<K: GroupKill> ClaudeCanary<K> {
         };
         let captured = supervise::run(command, PROMPT.as_bytes(), bounds, &self.killer)?;
         let loaded_mods = layout.loaded().map_err(CanaryError::Inspect)?;
+        let result = stream::classify(&captured.transcript, captured.ending, BUDGET);
         Ok(CanaryRun {
-            init: read_session_init(&captured.transcript),
-            outcome: stream::classify(&captured.transcript, captured.ending, BUDGET).outcome,
+            init: result.init,
+            outcome: result.outcome,
             transcript: captured.transcript,
             planted_mods: MODS.map(str::to_owned).to_vec(),
             loaded_mods,

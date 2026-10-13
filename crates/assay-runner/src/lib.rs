@@ -8,11 +8,13 @@
 mod cost;
 mod headless;
 mod replay;
+mod status;
 mod stream;
 
 pub use headless::{
     CanaryError, ClaudeCanary, ClaudeHeadless, EnvVarError, GroupKill, HeadlessEnv, HeadlessError,
-    Workdir, WorkdirError,
+    StatusCommand, StatusError, Workdir, WorkdirError,
 };
 pub use replay::{Recording, Replay, ReplayError};
+pub use status::read_cli_status;
 pub use stream::read_session_init;

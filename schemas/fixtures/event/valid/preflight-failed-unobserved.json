@@ -1,0 +1,19 @@
+{
+  "schema": "assay.event/1",
+  "job": "review",
+  "idx": 2,
+  "ts": "2026-10-13T06:20:00Z",
+  "run_key": "run-83-1",
+  "run_uid": {
+    "repo_id": 840213377,
+    "run_id": 18342009871,
+    "run_attempt": 1
+  },
+  "stage": "S3",
+  "kind": "PreflightFailed",
+  "data": {
+    "auth_method": "unknown",
+    "cli_version": "unknown",
+    "init_clean": false
+  }
+}
