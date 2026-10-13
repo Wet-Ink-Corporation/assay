@@ -6,10 +6,13 @@
 //! refused whole on anything outside the exact shape or any rule (wi-b5affa). The answer holds
 //! finding ids only: nothing in it is published.
 
+use std::num::NonZeroU64;
+
 use assay_domain::Severity;
 use serde_json::{Map, Value};
 
 use super::merge::may_absorb;
+use super::outcome::Merged;
 use crate::validation::ValidFinding;
 
 /// The JSON Schema the coordinator's structured output must satisfy (`--json-schema`): groups
@@ -32,10 +35,22 @@ pub enum CoordinationRefusal {
     EmptyGroup,
     /// A group's findings do not share one `class`.
     MixedClasses,
+    /// A group holds more than one finding of at least `major`: grouping them would lower the
+    /// count of distinct majors (04 §5 rule 7), which only the mechanical merge may do.
+    SeveralMajors,
     /// A duplicate's `of` is not among its own group's findings.
     DuplicateOutsideGroup,
     /// A duplicate cites another file or side than the finding it duplicates.
     DuplicateElsewhere,
+    /// A duplicate is `major` or above: only the mechanical merge of one fingerprint may absorb
+    /// such a finding, which would otherwise be neither published nor verified.
+    DuplicateTooSevere,
+    /// A duplicate has another `class` than the finding it duplicates.
+    DuplicateOtherClass,
+    /// A duplicate has another `kind` than the finding it duplicates.
+    DuplicateOtherKind,
+    /// A duplicate's lines do not overlap those of the finding it duplicates.
+    DuplicateApart,
     /// A duplicate is more severe than the finding it duplicates, or is not pre-existing while
     /// that one is: merging it would hide it.
     DuplicateOutranks,
@@ -45,22 +60,37 @@ pub enum CoordinationRefusal {
     NoiseMerged,
 }
 
-/// An accepted answer, in ids of the findings shown.
+/// A finding shown to the coordinator: its id is its position among those shown, and `index`
+/// its position in the findings given to the stage.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Shown<'a> {
+    pub(super) index: usize,
+    pub(super) found: &'a ValidFinding,
+}
+
+/// A kept finding of an accepted answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Member {
+    /// Its position in the findings given to the stage.
+    pub(super) index: usize,
+    /// Whether the coordinator marked it as noise.
+    pub(super) noise: bool,
+}
+
+/// An accepted answer, in positions of the findings given to the stage: every id is mapped
+/// through [`Shown::index`] as it is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Plan {
     /// Each group's findings, most important first; the groups in the same order.
-    pub(super) groups: Vec<Vec<usize>>,
-    /// Each duplicate and the finding it duplicates, `(id, of)`, in the answer's order.
-    pub(super) duplicates: Vec<(usize, usize)>,
-    /// Whether each finding shown is noise, by id.
-    pub(super) noise: Vec<bool>,
+    pub(super) groups: Vec<Vec<Member>>,
+    /// Each duplicate and the kept finding it joins, in the answer's order.
+    pub(super) duplicates: Vec<Merged>,
 }
 
-/// Reads `answer` against the findings `shown`, whose positions are their ids, refusing
-/// anything outside the exact shape or any rule. Linear in the smaller of the answer and the
-/// findings: every accepted id marks one finding, so the answer is refused by the time it
-/// names one more id than there are findings.
-pub(super) fn read(answer: Value, shown: &[&ValidFinding]) -> Result<Plan, CoordinationRefusal> {
+/// Reads `answer` against the findings `shown`, refusing anything outside the exact shape or
+/// any rule. Linear in the smaller of the answer and the findings: every accepted id marks one
+/// finding, so the answer is refused by the time it names one more id than there are findings.
+pub(super) fn read(answer: Value, shown: &[Shown<'_>]) -> Result<Plan, CoordinationRefusal> {
     let mut fields = exact(answer, ["groups", "noise"])?;
     let (Some(Value::Array(groups)), Some(Value::Array(noise))) =
         (fields.remove("groups"), fields.remove("noise"))
@@ -69,12 +99,11 @@ pub(super) fn read(answer: Value, shown: &[&ValidFinding]) -> Result<Plan, Coord
     };
     let mut reader = Reader {
         shown,
-        group_of: vec![None; shown.len()],
+        member_at: vec![None; shown.len()],
         placed: vec![false; shown.len()],
         plan: Plan {
             groups: Vec::new(),
             duplicates: Vec::new(),
-            noise: vec![false; shown.len()],
         },
     };
     for group in groups {
@@ -104,19 +133,30 @@ fn exact<const N: usize>(
     }
 }
 
+/// Whether `finding` counts for rule 7's distinct majors: at least `major`.
+fn is_major(found: &ValidFinding) -> bool {
+    found.finding.severity >= Severity::Major
+}
+
+/// The lines `found` cites, first and last.
+fn span(found: &ValidFinding) -> (NonZeroU64, NonZeroU64) {
+    let first = found.finding.line;
+    (first, found.finding.end_line.unwrap_or(first).max(first))
+}
+
 /// The answer read so far.
 struct Reader<'a, 'f> {
-    shown: &'a [&'f ValidFinding],
-    /// The group each finding is a member of, by id.
-    group_of: Vec<Option<usize>>,
+    shown: &'a [Shown<'f>],
+    /// Where each finding sits as a member, `(group, position)`, by id.
+    member_at: Vec<Option<(usize, usize)>>,
     /// Whether each finding is placed, as a member or a duplicate, by id.
     placed: Vec<bool>,
     plan: Plan,
 }
 
 impl<'f> Reader<'_, 'f> {
-    /// The id `value` names: a whole number below the number of findings shown.
-    fn id(&self, value: &Value) -> Result<(usize, &'f ValidFinding), CoordinationRefusal> {
+    /// The finding `value` names: a whole number below the number of findings shown.
+    fn id(&self, value: &Value) -> Result<(usize, Shown<'f>), CoordinationRefusal> {
         let id = value.as_u64().ok_or(CoordinationRefusal::Shape)?;
         usize::try_from(id)
             .ok()
@@ -125,19 +165,19 @@ impl<'f> Reader<'_, 'f> {
     }
 
     /// Places the finding `value` names, which must not be placed yet.
-    fn place(&mut self, value: &Value) -> Result<(usize, &'f ValidFinding), CoordinationRefusal> {
-        let (id, found) = self.id(value)?;
+    fn place(&mut self, value: &Value) -> Result<(usize, Shown<'f>), CoordinationRefusal> {
+        let (id, shown) = self.id(value)?;
         match self.placed.get_mut(id) {
             Some(placed) if !*placed => {
                 *placed = true;
-                Ok((id, found))
+                Ok((id, shown))
             }
             _ => Err(CoordinationRefusal::Repeated),
         }
     }
 
-    /// Reads one group: its findings, which share a class, then its duplicates, each of a
-    /// finding among them.
+    /// Reads one group: its findings, which share a class and hold at most one major, then its
+    /// duplicates, each of a finding among them.
     fn group(&mut self, group: Value) -> Result<(), CoordinationRefusal> {
         let mut fields = exact(group, ["findings", "duplicates"])?;
         let (Some(Value::Array(members)), Some(Value::Array(duplicates))) =
@@ -146,71 +186,111 @@ impl<'f> Reader<'_, 'f> {
             return Err(CoordinationRefusal::Shape);
         };
         let number = self.plan.groups.len();
-        let mut ids = Vec::with_capacity(members.len().min(self.shown.len()));
+        let mut kept = Vec::with_capacity(members.len().min(self.shown.len()));
         let mut class = None;
+        let mut majors = 0_usize;
         for member in &members {
-            let (id, found) = self.place(member)?;
-            if *class.get_or_insert(found.finding.class) != found.finding.class {
+            let (id, shown) = self.place(member)?;
+            let finding = &shown.found.finding;
+            if *class.get_or_insert(finding.class) != finding.class {
                 return Err(CoordinationRefusal::MixedClasses);
             }
-            if let Some(group) = self.group_of.get_mut(id) {
-                *group = Some(number);
+            if is_major(shown.found) {
+                majors = majors.saturating_add(1);
+                if majors > 1 {
+                    return Err(CoordinationRefusal::SeveralMajors);
+                }
             }
-            ids.push(id);
+            if let Some(at) = self.member_at.get_mut(id) {
+                *at = Some((number, kept.len()));
+            }
+            kept.push(Member {
+                index: shown.index,
+                noise: false,
+            });
         }
-        if ids.is_empty() {
+        if kept.is_empty() {
             return Err(CoordinationRefusal::EmptyGroup);
         }
         for duplicate in duplicates {
-            let pair = self.duplicate(duplicate, number)?;
-            self.plan.duplicates.push(pair);
+            let merged = self.duplicate(duplicate, number)?;
+            self.plan.duplicates.push(merged);
         }
-        self.plan.groups.push(ids);
+        self.plan.groups.push(kept);
         Ok(())
     }
 
-    /// Reads one duplicate of group `number`: `{id, of}`, `of` a member of that group, and the
-    /// merge allowed by [`may_absorb`].
+    /// Reads one duplicate of group `number`: `{id, of}`, `of` a member of that group, the
+    /// duplicate below `major`, of the same class and kind, on overlapping lines of the same
+    /// file and side, and the merge allowed by [`may_absorb`].
     fn duplicate(
         &mut self,
         duplicate: Value,
         number: usize,
-    ) -> Result<(usize, usize), CoordinationRefusal> {
+    ) -> Result<Merged, CoordinationRefusal> {
         let fields = exact(duplicate, ["id", "of"])?;
         let (Some(id), Some(of)) = (fields.get("id"), fields.get("of")) else {
             return Err(CoordinationRefusal::Shape);
         };
-        let (id, found) = self.place(id)?;
+        let (_, copy) = self.place(id)?;
         let (of, keeper) = self.id(of)?;
-        if self.group_of.get(of).copied().flatten() != Some(number) {
+        if self
+            .member_at
+            .get(of)
+            .copied()
+            .flatten()
+            .map(|(group, _)| group)
+            != Some(number)
+        {
             return Err(CoordinationRefusal::DuplicateOutsideGroup);
         }
-        if keeper.file_at_head != found.file_at_head || keeper.finding.side != found.finding.side {
-            return Err(CoordinationRefusal::DuplicateElsewhere);
-        }
-        if !may_absorb(keeper, found) {
-            return Err(CoordinationRefusal::DuplicateOutranks);
-        }
-        Ok((id, of))
+        let (found, kept) = (copy.found, keeper.found);
+        let refusal =
+            if kept.file_at_head != found.file_at_head || kept.finding.side != found.finding.side {
+                CoordinationRefusal::DuplicateElsewhere
+            } else if is_major(found) {
+                CoordinationRefusal::DuplicateTooSevere
+            } else if kept.finding.class != found.finding.class {
+                CoordinationRefusal::DuplicateOtherClass
+            } else if kept.finding.kind != found.finding.kind {
+                CoordinationRefusal::DuplicateOtherKind
+            } else if !overlap(span(kept), span(found)) {
+                CoordinationRefusal::DuplicateApart
+            } else if !may_absorb(kept, found) {
+                CoordinationRefusal::DuplicateOutranks
+            } else {
+                return Ok(Merged {
+                    index: copy.index,
+                    into: keeper.index,
+                });
+            };
+        Err(refusal)
     }
 
     /// Reads one noise id: a member of a group, at most `minor`, listed once.
     fn noise(&mut self, value: &Value) -> Result<(), CoordinationRefusal> {
-        let (id, found) = self.id(value)?;
-        if self.group_of.get(id).copied().flatten().is_none() {
-            return Err(CoordinationRefusal::NoiseMerged);
-        }
-        if found.finding.severity > Severity::Minor {
+        let (id, shown) = self.id(value)?;
+        let member = self
+            .member_at
+            .get(id)
+            .copied()
+            .flatten()
+            .and_then(|(group, position)| self.plan.groups.get_mut(group)?.get_mut(position))
+            .ok_or(CoordinationRefusal::NoiseMerged)?;
+        if shown.found.finding.severity > Severity::Minor {
             return Err(CoordinationRefusal::NoiseTooSevere);
         }
-        match self.plan.noise.get_mut(id) {
-            Some(noise) if !*noise => {
-                *noise = true;
-                Ok(())
-            }
-            _ => Err(CoordinationRefusal::Repeated),
+        if member.noise {
+            return Err(CoordinationRefusal::Repeated);
         }
+        member.noise = true;
+        Ok(())
     }
+}
+
+/// Whether two line spans share a line.
+fn overlap(a: (NonZeroU64, NonZeroU64), b: (NonZeroU64, NonZeroU64)) -> bool {
+    a.0 <= b.1 && b.0 <= a.1
 }
 
 #[cfg(test)]

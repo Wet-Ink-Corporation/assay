@@ -62,6 +62,19 @@ fn ranking<E>(coordination: &Coordination<E>) -> Vec<(usize, String)> {
         .collect()
 }
 
+/// Every position the coordination accounts for, ranked or merged, sorted: each finding given
+/// must appear exactly once.
+fn accounted<E>(coordination: &Coordination<E>) -> Vec<usize> {
+    let mut all: Vec<usize> = coordination
+        .ranked
+        .iter()
+        .map(|ranked| ranked.index)
+        .chain(coordination.merged.iter().map(|merged| merged.index))
+        .collect();
+    all.sort_unstable();
+    all
+}
+
 /// An answer of `groups` (members only) and `noise`.
 fn answer(groups: &[&[u64]], noise: &[u64]) -> ModelOutcome {
     let groups: Vec<Value> = groups
@@ -104,7 +117,7 @@ fn an_accepted_answer_groups_merges_and_ranks_the_findings() -> Result<(), Box<d
     let findings = findings(&[
         Severity::Minor,
         Severity::Major,
-        Severity::Major,
+        Severity::Minor,
         Severity::Minor,
     ])?;
     // 1 and 2 share a root cause, 3 duplicates 0, and the coordinator lists the minor first.
@@ -122,11 +135,12 @@ fn an_accepted_answer_groups_merges_and_ranks_the_findings() -> Result<(), Box<d
     assert_eq!(
         ranking(&coordination),
         [
-            (2, "g1".to_owned()),
             (1, "g1".to_owned()),
-            (0, "g2".to_owned())
+            (0, "g2".to_owned()),
+            (2, "g1".to_owned())
         ]
     );
+    assert_eq!(accounted(&coordination), [0, 1, 2, 3]);
     assert_eq!(coordination.merged, [Merged { index: 3, into: 0 }]);
     assert_eq!(
         (coordination.merged_by, coordination.outcome()),
@@ -207,12 +221,13 @@ fn findings_of_one_fingerprint_are_merged_before_the_call() -> Result<(), Box<dy
 #[test]
 fn a_finding_merged_before_the_call_follows_its_keeper_into_the_coordinators_merge()
 -> Result<(), Box<dyn Error>> {
-    let mut findings = findings(&[Severity::Minor, Severity::Major])?;
-    findings.push(distinct(1, Severity::Major)?);
-    // Shown: 0 is finding 1, 1 is finding 2, which the coordinator merges into finding 1.
+    let mut findings = findings(&[Severity::Minor, Severity::Minor])?;
+    // Merged into finding 0 of its fingerprint before the call.
+    findings.push(distinct(1, Severity::Nit)?);
+    // Shown: 0 is finding 0, which the coordinator merges into 1, finding 1.
     let runner = Scripted::answering([(
         output(json!({
-            "groups": [{"findings": [0], "duplicates": [{"id": 1, "of": 0}]}],
+            "groups": [{"findings": [1], "duplicates": [{"id": 0, "of": 1}]}],
             "noise": []
         })),
         10_000,
@@ -225,6 +240,7 @@ fn a_finding_merged_before_the_call_follows_its_keeper_into_the_coordinators_mer
         [Merged { index: 0, into: 1 }, Merged { index: 2, into: 1 }]
     );
     assert_eq!(ranking(&coordination), [(1, "g1".to_owned())]);
+    assert_eq!(accounted(&coordination), [0, 1, 2]);
     Ok(())
 }
 
@@ -294,6 +310,7 @@ fn a_refused_answer_twice_falls_back_to_the_mechanical_merge() -> Result<(), Box
         ranking(&coordination),
         [(0, "g1".to_owned()), (1, "g2".to_owned())]
     );
+    assert_eq!(accounted(&coordination), [0, 1]);
     assert_eq!(
         coordination.events().collect::<Vec<_>>(),
         [EventPayload::StageDegraded {
@@ -313,7 +330,7 @@ fn a_refused_answer_then_an_accepted_one_completes() -> Result<(), Box<dyn Error
     let findings = findings(&[Severity::Major, Severity::Major])?;
     let runner = Scripted::answering([
         (answer(&[&[0, 0]], &[]), 30_000),
-        (answer(&[&[1, 0]], &[]), 20_000),
+        (answer(&[&[1], &[0]], &[]), 20_000),
     ]);
 
     let coordination = run(&runner, &findings)?;
@@ -322,7 +339,7 @@ fn a_refused_answer_then_an_accepted_one_completes() -> Result<(), Box<dyn Error
     assert_eq!(coordination.outcome(), SupportOutcome::Completed);
     assert_eq!(
         ranking(&coordination),
-        [(1, "g1".to_owned()), (0, "g1".to_owned())]
+        [(1, "g1".to_owned()), (0, "g2".to_owned())]
     );
     Ok(())
 }
@@ -452,6 +469,32 @@ fn the_most_distinct_findings_a_call_takes_are_coordinated() -> Result<(), Box<d
         (runner.call_count(), coordination.outcome()),
         (1, SupportOutcome::Completed)
     );
+    Ok(())
+}
+
+#[test]
+fn one_finding_more_than_a_call_takes_is_coordinated_when_two_share_a_fingerprint()
+-> Result<(), Box<dyn Error>> {
+    let mut findings = findings(&[Severity::Minor; MAX_COORDINATED_FINDINGS])?;
+    findings.push(distinct(1, Severity::Minor)?);
+    let ids: Vec<u64> = (0..).take(MAX_COORDINATED_FINDINGS).collect();
+    let runner = Scripted::answering([(answer(&[&ids], &[]), 10_000)]);
+
+    let coordination = run(&runner, &findings)?;
+
+    assert_eq!(
+        (runner.call_count(), coordination.outcome()),
+        (1, SupportOutcome::Completed)
+    );
+    assert_eq!(
+        coordination.merged,
+        [Merged {
+            index: MAX_COORDINATED_FINDINGS,
+            into: 0
+        }]
+    );
+    let all: Vec<usize> = (0..=MAX_COORDINATED_FINDINGS).collect();
+    assert_eq!(accounted(&coordination), all);
     Ok(())
 }
 

@@ -6,8 +6,10 @@
 //! [`ValidFinding`]s, and only through ids: its answer names findings, it never writes, rewords
 //! or re-rates one, and nothing it returns is published as text. Every merge obeys one rule
 //! (a duplicate cites the same file and side, is no more severe and hides no new finding behind
-//! a pre-existing one), every group shares a `class`, and noise only moves a `minor` or `nit`
-//! to the summary. The ranking is mechanical: severity, then confidence, then the
+//! a pre-existing one); a merge the coordinator asks for must also be of a `minor` or `nit` of
+//! the keeper's class and kind on overlapping lines, so only a fingerprint merge absorbs a
+//! major. Every group shares a `class` and holds at most one major, so the coordinator never
+//! lowers rule 7's count, and noise only moves a `minor` or `nit` to the summary. The ranking is mechanical: severity, then confidence, then the
 //! coordinator's order.
 
 mod answer;
@@ -28,7 +30,7 @@ use serde_json::{Value, json};
 pub use answer::{COORDINATION_SCHEMA, CoordinationRefusal};
 pub use outcome::{Coordination, CoordinatorFailure, GroupId, Merged, MergedBy, Ranked};
 
-use self::answer::Plan;
+use self::answer::{Plan, Shown};
 use self::merge::{Distinct, Entry, distinct, mechanical, rank};
 use crate::model_runner::{
     InvalidPrompt, ModelCall, ModelOutcome, ModelRunner, Prompt, RateLimitObserved,
@@ -97,7 +99,7 @@ pub struct CoordinateRequest<'a> {
 /// use assay_domain::{Aeu, Class, Finding, FindingKind, Severity, SupportOutcome};
 /// use serde_json::json;
 ///
-/// /// A coordinator that puts both findings in one group.
+/// /// A coordinator that puts both findings in one group, the minor first.
 /// struct OneGroup;
 ///
 /// impl ModelRunner for OneGroup {
@@ -115,12 +117,12 @@ pub struct CoordinateRequest<'a> {
 /// }
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let found = |index: usize, line: u64, fp: &str| -> Result<ValidFinding, Box<dyn std::error::Error>> {
+/// let found = |index: usize, line: u64, fp: &str, severity| -> Result<ValidFinding, Box<dyn std::error::Error>> {
 ///     Ok(ValidFinding {
 ///         at: FindingRef::Finding { document: 0, index },
 ///         finding: Finding {
 ///             class: Class::Logic, rule: None, kind: FindingKind::Defect,
-///             severity: Severity::Major, introduced_by: None, pre_existing: false,
+///             severity, introduced_by: None, pre_existing: false,
 ///             file: "src/lib.rs".to_owned(), line: NonZeroU64::new(line).ok_or("zero")?,
 ///             end_line: None, side: None, evidence: "check(x);".to_owned(),
 ///             expected_behavior: None, trigger: Some("an empty x".to_owned()), caller: None,
@@ -135,7 +137,10 @@ pub struct CoordinateRequest<'a> {
 ///         previously_dismissed: None,
 ///     })
 /// };
-/// let findings = [found(0, 3, "0000000000000001")?, found(1, 9, "0000000000000002")?];
+/// let findings = [
+///     found(0, 3, "0000000000000001", Severity::Major)?,
+///     found(1, 9, "0000000000000002", Severity::Minor)?,
+/// ];
 /// let text = |s: &str| s.to_owned();
 /// let bundle = PromptBundle::new(BundleFiles {
 ///     system: text("system"), bugs: text("bugs"), security: text("security"),
@@ -152,9 +157,9 @@ pub struct CoordinateRequest<'a> {
 ///     timeout: Duration::from_secs(300),
 /// });
 ///
-/// // One group, in the coordinator's order, and the coordinator completed.
+/// // One group; the major ranks first whatever the coordinator's order, and it completed.
 /// let order: Vec<_> = coordinated.ranked.iter().map(|r| (r.index, r.group.to_string())).collect();
-/// assert_eq!(order, [(1, "g1".to_owned()), (0, "g1".to_owned())]);
+/// assert_eq!(order, [(0, "g1".to_owned()), (1, "g1".to_owned())]);
 /// assert_eq!((coordinated.merged_by, coordinated.outcome()), (MergedBy::Coordinator, SupportOutcome::Completed));
 /// # Ok(())
 /// # }
@@ -179,10 +184,15 @@ pub fn coordinate<R: ModelRunner>(
             findings: distinct.kept.len(),
         });
     }
-    let shown: Vec<&ValidFinding> = distinct
+    let shown: Vec<Shown<'_>> = distinct
         .kept
         .iter()
-        .filter_map(|&index| findings.get(index))
+        .filter_map(|&index| {
+            Some(Shown {
+                index,
+                found: findings.get(index)?,
+            })
+        })
         .collect();
     let Ok(user_prompt) = prompt(&shown, bundle.coordinator_instruction()) else {
         return merge_mechanically(findings).failed(unpromptable());
@@ -198,7 +208,7 @@ pub fn coordinate<R: ModelRunner>(
     };
     let mut spent = Spent::default();
     match ask(runner, &mut call, &shown, &mut spent) {
-        Ok(plan) => spent.charge(coordinated(findings, distinct, &plan)),
+        Ok(plan) => spent.charge(coordinated(findings, distinct, plan)),
         Err(failure) => spent.charge(merge_mechanically(findings).failed(failure)),
     }
 }
@@ -224,28 +234,25 @@ pub fn merge_mechanically<E>(findings: &[ValidFinding]) -> Coordination<E> {
     }
 }
 
-/// The coordination of an accepted `plan` over the `distinct` findings it names by id.
-fn coordinated<E>(findings: &[ValidFinding], distinct: Distinct, plan: &Plan) -> Coordination<E> {
-    let Distinct { kept, mut merged } = distinct;
-    let at = |id: usize| kept.get(id).copied();
-    let entries = plan
-        .groups
-        .iter()
+/// The coordination of an accepted `plan`, whose positions `read` already mapped from ids, with
+/// the merges of `distinct` made before the call.
+fn coordinated<E>(findings: &[ValidFinding], distinct: Distinct, plan: Plan) -> Coordination<E> {
+    let Distinct { mut merged, .. } = distinct;
+    let Plan { groups, duplicates } = plan;
+    let entries = groups
+        .into_iter()
         .enumerate()
         .flat_map(|(group, members)| {
-            members.iter().filter_map(move |&id| {
-                Some(Entry {
-                    index: at(id)?,
-                    group,
-                    noise: plan.noise.get(id).copied().unwrap_or(false),
-                })
+            members.into_iter().map(move |member| Entry {
+                index: member.index,
+                group,
+                noise: member.noise,
             })
         })
         .collect();
-    let by_coordinator: BTreeMap<usize, usize> = plan
-        .duplicates
-        .iter()
-        .filter_map(|&(id, of)| Some((at(id)?, at(of)?)))
+    let by_coordinator: BTreeMap<usize, usize> = duplicates
+        .into_iter()
+        .map(|merge| (merge.index, merge.into))
         .collect();
     // A finding merged before the call follows its keeper when the coordinator merged that
     // keeper too, so every merge names a kept finding; the coordinator's keepers are kept.
@@ -274,11 +281,12 @@ fn coordinated<E>(findings: &[ValidFinding], distinct: Distinct, plan: &Plan) ->
 
 /// The coordinator's user prompt: the findings it may see as one JSON object, a blank line,
 /// then the instruction. Only the listed fields are shown; never `body`, `fix` or the rest.
-fn prompt(shown: &[&ValidFinding], instruction: &str) -> Result<Prompt, InvalidPrompt> {
+fn prompt(shown: &[Shown<'_>], instruction: &str) -> Result<Prompt, InvalidPrompt> {
     let findings: Vec<Value> = shown
         .iter()
         .enumerate()
-        .map(|(id, found)| {
+        .map(|(id, shown)| {
+            let found = shown.found;
             let finding = &found.finding;
             json!({
                 "id": id,
@@ -343,7 +351,7 @@ impl<E> Coordination<E> {
 fn ask<R: ModelRunner>(
     runner: &R,
     call: &mut ModelCall,
-    shown: &[&ValidFinding],
+    shown: &[Shown<'_>],
     spent: &mut Spent,
 ) -> Result<Plan, CoordinatorFailure<R::Error>> {
     for _ in 0..ATTEMPTS {
