@@ -15,6 +15,7 @@
 mod board;
 mod report;
 mod schedule;
+mod sharded;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -24,6 +25,7 @@ use std::time::Duration;
 use assay_domain::RequiredRole;
 
 pub use report::{Halt, RoleFailure, RoleOutcome, RoleReport, Specialists};
+pub use sharded::{ShardedSpecialists, ShardsError, ShardsRequest, run_shards};
 
 use self::board::Board;
 use self::schedule::{Joined, Schedule, Start};
@@ -158,44 +160,86 @@ where
     R: ModelRunner + Sync,
     R::Error: Send,
 {
-    let roles: Vec<Role> = request
-        .roles
-        .iter()
-        .copied()
-        .collect::<BTreeSet<RequiredRole>>()
-        .into_iter()
-        .map(Role::from)
-        .collect();
-    let head_start = request.head_start;
-    let calls = calls(&roles, request)?;
-    let mut schedule = Schedule::new(&roles);
-    let board = Board::default();
-    thread::scope(|scope| {
-        let mut workers = Workers {
-            scope,
-            runner,
-            calls: calls.into_iter().map(Some).collect(),
-            board: &board,
-            handles: roles.iter().map(|_| None).collect(),
-        };
-        // The first call goes alone; the head start ends early if it does.
-        workers.start(&mut schedule, 1);
-        if schedule.in_flight() > 0 {
-            for slot in board.take_within(head_start) {
-                workers.settle(&mut schedule, slot);
+    Ok(Prepared::new(request)?.run(runner))
+}
+
+/// A fan-out whose prompts are checked, ready to run: its distinct roles in roster order and
+/// one call per role.
+struct Prepared {
+    roles: Vec<Role>,
+    calls: Vec<ModelCall>,
+    head_start: Duration,
+}
+
+impl Prepared {
+    /// The roles and calls of `request`.
+    ///
+    /// # Errors
+    /// Returns [`InvalidPrompt`] when a user prompt is not a valid prompt.
+    fn new(request: SpecialistsRequest<'_>) -> Result<Self, InvalidPrompt> {
+        let roles: Vec<Role> = request
+            .roles
+            .iter()
+            .copied()
+            .collect::<BTreeSet<RequiredRole>>()
+            .into_iter()
+            .map(Role::from)
+            .collect();
+        let head_start = request.head_start;
+        let calls = calls(&roles, request)?;
+        Ok(Self {
+            roles,
+            calls,
+            head_start,
+        })
+    }
+
+    /// Runs the calls (see [`run_specialists`]); every thread is joined before this returns.
+    fn run<R>(self, runner: &R) -> Specialists<R::Error>
+    where
+        R: ModelRunner + Sync,
+        R::Error: Send,
+    {
+        let Self {
+            roles,
+            calls,
+            head_start,
+        } = self;
+        let mut schedule = Schedule::new(&roles);
+        let board = Board::default();
+        thread::scope(|scope| {
+            let mut workers = Workers {
+                scope,
+                runner,
+                calls: calls.into_iter().map(Some).collect(),
+                board: &board,
+                handles: roles.iter().map(|_| None).collect(),
+            };
+            // The first call goes alone; the head start ends early if it does.
+            workers.start(&mut schedule, 1);
+            if schedule.in_flight() > 0 {
+                for slot in board.take_within(head_start) {
+                    workers.settle(&mut schedule, slot);
+                }
             }
-        }
-        loop {
-            workers.start(&mut schedule, MAX_MODEL_PROCESSES);
-            if schedule.in_flight() == 0 {
-                break;
+            loop {
+                workers.start(&mut schedule, MAX_MODEL_PROCESSES);
+                if schedule.in_flight() == 0 {
+                    break;
+                }
+                for slot in board.take() {
+                    workers.settle(&mut schedule, slot);
+                }
             }
-            for slot in board.take() {
-                workers.settle(&mut schedule, slot);
-            }
-        }
-    });
-    Ok(schedule.finish())
+        });
+        schedule.finish()
+    }
+
+    /// The reports of a fan-out that never starts because the stage halted before it: every
+    /// role is skipped for `halt`, with no call and no cost.
+    fn skipped<E>(self, halt: Halt) -> Specialists<E> {
+        Schedule::halted(&self.roles, halt).finish()
+    }
 }
 
 /// One call per role, in the roles' order: the pack, the intent for the roles that see it,
@@ -292,6 +336,11 @@ where
     /// Joins `slot`'s thread, which has posted, and settles its call.
     fn settle(&mut self, schedule: &mut Schedule<R::Error>, slot: usize) {
         let Some(handle) = self.handles.get_mut(slot).and_then(Option::take) else {
+            // Only a started thread posts, and its handle is kept until this joins it, so this
+            // does not happen. Were it to, the call is settled as never started, so the
+            // schedule's count of calls in flight still falls and the fan-out cannot wait on
+            // a call that is not there (#223).
+            schedule.refused(slot, std::io::ErrorKind::NotFound);
             return;
         };
         let joined = match handle.join() {

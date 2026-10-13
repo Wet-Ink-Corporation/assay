@@ -147,6 +147,13 @@ impl<E> Schedule<E> {
         }
     }
 
+    /// A schedule for `roles` that starts nothing: the stage halted for `halt` before it.
+    pub(super) fn halted(roles: &[Role], halt: Halt) -> Self {
+        let mut schedule = Self::new(roles);
+        schedule.halt = Some(halt);
+        schedule
+    }
+
     /// The calls in flight.
     pub(super) const fn in_flight(&self) -> usize {
         self.in_flight
@@ -327,6 +334,7 @@ impl<E> Schedule<E> {
         Specialists {
             roles,
             run_cap: self.ledger.cap,
+            halt: self.halt,
         }
     }
 }

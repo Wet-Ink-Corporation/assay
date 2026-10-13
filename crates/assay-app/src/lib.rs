@@ -22,6 +22,7 @@ mod prompt_bundle;
 mod publish;
 mod replay;
 mod session_init;
+mod shard;
 mod specialists;
 mod status;
 mod tiering;
@@ -102,9 +103,14 @@ pub use replay::{
     BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
     ReplayRequest, Replayed, RunField, StoredBundle, replay_decision,
 };
+pub use shard::{
+    Import, MAX_IMPORTS, MAX_SHARD_FILES, MAX_SHARDS, Shard, ShardCount, ShardError, ShardFile,
+    Sharding, full_run_cap, shard,
+};
 pub use specialists::{
-    HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport, Specialists,
-    SpecialistsRequest, run_specialists,
+    HEAD_START, Halt, MAX_MODEL_PROCESSES, RoleFailure, RoleOutcome, RoleReport,
+    ShardedSpecialists, ShardsError, ShardsRequest, Specialists, SpecialistsRequest, run_shards,
+    run_specialists,
 };
 pub use status::{
     AppId, BundleProblem, CheckView, Detail, FetchedAt, Identities, InvalidFetchedAt,

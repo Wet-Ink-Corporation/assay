@@ -17,6 +17,10 @@ pub struct Specialists<E> {
     pub roles: Vec<RoleReport<E>>,
     /// The run cap the calls were held to: the sum of the roles' caps (06 §1).
     pub run_cap: Aeu,
+    /// Why the stage stopped starting calls, if it did: the run cap, a pause for a rate limit
+    /// or quota, or a runner's panic. A paused or stopped stage starts no later shard
+    /// ([`run_shards`](crate::run_shards)).
+    pub halt: Option<Halt>,
 }
 
 impl<E> Specialists<E> {
