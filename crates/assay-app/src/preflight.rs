@@ -12,19 +12,31 @@
 //! its `PreflightFailed` event; a pass carries `PreflightPassed` (03 §6). A field the preflight
 //! did not get to observe is written [`UNOBSERVED`].
 
+mod status;
+
 use std::ffi::OsStr;
+use std::fmt;
 
 use assay_domain::{Deferral, EventPayload, Preflight};
 use thiserror::Error;
 
 use crate::config::{BuiltinAllowlist, ExactVersion};
-use crate::session_init::{InitReadError, InitUnclean, SessionInit, check_init, is_readable};
+use crate::session_init::{InitReadError, InitUnclean, SessionInit, check_init};
+
+pub use status::{CliStatus, StatusParts, StatusReadError};
 
 /// The `authMethod` of a session authenticated by `CLAUDE_CODE_OAUTH_TOKEN`.
 pub const OAUTH_TOKEN_METHOD: &str = "oauth_token";
 
 /// The `apiProvider` of Anthropic's own API.
 pub const FIRST_PARTY_PROVIDER: &str = "firstParty";
+
+/// The runbook for rotating the OAuth token (06 F4).
+///
+/// Auth failures and doctor's expiry warning link it. It is an absolute URL because the
+/// failure is read in consumer repositories, which do not hold the document.
+pub const TOKEN_ROTATION_RUNBOOK: &str =
+    "https://github.com/Wet-Ink-Corporation/assay/blob/main/docs/operations/token-rotation.md";
 
 /// What a preflight event says for a field the preflight did not get to observe.
 pub const UNOBSERVED: &str = "unknown";
@@ -49,103 +61,6 @@ pub fn is_provider_variable(name: &OsStr) -> bool {
     PROVIDER_PREFIXES
         .iter()
         .any(|prefix| name.starts_with(prefix.as_bytes()))
-}
-
-/// The fields of `claude --version` and `claude auth status` the preflight reads, as the runner
-/// found them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusParts {
-    /// The version `claude --version` printed.
-    pub version: String,
-    /// `loggedIn`.
-    pub logged_in: bool,
-    /// `authMethod`.
-    pub auth_method: String,
-    /// `apiProvider`.
-    pub api_provider: String,
-}
-
-/// What the pinned CLI says about itself, within bounds.
-///
-/// Every name is 1 to [`MAX_BUILTIN_NAME_BYTES`](crate::MAX_BUILTIN_NAME_BYTES) bytes with no
-/// control character, so it can go into an event as it is. Build it with [`CliStatus::new`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CliStatus {
-    parts: StatusParts,
-}
-
-/// Why no [`CliStatus`] could be read. Every variant fails the preflight.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum StatusReadError {
-    /// `claude --version` did not print one line `<version> (Claude Code)`.
-    #[error("claude --version did not print `<version> (Claude Code)`")]
-    Version,
-    /// `claude auth status` is not one JSON object.
-    #[error("claude auth status did not print one JSON object")]
-    NotJson,
-    /// An object in `claude auth status` repeats a key, so which value counts depends on the
-    /// parser (RFC 8259 §4).
-    #[error("claude auth status repeats a key")]
-    RepeatedKey,
-    /// A field the preflight reads is absent or not of the expected type.
-    #[error("claude auth status field `{field}` is absent or malformed")]
-    Field {
-        /// The field.
-        field: &'static str,
-    },
-    /// A name is empty, too long or holds a control character.
-    #[error("`{field}` is not a readable name")]
-    Name {
-        /// The field (`version` for the CLI version).
-        field: &'static str,
-    },
-}
-
-impl CliStatus {
-    /// Bounds `parts`.
-    ///
-    /// # Errors
-    /// [`StatusReadError::Name`] naming the first of `version`, `authMethod` and `apiProvider`
-    /// that is empty, over [`MAX_BUILTIN_NAME_BYTES`](crate::MAX_BUILTIN_NAME_BYTES) bytes or
-    /// holds a control character.
-    pub fn new(parts: StatusParts) -> Result<Self, StatusReadError> {
-        let names = [
-            ("version", &parts.version),
-            ("authMethod", &parts.auth_method),
-            ("apiProvider", &parts.api_provider),
-        ];
-        let unreadable = names
-            .into_iter()
-            .find_map(|(field, name)| (!is_readable(name)).then_some(field));
-        match unreadable {
-            Some(field) => Err(StatusReadError::Name { field }),
-            None => Ok(Self { parts }),
-        }
-    }
-
-    /// The CLI's version.
-    #[must_use]
-    pub fn version(&self) -> &str {
-        &self.parts.version
-    }
-
-    /// Whether the CLI reports a logged-in session.
-    #[must_use]
-    pub const fn logged_in(&self) -> bool {
-        self.parts.logged_in
-    }
-
-    /// How the session authenticates.
-    #[must_use]
-    pub fn auth_method(&self) -> &str {
-        &self.parts.auth_method
-    }
-
-    /// Which API the session calls.
-    #[must_use]
-    pub fn api_provider(&self) -> &str {
-        &self.parts.api_provider
-    }
 }
 
 /// Asks the pinned CLI for its version and `claude auth status` under the environment the model
@@ -174,7 +89,7 @@ pub enum PreflightFailure<E> {
         name: String,
     },
     /// The CLI could not be asked for its status, or its answer could not be read.
-    #[error("the CLI's auth status could not be read")]
+    #[error("the CLI's version and auth status could not be read")]
     Probe(#[source] E),
     /// The CLI is not the pinned version.
     #[error("the CLI is {found:?}, not the pinned {pinned}")]
@@ -184,11 +99,14 @@ pub enum PreflightFailure<E> {
         /// The pinned version.
         pinned: String,
     },
-    /// The CLI reports no logged-in session.
-    #[error("the CLI is not logged in")]
+    /// The CLI reports no logged-in session. Links [`TOKEN_ROTATION_RUNBOOK`].
+    #[error("the CLI is not logged in; rotate the OAuth token: {TOKEN_ROTATION_RUNBOOK}")]
     NotLoggedIn,
-    /// The session is not authenticated by OAuth token.
-    #[error("the CLI authenticates with {found:?}, not {OAUTH_TOKEN_METHOD}")]
+    /// The session is not authenticated by OAuth token. Links [`TOKEN_ROTATION_RUNBOOK`].
+    #[error(
+        "the CLI authenticates with {found:?}, not {OAUTH_TOKEN_METHOD}; \
+         rotate the OAuth token: {TOKEN_ROTATION_RUNBOOK}"
+    )]
     AuthMethod {
         /// The method the CLI reported.
         found: String,
@@ -223,12 +141,42 @@ impl<E> PreflightFailure<E> {
             | Self::InitUnclean(_) => Deferral::InfraLlmUnavailable,
         }
     }
+
+    /// The runbook that fixes this failure: [`TOKEN_ROTATION_RUNBOOK`] for an auth failure the
+    /// token causes (no logged-in session, another auth method; 06 F4), `None` for the rest,
+    /// which rotating the token does not fix.
+    #[must_use]
+    pub const fn runbook(&self) -> Option<&'static str> {
+        match self {
+            Self::NotLoggedIn | Self::AuthMethod { .. } => Some(TOKEN_ROTATION_RUNBOOK),
+            Self::ProviderVariable { .. }
+            | Self::Probe(_)
+            | Self::CliVersion { .. }
+            | Self::ApiProvider { .. }
+            | Self::InitUnreadable(_)
+            | Self::InitUnclean(_) => None,
+        }
+    }
 }
 
 /// A failed preflight: its `PreflightFailed` event and why.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("preflight failed: {}", .0.reason)]
+///
+/// It shows only `preflight failed`; the reason, with the runbook link when there is one, is
+/// its `source` (ERR-05), so a reporter that walks the chain prints each once.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreflightFailed<E>(Box<Failed<E>>);
+
+impl<E> fmt::Display for PreflightFailed<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("preflight failed")
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for PreflightFailed<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0.reason)
+    }
+}
 
 /// The contents of a [`PreflightFailed`], boxed so the `Err` of a preflight stays small.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,10 +371,11 @@ impl AuthProof {
                 PreflightFailure::InitUnclean(unclean),
             ));
         }
+        let status = self.status.into_parts();
         Ok(PreflightPassed {
             event: Preflight {
-                auth_method: self.status.parts.auth_method,
-                cli_version: self.status.parts.version,
+                auth_method: status.auth_method,
+                cli_version: status.version,
                 init_clean: true,
                 builtins: Some(init.builtin_set()),
             },

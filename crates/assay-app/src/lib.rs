@@ -6,6 +6,7 @@
 //! Every versioned contract is validated on read through [`ContractValidator`]
 //! (`docs/architecture/03-contracts.md`). Base configuration is parsed into [`PluginsConfig`].
 
+mod calendar;
 mod check;
 mod config;
 mod contract;
@@ -22,14 +23,15 @@ mod replay;
 mod session_init;
 mod tiering;
 
+pub use calendar::{CalendarDate, CalendarDateError};
 pub use doctor::{
     CanaryProbe, CanaryRun, CanaryToken, Check, CheckFailure, CheckResult, DoctorError,
-    DoctorReport, doctor,
+    DoctorReport, EXPIRY_WARNING_DAYS, ExpiryWarning, doctor, token_expiry_warning,
 };
 pub use preflight::{
     AuthProof, CliProbe, CliStatus, FIRST_PARTY_PROVIDER, OAUTH_TOKEN_METHOD, PreflightFailed,
-    PreflightFailure, PreflightPassed, StatusParts, StatusReadError, UNOBSERVED,
-    is_provider_variable, preflight,
+    PreflightFailure, PreflightPassed, StatusParts, StatusReadError, TOKEN_ROTATION_RUNBOOK,
+    UNOBSERVED, is_provider_variable, preflight,
 };
 pub use session_init::{
     AllowlistDrift, InitParts, InitPlugin, InitReadError, InitUnclean, SessionInit,

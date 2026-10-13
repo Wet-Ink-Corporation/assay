@@ -3,8 +3,12 @@
 //! the observed built-ins and the pinned allowlist, a loaded or named mod (the mod canary) and a
 //! followed AGENTS.md/CLAUDE.md instruction (the AGENTS.md canary).
 //!
+//! The token's recorded expiry is judged by [`token_expiry_warning`] (05 §5, #93).
+//!
 //! Every check fails closed: a check that cannot see what it needs (an unreadable init, a call
 //! that did not answer, a canary that planted nothing) fails rather than passes.
+
+mod token_expiry;
 
 use std::fmt;
 
@@ -17,6 +21,8 @@ use crate::plan::{ArtifactNonce, NonceSource};
 use crate::session_init::{
     AllowlistDrift, InitReadError, InitUnclean, SessionInit, allowlist_drift, check_init,
 };
+
+pub use token_expiry::{EXPIRY_WARNING_DAYS, ExpiryWarning, token_expiry_warning};
 
 /// The fixed first part of every canary word.
 const WORD_PREFIX: &str = "ASSAYCANARY";
