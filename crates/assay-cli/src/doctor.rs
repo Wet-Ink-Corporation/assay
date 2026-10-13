@@ -146,7 +146,10 @@ impl fmt::Display for DoctorCliError {
 }
 
 /// `error` and each of its causes, joined by `: `.
-fn write_chain(f: &mut fmt::Formatter<'_>, error: &dyn std::error::Error) -> fmt::Result {
+pub(crate) fn write_chain(
+    f: &mut fmt::Formatter<'_>,
+    error: &dyn std::error::Error,
+) -> fmt::Result {
     write!(f, "{error}")?;
     let mut cause = error.source();
     while let Some(next) = cause {
