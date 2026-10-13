@@ -99,6 +99,15 @@ pub enum ConfigError {
         /// The value given.
         seconds: u64,
     },
+    /// A declared step passes `--no-tests` in any spelling but exactly `--no-tests=fail`, which
+    /// could let a run of zero tests pass (`docs/architecture/03-contracts.md` §2.1 step 7).
+    #[error("`{gate}` passes `{arg}`; a declared step may pass only `--no-tests=fail`")]
+    NoTests {
+        /// The `plugin.step`.
+        gate: String,
+        /// The refused argument.
+        arg: String,
+    },
 }
 
 /// The TOML parser's error, with line and column. Opaque, so the parser's type stays out of this

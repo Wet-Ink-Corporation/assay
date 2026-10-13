@@ -21,8 +21,9 @@ pub enum TemperError<S, R> {
         /// The plugin.
         plugin: String,
     },
-    /// The job is `gates-test`, whose declared steps are not built yet (#67).
-    #[error("the temper adapter does not run in {job} yet")]
+    /// The plugin has no work in the job: `gates-test` with no declared `test` step. Nothing to
+    /// run is never a pass.
+    #[error("the temper plugin declares no step for {job}")]
     UnsupportedJob {
         /// The job asked for.
         job: GateJob,
@@ -54,8 +55,9 @@ pub enum TemperError<S, R> {
         /// What was wrong.
         detail: String,
     },
-    /// The supervisor could not run `baseline --check` or a declared step.
-    #[error("could not run {process} in gates-lint")]
+    /// The supervisor could not run `baseline --check` or a declared step (in `gates-lint` or
+    /// `gates-test`). Never retried: the process may not be shown gone.
+    #[error("could not run {process}")]
     Lint {
         /// `baseline --check`, or the step's name.
         process: String,

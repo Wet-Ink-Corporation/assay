@@ -13,6 +13,7 @@ mod contract;
 mod coordinate;
 mod decide;
 mod doctor;
+mod eval;
 mod events;
 mod gate;
 mod golden;
@@ -72,6 +73,14 @@ pub use decide::{
     MAX_SYMBOL_BYTES, Moved, OutputsProblem, PlanJob, PlanMismatch, PlanRefusal, PullOnHead,
     PullRequestState, Refusal, Reported, ReportedGate, ReviewJob, RunArtifacts, Snapshot,
     StateStep, TierDegrade, Unreadable, UpstreamJob, authenticate,
+};
+pub use eval::{
+    Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,
+    ClassMap, CompareError, CorpusError, EVAL_MONTHLY_CAP, EVAL_ROLE, EVAL_RUNS, EvalCase,
+    EvalCorpus, EvalError, EvalLedger, EvalMonth, EvalReport, EvalRequest, LINE_WINDOW, Label,
+    MAX_AUTHORING_MODEL_BYTES, MAX_CASE_BYTES, MAX_CASE_ID_BYTES, MAX_EVAL_CASES, MAX_EVAL_ENTRIES,
+    MAX_LABEL_PATH_BYTES, MAX_LABELS, MAX_RUN_FINDINGS, NoiseCheck, OutputProblem, PathField,
+    Proportion, RunScore, Split, Unscorable, WILSON_Z, compare, read_eval_corpus, run_eval,
 };
 pub use events::{EventSink, NoEvents};
 pub use gate::{

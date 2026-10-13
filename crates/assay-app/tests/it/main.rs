@@ -17,6 +17,11 @@ mod decide_fakes;
 mod decide_refusals;
 mod doctor;
 mod domain_model;
+mod eval_compare;
+mod eval_corpus;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod eval_fakes;
+mod eval_run;
 mod exec_roots;
 mod gate;
 mod golden;
