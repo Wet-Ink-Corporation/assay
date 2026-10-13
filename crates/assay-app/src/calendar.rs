@@ -75,6 +75,12 @@ impl CalendarDate {
     pub const fn days_since_epoch(self) -> u32 {
         self.days
     }
+
+    /// The year and the month (1 to 12) the day falls in.
+    pub(crate) const fn year_month(self) -> (u32, u32) {
+        let (year, month, _day) = civil_from_days(self.days);
+        (year, month)
+    }
 }
 
 /// Whether `year` has a 29 February.
