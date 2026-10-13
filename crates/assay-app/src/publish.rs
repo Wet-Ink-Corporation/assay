@@ -237,22 +237,21 @@ pub type PublishOutcome<F, L, B> =
 ///
 /// ```
 /// use assay_app::{
-///     BundleStore, PublishLedger, PublishOutcome, PublishPorts, Publication, Published,
-///     VerdictForge, publish,
+///     BundleStore, PersistFailure, PublishFailure, PublishLedger, PublishPorts, Publication,
+///     Published, VerdictForge, publish,
 /// };
 ///
-/// # fn demo<F: VerdictForge, L: PublishLedger, B: BundleStore>(
-/// #     publication: &Publication<'_>,
-/// #     ports: &PublishPorts<'_, F, L, B>,
-/// # ) -> PublishOutcome<F, L, B> {
-/// let published = publish(publication, ports)?;
-/// if let Published::Written(written) = &published {
-///     // Report `written.persist` and `written.unlock`; a trust-path PR's check already
-///     // fails on a persist error.
-///     drop(&written.persist);
+/// /// The persist failure to log as a warning, if any. A trust-path or exec-surface PR's
+/// /// check already fails on it (`persist-error`).
+/// fn warning<F: VerdictForge, L: PublishLedger, B: BundleStore>(
+///     publication: &Publication<'_>,
+///     ports: &PublishPorts<'_, F, L, B>,
+/// ) -> Result<Option<&'static str>, PublishFailure<F, L>> {
+///     Ok(match publish(publication, ports)? {
+///         Published::Written(written) => written.persist.as_ref().map(PersistFailure::code),
+///         Published::Nothing | Published::Unchanged | Published::Yielded { .. } => None,
+///     })
 /// }
-/// # Ok(published)
-/// # }
 /// ```
 ///
 /// # Errors

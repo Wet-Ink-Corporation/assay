@@ -38,6 +38,8 @@ pub(crate) struct Run {
     pub(crate) inputs: DecisionInputs,
     pub(crate) rubric: Rubric,
     pub(crate) events: Vec<Event>,
+    /// What the run spent, shown in the summary but not part of the bundle.
+    pub(crate) cost: Aeu,
 }
 
 impl Run {
@@ -56,6 +58,7 @@ impl Run {
             inputs,
             rubric: rubric_v1()?,
             events: Vec::new(),
+            cost: Aeu::from_micros(740_000),
         })
     }
 
@@ -77,7 +80,7 @@ impl Run {
                 rubric: &self.rubric,
                 inputs: &self.inputs,
                 events: &self.events,
-                cost: Aeu::from_micros(740_000),
+                cost: self.cost,
             }),
         };
         publish(&publication, &ports(world))

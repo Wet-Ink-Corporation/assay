@@ -201,14 +201,23 @@ impl Scenario {
     }
 
     /// The scenario for `pr`, planned with a base config that protects `main`.
-    pub(crate) fn of(mut pr: FakePr) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn of(pr: FakePr) -> Result<Self, Box<dyn Error>> {
+        Self::requested(pr, |_| {})
+    }
+
+    /// The scenario for `pr`, its plan request changed by `adjust` before planning.
+    pub(crate) fn requested(
+        mut pr: FakePr,
+        adjust: impl FnOnce(&mut PlanRequest),
+    ) -> Result<Self, Box<dyn Error>> {
         let protected = plugins_toml().replacen(
             "claude_cli = \"2.1.296\"",
             "claude_cli = \"2.1.296\"\nprotected_bases = [\"main\"]",
             1,
         );
         pr.write(BASE, ".assay/plugins.toml", protected.as_bytes());
-        let plan_request = request(&pr)?;
+        let mut plan_request = request(&pr)?;
+        adjust(&mut plan_request);
         let planned = plan(
             &plan_request,
             &pr,

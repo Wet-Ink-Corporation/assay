@@ -192,14 +192,50 @@ fn block(lines: &mut Vec<String>, total: usize, items: impl Iterator<Item = Stri
     }
 }
 
-/// `item` on one line: control characters (line breaks included) become U+FFFD, and past
-/// [`MAX_ITEM_CHARS`] characters it is cut and ends with `…`.
+/// Unicode general category Cf (format characters) as of Unicode 15.1, as inclusive ranges:
+/// bidi embeddings, overrides and isolates, zero-width characters, the byte-order mark, tags
+/// and the rest, none of which shows as itself. std has no category lookup and this list
+/// avoids a dependency; a character added to Cf later passes as itself.
+const FORMAT: [(char, char); 21] = [
+    ('\u{00ad}', '\u{00ad}'),
+    ('\u{0600}', '\u{0605}'),
+    ('\u{061c}', '\u{061c}'),
+    ('\u{06dd}', '\u{06dd}'),
+    ('\u{070f}', '\u{070f}'),
+    ('\u{0890}', '\u{0891}'),
+    ('\u{08e2}', '\u{08e2}'),
+    ('\u{180e}', '\u{180e}'),
+    ('\u{200b}', '\u{200f}'),
+    ('\u{202a}', '\u{202e}'),
+    ('\u{2060}', '\u{2064}'),
+    ('\u{2066}', '\u{206f}'),
+    ('\u{feff}', '\u{feff}'),
+    ('\u{fff9}', '\u{fffb}'),
+    ('\u{110bd}', '\u{110bd}'),
+    ('\u{110cd}', '\u{110cd}'),
+    ('\u{13430}', '\u{1343f}'),
+    ('\u{1bca0}', '\u{1bca3}'),
+    ('\u{1d173}', '\u{1d17a}'),
+    ('\u{e0001}', '\u{e0001}'),
+    ('\u{e0020}', '\u{e007f}'),
+];
+
+/// Whether `c` renders as something other than itself: a control or a format character.
+fn is_hidden(c: char) -> bool {
+    c.is_control()
+        || FORMAT
+            .iter()
+            .any(|&(first, last)| (first..=last).contains(&c))
+}
+
+/// `item` on one line: control and format characters (line breaks and bidi controls included)
+/// become U+FFFD, and past [`MAX_ITEM_CHARS`] characters it is cut and ends with `…`.
 fn clean(item: &str) -> String {
     let mut chars = item.chars();
     let mut cleaned: String = chars
         .by_ref()
         .take(MAX_ITEM_CHARS)
-        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .map(|c| if is_hidden(c) { '\u{fffd}' } else { c })
         .collect();
     if chars.next().is_some() {
         cleaned.push('…');
@@ -292,6 +328,44 @@ mod tests {
         let lines = rendered(&["`code`".to_owned()]);
 
         assert_eq!(lines, ["```text", "`code`", "```"]);
+    }
+
+    #[test]
+    fn bidi_and_invisible_format_characters_are_replaced() {
+        let format: String = [
+            '\u{202a}',
+            '\u{202b}',
+            '\u{202c}',
+            '\u{202d}',
+            '\u{202e}',
+            '\u{2066}',
+            '\u{2067}',
+            '\u{2068}',
+            '\u{2069}',
+            '\u{200b}',
+            '\u{200c}',
+            '\u{200d}',
+            '\u{200e}',
+            '\u{200f}',
+            '\u{feff}',
+            '\u{00ad}',
+            '\u{2060}',
+            '\u{e0041}',
+        ]
+        .into_iter()
+        .collect();
+
+        let cleaned = clean(&["a", format.as_str(), "b"].concat());
+
+        let expected: String = ["a", "\u{fffd}".repeat(18).as_str(), "b"].concat();
+        assert_eq!(cleaned, expected);
+    }
+
+    #[test]
+    fn letters_marks_and_symbols_are_kept() {
+        let kept = "é ß 日本 ✓ —";
+
+        assert_eq!(clean(kept), kept);
     }
 
     #[test]

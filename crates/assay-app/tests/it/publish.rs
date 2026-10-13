@@ -9,7 +9,7 @@ use assay_app::{
     CheckConclusion, CheckName, CheckState, CheckStatus, ForgeStep, JobResult, Publication,
     PublishError, Published, SUMMARY_MARKER, Stale, Unlock, Verdict, publish,
 };
-use assay_domain::{Deferral, InfraPolicy, LlmStage, Override, OverrideScope, decide};
+use assay_domain::{Aeu, Deferral, InfraPolicy, LlmStage, Override, OverrideScope, decide};
 
 use crate::decide_fakes::{Scenario, refusal};
 use crate::plan_fakes::{FakeError, HEAD};
@@ -244,9 +244,10 @@ fn a_pr_into_another_base_writes_only_that_base_s_check() -> Result<(), Box<dyn 
 fn two_writers_reading_the_same_stamp_never_both_publish() -> Result<(), Box<dyn Error>> {
     let scenario = Scenario::new()?;
     let first = Run::of(&scenario)?;
+    // Both writers are run 7, so they share the bundle (and its artifact, whose store refuses
+    // other bytes); they differ only in the cost the summary shows.
     let mut second = Run::of(&scenario)?;
-    second.inputs.decision_key = format!("sha256:{}", "e".repeat(64));
-    let other_key = second.inputs.decision_key.clone();
+    second.cost = Aeu::from_micros(1_250_000);
     let world = stamped()?;
     // The second writer reads the stamp after the first did, then takes the lock first.
     *world.interleave.borrow_mut() = Some(Box::new(move |world: &FakeWorld| {
@@ -273,9 +274,12 @@ fn two_writers_reading_the_same_stamp_never_both_publish() -> Result<(), Box<dyn
         .iter()
         .filter(|c| **c == Call::UpdateCheck)
         .count();
-    assert_eq!(
-        (updates, world.app_check(NAME)?.external_id),
-        (1, other_key)
+    let check = world.app_check(NAME)?;
+    let summary = check.output.ok_or("written")?.summary;
+    assert_eq!((updates, check.external_id.as_str()), (1, KEY));
+    assert!(
+        summary.contains("AEU: 1.25"),
+        "the second writer's: {summary}"
     );
     assert_eq!(
         world.evidence.borrow().len(),

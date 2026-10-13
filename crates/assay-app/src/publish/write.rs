@@ -68,21 +68,16 @@ pub(super) fn write<F: VerdictForge, L: PublishLedger, B: BundleStore>(
 ) -> PublishOutcome<F, L, B> {
     let event = target.pull_request;
     let name = CheckName::for_base(&event.base_ref, target.default_branch);
-    let observed = ports
-        .forge
-        .find_check(&event.head_sha, &name)
-        .map_err(PublishError::Observe)?
-        .ok_or(PublishError::CheckMissing)?;
-    let key = pending.key();
-    if observed.external_id == key && observed.status == CheckStatus::Completed {
-        return Ok(Published::Unchanged);
-    }
-    if observed.external_id != key && !is_own_stamp(&observed.external_id, target) {
-        return Ok(Published::Yielded {
-            stale: Stale::Foreign,
-            unlock: Unlock::NotTaken,
-        });
-    }
+    let observed = match observe(target, ports.forge, &name, pending.key())? {
+        Observation::Writable(observed) => observed,
+        Observation::Unchanged => return Ok(Published::Unchanged),
+        Observation::Foreign => {
+            return Ok(Published::Yielded {
+                stale: Stale::Foreign,
+                unlock: Unlock::NotTaken,
+            });
+        }
+    };
     // Uploaded before the lock: it is slow, and an artifact nothing points to is harmless.
     let prepared = match pending {
         Pending::Refused(update) => Prepared::Refused(update),
@@ -120,6 +115,41 @@ pub(super) fn write<F: VerdictForge, L: PublishLedger, B: BundleStore>(
             unlock,
         }),
     }
+}
+
+/// What the first read of the check allows.
+enum Observation {
+    /// The check is this run's to write: stamped for it, or carrying `key` but not completed.
+    Writable(CheckRun),
+    /// The check is completed under `key` already: nothing to write.
+    Unchanged,
+    /// The check carries neither `key` nor this run's stamp: another run owns it.
+    Foreign,
+}
+
+/// Reads the App check `name` on the head and judges it against `key` and this run's stamp,
+/// before any write or the lock.
+fn observe<F: VerdictForge, E>(
+    target: &Target<'_>,
+    forge: &F,
+    name: &CheckName,
+    key: &str,
+) -> Result<Observation, PublishError<F::Error, E>> {
+    let observed = forge
+        .find_check(&target.pull_request.head_sha, name)
+        .map_err(PublishError::Observe)?
+        .ok_or(PublishError::CheckMissing)?;
+    Ok(if observed.external_id == key {
+        if observed.status == CheckStatus::Completed {
+            Observation::Unchanged
+        } else {
+            Observation::Writable(observed)
+        }
+    } else if is_own_stamp(&observed.external_id, target) {
+        Observation::Writable(observed)
+    } else {
+        Observation::Foreign
+    })
 }
 
 /// Whether `external_id` is `open`'s stamp for this run: `pending:<run_id>:<seq>`, with `seq`

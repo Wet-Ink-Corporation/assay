@@ -296,9 +296,16 @@ impl BundleStore for FakeWorld {
 
     fn upload(&self, artifact: &str, file: &str, bytes: &[u8]) -> Result<(), FakeError> {
         self.record(Call::Upload)?;
-        self.uploads
-            .borrow_mut()
-            .push((artifact.to_owned(), file.to_owned(), bytes.to_vec()));
-        Ok(())
+        // The port's contract: equal bytes again succeed without writing; other bytes for an
+        // existing file are refused, never overwritten.
+        let mut uploads = self.uploads.borrow_mut();
+        match uploads.iter().find(|(a, f, _)| a == artifact && f == file) {
+            Some((_, _, kept)) if kept == bytes => Ok(()),
+            Some(_) => Err(FakeError),
+            None => {
+                uploads.push((artifact.to_owned(), file.to_owned(), bytes.to_vec()));
+                Ok(())
+            }
+        }
     }
 }

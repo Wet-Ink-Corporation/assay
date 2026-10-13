@@ -103,11 +103,18 @@ pub trait BundleStore {
     /// Why the artifact could not be uploaded.
     type Error: std::error::Error;
 
-    /// Uploads `bytes` as `file` of a new artifact named `artifact`, kept 90 days.
+    /// Uploads `bytes` as `file` of the artifact named `artifact`, kept 90 days.
+    ///
+    /// Idempotent for equal bytes: when `artifact` already holds `file` with exactly `bytes`
+    /// (the same run publishing again after `open` re-stamped its check), the upload succeeds
+    /// without writing, so a republish never turns a persisted decision into `persist-error`.
+    /// An existing `file` with other bytes is never overwritten: that is an error, since the
+    /// evidence pointer already names the first upload's digest.
     ///
     /// # Errors
     ///
-    /// [`Self::Error`] when the upload failed.
+    /// [`Self::Error`] when the upload failed, or `artifact` already holds `file` with other
+    /// bytes.
     fn upload(&self, artifact: &str, file: &str, bytes: &[u8]) -> Result<(), Self::Error>;
 }
 

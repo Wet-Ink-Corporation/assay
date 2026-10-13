@@ -13,14 +13,14 @@ use assay_app::{
 };
 use assay_domain::{
     Deferral, Event, EventPayload, EventSchema, FileChange, Lines, LlmStage, NotRunReason,
-    Override, OverrideScope, Readiness, decide,
+    Override, OverrideScope, PrClass, Readiness, decide,
 };
 use serde_json::Value;
 
 use crate::decide_fakes::Scenario;
 use crate::plan_fakes::{FakeError, FakePr, run_uid};
 use crate::publish_fakes::{Call, FakeWorld};
-use crate::publish_support::{NAME, Run, stamped, written};
+use crate::publish_support::{NAME, Run, STAMP, stamped, written};
 
 /// The one upload's artifact, file and bytes.
 fn upload(world: &FakeWorld) -> Result<(String, String, Vec<u8>), Box<dyn Error>> {
@@ -102,9 +102,8 @@ fn the_run_inputs_fixtures_pass_or_fail_their_schema_where_listed() -> Result<()
     Ok(())
 }
 
-/// A run of a PR changing a CI workflow (a trust path), overridden with `all` so the rubric
-/// alone would publish `neutral`.
-fn trust_path_run() -> Result<Run, Box<dyn Error>> {
+/// A PR changing a CI workflow (a trust path).
+fn trust_path_pr() -> FakePr {
     let mut pr = FakePr::new();
     pr.changes = assay_app::ChangedFiles::Listed(vec![FileChange::new(
         ".github/workflows/ci.yml",
@@ -113,7 +112,31 @@ fn trust_path_run() -> Result<Run, Box<dyn Error>> {
             removed: 0,
         },
     )]);
-    let mut run = Run::of(&Scenario::of(pr)?)?;
+    pr
+}
+
+/// A run of a PR changing a CI workflow (a trust path), overridden with `all` so the rubric
+/// alone would publish `neutral`.
+fn trust_path_run() -> Result<Run, Box<dyn Error>> {
+    overridden(&Scenario::of(trust_path_pr())?)
+}
+
+/// A run whose head has no package set, so it is exec surface (and only that), overridden
+/// with `all` so the rubric alone would publish `neutral`.
+fn exec_surface_run() -> Result<Run, Box<dyn Error>> {
+    let scenario = Scenario::requested(FakePr::new(), |request| request.head_packages = None)?;
+    let run = overridden(&scenario)?;
+    assert_eq!(
+        run.authenticated.tiering().classes,
+        [PrClass::ExecSurface],
+        "the run is exec surface only"
+    );
+    Ok(run)
+}
+
+/// `scenario`'s run with an `all` override of its current reasons.
+fn overridden(scenario: &Scenario) -> Result<Run, Box<dyn Error>> {
+    let mut run = Run::of(scenario)?;
     let reasons_digest = decide(&run.rubric, &run.inputs).reasons_digest();
     run.inputs.override_record = Some(Override {
         scope: OverrideScope::All,
@@ -138,6 +161,34 @@ fn event(job: &str, idx: u64) -> Result<Event, Box<dyn Error>> {
 }
 
 // --- the bundle and its pointer ---
+
+#[test]
+fn republishing_a_run_uploads_the_same_bundle_and_still_persists() -> Result<(), Box<dyn Error>> {
+    let run = Run::new()?;
+    let world = stamped()?;
+    let first = written(run.publish(&world))?;
+    world.restamp(STAMP);
+
+    let second = written(run.publish(&world))?;
+
+    assert_matches!((first.persist, second.persist), (None, None));
+    let uploads = world
+        .calls
+        .borrow()
+        .iter()
+        .filter(|call| **call == Call::Upload)
+        .count();
+    assert_eq!(uploads, 2, "the bundle is uploaded again");
+    let pointers: Vec<Sha256Digest> = world
+        .evidence
+        .borrow()
+        .iter()
+        .map(|entry| entry.pointer.sha256.clone())
+        .collect();
+    let digest = Sha256Digest::of(&upload(&world)?.2);
+    assert_eq!(pointers, [digest.clone(), digest]);
+    Ok(())
+}
 
 #[test]
 fn the_pointer_s_digest_is_the_uploaded_bundle_s() -> Result<(), Box<dyn Error>> {
@@ -412,6 +463,62 @@ fn a_bundle_over_its_cap_is_not_persisted() -> Result<(), Box<dyn Error>> {
         Some(PersistFailure::Bundle(BundleError::TooLarge))
     );
     assert_eq!(*world.uploads.borrow(), []);
+    let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
+    assert!(summary.contains("(`bundle-too-large`)"), "{summary}");
+    Ok(())
+}
+
+#[test]
+fn a_trust_path_pr_whose_bundle_is_not_utf8_fails_closed() -> Result<(), Box<dyn Error>> {
+    let mut scenario = Scenario::of(trust_path_pr())?;
+    scenario.publish_review("combined-micro.json", vec![b'{', 0xff, b'}'])?;
+    let run = overridden(&scenario)?;
+    let world = stamped()?;
+
+    let written = written(run.publish(&world))?;
+
+    assert_eq!(
+        written.state,
+        CheckState::Completed(CheckConclusion::Failure)
+    );
+    let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
+    assert!(
+        summary.contains("persist-error: bundle-not-utf8"),
+        "{summary}"
+    );
+    assert_eq!(*world.uploads.borrow(), []);
+    assert_eq!(*world.evidence.borrow(), [], "no pointer without a bundle");
+    Ok(())
+}
+
+#[test]
+fn a_failed_upload_fails_an_exec_surface_pr_closed() -> Result<(), Box<dyn Error>> {
+    let run = exec_surface_run()?;
+    let world = stamped()?;
+    world.fail(Call::Upload, 1);
+
+    let written = written(run.publish(&world))?;
+
+    assert_eq!(
+        written.state,
+        CheckState::Completed(CheckConclusion::Failure)
+    );
+    let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
+    assert!(summary.contains("persist-error: upload"), "{summary}");
+    Ok(())
+}
+
+#[test]
+fn an_exec_surface_pr_that_persists_keeps_its_override() -> Result<(), Box<dyn Error>> {
+    let run = exec_surface_run()?;
+    let world = stamped()?;
+
+    let written = written(run.publish(&world))?;
+
+    assert_eq!(
+        written.state,
+        CheckState::Completed(CheckConclusion::Neutral)
+    );
     Ok(())
 }
 
