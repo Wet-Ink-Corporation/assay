@@ -6,7 +6,6 @@ use std::borrow::Cow;
 
 use serde_json::Value;
 
-use super::super::screen;
 use crate::contract::parse_json_strict;
 
 /// What may stand before each byte of hex written one byte at a time, lowercase (after
@@ -23,7 +22,7 @@ const MAX_BYTE_DIGITS: usize = 3;
 ///
 /// Cost: linear; each step consumes at least one byte and tries a fixed set of prefixes.
 pub(super) fn hex_view(text: &str) -> Vec<u8> {
-    let folded = screen::fold(text);
+    let folded = super::fold(text);
     let mut rest = folded.as_bytes();
     let mut view = Vec::with_capacity(rest.len());
     while let Some((&first, tail)) = rest.split_first() {
@@ -67,17 +66,24 @@ fn decimal_reference(text: &[u8]) -> Option<(u8, &[u8])> {
 
 /// Whether `c` is drawn like an ASCII letter or digit from a block that normalisation drops
 /// rather than reads back: Mathematical Alphanumeric Symbols, Enclosed Alphanumerics and their
-/// supplement, superscripts and subscripts, small capitals and modifier letters, or any
-/// non-ASCII numeric character. Such text is refused, not mapped (wi-b5affa).
+/// supplement, superscript and subscript letters, small capitals and modifier letters, a Latin
+/// letter with no ASCII base, or any other non-ASCII numeric character. Such text is refused,
+/// not mapped (wi-b5affa). Superscript and subscript digits are read as ASCII digits instead.
 pub(super) fn is_obfuscated(c: char) -> bool {
-    matches!(
-        c,
-        '\u{1d400}'..='\u{1d7ff}'
-            | '\u{2460}'..='\u{24ff}'
-            | '\u{1f100}'..='\u{1f1ff}'
-            | '\u{2070}'..='\u{209f}'
-            | '\u{1d00}'..='\u{1dbf}'
-    ) || (c.is_numeric() && !c.is_ascii_digit())
+    if super::latin::script_digit(c).is_some() {
+        // Read as an ASCII digit (`O(n²)`), not refused.
+        return false;
+    }
+    super::latin::is_unmapped_latin(c)
+        || matches!(
+            c,
+            '\u{1d400}'..='\u{1d7ff}'
+                | '\u{2460}'..='\u{24ff}'
+                | '\u{1f100}'..='\u{1f1ff}'
+                | '\u{2070}'..='\u{209f}'
+                | '\u{1d00}'..='\u{1dbf}'
+        )
+        || (c.is_numeric() && !c.is_ascii_digit())
 }
 
 /// A document whose escapes could not be read back, so what it spells is unknown.
@@ -234,15 +240,15 @@ mod tests {
     }
 
     #[test]
-    fn refuses_lookalikes_but_not_letters_of_other_scripts() {
+    fn refuses_lookalikes_but_not_letters_of_other_scripts_or_raised_digits() {
         let refused = [
-            '𝐀', '𝐳', '𝟗', '①', '🄰', '⁴', '₄', '²', 'ᴀ', 'ᵃ', '٣', '５', '½',
+            '𝐀', '𝐳', '𝟗', '①', '🄰', 'ⁿ', 'ₐ', 'ᴀ', 'ᵃ', '٣', '５', '½', 'ß', 'ł',
         ];
-        let read = ['a', 'é', 'ж', 'Ω', '中', '7'];
+        let read = ['a', 'é', 'ạ', 'ж', 'Ω', '中', '7', '²', '⁴', '₄'];
 
         assert_eq!(
             (refused.map(is_obfuscated), read.map(is_obfuscated)),
-            ([true; 13], [false; 6])
+            ([true; 14], [false; 10])
         );
     }
 }

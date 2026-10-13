@@ -364,3 +364,33 @@ fn explains_the_runs_own_commits_exactly() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn flags_a_rejected_document_holding_an_escape_it_cannot_read() -> Result<(), Box<dyn Error>> {
+    let rejected = br#"{"schema": "assay.findings/1", "note": "\q""#.to_vec();
+    let at = FindingRef::Document { document: 0 };
+    let run = Run {
+        token: Some(token()?),
+        ..Run::default()
+    };
+
+    let validated = run.validate(&[rejected])?;
+
+    let codes: Vec<_> = validated
+        .transitions
+        .iter()
+        .map(|t| (t.at, t.code))
+        .collect();
+    assert_eq!(
+        (codes, validated.egress),
+        (
+            vec![(at, Disposition::InjectionSuspect)],
+            vec![EgressHit {
+                at,
+                field: FreeTextField::RejectedDocument,
+                kind: EgressKind::TokenShaped,
+            }]
+        )
+    );
+    Ok(())
+}

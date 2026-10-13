@@ -69,8 +69,9 @@ fn reads_fullwidth_digits_as_ascii_ones() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn flags_a_lookalike_alphanumeric_from_each_refused_block() -> Result<(), Box<dyn Error>> {
-    // Mathematical, circled, parenthesised-squared, superscript, small capital, non-ASCII digit.
-    let lookalikes = ["𝐳", "①", "🄰", "⁴", "²", "ᴀ", "٣"];
+    // Mathematical, circled, squared, superscript and subscript letters, small capital,
+    // non-ASCII digit, and Latin letters with no ASCII base.
+    let lookalikes = ["𝐳", "①", "🄰", "ⁿ", "ₐ", "ᴀ", "٣", "ß", "ø"];
     let findings: Vec<_> = lookalikes
         .iter()
         .map(|c| finding_with(json!({ "body": format!("see {c} here") })))
@@ -143,5 +144,42 @@ fn catches_decimal_character_references() -> Result<(), Box<dyn Error>> {
         .concat();
 
     assert_eq!(kind_of(&decimal)?, Some(EgressKind::Token));
+    Ok(())
+}
+
+/// `TOKEN` with each ASCII letter that has one written with a dot below (or above), case kept,
+/// spaced every 15 characters (generated with Python's `unicodedata.normalize("NFC", c + mark)`).
+const DOTTED: &str = "\u{1e63}\u{1e33}-\u{1ea1}\u{1e47}\u{1e6d}-\u{1ecd}\u{1ea1}\u{1e6d}01-\u{1e92}q 3\u{1e36}\u{1e89}9_\u{1e8a}\u{1e7f}2\u{1e5a}\u{1e6d}~~~\u{1e24}\u{1e57} 8\u{1e46}\u{10b}\u{1ef4}\u{1e05}4?\u{1e42}\u{1e0d}\u{1e32}\u{1e63}7\u{1ee4}\u{1eb9}1 J\u{1ea1}6\u{120}\u{1e1f}0\u{1e6c}\u{1ecb}5\u{1e88}\u{1ecd}>>?";
+
+#[test]
+fn reads_the_token_in_dotted_latin_letters() -> Result<(), Box<dyn Error>> {
+    assert_eq!(kind_of(DOTTED)?, Some(EgressKind::Token));
+    Ok(())
+}
+
+#[test]
+fn reads_the_token_with_superscript_digits() -> Result<(), Box<dyn Error>> {
+    // Every digit raised: no twelve ASCII characters of the token are left in a row.
+    let raised = respelled(|c| match c {
+        '0' => Some('\u{2070}'),
+        '1' => Some('\u{b9}'),
+        '2' => Some('\u{b2}'),
+        '3' => Some('\u{b3}'),
+        '4'..='9' => char::from_u32(0x2070 + (u32::from(c) - u32::from('0'))),
+        _ => None,
+    });
+
+    assert_eq!(kind_of(&raised)?, Some(EgressKind::Token));
+    Ok(())
+}
+
+#[test]
+fn passes_superscript_and_subscript_digits_in_prose() -> Result<(), Box<dyn Error>> {
+    let prose =
+        finding_with(json!({ "body": "The loop is O(n\u{b2}) over x\u{2081} to x\u{2089}." }));
+
+    let validated = z4(&[prose])?;
+
+    assert_eq!(validated.egress, Vec::new());
     Ok(())
 }

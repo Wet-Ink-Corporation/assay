@@ -9,6 +9,7 @@
 //! is the catch-all, so what is not provably the tree's own text is a hit (wi-b5affa).
 
 mod encoding;
+mod latin;
 mod views;
 
 use std::collections::HashSet;
@@ -46,8 +47,9 @@ pub enum EgressKind {
     /// base `REVIEW.md`.
     UnexplainedRun,
     /// A character drawn like an ASCII letter or digit from a block normalisation cannot read
-    /// back: mathematical alphanumerics, enclosed alphanumerics, superscripts and subscripts,
-    /// small capitals and modifier letters, and any non-ASCII numeric character.
+    /// back: mathematical alphanumerics, enclosed alphanumerics, superscript and subscript
+    /// letters, small capitals and modifier letters, Latin letters with no ASCII base (`ß`,
+    /// `ø`), and non-ASCII numeric characters other than superscript and subscript digits.
     Obfuscated,
     /// In an artifact: a token-shaped string the tree does not explain (a credential prefix, a
     /// private key header, an AWS access key id, or a long run mixing letters and digits that
@@ -317,15 +319,21 @@ impl<'t> EgressScan<'t> {
     }
 }
 
-/// `text` as the token windows are compared with it: folded as a reader sees it (invisible
-/// characters dropped, lowercase, lookalike letters read as Latin), then only ASCII letters
-/// and digits kept. Separators, case, and the difference between the two base64 alphabets are
+/// `text` as the token windows are compared with it: [`fold`]ed, then only ASCII letters and
+/// digits kept. Separators, case, and the difference between the two base64 alphabets are
 /// gone.
 fn normalise(text: &str) -> Vec<u8> {
-    screen::fold(text)
+    fold(text)
         .bytes()
         .filter(u8::is_ascii_alphanumeric)
         .collect()
+}
+
+/// `text` as a reader sees it, for the scan: the screen's fold (invisible characters dropped,
+/// lowercase, lookalike letters read as Latin), then precomposed Latin letters read as their
+/// base ASCII letter and superscript and subscript digits as ASCII digits.
+fn fold(text: &str) -> String {
+    screen::fold(text).chars().map(latin::fold_char).collect()
 }
 
 /// The runs of `text` of at least [`MIN_UNEXPLAINED_RUN`] characters. A run is a maximal
