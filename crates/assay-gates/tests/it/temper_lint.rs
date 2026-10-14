@@ -10,7 +10,7 @@
 //! `git diff` throws: mode `totals`, base `null`, `ok` still true.
 
 use std::assert_matches;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
@@ -104,6 +104,8 @@ struct FakeLint {
     leaves: Leaves,
     /// How each step ends, by its program's first argument (`fmt`, `deny`); exit 0 otherwise.
     steps: BTreeMap<String, Termination>,
+    /// How a step's first attempts end, in order, before `steps` applies.
+    attempts: BTreeMap<String, VecDeque<Termination>>,
     /// When set, the supervisor cannot start this step, or `baseline --check` for `baseline`.
     cannot_start: Option<String>,
     seen: Vec<SeenSpec>,
@@ -122,6 +124,7 @@ impl FakeLint {
             baseline,
             leaves,
             steps: BTreeMap::new(),
+            attempts: BTreeMap::new(),
             cannot_start: None,
             seen: Vec::new(),
         }
@@ -130,6 +133,28 @@ impl FakeLint {
     fn step_ends(mut self, step: &str, termination: Termination) -> Self {
         self.steps.insert(step.to_owned(), termination);
         self
+    }
+
+    /// `step`'s first attempts end as `attempts`, in order; later ones as `steps` says.
+    fn step_attempts(mut self, step: &str, attempts: &[Termination]) -> Self {
+        self.attempts
+            .insert(step.to_owned(), attempts.iter().copied().collect());
+        self
+    }
+
+    /// Each process run, in order: a step by its first argument, `baseline --check` as
+    /// `baseline`.
+    fn ran(&self) -> Vec<&str> {
+        self.seen
+            .iter()
+            .map(|seen| {
+                if seen.args.get(1).map(String::as_str) == Some("baseline") {
+                    "baseline"
+                } else {
+                    seen.args.first().map_or("", String::as_str)
+                }
+            })
+            .collect()
     }
 
     fn play_baseline(&self, cwd: &Path) -> Result<Termination, FakeError> {
@@ -169,6 +194,8 @@ impl CaptureSupervisor for FakeLint {
             return Err(FakeError(format!("cannot start {process}")));
         } else if baseline {
             self.play_baseline(spec.cwd)?
+        } else if let Some(attempt) = self.attempts.get_mut(first).and_then(VecDeque::pop_front) {
+            attempt
         } else {
             self.steps
                 .get(first)
@@ -985,17 +1012,71 @@ fn baseline_check_that_cannot_start_is_a_gate_error() -> Result<(), Box<dyn Erro
 #[test]
 fn a_step_that_does_not_exit_is_that_gate_error() -> Result<(), Box<dyn Error>> {
     let pr = Pr::new()?;
-    let cases = [
-        (Termination::Signalled, GateError::Signal),
-        (Termination::OutputTooLarge, GateError::OutputTooLarge),
+    let cases: [(Termination, GateError, &[&str]); 2] = [
+        // A signal is infra-class (06 F9): one retry, signalled again, then the run stops.
+        (Termination::Signalled, GateError::Signal, &["fmt", "fmt"]),
+        (
+            Termination::OutputTooLarge,
+            GateError::OutputTooLarge,
+            &["fmt"],
+        ),
     ];
-    for (termination, expected) in cases {
+    for (termination, expected, ran) in cases {
         let mut lint = FakeLint::leaving(DIFF_TOTALS).step_ends("fmt", termination);
 
         let (outcome, _) = outcome(&pr, &mut lint)?;
 
         assert_eq!(outcome, GateOutcome::Error(expected), "{termination:?}");
-        assert_eq!(lint.seen.len(), 1, "{termination:?}: nothing runs after it");
+        assert_eq!(lint.ran(), ran, "{termination:?}: nothing runs after it");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_lint_step_a_signal_ended_is_retried_once_and_the_retry_decides() -> Result<(), Box<dyn Error>>
+{
+    let pr = Pr::new()?;
+    let cases = [
+        (
+            "fmt",
+            Termination::Exited(0),
+            PASSED,
+            ["fmt", "fmt", "deny", "baseline"],
+        ),
+        (
+            "deny",
+            Termination::Exited(1),
+            FAILED,
+            ["fmt", "deny", "deny", "baseline"],
+        ),
+    ];
+    for (step, retry, expected, ran) in cases {
+        let mut lint =
+            FakeLint::leaving(DIFF_TOTALS).step_attempts(step, &[Termination::Signalled, retry]);
+
+        let (outcome, _) = outcome(&pr, &mut lint)?;
+
+        assert_eq!(outcome, expected, "{step}");
+        assert_eq!(lint.ran(), ran, "{step}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_lint_step_that_exits_non_zero_is_not_retried() -> Result<(), Box<dyn Error>> {
+    let pr = Pr::new()?;
+    for step in ["fmt", "deny"] {
+        let mut lint = FakeLint::leaving(DIFF_TOTALS)
+            .step_attempts(step, &[Termination::Exited(1), Termination::Exited(0)]);
+
+        let (outcome, _) = outcome(&pr, &mut lint)?;
+
+        assert_eq!(outcome, FAILED, "{step}");
+        assert_eq!(
+            lint.ran(),
+            ["fmt", "deny", "baseline"],
+            "{step}: an exit is the step's verdict"
+        );
     }
     Ok(())
 }

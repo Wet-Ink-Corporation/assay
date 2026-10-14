@@ -1,7 +1,10 @@
-//! Reads back the verdict check's `output.text` exactly as [`super::text`] writes it, for
-//! `assay status`. Any other text is refused (wi-b5affa): the reader never guesses at a format.
+//! Reads back the verdict check's `output.text` exactly as [`super::text`] writes it, and a
+//! refusal's `output.title` exactly as [`super::title`] writes it, for `assay status`. Any other
+//! text is refused (wi-b5affa): the reader never guesses at a format.
 
 use std::num::NonZeroU64;
+
+use assay_domain::ReasonCode;
 
 use crate::config::Sha256Digest;
 use crate::publish::ports::EvidencePointer;
@@ -11,8 +14,21 @@ use crate::publish::ports::EvidencePointer;
 pub(crate) struct ProjectedText<'a> {
     /// The decision key the check was written under.
     pub(crate) decision_key: &'a str,
+    /// The decision's inputs digest: `None` exactly when the run was refused before the rubric
+    /// (a decided run always writes it).
+    pub(crate) inputs_digest: Option<&'a str>,
     /// The evidence pointer, `None` when the run persisted no bundle.
     pub(crate) pointer: Option<EvidencePointer>,
+}
+
+/// The reason code of a refusal's `output.title`, read as [`super::title`] writes it for a
+/// `failure` with one reason (`assay: failure (<code>)`), or `None` for any other title: more
+/// than one reason, another conclusion, or a code outside 03's closed list.
+pub(crate) fn read_refusal_title(title: &str) -> Option<ReasonCode> {
+    let code = title.strip_prefix("assay: failure (")?.strip_suffix(')')?;
+    ReasonCode::ALL
+        .into_iter()
+        .find(|reason| reason.code() == code)
 }
 
 /// `text` read as [`super::text`] writes it, or `None` when it is anything else.
@@ -23,8 +39,10 @@ pub(crate) fn read_text(text: &str) -> Option<ProjectedText<'_>> {
     }
     let decision_key = lines.next()?.strip_prefix("decision_key: ")?;
     let mut line = lines.next()?;
+    let mut inputs_digest = None;
     if let Some(digest) = line.strip_prefix("inputs_digest: ") {
         digest.parse::<Sha256Digest>().ok()?;
+        inputs_digest = Some(digest);
         line = lines.next()?;
     }
     let pointer = match line.strip_prefix("evidence pointer: ")? {
@@ -38,6 +56,7 @@ pub(crate) fn read_text(text: &str) -> Option<ProjectedText<'_>> {
     let closed = lines.next()? == "```" && lines.next().is_none();
     closed.then_some(ProjectedText {
         decision_key,
+        inputs_digest,
         pointer,
     })
 }
@@ -66,11 +85,11 @@ fn read_count(text: &str) -> Option<NonZeroU64> {
 mod tests {
     use std::num::NonZeroU64;
 
-    use assay_domain::Tier;
+    use assay_domain::{Conclusion, Reason, ReasonCode, Tier};
 
-    use super::{ProjectedText, read_text};
+    use super::{ProjectedText, read_refusal_title, read_text};
     use crate::publish::ports::{EvidenceEntry, EvidencePointer, EvidenceRecord, LlmEvidence};
-    use crate::publish::render::{Projection, text};
+    use crate::publish::render::{Projection, text, title};
 
     const KEY: &str = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     const DIGEST: &str = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -110,6 +129,7 @@ mod tests {
             read_text(&written),
             Some(ProjectedText {
                 decision_key: KEY,
+                inputs_digest: Some(DIGEST),
                 pointer: Some(pointer()),
             })
         );
@@ -127,9 +147,50 @@ mod tests {
             read_text(&written),
             Some(ProjectedText {
                 decision_key: KEY,
+                inputs_digest: None,
                 pointer: None,
             })
         );
+    }
+
+    #[test]
+    fn reads_back_every_refusal_title() {
+        for code in ReasonCode::ALL {
+            let reason = Reason {
+                code,
+                detail: "detail".to_owned(),
+                fp: None,
+            };
+            let written = title(Conclusion::Failure, &[reason]);
+
+            assert_eq!(read_refusal_title(&written), Some(code), "{written}");
+        }
+    }
+
+    #[test]
+    fn refuses_titles_that_are_not_one_failure_reason() {
+        let reason = |code| Reason {
+            code,
+            detail: "detail".to_owned(),
+            fp: None,
+        };
+        let two = [
+            reason(ReasonCode::GateError),
+            reason(ReasonCode::PlanMismatch),
+        ];
+        let cases = [
+            title(Conclusion::Failure, &[]),
+            title(Conclusion::Failure, &two),
+            title(Conclusion::Success, &[reason(ReasonCode::GateError)]),
+            title(Conclusion::Neutral, &[reason(ReasonCode::Override)]),
+            "assay: failure (unknown-code)".to_owned(),
+            "assay: failure (GATE-ERROR)".to_owned(),
+            "assay: failure (gate-error))".to_owned(),
+        ];
+
+        for case in cases {
+            assert_eq!(read_refusal_title(&case), None, "{case:?} must be refused");
+        }
     }
 
     #[test]

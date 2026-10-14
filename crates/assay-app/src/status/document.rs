@@ -29,6 +29,8 @@ pub(super) struct Document<'a> {
     stale: bool,
     check: Option<CheckEntry>,
     decision: Option<DecisionEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refused: Option<RefusedEntry>,
     tier: Option<&'static str>,
     gates: Vec<GateEntry>,
     findings: Vec<FindingEntry>,
@@ -94,6 +96,13 @@ pub(super) struct FindingEntry {
     body: Option<String>,
 }
 
+/// Why the run was refused before the rubric: the reason code the App's verdict check
+/// published (#218).
+#[derive(Debug, Serialize)]
+struct RefusedEntry {
+    reason: &'static str,
+}
+
 /// What the required Weigh-In gate reported, as the domain's code: `clear`, `open-blocking`,
 /// `pending-triage` or `no-evidence` (one state, so no two can be claimed at once).
 #[derive(Debug, Serialize)]
@@ -145,6 +154,9 @@ impl<'a> Document<'a> {
             ),
             None => (None, None, None),
         };
+        let refused = observed.refused.map(|reason| RefusedEntry {
+            reason: reason.code(),
+        });
         Ok(Self {
             schema: "assay.status/1",
             source: "ci",
@@ -156,6 +168,7 @@ impl<'a> Document<'a> {
             stale: local_head_sha.is_some_and(|local| local != head_sha),
             check: observed.check.map(check_entry),
             decision,
+            refused,
             tier,
             gates: observed
                 .gates
@@ -194,6 +207,9 @@ impl<'a> Document<'a> {
             },
         ];
         self.decision_lines(&mut lines);
+        if let Some(refused) = &self.refused {
+            lines.push(format!("Refused: {}", refused.reason));
+        }
         lines.push(heading("Gates", self.gates.is_empty()));
         lines.extend(self.gates.iter().map(|gate| {
             format!(

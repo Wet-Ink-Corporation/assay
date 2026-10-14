@@ -31,7 +31,7 @@ pub use self::ports::{
     InlineComment, LlmEvidence, PublishLedger, SummaryComment, VerdictForge,
 };
 pub use self::render::SUMMARY_MARKER;
-pub(crate) use self::render::read::read_text;
+pub(crate) use self::render::read::{read_refusal_title, read_text};
 use self::render::{Projection, Summary};
 pub(crate) use self::render::{clean, is_hidden};
 pub(crate) use self::resolution::resolution_note;

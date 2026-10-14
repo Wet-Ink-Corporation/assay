@@ -111,6 +111,7 @@ impl FakeGitHub {
                     CheckState::Completed(conclusion) => Some(observed(conclusion)),
                 }),
                 external_id: Some(check.external_id.clone()),
+                output_title: check.output.as_ref().map(|output| output.title.clone()),
                 output_text: check.output.as_ref().map(|output| output.text.clone()),
                 url: run_url(check.id.0.get()),
             })
@@ -135,6 +136,7 @@ impl FakeGitHub {
             status: CheckStatus::Completed,
             conclusion: Some(conclusion),
             external_id: None,
+            output_title: None,
             output_text: None,
             url: run_url(id),
         });

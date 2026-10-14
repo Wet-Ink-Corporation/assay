@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use assay_domain::{Decision, DecisionInputs, RunUid};
+use assay_domain::{Decision, DecisionInputs, ReasonCode, RunUid};
 
 use super::ports::{AppId, CheckView, ObservedConclusion, PullView, StatusForge};
 use super::{
@@ -11,8 +11,8 @@ use super::{
     StatusUnreadable, page,
 };
 use crate::config::{GateName, Sha256Digest};
-use crate::publish::read_text;
 use crate::publish::{BUNDLE_FILE, CheckName, CheckStatus, EvidencePointer, MAX_BUNDLE_BYTES};
+use crate::publish::{read_refusal_title, read_text};
 use crate::replay::{self, BundleSource, StoredBundle};
 
 /// What a gate check's name starts with (`assay / gate: <plugin>`, 04 §6).
@@ -24,6 +24,8 @@ pub(super) struct Observed {
     pub(super) check: Option<Check>,
     /// The decision the check carries, if it names a persisted one.
     pub(super) decided: Option<Decided>,
+    /// The reason code the check published, if its run was refused before the rubric (#218).
+    pub(super) refused: Option<ReasonCode>,
     /// The per-gate checks, by plugin.
     pub(super) gates: BTreeMap<GateName, Check>,
 }
@@ -39,6 +41,16 @@ pub(super) struct Check {
 pub(super) struct Decided {
     pub(super) decision: Decision,
     pub(super) inputs: DecisionInputs,
+}
+
+/// What a decided verdict check's `output.text` names.
+enum Named {
+    /// A decision, read from its authenticated bundle (boxed: it dwarfs the other cases).
+    Decided(Box<Decided>),
+    /// A decided run that persisted no bundle: nothing to read.
+    Unpersisted,
+    /// A run refused before the rubric, with the reason code its check published.
+    Refused(ReasonCode),
 }
 
 /// What the verdict check's `external_id` says.
@@ -71,21 +83,27 @@ pub(super) fn observe<F: StatusForge, B: BundleSource>(
     let verdicts: Vec<&CheckView> = app_checks(&runs, request.app)
         .filter(|run| run.name == name.as_str())
         .collect();
-    let (check, decided) = match verdicts.as_slice() {
+    let (check, named) = match verdicts.as_slice() {
         [] => (None, None),
         [verdict] => {
             let check = check(verdict, repository).map_err(StatusError::Unreadable)?;
-            let decided = match stamp(verdict).map_err(StatusError::Unreadable)? {
+            let named = match stamp(verdict).map_err(StatusError::Unreadable)? {
                 Stamp::Open => None,
-                Stamp::Decided(key) => decision(request, ports.bundles, verdict, key)?,
+                Stamp::Decided(key) => Some(decision(request, ports.bundles, verdict, key)?),
             };
-            (Some(check), decided)
+            (Some(check), named)
         }
         many => return Err(StatusError::DuplicateVerdict { count: many.len() }),
+    };
+    let (decided, refused) = match named {
+        Some(Named::Decided(decided)) => (Some(*decided), None),
+        Some(Named::Refused(reason)) => (None, Some(reason)),
+        Some(Named::Unpersisted) | None => (None, None),
     };
     Ok(Observed {
         check,
         decided,
+        refused,
         gates: gates(&runs, request.app, repository)?,
     })
 }
@@ -150,25 +168,47 @@ fn stamp(run: &CheckView) -> Result<Stamp<'_>, StatusUnreadable> {
     }
 }
 
-/// The decision a decided verdict check names: none when its run persisted no bundle, else the
-/// bundle's, once authenticated against the pointer and the check's key.
+/// What a decided verdict check names. Its text says which: no inputs digest and no pointer is a
+/// refusal, whose reason comes from the check's title ([`refusal`]); an inputs digest without a
+/// pointer is a decided run that persisted no bundle; both name the bundle, read once
+/// authenticated against the pointer and the check's key. A pointer without an inputs digest is
+/// not what `publish` writes.
 fn decision<E, B: BundleSource>(
     request: &StatusRequest<'_>,
     bundles: &B,
     run: &CheckView,
     key: &str,
-) -> Result<Option<Decided>, StatusError<E, B::Error>> {
+) -> Result<Named, StatusError<E, B::Error>> {
     let text = run
         .output_text
         .as_deref()
         .and_then(read_text)
         .filter(|text| text.decision_key == key)
         .ok_or(StatusError::Unreadable(StatusUnreadable::CheckText))?;
-    let Some(pointer) = text.pointer else {
-        return Ok(None);
-    };
-    let decided = authenticated(request, bundles, &pointer, key).map_err(StatusError::Bundle)?;
-    Ok(Some(decided))
+    match (text.inputs_digest, text.pointer) {
+        (None, None) => refusal(run)
+            .map(Named::Refused)
+            .map_err(StatusError::Unreadable),
+        (None, Some(_)) => Err(StatusError::Unreadable(StatusUnreadable::CheckText)),
+        (Some(_), None) => Ok(Named::Unpersisted),
+        (Some(_), Some(pointer)) => authenticated(request, bundles, &pointer, key)
+            .map(|decided| Named::Decided(Box::new(decided)))
+            .map_err(StatusError::Bundle),
+    }
+}
+
+/// The reason code a refused run's verdict check published: the check must be completed
+/// `failure`, as `publish` writes every refusal, and its title exactly the one reason's.
+fn refusal(run: &CheckView) -> Result<ReasonCode, StatusUnreadable> {
+    let failed =
+        run.status == CheckStatus::Completed && run.conclusion == Some(ObservedConclusion::Failure);
+    if !failed {
+        return Err(StatusUnreadable::CheckState);
+    }
+    run.output_title
+        .as_deref()
+        .and_then(read_refusal_title)
+        .ok_or(StatusUnreadable::CheckTitle)
 }
 
 /// The bundle `pointer` names, read under its cap, hashing to the pointer, consistent with it
