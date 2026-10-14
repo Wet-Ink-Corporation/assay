@@ -543,7 +543,7 @@ fn a_runner_errors_cause_names_every_source_below_it() -> Result<(), Box<dyn Err
     assert_eq!(
         (report.outcome, report.cause.as_deref()),
         (
-            GateOutcome::Error(GateError::NotRun),
+            GateJobOutcome::Error(GateError::NotRun),
             Some(
                 "could not run the exec gate: the supervisor could not start the process: \
                  no such file or directory"
@@ -566,11 +566,14 @@ fn a_required_gate_reported_only_in_another_job_is_skipped() -> Result<(), Box<d
 
     account_for_required(&config, LINT, &mut reports);
 
-    let lint: Vec<(&str, &GateOutcome)> = reports
+    let lint: Vec<(&str, &GateJobOutcome)> = reports
         .iter()
         .filter(|report| report.job == LINT)
         .map(|report| (report.plugin.as_str(), &report.outcome))
         .collect();
-    assert_eq!(lint, [("temper", &GateOutcome::Error(GateError::Skipped))]);
+    assert_eq!(
+        lint,
+        [("temper", &GateJobOutcome::Error(GateError::Skipped))]
+    );
     Ok(())
 }
