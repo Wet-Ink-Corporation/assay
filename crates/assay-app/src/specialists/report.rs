@@ -67,7 +67,8 @@ pub struct RoleReport<E> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoleOutcome<E> {
     /// The model produced structured output, unvalidated, with `source.role` set to the role
-    /// that ran (#173): validation's role ceiling never trusts the model's own claim.
+    /// that ran (#173). Validate it as [`RoleReport::role`]: validation takes the ceiling
+    /// from that, never from the document, and refuses a document claiming another role.
     Completed(Structured),
     /// The role was called and produced nothing usable.
     Failed(RoleFailure<E>),

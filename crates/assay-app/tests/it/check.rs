@@ -398,7 +398,7 @@ fn output_that_is_not_a_findings_object_completes_with_no_finding() -> Result<()
     assert_eq!(report.review().findings, []);
     assert_eq!(
         report.review().note.as_deref(),
-        Some("the model's document failed the findings schema")
+        Some("the model's document was refused at step 1 (schema or role)")
     );
     Ok(())
 }
@@ -487,6 +487,37 @@ fn a_model_written_source_is_replaced_so_the_role_ceiling_holds() -> Result<(), 
             .collect::<Vec<_>>(),
         [Severity::Major],
         "combined-micro's findings are capped at major whatever role the model claims"
+    );
+    Ok(())
+}
+
+// #173, the lite path: the stamp is the role that ran, so a claim of `combined-micro` neither
+// caps a `combined` review's blocker nor gets its document refused.
+#[test]
+fn a_lite_review_claiming_micro_keeps_its_blocker() -> Result<(), Box<dyn Error>> {
+    let pr = sized_tree(30);
+    let mut blocker = unwrap_finding();
+    blocker["severity"] = json!("blocker");
+    let model = FakeModel::answering([Ok(ModelOutcome::Ok(Structured::new(json!({
+        "schema": "assay.findings/1",
+        "source": {"kind": "reviewer", "name": "x", "version": "x", "role": "combined-micro",
+                   "run_key": "x"},
+        "findings": [blocker],
+    }))))]);
+
+    let report = check(&pr, &mut FakeGates::passing(), &model)?;
+
+    assert_eq!(
+        (
+            report.tier(),
+            report
+                .review()
+                .findings
+                .iter()
+                .map(|finding| finding.finding.severity)
+                .collect::<Vec<_>>()
+        ),
+        (Tier::Lite, vec![Severity::Blocker])
     );
     Ok(())
 }

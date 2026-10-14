@@ -10,7 +10,7 @@ use std::time::Duration;
 use assay_app::{
     BundleFiles, Change, ContractValidator, CoordinateRequest, Coordination, CoordinationRefusal,
     DiffPaths, EgressScan, FileDiff, Hunk, Inputs, KnownRuns, LineSpan, MergedBy, PromptBundle,
-    SuppressRules, ValidFinding, coordinate, validate,
+    ReviewerDocument, Role, SuppressRules, ValidFinding, coordinate, validate,
 };
 use assay_domain::{Aeu, CallFailure, EventPayload, Finding, SupportOutcome};
 use assay_runner::{Recording, Replay, ReplayError};
@@ -79,7 +79,11 @@ fn validated() -> Result<Vec<ValidFinding>, Box<dyn Error>> {
         gate_findings: &[],
         egress: &egress,
     };
-    let validated = validate(&ContractValidator::new()?, &inputs, &[document.as_bytes()]);
+    let bugs = ReviewerDocument {
+        role: Role::Bugs,
+        bytes: document.as_bytes(),
+    };
+    let validated = validate(&ContractValidator::new()?, &inputs, &[bugs]);
     if validated.findings.len() != 2 {
         return Err(format!("Z3 dropped a finding: {:?}", validated.transitions).into());
     }

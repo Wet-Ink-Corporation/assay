@@ -93,8 +93,8 @@ pub struct VerifyRequest<'a> {
 ///
 /// use assay_app::{
 ///     BundleFiles, Change, ContractValidator, EgressScan, InitReadError, Inputs, KnownRuns,
-///     ModelCall, ModelOutcome, ModelResult, ModelRunner, PromptBundle, Structured,
-///     SuppressRules, VerifierTier, VerifyRequest, validate, verify,
+///     ModelCall, ModelOutcome, ModelResult, ModelRunner, PromptBundle, ReviewerDocument, Role,
+///     Structured, SuppressRules, VerifierTier, VerifyRequest, validate, verify,
 /// };
 /// use assay_domain::{Aeu, Finding, Severity, SupportOutcome, VerifierVerdict};
 /// use serde_json::json;
@@ -145,7 +145,8 @@ pub struct VerifyRequest<'a> {
 ///     "findings": [{"class": "logic", "kind": "defect", "severity": "major", "file": "src/lib.rs",
 ///                   "line": 2, "evidence": "parse(x).unwrap();", "trigger": "a non-numeric x",
 ///                   "title": "unwrap panics", "body": "b"}]}"#;
-/// let validated = validate(&ContractValidator::new()?, &inputs, &[document]);
+/// let combined = ReviewerDocument { role: Role::Combined, bytes: document };
+/// let validated = validate(&ContractValidator::new()?, &inputs, &[combined]);
 /// let bundle = PromptBundle::new(BundleFiles {
 ///     system: "system".to_owned(),
 ///     bugs: "bugs".to_owned(),

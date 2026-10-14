@@ -5,8 +5,8 @@ use std::sync::LazyLock;
 
 use assay_app::{
     Change, CommitId, ContractSchemaError, ContractValidator, DiffPaths, EgressScan, EgressToken,
-    FileDiff, Hunk, Inputs, KnownRuns, KnownRunsError, LineSpan, SuppressRules, Validated,
-    validate,
+    FileDiff, Hunk, Inputs, KnownRuns, KnownRunsError, LineSpan, ReviewerDocument, Role,
+    SuppressRules, Validated, validate,
 };
 use assay_domain::{Dismissal, Finding};
 use serde_json::{Value, json};
@@ -167,8 +167,17 @@ static VALIDATOR: LazyLock<Result<ContractValidator, ContractSchemaError>> =
     LazyLock::new(ContractValidator::new);
 
 impl Run<'_> {
-    /// Validates `documents` in this run.
+    /// Validates `documents` in this run, each as the `combined` reviewer's.
     pub(crate) fn validate(&self, documents: &[Vec<u8>]) -> Result<Validated, RunError> {
+        self.validate_as(Role::Combined, documents)
+    }
+
+    /// Validates `documents` in this run, each as the output of a call that ran as `role`.
+    pub(crate) fn validate_as(
+        &self,
+        role: Role,
+        documents: &[Vec<u8>],
+    ) -> Result<Validated, RunError> {
         let validator = VALIDATOR.as_ref()?;
         // The tree is every file of the change at either end, and base REVIEW.md.
         let tree = self
@@ -191,7 +200,10 @@ impl Run<'_> {
             gate_findings: &self.gate_findings,
             egress: &egress,
         };
-        let documents: Vec<&[u8]> = documents.iter().map(Vec::as_slice).collect();
+        let documents: Vec<ReviewerDocument<'_>> = documents
+            .iter()
+            .map(|bytes| ReviewerDocument { role, bytes })
+            .collect();
         Ok(validate(validator, &inputs, &documents))
     }
 }

@@ -146,8 +146,8 @@ mod validation;
 pub use validation::{
     Change, DiffPaths, EgressHit, EgressKind, EgressScan, EgressToken, EgressTokenError, FileDiff,
     FindingRef, FreeTextField, Hunk, Inputs, KnownRuns, KnownRunsError, LineSpan,
-    MAX_INDEXED_BYTES, MAX_TOKEN_BYTES, Placement, SuppressRules, Transition, ValidFinding,
-    Validated, validate,
+    MAX_INDEXED_BYTES, MAX_TOKEN_BYTES, Placement, ReviewerDocument, SuppressRules, Transition,
+    ValidFinding, Validated, validate,
 };
 
 mod verify;

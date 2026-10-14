@@ -86,6 +86,28 @@ impl fmt::Debug for Inputs<'_> {
     }
 }
 
+/// One reviewer's `assay.findings/1` document, as raw bytes, with the role its call ran as.
+///
+/// The role is the caller's, never read from the document (#173): a model that writes
+/// `source.role` cannot lift its findings past its role's severity ceiling.
+#[derive(Clone, Copy)]
+pub struct ReviewerDocument<'a> {
+    /// The role the call that wrote `bytes` ran as; its ceiling is the one applied.
+    pub role: Role,
+    /// The document as the model's output was stamped and encoded.
+    pub bytes: &'a [u8],
+}
+
+impl fmt::Debug for ReviewerDocument<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The bytes are model output: their length identifies the document without quoting it.
+        f.debug_struct("ReviewerDocument")
+            .field("role", &self.role)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
+}
+
 /// Which input a transition or a finding refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FindingRef {
@@ -212,16 +234,19 @@ impl Validated {
     }
 }
 
-/// Validates reviewer findings `documents` (raw `assay.findings/1` bytes) against `inputs`.
+/// Validates reviewer findings `documents` against `inputs`.
 ///
 /// Applies 04 §4 steps 1 to 6 in order: schema, evidence location, placement, severity caps,
 /// injection screen and suppression. Pure and total: every input ends kept or with a
-/// disposition. A document that fails its schema, is not a reviewer's or names a role outside
-/// the roster is one `schema` transition. Each file is indexed once per call, however many
-/// findings cite it. No transition quotes model text. A kept finding's `evidence` and
-/// `caller.evidence` are replaced by the tree's lines; its other free-text fields are still
-/// model text, which the injection screen checks heuristically, refusing what it cannot be
-/// sure GitHub renders harmlessly.
+/// disposition. Each document is held to the severity ceiling of its [`ReviewerDocument::role`],
+/// the role its caller ran; the document's own `source.role` never sets it. A document that
+/// fails its schema, is not a reviewer's or whose `source.role` is not that role's code is one
+/// `schema` transition, so an unstamped document that claims another role is refused, not
+/// believed: a [`FindingRef::Document`] transition coded [`Disposition::Schema`] means either a
+/// schema failure or a role mismatch. Each file is indexed once per call, however many findings cite it. No transition
+/// quotes model text. A kept finding's `evidence` and `caller.evidence` are replaced by the
+/// tree's lines; its other free-text fields are still model text, which the injection screen
+/// checks heuristically, refusing what it cannot be sure GitHub renders harmlessly.
 ///
 /// # Examples
 ///
@@ -229,7 +254,8 @@ impl Validated {
 /// use std::collections::BTreeMap;
 ///
 /// use assay_app::{
-///     Change, ContractValidator, EgressScan, Inputs, KnownRuns, Placement, SuppressRules, validate,
+///     Change, ContractValidator, EgressScan, Inputs, KnownRuns, Placement, ReviewerDocument, Role,
+///     SuppressRules, validate,
 /// };
 /// use assay_domain::Finding;
 ///
@@ -263,7 +289,9 @@ impl Validated {
 ///     "findings": [{"class": "logic", "kind": "defect", "severity": "minor", "file": "src/lib.rs",
 ///                   "line": 9, "evidence": "record_event(id);", "title": "t", "body": "b"}]}"#;
 ///
-/// let validated = validate(&ContractValidator::new()?, &inputs, &[document]);
+/// let combined = ReviewerDocument { role: Role::Combined, bytes: document };
+///
+/// let validated = validate(&ContractValidator::new()?, &inputs, &[combined]);
 ///
 /// // Relocated from line 9 to its evidence on line 2, which no hunk covers.
 /// let kept = validated.findings.first().ok_or("the finding is kept")?;
@@ -275,12 +303,13 @@ impl Validated {
 pub fn validate(
     validator: &ContractValidator,
     inputs: &Inputs<'_>,
-    documents: &[&[u8]],
+    documents: &[ReviewerDocument<'_>],
 ) -> Validated {
     let mut run = steps::Run::new(inputs);
-    for (document, bytes) in documents.iter().enumerate() {
-        match read(validator, bytes) {
-            Ok((ceiling, findings)) => {
+    for (document, &ReviewerDocument { role, bytes }) in documents.iter().enumerate() {
+        match read(validator, bytes, role) {
+            Ok(findings) => {
+                let ceiling = role.severity_ceiling();
                 for (index, finding) in findings.into_iter().enumerate() {
                     let at = FindingRef::Finding { document, index };
                     // Before the cap: the scan is linear in the text, and a finding past the
@@ -301,13 +330,15 @@ pub fn validate(
     run.finish()
 }
 
-/// Step 1: the findings of a schema-valid reviewer document, with the severity ceiling of the
-/// role that wrote them, or the `schema` disposition. A role outside the roster is refused:
-/// every reviewer role has a ceiling, and an unknown one cannot be held to it.
+/// Step 1: the findings of a schema-valid reviewer document written as `role`, or the `schema`
+/// disposition. A `source.role` other than `role`'s code, a role outside the roster included,
+/// is refused rather than reconciled (wi-b5affa): the callers stamp it, so a disagreement means
+/// the document reached validation unstamped, and the model's claim is never believed.
 fn read(
     validator: &ContractValidator,
     bytes: &[u8],
-) -> Result<(Severity, Vec<Finding>), Disposition> {
+    role: Role,
+) -> Result<Vec<Finding>, Disposition> {
     let value = validator
         .read(Contract::Findings, bytes)
         .map_err(|error| error.disposition())?;
@@ -320,11 +351,8 @@ fn read(
     if document.source.kind != SourceKind::Reviewer {
         return Err(Disposition::Schema);
     }
-    let role = document
-        .source
-        .role
-        .as_deref()
-        .and_then(|code| Role::ALL.into_iter().find(|role| role.code() == code))
-        .ok_or(Disposition::Schema)?;
-    Ok((role.severity_ceiling(), document.findings))
+    if document.source.role.as_deref() != Some(role.code()) {
+        return Err(Disposition::Schema);
+    }
+    Ok(document.findings)
 }

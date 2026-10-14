@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use assay_app::{
     BundleFiles, Change, ContractValidator, DiffPaths, EgressScan, FileDiff, Hunk, Inputs,
-    KnownRuns, LineSpan, PromptBundle, SuppressRules, ValidFinding, VerdictTally, Verification,
-    VerifiedFinding, VerifierStatus, VerifierTier, VerifyRequest, validate, verify,
+    KnownRuns, LineSpan, PromptBundle, ReviewerDocument, Role, SuppressRules, ValidFinding,
+    VerdictTally, Verification, VerifiedFinding, VerifierStatus, VerifierTier, VerifyRequest,
+    validate, verify,
 };
 use assay_domain::{
     Aeu, CallFailure, Disposition, Event, EventPayload, EventSchema, Finding, RunUid, Severity,
@@ -79,7 +80,11 @@ fn validated_major() -> Result<Vec<ValidFinding>, Box<dyn Error>> {
         gate_findings: &[],
         egress: &egress,
     };
-    let validated = validate(&ContractValidator::new()?, &inputs, &[document.as_bytes()]);
+    let combined = ReviewerDocument {
+        role: Role::Combined,
+        bytes: document.as_bytes(),
+    };
+    let validated = validate(&ContractValidator::new()?, &inputs, &[combined]);
     Ok(validated.findings)
 }
 

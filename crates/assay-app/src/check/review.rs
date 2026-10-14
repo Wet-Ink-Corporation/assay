@@ -23,7 +23,7 @@ use crate::plan::EvidenceKey;
 use crate::prompt_bundle::Role;
 use crate::session_init::{InitReadError, SessionInit};
 use crate::validation::{
-    Change, EgressScan, FindingRef, Inputs, SuppressRules, ValidFinding, validate,
+    Change, EgressScan, FindingRef, Inputs, ReviewerDocument, SuppressRules, ValidFinding, validate,
 };
 
 /// The reviewer name local mode stamps on its document.
@@ -249,7 +249,11 @@ impl<M: ModelRunner> Reviewer<'_, M> {
             }
         };
         let document = serde_json::to_vec(&self.stamp(structured.into_value(), role))?;
-        let validated = validate(self.validator, inputs, &[document.as_slice()]);
+        let reviewed = ReviewerDocument {
+            role,
+            bytes: &document,
+        };
+        let validated = validate(self.validator, inputs, &[reviewed]);
         if validated.raises_egress_alarm() {
             // As the CI review job fails on an alarm, none of this output is shown.
             let note = format!(
@@ -266,7 +270,8 @@ impl<M: ModelRunner> Reviewer<'_, M> {
         Ok(Reviewed {
             disposed: validated.events().collect(),
             stage: Stage::Completed(validated.findings),
-            note: refused.then(|| "the model's document failed the findings schema".to_owned()),
+            note: refused
+                .then(|| "the model's document was refused at step 1 (schema or role)".to_owned()),
             cost,
         })
     }
