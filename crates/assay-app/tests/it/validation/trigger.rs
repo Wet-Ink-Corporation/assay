@@ -166,6 +166,7 @@ fn refuses_a_micro_document_that_claims_combined_as_schema() -> Result<(), Box<d
 const REFUSED_WHOLE: Transition = Transition {
     at: FindingRef::Document { document: 0 },
     code: Disposition::Schema,
+    fp: None,
     from: None,
     to: None,
 };
@@ -186,8 +187,9 @@ fn refuses_a_bugs_document_that_claims_combined_micro_as_schema() -> Result<(), 
     Ok(())
 }
 
-// #173: a document with no `source.role` cannot be matched to the caller's role, so it is
-// refused whole rather than assumed to be that role's.
+// #173: a reviewer document with no `source.role` is refused whole rather than assumed to be the
+// caller's role's. `findings-1.schema.json` already requires `role` for a reviewer, so this pins
+// the schema step; the role comparison itself is pinned by the claims below and above.
 #[test]
 fn refuses_a_document_without_a_role_as_schema() -> Result<(), Box<dyn Error>> {
     let blocker = finding_with(json!({ "severity": "blocker" }));
@@ -236,6 +238,7 @@ fn caps_a_major_without_a_trigger_at_minor() -> Result<(), Box<dyn Error>> {
         .iter()
         .map(|kept| kept.finding.severity)
         .collect();
+    let fp = validated.findings.first().map(|kept| kept.fingerprint);
     assert_eq!(
         (severities, validated.transitions),
         (
@@ -246,6 +249,7 @@ fn caps_a_major_without_a_trigger_at_minor() -> Result<(), Box<dyn Error>> {
                     index: 0
                 },
                 code: Disposition::NoTrigger,
+                fp,
                 from: Some(Severity::Major),
                 to: Some(Severity::Minor),
             }]
@@ -290,6 +294,22 @@ fn leaves_a_minor_without_a_trigger_alone() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         (severities, validated.transitions),
         (vec![Severity::Minor], vec![])
+    );
+    Ok(())
+}
+
+// #173 (#253 F1): a schema-valid role code outside the roster passes the schema step and is
+// refused only by the comparison with the caller's role, never matched to a role it resembles.
+#[test]
+fn refuses_a_document_claiming_an_unknown_role_as_schema() -> Result<(), Box<dyn Error>> {
+    let blocker = finding_with(json!({ "severity": "blocker" }));
+
+    let validated =
+        Run::default().validate_as(Role::Combined, &[document_by("auditor", &[blocker])])?;
+
+    assert_eq!(
+        (validated.transitions, validated.findings.len()),
+        (vec![REFUSED_WHOLE], 0)
     );
     Ok(())
 }

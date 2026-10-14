@@ -1,7 +1,7 @@
 //! Steps 2 to 6 of 04 §4 for each finding of a run, in order; a dropping step ends the finding.
 
 use assay_domain::{
-    DismissalMatch, Disposition, Finding, FindingKind, IntroducedBy, Severity, Side,
+    DismissalMatch, Disposition, Finding, FindingKind, Fingerprint, IntroducedBy, Severity, Side,
 };
 
 use super::anchor::{Anchored, anchor};
@@ -44,9 +44,12 @@ impl<'s, 'c> Run<'s, 'c> {
         }
     }
 
-    /// Records that the input at `at` was dropped as `code` before its findings were read.
+    /// Records that the input at `at` was dropped as `code` before its evidence was located, so
+    /// with no fingerprint.
     pub(super) fn reject(&mut self, at: FindingRef, code: Disposition) {
-        self.validated.transitions.push(Transition::of(at, code));
+        self.validated
+            .transitions
+            .push(Transition::of(at, code, None));
     }
 
     /// Records that the document at `at`, whose bytes are `document`, was dropped as `code`
@@ -84,11 +87,17 @@ impl<'s, 'c> Run<'s, 'c> {
             files: &mut self.files,
             at,
             ceiling,
+            fp: None,
             transitions: &mut self.validated.transitions,
         };
         match steps.apply(finding) {
             Ok(kept) => self.validated.findings.push(kept),
-            Err(code) => self.reject(at, code),
+            Err(code) => {
+                let fp = steps.fp;
+                self.validated
+                    .transitions
+                    .push(Transition::of(at, code, fp));
+            }
         }
     }
 
@@ -104,6 +113,8 @@ struct Steps<'r, 'c> {
     files: &'r mut Files<'c>,
     at: FindingRef,
     ceiling: Severity,
+    /// Its fingerprint, from step 2 on; every transition recorded after that names it.
+    fp: Option<Fingerprint>,
     transitions: &'r mut Vec<Transition>,
 }
 
@@ -112,6 +123,7 @@ impl Steps<'_, '_> {
     fn apply(&mut self, mut finding: Finding) -> Result<ValidFinding, Disposition> {
         shape(&finding)?;
         let anchored = anchor(self.inputs.change, self.files, &mut finding)?;
+        self.fp = Some(anchored.fingerprint);
         let placement = self.place(&mut finding, &anchored);
         self.cap(&mut finding);
         if free_text(&finding, anchored.quoted_caller.as_deref())
@@ -133,7 +145,8 @@ impl Steps<'_, '_> {
     }
 
     fn record(&mut self, code: Disposition) {
-        self.transitions.push(Transition::of(self.at, code));
+        self.transitions
+            .push(Transition::of(self.at, code, self.fp));
     }
 
     /// A transition that moves `finding` to `to`, recorded as `code`.
@@ -141,6 +154,7 @@ impl Steps<'_, '_> {
         self.transitions.push(Transition {
             at: self.at,
             code,
+            fp: self.fp,
             from: Some(finding.severity),
             to: Some(to),
         });

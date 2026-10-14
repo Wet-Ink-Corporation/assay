@@ -139,6 +139,36 @@ fn event_vocabularies_are_exactly_the_event_schema_enums() -> Result<(), Box<dyn
     Ok(())
 }
 
+/// #170: the codes whose `FindingDisposed` must name a fingerprint are the same in the domain
+/// and in `event-1.schema.json`, with or without a severity change.
+#[test]
+fn fingerprinted_dispositions_are_exactly_the_event_schema_s() -> Result<(), Box<dyn Error>> {
+    let event = schema("event-1")?;
+    let rules = "/$defs/whenFindingDisposed/then/properties/data/allOf";
+    let always = enum_at(&event, &format!("{rules}/0/if/properties/code/enum"))?;
+    let with_from = event
+        .pointer(&format!("{rules}/1/if/properties/code/const"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or("no const for the severity-change rule")?;
+
+    let without = Disposition::ALL
+        .into_iter()
+        .filter(|code| code.requires_fingerprint(None));
+    let changed = Disposition::ALL
+        .into_iter()
+        .filter(|code| code.requires_fingerprint(Some(Severity::Minor)));
+    let only_changed: BTreeSet<String> = wire_codes(changed)?
+        .difference(&wire_codes(without.clone())?)
+        .cloned()
+        .collect();
+
+    assert_eq!(
+        (wire_codes(without)?, only_changed),
+        (always, BTreeSet::from([with_from.to_owned()]))
+    );
+    Ok(())
+}
+
 #[test]
 fn event_kinds_are_exactly_the_spec_list() -> Result<(), Box<dyn Error>> {
     let spec = spec_names(&spec_line("`RunRequested`, `PlanComputed`")?);

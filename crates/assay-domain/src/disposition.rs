@@ -1,5 +1,6 @@
 //! Dispositions: what happened to an individual finding (`docs/architecture/03-contracts.md` §5).
 
+use crate::severity::Severity;
 use crate::vocabulary::closed_enum;
 
 closed_enum! {
@@ -36,6 +37,33 @@ closed_enum! {
         InjectionSuspect => "injection-suspect",
         /// A `major` or `blocker` without a trigger, capped at `minor`.
         NoTrigger => "no-trigger",
+    }
+}
+
+impl Disposition {
+    /// Whether a `FindingDisposed` event with this code, and `from` if it changed the
+    /// severity, must name its finding's fingerprint (03 §6, #170): validation records these
+    /// only after it has located the finding's evidence, which is when the fingerprint is
+    /// computed. `cap-exceeded` with `from` is the role's ceiling, recorded then; without, it is a
+    /// finding past its document's cap, never located. Every other code is also recorded for a
+    /// document refused whole or a finding never located, or is not validation's.
+    #[must_use]
+    pub const fn requires_fingerprint(self, from: Option<Severity>) -> bool {
+        match self {
+            Self::LineNotInDiffMoved
+            | Self::PreExisting
+            | Self::NoTrigger
+            | Self::SuppressedByRule
+            | Self::DismissedByOwner
+            | Self::DuplicateOfGate => true,
+            Self::CapExceeded => from.is_some(),
+            Self::Schema
+            | Self::EvidenceMissing
+            | Self::InjectionSuspect
+            | Self::Duplicate
+            | Self::WaivedByOwner
+            | Self::VerifierRejectedDowngraded => false,
+        }
     }
 }
 

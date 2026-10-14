@@ -206,6 +206,11 @@ pub enum EventPayload {
     FindingDisposed {
         /// The disposition.
         code: Disposition,
+        /// The finding's fingerprint (#170); absent where none was computed (a document
+        /// refused whole, or a finding dropped before its evidence was located) and, for now,
+        /// on the coordinator's and the verifier's dispositions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fp: Option<Fingerprint>,
         /// The severity before.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<Severity>,

@@ -114,6 +114,7 @@ fn finding_and_command_samples() -> Result<Vec<EventPayload>, Box<dyn Error>> {
         },
         EventPayload::FindingDisposed {
             code: Disposition::VerifierRejectedDowngraded,
+            fp: Some("0123456789abcdef".parse()?),
             from: Some(Severity::Major),
             to: Some(Severity::Minor),
         },

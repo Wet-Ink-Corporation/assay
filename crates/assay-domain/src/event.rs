@@ -7,6 +7,7 @@ mod payload;
 
 use serde::{Deserialize, Serialize};
 
+use crate::disposition::Disposition;
 use crate::run_uid::RunUid;
 use crate::vocabulary::closed_enum;
 
@@ -29,9 +30,10 @@ closed_enum! {
 /// [`payload`](Self::payload).
 ///
 /// On the wire `kind` and `data` sit beside the envelope fields; unknown fields are rejected
-/// at every level, as the schema rejects them.
+/// at every level, as the schema rejects them, and so is a `FindingDisposed` that omits a
+/// fingerprint its code requires ([`Disposition::requires_fingerprint`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "EventWire")]
 pub struct Event {
     /// The contract version.
     pub schema: EventSchema,
@@ -50,6 +52,69 @@ pub struct Event {
     /// What happened: `kind` and `data` on the wire.
     #[serde(flatten)]
     pub payload: EventPayload,
+}
+
+/// The wire form of an [`Event`], before the checks its fields cannot state alone.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventWire {
+    schema: EventSchema,
+    job: String,
+    idx: u64,
+    ts: String,
+    run_key: String,
+    run_uid: RunUid,
+    stage: String,
+    #[serde(flatten)]
+    payload: EventPayload,
+}
+
+/// Why an event that matches every field's shape was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum EventError {
+    /// A `FindingDisposed` omits the fingerprint its code requires (#170).
+    #[error("a `{}` disposition must name its finding's fingerprint", .code.code())]
+    FingerprintMissing {
+        /// The disposition.
+        code: Disposition,
+    },
+}
+
+impl TryFrom<EventWire> for Event {
+    type Error = EventError;
+
+    fn try_from(wire: EventWire) -> Result<Self, Self::Error> {
+        let EventWire {
+            schema,
+            job,
+            idx,
+            ts,
+            run_key,
+            run_uid,
+            stage,
+            payload,
+        } = wire;
+        if let EventPayload::FindingDisposed {
+            code,
+            fp: None,
+            from,
+            ..
+        } = payload
+            && code.requires_fingerprint(from)
+        {
+            return Err(EventError::FingerprintMissing { code });
+        }
+        Ok(Self {
+            schema,
+            job,
+            idx,
+            ts,
+            run_key,
+            run_uid,
+            stage,
+            payload,
+        })
+    }
 }
 
 closed_enum! {
