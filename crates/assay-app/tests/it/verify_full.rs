@@ -290,6 +290,7 @@ fn carried_verdicts_change_severity_and_come_first_in_the_events() -> Result<(),
             },
             EventPayload::FindingDisposed {
                 code: Disposition::VerifierRejectedDowngraded,
+                fp: None,
                 from: Some(Severity::Blocker),
                 to: Some(Severity::Minor),
             },

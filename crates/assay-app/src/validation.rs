@@ -141,6 +141,10 @@ pub struct Transition {
     pub at: FindingRef,
     /// What happened.
     pub code: Disposition,
+    /// The finding's fingerprint, once step 2 has computed it (#170): `None` for a document
+    /// refused whole and for a finding dropped before its evidence was located (step 1, the
+    /// egress scan, the per-document cap, or `evidence-missing`), which has none.
+    pub fp: Option<Fingerprint>,
     /// The severity before, when the transition changes it.
     pub from: Option<Severity>,
     /// The severity after, when the transition changes it.
@@ -148,11 +152,13 @@ pub struct Transition {
 }
 
 impl Transition {
-    /// A transition that leaves the severity alone.
-    const fn of(at: FindingRef, code: Disposition) -> Self {
+    /// A transition of the finding with fingerprint `fp`, if computed, that leaves the severity
+    /// alone.
+    const fn of(at: FindingRef, code: Disposition, fp: Option<Fingerprint>) -> Self {
         Self {
             at,
             code,
+            fp,
             from: None,
             to: None,
         }
@@ -163,6 +169,7 @@ impl Transition {
     pub const fn event(&self) -> EventPayload {
         EventPayload::FindingDisposed {
             code: self.code,
+            fp: self.fp,
             from: self.from,
             to: self.to,
         }
@@ -243,10 +250,12 @@ impl Validated {
 /// fails its schema, is not a reviewer's or whose `source.role` is not that role's code is one
 /// `schema` transition, so an unstamped document that claims another role is refused, not
 /// believed: a [`FindingRef::Document`] transition coded [`Disposition::Schema`] means either a
-/// schema failure or a role mismatch. Each file is indexed once per call, however many findings cite it. No transition
-/// quotes model text. A kept finding's `evidence` and `caller.evidence` are replaced by the
-/// tree's lines; its other free-text fields are still model text, which the injection screen
-/// checks heuristically, refusing what it cannot be sure GitHub renders harmlessly.
+/// schema failure or a role mismatch. Each file is indexed once per call, however many findings
+/// cite it. No transition quotes model text. A transition names its finding's fingerprint once
+/// step 2 has computed it ([`Transition::fp`]). A kept finding's `evidence` and
+/// `caller.evidence` are replaced by the tree's lines; its other free-text fields are still
+/// model text, which the injection screen checks heuristically, refusing what it cannot be sure
+/// GitHub renders harmlessly.
 ///
 /// # Examples
 ///

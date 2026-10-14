@@ -151,6 +151,7 @@ fn an_accepted_answer_groups_merges_and_ranks_the_findings() -> Result<(), Box<d
         [
             EventPayload::FindingDisposed {
                 code: Disposition::Duplicate,
+                fp: None,
                 from: None,
                 to: None
             },
@@ -567,6 +568,7 @@ fn merging_mechanically_needs_no_coordinator_and_records_each_duplicate()
         coordination.events().collect::<Vec<_>>(),
         [EventPayload::FindingDisposed {
             code: Disposition::Duplicate,
+            fp: None,
             from: None,
             to: None
         }]

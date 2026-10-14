@@ -186,6 +186,7 @@ fn a_recorded_refutation_downgrades_to_minor_with_the_reason() -> Result<(), Box
             },
             EventPayload::FindingDisposed {
                 code: Disposition::VerifierRejectedDowngraded,
+                fp: None,
                 from: Some(Severity::Major),
                 to: Some(Severity::Minor),
             },

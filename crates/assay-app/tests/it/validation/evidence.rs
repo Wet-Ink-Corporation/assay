@@ -26,6 +26,7 @@ fn drops_a_finding_whose_evidence_is_nowhere_in_the_file() -> Result<(), Box<dyn
             vec![Transition {
                 at: AT,
                 code: Disposition::EvidenceMissing,
+                fp: None,
                 from: None,
                 to: None
             }]

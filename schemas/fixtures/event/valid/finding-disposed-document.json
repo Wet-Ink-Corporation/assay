@@ -1,0 +1,17 @@
+{
+  "schema": "assay.event/1",
+  "job": "review",
+  "idx": 3,
+  "ts": "2026-10-14T09:30:01Z",
+  "run_key": "run-42-1",
+  "run_uid": {
+    "repo_id": 840213377,
+    "run_id": 18342009871,
+    "run_attempt": 1
+  },
+  "stage": "S4",
+  "kind": "FindingDisposed",
+  "data": {
+    "code": "schema"
+  }
+}

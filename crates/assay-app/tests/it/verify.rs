@@ -98,6 +98,7 @@ fn a_refuted_candidate_is_downgraded_to_minor_with_its_reason() -> Result<(), Bo
             },
             EventPayload::FindingDisposed {
                 code: Disposition::VerifierRejectedDowngraded,
+                fp: None,
                 from: Some(Severity::Blocker),
                 to: Some(Severity::Minor),
             },

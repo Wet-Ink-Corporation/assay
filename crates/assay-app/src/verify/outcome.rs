@@ -131,8 +131,11 @@ impl<E> Verification<E> {
             let judged = verdict.map(|verdict| EventPayload::FindingVerified { verdict });
             let downgraded = (verdict == Some(VerifierVerdict::Refuted)
                 && found.severity != found.raised)
+                // A verified finding names its claim, not its fingerprint, so this event carries
+                // no `fp` yet; the event schema leaves it optional for this code (03 §6).
                 .then_some(EventPayload::FindingDisposed {
                     code: Disposition::VerifierRejectedDowngraded,
+                    fp: None,
                     from: Some(found.raised),
                     to: Some(found.severity),
                 });

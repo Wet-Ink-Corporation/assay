@@ -128,8 +128,11 @@ impl<E> Coordination<E> {
     /// then `CoordinatorFinished` when the coordinator's answer was used, or a `StageDegraded`
     /// for the coordinator when it failed.
     pub fn events(&self) -> impl Iterator<Item = EventPayload> + '_ {
+        // A merge names positions, not fingerprints, so its event carries no `fp` yet; the
+        // event schema leaves `fp` optional for `duplicate` (03 §6).
         let merged = self.merged.iter().map(|_| EventPayload::FindingDisposed {
             code: Disposition::Duplicate,
+            fp: None,
             from: None,
             to: None,
         });

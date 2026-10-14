@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:assay:schema:event:1",
   "title": "assay.event/1",
-  "description": "One line of a job's JSONL event stream (docs/architecture/03-contracts.md §6). The envelope rejects unknown fields; `data` is closed for every kind whose fields 03 §6 lists and an object for the others.",
+  "description": "One line of a job's JSONL event stream (docs/architecture/03-contracts.md §6). The envelope rejects unknown fields; `data` is closed for every kind whose fields 03 §6 lists and an object for the others. Unreleased, so changed in place rather than versioned: `FindingDisposed.fp` was added by #170.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "job", "idx", "ts", "run_key", "run_uid", "stage", "kind", "data"],
@@ -221,9 +221,35 @@
                   "pre-existing", "injection-suspect", "no-trigger"
                 ]
               },
+              "fp": { "$ref": "#/$defs/fp" },
               "from": { "$ref": "#/$defs/severity" },
               "to": { "$ref": "#/$defs/severity" }
-            }
+            },
+            "allOf": [
+              {
+                "description": "Codes recorded only after validation located the finding's evidence, which is when its fingerprint is computed, name it (#170).",
+                "if": {
+                  "required": ["code"],
+                  "properties": {
+                    "code": {
+                      "enum": [
+                        "line-not-in-diff-moved", "pre-existing", "no-trigger",
+                        "suppressed-by-rule", "dismissed-by-owner", "duplicate-of-gate"
+                      ]
+                    }
+                  }
+                },
+                "then": { "required": ["fp"] }
+              },
+              {
+                "description": "A role-ceiling cap (with `from`) is recorded after the evidence was located; a finding past a document's cap (no `from`) never was (#170).",
+                "if": {
+                  "required": ["code", "from"],
+                  "properties": { "code": { "const": "cap-exceeded" } }
+                },
+                "then": { "required": ["fp"] }
+              }
+            ]
           }
         }
       }

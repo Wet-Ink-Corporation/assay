@@ -20,7 +20,7 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 57] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 59] = [
     (
         Contract::Status,
         "unknown-field",
@@ -201,6 +201,17 @@ const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 57] = [
     (
         Contract::Event,
         "slot-reaped-without-run-uid",
+        Rejection::Violation("/data", "required"),
+    ),
+    // #170: a disposition recorded after the evidence was located names the finding's `fp`.
+    (
+        Contract::Event,
+        "finding-disposed-moved-without-fp",
+        Rejection::Violation("/data", "required"),
+    ),
+    (
+        Contract::Event,
+        "finding-disposed-ceiling-without-fp",
         Rejection::Violation("/data", "required"),
     ),
     (

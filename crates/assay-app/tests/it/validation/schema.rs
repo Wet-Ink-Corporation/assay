@@ -61,6 +61,7 @@ fn disposes_of_a_schema_invalid_document_as_one_transition() -> Result<(), Box<d
         [Transition {
             at: FindingRef::Document { document: 1 },
             code: Disposition::Schema,
+            fp: None,
             from: None,
             to: None,
         }]
@@ -109,6 +110,7 @@ fn emits_one_finding_disposed_event_per_transition() -> Result<(), Box<dyn Error
         events,
         [EventPayload::FindingDisposed {
             code: Disposition::Schema,
+            fp: None,
             from: None,
             to: None
         }]
@@ -163,6 +165,7 @@ fn drops_findings_past_256_in_a_document_as_cap_exceeded() -> Result<(), Box<dyn
                     index: 256
                 },
                 code: Disposition::CapExceeded,
+                fp: None,
                 from: None,
                 to: None
             }]
@@ -171,9 +174,9 @@ fn drops_findings_past_256_in_a_document_as_cap_exceeded() -> Result<(), Box<dyn
     Ok(())
 }
 
-// A role outside the roster has no severity ceiling to hold its findings to. The verifier writes
-// verdicts, never findings, so no findings document is accepted in its name. (Until #95 this
-// used `bugs`, which then had no instruction; it is a roster role now.)
+// The ceiling is the caller's role's (#173), so a document claiming another role is refused, not
+// looked up: the verifier writes verdicts, never findings, so a findings document in its name
+// from a `combined` call is one `schema` transition.
 #[test]
 fn disposes_of_a_document_from_a_role_outside_the_roster_as_schema() -> Result<(), Box<dyn Error>> {
     let validated = Run::default().validate(&[document_by("verifier", &[finding()])])?;
@@ -184,6 +187,7 @@ fn disposes_of_a_document_from_a_role_outside_the_roster_as_schema() -> Result<(
             vec![Transition {
                 at: FindingRef::Document { document: 0 },
                 code: Disposition::Schema,
+                fp: None,
                 from: None,
                 to: None
             }],
