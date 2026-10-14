@@ -183,13 +183,17 @@ pub enum StatusUnreadable {
     /// An App check named `assay / gate: <name>` whose name is not a plugin name.
     GateName,
     /// An App check whose status and conclusion disagree (completed without one, or with one
-    /// before completing).
+    /// before completing), or a verdict check whose text says the run was refused but which is
+    /// not completed `failure`.
     CheckState,
     /// A verdict check whose `external_id` is neither a decision key nor `open`'s stamp.
     ExternalId,
     /// A decided verdict check whose `output.text` is not what `publish` writes, or names
     /// another decision key.
     CheckText,
+    /// A refused run's verdict check whose `output.title` is not the `assay: failure (<code>)`
+    /// `publish` writes for a refusal, with one reason code of 03's closed list (#218).
+    CheckTitle,
 }
 
 impl StatusUnreadable {
@@ -202,6 +206,7 @@ impl StatusUnreadable {
             Self::CheckState => "check status and conclusion",
             Self::ExternalId => "verdict check external id",
             Self::CheckText => "verdict check output text",
+            Self::CheckTitle => "verdict check output title",
         }
     }
 }
