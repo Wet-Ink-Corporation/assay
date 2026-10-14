@@ -46,6 +46,7 @@ mod replay;
 mod replay_fakes;
 mod rereview_anchor;
 mod rereview_carried;
+mod rereview_carry;
 mod rereview_settle;
 mod rereview_target;
 mod self_trust;

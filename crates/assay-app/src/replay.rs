@@ -28,6 +28,7 @@ pub use self::diff::DecisionDiff;
 use crate::config::Sha256Digest;
 use crate::contract::parse_json_strict;
 use crate::publish::{BUNDLE_FILE, EvidencePointer, MAX_BUNDLE_BYTES};
+use crate::rereview::record::CarryIn;
 
 /// The workflow runs' artifacts, read to replay a decision. Implemented by the forge adapter.
 pub trait BundleSource {
@@ -256,6 +257,8 @@ pub(crate) struct Bundle {
     /// Checked to be an array, not kept: replay does not read events.
     #[serde(rename = "events")]
     _events: Vec<IgnoredAny>,
+    /// The findings the run carries into the next (#224); replay does not read them.
+    pub(crate) carry: CarryIn,
 }
 
 /// The only bundle version this build reads.

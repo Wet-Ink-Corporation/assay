@@ -3,8 +3,8 @@
 use std::error::Error;
 
 use assay_app::{
-    AuthenticatedRun, DecideRequest, Decided, Publication, PublishError, PublishPorts, Published,
-    Snapshot, Target, Verdict, Written, publish,
+    AuthenticatedRun, CarrySet, DecideRequest, Decided, Publication, PublishError, PublishPorts,
+    Published, Snapshot, Target, Verdict, Written, publish,
 };
 use assay_domain::{
     Aeu, Authorship, DecisionInputs, Event, LlmStage, OwnerApproval, Readiness, RequiredRole,
@@ -38,6 +38,8 @@ pub(crate) struct Run {
     pub(crate) inputs: DecisionInputs,
     pub(crate) rubric: Rubric,
     pub(crate) events: Vec<Event>,
+    /// The findings it carries into the next run: none unless a test sets them.
+    pub(crate) carry: CarrySet,
     /// What the run spent, shown in the summary but not part of the bundle.
     pub(crate) cost: Aeu,
 }
@@ -58,6 +60,7 @@ impl Run {
             inputs,
             rubric: rubric_v1()?,
             events: Vec::new(),
+            carry: CarrySet::default(),
             cost: Aeu::from_micros(740_000),
         })
     }
@@ -80,6 +83,7 @@ impl Run {
                 rubric: &self.rubric,
                 inputs: &self.inputs,
                 events: &self.events,
+                carry: &self.carry,
                 cost: self.cost,
             }),
         };

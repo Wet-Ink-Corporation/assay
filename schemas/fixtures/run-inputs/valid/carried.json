@@ -1,0 +1,36 @@
+{
+  "schema": "assay.run-inputs/1",
+  "run_uid": { "repo_id": 42, "run_id": 8, "run_attempt": 1 },
+  "evidence_key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "documents": [],
+  "inputs": { "decision_key": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+  "rubric_version": "v1",
+  "decision": { "schema": "assay.decision/1" },
+  "events": [],
+  "carry": {
+    "findings": [
+      {
+        "fp": "0123456789abcdef",
+        "file": "src/lib.rs",
+        "line": 40,
+        "end_line": 42,
+        "class": "error-handling",
+        "severity": "blocker",
+        "verdict": "confirmed",
+        "title": "unwrap on user input panics",
+        "trigger": "a non-numeric input reaches parse",
+        "evidence": "let x = input.parse().unwrap();"
+      },
+      {
+        "fp": "00000000000000aa",
+        "file": "src/sum.rs",
+        "line": 7,
+        "class": "logic",
+        "severity": "minor",
+        "title": "off by one in the loop bound",
+        "evidence": "for i in 0..=items.len() {"
+      }
+    ],
+    "omitted": [{ "fp": "00000000000000bb", "reason": "cap" }]
+  }
+}

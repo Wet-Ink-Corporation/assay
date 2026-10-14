@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::num::NonZeroU64;
 
-use assay_domain::{Class, Fingerprint, Severity};
+use assay_domain::{Class, Fingerprint, Severity, VerifierVerdict};
 use thiserror::Error;
 
 use crate::validation::{is_injection_suspect, is_invisible, is_searchable_evidence};
@@ -40,10 +40,14 @@ pub struct CarriedParts {
     pub file: String,
     /// Its line as last published.
     pub line: NonZeroU64,
+    /// The last line of its range as last published, when it spans several.
+    pub end_line: Option<NonZeroU64>,
     /// Its class.
     pub class: Class,
     /// Its severity as last published (after that run's verification).
     pub severity: Severity,
+    /// The verifier's verdict on it when it was last re-verified, if it ever was.
+    pub verdict: Option<VerifierVerdict>,
     /// Its title (model text).
     pub title: String,
     /// How the defect is reached (model text), if it said.
@@ -74,8 +78,10 @@ pub struct CarriedFinding {
     fp: Fingerprint,
     file: String,
     line: NonZeroU64,
+    end_line: Option<NonZeroU64>,
     class: Class,
     severity: Severity,
+    verdict: Option<VerifierVerdict>,
     title: String,
     trigger: Option<String>,
     evidence: String,
@@ -87,6 +93,8 @@ pub struct CarriedFinding {
 pub enum CarriedField {
     /// `file`.
     File,
+    /// `end_line`.
+    EndLine,
     /// `title`.
     Title,
     /// `trigger`.
@@ -113,6 +121,8 @@ pub enum CarriedProblem {
     Injection,
     /// Evidence with too little content to be searched for at head.
     NoContent,
+    /// A range that ends before its first line.
+    BeforeLine,
 }
 
 /// Why one carried finding was refused. Shows neither the field's text nor anything from it.
@@ -187,24 +197,30 @@ impl CarriedFinding {
     /// dropped rather than handed back.
     ///
     /// # Errors
-    /// [`CarriedRefusal`] naming the first refused field, in the order `file`, `title`,
-    /// `trigger`, `evidence`: a path that is empty, longer than [`MAX_CARRIED_PATH_BYTES`],
-    /// holds a control or invisible character, is absolute or has an empty, `.` or `..` segment; a title
-    /// (or a trigger given) that is blank, longer than its `findings-1` cap (100 and 300
-    /// characters), holds a control or invisible character or is flagged by the injection screen; evidence
-    /// longer than 400 characters or with too little content to search for.
+    /// [`CarriedRefusal`] naming the first refused field, in the order `file`, `end_line`,
+    /// `title`, `trigger`, `evidence`: a path that is empty, longer than
+    /// [`MAX_CARRIED_PATH_BYTES`], holds a control or invisible character, is absolute or has an
+    /// empty, `.` or `..` segment; a range that ends before its line; a title (or a trigger
+    /// given) that is blank, longer than its `findings-1` cap (100 and 300 characters), holds a
+    /// control or invisible character or is flagged by the injection screen; evidence longer
+    /// than 400 characters or with too little content to search for.
     pub fn read(parts: CarriedParts, repository: &str) -> Result<Self, CarriedRefusal> {
         let CarriedParts {
             fp,
             file,
             line,
+            end_line,
             class,
             severity,
+            verdict,
             title,
             trigger,
             evidence,
         } = parts;
         check_path(&file).map_err(|problem| refused(CarriedField::File, problem))?;
+        if end_line.is_some_and(|end| end < line) {
+            return Err(refused(CarriedField::EndLine, CarriedProblem::BeforeLine));
+        }
         check_prose(&title, MAX_TITLE_CHARS, repository)
             .map_err(|problem| refused(CarriedField::Title, problem))?;
         if let Some(trigger) = &trigger {
@@ -216,8 +232,10 @@ impl CarriedFinding {
             fp,
             file,
             line,
+            end_line,
             class,
             severity,
+            verdict,
             title,
             trigger,
             evidence,
@@ -245,6 +263,12 @@ impl CarriedFinding {
         self.line
     }
 
+    /// The last line of its range, when it spans several: moved with [`Self::line`].
+    #[must_use]
+    pub const fn end_line(&self) -> Option<NonZeroU64> {
+        self.end_line
+    }
+
     /// Its class.
     #[must_use]
     pub const fn class(&self) -> Class {
@@ -255,6 +279,12 @@ impl CarriedFinding {
     #[must_use]
     pub const fn severity(&self) -> Severity {
         self.severity
+    }
+
+    /// The verdict it was last re-verified with, if it ever was.
+    #[must_use]
+    pub const fn verdict(&self) -> Option<VerifierVerdict> {
+        self.verdict
     }
 
     /// Its title.
@@ -281,12 +311,28 @@ impl CarriedFinding {
         self.anchor
     }
 
-    /// The finding moved to `line` of `file` at head, where its evidence still is.
+    /// The finding moved to `line` of `file` at head, where its evidence still is; its range
+    /// keeps its length (and is dropped only if it would pass `u64::MAX`).
     pub(super) fn at_head(self, file: String, line: NonZeroU64) -> Self {
+        let end_line = self.end_line.and_then(|end| {
+            end.get()
+                .checked_sub(self.line.get())
+                .and_then(|span| line.checked_add(span))
+        });
         Self {
             file,
             line,
+            end_line,
             anchor: CarriedAnchor::AtHead,
+            ..self
+        }
+    }
+
+    /// The finding as this run judged it: its severity and verdict after verification.
+    pub(super) fn judged(self, severity: Severity, verdict: Option<VerifierVerdict>) -> Self {
+        Self {
+            severity,
+            verdict,
             ..self
         }
     }
@@ -361,6 +407,7 @@ impl fmt::Display for CarriedField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::File => "file",
+            Self::EndLine => "end_line",
             Self::Title => "title",
             Self::Trigger => "trigger",
             Self::Evidence => "evidence",
@@ -378,6 +425,7 @@ impl fmt::Display for CarriedProblem {
             Self::Segment => "it has an empty, `.` or `..` segment",
             Self::Injection => "the injection screen flags it",
             Self::NoContent => "it has too little content to search for",
+            Self::BeforeLine => "it ends before its first line",
         })
     }
 }

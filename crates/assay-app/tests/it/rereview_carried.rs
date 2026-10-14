@@ -9,7 +9,7 @@ use assay_app::{
     CarriedAnchor, CarriedField, CarriedFinding, CarriedParts, CarriedProblem, CarriedRefusal,
     CarryRefused, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, read_carried,
 };
-use assay_domain::{Class, Fingerprint, Severity};
+use assay_domain::{Class, Fingerprint, Severity, VerifierVerdict};
 
 /// The repository under review.
 const REPOSITORY: &str = "Wet-Ink-Corporation/assay";
@@ -25,8 +25,10 @@ fn parts(n: usize) -> Result<CarriedParts, Box<dyn Error>> {
         fp: fp(n)?,
         file: "src/lib.rs".to_owned(),
         line: NonZeroU64::new(12).ok_or("12 is not zero")?,
+        end_line: None,
         class: Class::ErrorHandling,
         severity: Severity::Major,
+        verdict: None,
         title: "unwrap on user input panics".to_owned(),
         trigger: Some("a non-numeric input reaches parse".to_owned()),
         evidence: "let x = input.parse().unwrap();".to_owned(),
@@ -336,6 +338,40 @@ fn a_fingerprint_given_twice_refuses_the_set_at_the_repeat() -> Result<(), Box<d
     let refused = read_carried(set, REPOSITORY);
 
     assert_eq!(refused.err(), Some(CarryRefused::Repeated { index: 2 }));
+    Ok(())
+}
+
+/// #224: a carried range keeps its last line and its last verdict.
+#[test]
+fn a_finding_is_read_with_its_line_range_and_last_verdict() -> Result<(), Box<dyn Error>> {
+    let mut part = parts(0)?;
+    part.end_line = NonZeroU64::new(14);
+    part.verdict = Some(VerifierVerdict::Unclear);
+
+    let read = CarriedFinding::read(part, REPOSITORY)?;
+
+    assert_eq!(
+        (read.end_line().map(NonZeroU64::get), read.verdict()),
+        (Some(14), Some(VerifierVerdict::Unclear))
+    );
+    Ok(())
+}
+
+#[test]
+fn a_range_ending_before_its_line_is_refused() -> Result<(), Box<dyn Error>> {
+    let refused = refusal(|part| part.end_line = NonZeroU64::new(11))?;
+
+    assert_eq!(
+        refused,
+        CarriedRefusal {
+            field: CarriedField::EndLine,
+            problem: CarriedProblem::BeforeLine,
+        }
+    );
+    assert!(
+        reads(|part| part.end_line = NonZeroU64::new(12))?,
+        "a range of one line is read"
+    );
     Ok(())
 }
 

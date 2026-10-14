@@ -9,6 +9,8 @@ use thiserror::Error;
 
 use crate::decide::{AuthenticatedRun, RunDocument};
 use crate::plan::ArtifactJob;
+use crate::rereview::CarrySet;
+use crate::rereview::record::CarryOut;
 
 /// The bundle's file in the `decide` job's artifact.
 pub const BUNDLE_FILE: &str = "run-inputs.json";
@@ -43,6 +45,7 @@ pub(super) struct Contents<'a> {
     pub(super) inputs: &'a DecisionInputs,
     pub(super) decision: &'a Decision,
     pub(super) events: &'a [Event],
+    pub(super) carry: &'a CarrySet,
 }
 
 /// `assay.run-inputs/1`.
@@ -56,6 +59,7 @@ struct RunInputs<'a> {
     rubric_version: &'a str,
     decision: &'a Decision,
     events: Vec<&'a Event>,
+    carry: CarryOut<'a>,
 }
 
 /// One authentic artifact document, kept as the exact text its digest covers.
@@ -68,8 +72,8 @@ struct Document<'a> {
 }
 
 /// The bundle's bytes: `run.json`, the gate documents and the review documents as their exact
-/// text, the decision inputs, the rubric version, the decision and the events ordered by
-/// `(job, idx)`.
+/// text, the decision inputs, the rubric version, the decision, the events ordered by
+/// `(job, idx)` and the carry set the next run reads (#224).
 ///
 /// # Errors
 ///
@@ -106,6 +110,7 @@ pub(super) fn bundle(contents: &Contents<'_>) -> Result<Vec<u8>, BundleError> {
         rubric_version: &contents.decision.rubric_version,
         decision: contents.decision,
         events,
+        carry: CarryOut::of(contents.carry),
     };
     let mut out = Capped::new(MAX_BUNDLE_BYTES);
     match serde_json::to_writer(&mut out, &inputs) {

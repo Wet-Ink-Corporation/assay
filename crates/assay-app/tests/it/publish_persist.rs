@@ -5,22 +5,24 @@
 use std::assert_matches;
 use std::error::Error;
 use std::fs;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use assay_app::{
     ArtifactJob, BUNDLE_FILE, BundleError, CheckConclusion, CheckState, Contract,
-    ContractValidator, LlmEvidence, PersistFailure, Sha256Digest,
+    ContractValidator, LlmEvidence, PersistFailure, Sha256Digest, VerifierTier, next_carry, verify,
 };
 use assay_domain::{
     Deferral, Event, EventPayload, EventSchema, FileChange, Lines, LlmStage, NotRunReason,
-    Override, OverrideScope, PrClass, Readiness, decide,
+    Override, OverrideScope, PrClass, Readiness, Severity, decide,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::decide_fakes::Scenario;
 use crate::plan_fakes::{FakeError, FakePr, run_uid};
 use crate::publish_fakes::{Call, FakeWorld};
 use crate::publish_support::{NAME, Run, STAMP, stamped, written};
+use crate::verify_fakes::{REPOSITORY, Scripted, bundle as prompt_bundle, finding, request};
 
 /// The one upload's artifact, file and bytes.
 fn upload(world: &FakeWorld) -> Result<(String, String, Vec<u8>), Box<dyn Error>> {
@@ -85,14 +87,28 @@ fn the_run_inputs_fixtures_pass_or_fail_their_schema_where_listed() -> Result<()
     let accepted = fixture_violations("valid")?;
     let rejected = fixture_violations("invalid")?;
 
-    assert_eq!(accepted, [("decided".to_owned(), Vec::new())]);
+    assert_eq!(
+        accepted,
+        [
+            ("carried".to_owned(), Vec::new()),
+            ("decided".to_owned(), Vec::new())
+        ]
+    );
     let at = |name: &str, path: &str, keyword: &str| {
         (name.to_owned(), vec![(path.to_owned(), keyword.to_owned())])
     };
     assert_eq!(
         rejected,
         [
+            at(
+                "carried-unknown-field",
+                "/carry/findings/0",
+                "additionalProperties"
+            ),
+            at("carried-uppercase-fp", "/carry/findings/0/fp", "pattern"),
+            at("missing-carry", "", "required"),
             at("missing-events", "", "required"),
+            at("omitted-unknown-reason", "/carry/omitted/0/reason", "enum"),
             at("unknown-field", "", "additionalProperties"),
             at("unknown-job", "/documents/0/job", "enum"),
             at("unknown-version", "/schema", "const"),
@@ -236,6 +252,59 @@ fn the_pointer_s_digest_is_the_uploaded_bundle_s() -> Result<(), Box<dyn Error>>
     assert!(
         text.contains(digest.as_str()),
         "the text projects the pointer: {text}"
+    );
+    Ok(())
+}
+
+/// #224: the bundle records the carry set, and a bundle carrying findings still satisfies the
+/// schema.
+#[test]
+fn the_bundle_records_the_carry_set_within_its_schema() -> Result<(), Box<dyn Error>> {
+    let mut run = Run::new()?;
+    let mut second = finding(1, Severity::Minor)?;
+    second.fingerprint = "00000000000000aa".parse()?;
+    second.finding.end_line = NonZeroU64::new(13);
+    let raised = [finding(0, Severity::Major)?, second];
+    let prompts = prompt_bundle()?;
+    let verification = verify(
+        &Scripted::new([]),
+        request(VerifierTier::Micro, &raised, &prompts),
+    );
+    run.carry = next_carry(Vec::new(), &raised, &verification, REPOSITORY);
+    let world = stamped()?;
+
+    written(run.publish(&world))?;
+
+    let bundle = bundle(&world)?;
+    assert_eq!(violations(&bundle)?, Vec::<(String, String)>::new());
+    assert_eq!(
+        bundle["carry"],
+        json!({
+            "findings": [
+                {
+                    "fp": "0123456789abcdef",
+                    "file": "src/lib.rs",
+                    "line": 12,
+                    "class": "error-handling",
+                    "severity": "major",
+                    "title": "unwrap on user input panics (0)",
+                    "trigger": "a non-numeric input reaches line 12 through parse",
+                    "evidence": "let x = input.parse().unwrap();"
+                },
+                {
+                    "fp": "00000000000000aa",
+                    "file": "src/lib.rs",
+                    "line": 12,
+                    "end_line": 13,
+                    "class": "error-handling",
+                    "severity": "minor",
+                    "title": "unwrap on user input panics (1)",
+                    "trigger": "a non-numeric input reaches line 12 through parse",
+                    "evidence": "let x = input.parse().unwrap();"
+                }
+            ],
+            "omitted": []
+        })
     );
     Ok(())
 }

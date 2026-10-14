@@ -117,10 +117,11 @@ pub use replay::{
 };
 pub use rereview::{
     Ancestry, CarriedAnchor, CarriedField, CarriedFinding, CarriedOutcome, CarriedParts,
-    CarriedProblem, CarriedRefusal, CarriedState, Carry, CarryRefused, CarryReset, Cumulative,
-    Increment, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, MAX_RANGE_DIFF_BYTES, NotReverified,
-    PriorHistory, RangeDiff, RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError,
-    TargetRequest, read_carried, recheck_anchors, review_target, settle_carried,
+    CarriedProblem, CarriedRefusal, CarriedState, Carry, CarryRefused, CarryReset, CarrySet,
+    Cumulative, Increment, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, MAX_RANGE_DIFF_BYTES,
+    NotReverified, OmitReason, Omitted, PriorCarry, PriorCarryError, PriorHistory, RangeDiff,
+    RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError, TargetRequest, next_carry,
+    prior_carry, read_carried, recheck_anchors, review_target, settle_carried,
 };
 pub use shard::{
     Import, MAX_IMPORTS, MAX_SHARD_FILES, MAX_SHARDS, Shard, ShardCount, ShardError, ShardFile,
