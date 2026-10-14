@@ -151,8 +151,8 @@ impl fmt::Display for CheckCliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Usage => f.write_str(
-                "usage: assay check --local [--base <branch>] [--claude <program>], run from the \
-                 repository root",
+                "usage: assay check --local [--base <branch>] [--claude <program>] \
+                 [--events <path|->], run from the repository root",
             ),
             Self::BaseName(name) => write!(f, "the base {name:?} is not a plain branch name"),
             Self::NoBase(name) => write!(
