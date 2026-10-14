@@ -14,10 +14,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use assay_app::{
-    BuildJob, Conclusion, ContractValidator, GateError, GateJob, GateOutcome, GateRunner,
-    PluginsConfig, Termination, run_gates,
+    BuildJob, ContractValidator, GateError, GateJob, GateJobOutcome, GateRunner, PluginsConfig,
+    Termination, run_gates,
 };
-use assay_domain::FindingsDocument;
+use assay_domain::{FindingsDocument, GateConclusion};
 use assay_gates::{CaptureSupervisor, CapturedRun, ProcessSpec, TemperAdapter, TemperError};
 
 use crate::support::{GIT, SeenSpec, plugin};
@@ -132,7 +132,7 @@ impl CaptureSupervisor for FakeSteps {
 /// settings carry no ratchet base, which gates-test does not need.
 fn outcome(
     steps: &mut FakeSteps,
-) -> Result<(GateOutcome, Option<FindingsDocument>), Box<dyn Error>> {
+) -> Result<(GateJobOutcome, Option<FindingsDocument>), Box<dyn Error>> {
     let pr = Pr::new()?;
     let config = config()?;
     let mut adapter = TemperAdapter::new(steps, &pr.revisions, pr.settings()?);
@@ -148,8 +148,8 @@ fn outcome(
     Ok((report.outcome, document))
 }
 
-const PASSED: GateOutcome = GateOutcome::Concluded(Conclusion::Pass);
-const FAILED: GateOutcome = GateOutcome::Concluded(Conclusion::Fail);
+const PASSED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Pass);
+const FAILED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Fail);
 const SIGNALLED: Termination = Termination::Signalled;
 
 #[test]
@@ -304,7 +304,7 @@ fn a_step_signalled_twice_is_a_gate_error_and_stops_the_run() -> Result<(), Box<
 
     let (outcome, _) = outcome(&mut steps)?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::Signal));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::Signal));
     assert_eq!(steps.ran(), ["nextest", "nextest"], "one retry, then stop");
     Ok(())
 }
@@ -321,7 +321,7 @@ fn a_timeout_or_an_output_cap_is_a_gate_error_and_never_retried() -> Result<(), 
 
         let (outcome, _) = outcome(&mut steps)?;
 
-        assert_eq!(outcome, GateOutcome::Error(error), "{termination:?}");
+        assert_eq!(outcome, GateJobOutcome::Error(error), "{termination:?}");
         assert_eq!(steps.ran(), ["nextest"], "{termination:?}");
     }
     Ok(())

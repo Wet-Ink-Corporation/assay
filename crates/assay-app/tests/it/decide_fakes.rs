@@ -8,12 +8,11 @@ use std::num::NonZeroU64;
 
 use assay_app::{
     AdmitJob, ArtifactDocument, ArtifactJob, AuthenticatedRun, Authentication, CommitId,
-    Conclusion, ContractValidator, CurrentPullRequest, DecideError, DecidePorts, DecideRequest,
-    Fetched, GateJobOutputs, JobResult, PlanJob, PlanRequest, PullOnHead, PullRequestState,
-    Refusal, Reported, ReportedGate, ReviewJob, RunArtifacts, Sha256Digest, TierDegrade,
-    authenticate, plan,
+    ContractValidator, CurrentPullRequest, DecideError, DecidePorts, DecideRequest, Fetched,
+    GateJobOutputs, JobResult, PlanJob, PlanRequest, PullOnHead, PullRequestState, Refusal,
+    Reported, ReportedGate, ReviewJob, RunArtifacts, Sha256Digest, TierDegrade, authenticate, plan,
 };
-use assay_domain::RunUid;
+use assay_domain::{GateConclusion, RunUid};
 use serde_json::{Value, json};
 
 use crate::plan_fakes::{BASE, CountingNonces, FakeError, FakePr, HEAD, plugins_toml, request};
@@ -124,7 +123,7 @@ fn passing_request(plan: PlanRequest, plan_job: PlanJob) -> DecideRequest {
         gates: vec![ReportedGate {
             plugin: plugin.to_owned(),
             reported: Reported::Concluded {
-                conclusion: Conclusion::Pass,
+                conclusion: GateConclusion::Pass,
                 document: Sha256Digest::of(&gate_document(plugin, "pass", &json!([]))),
             },
         }],
@@ -271,7 +270,7 @@ impl Scenario {
     pub(crate) fn publish_gate(
         &mut self,
         (job, plugin): (ArtifactJob, &str),
-        conclusion: Conclusion,
+        conclusion: GateConclusion,
         bytes: Vec<u8>,
     ) -> Result<(), Box<dyn Error>> {
         let digest = Sha256Digest::of(&bytes);

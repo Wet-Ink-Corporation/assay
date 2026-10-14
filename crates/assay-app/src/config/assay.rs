@@ -1,5 +1,6 @@
 //! The `[assay]` table of `.assay/plugins.toml` (`docs/architecture/03-contracts.md` §1).
 
+use assay_domain::{InfraPolicy, LlmPolicy, PrClass};
 use serde::Deserialize;
 
 use super::builtins::BuiltinAllowlist;
@@ -24,11 +25,11 @@ pub struct AssaySettings {
     /// Empty by default, which protects nothing (fail-safe).
     pub protected_bases: Vec<String>,
     /// Whether verified LLM blockers fail the check (`QA-05`); advisory by default.
-    pub llm_blockers: Promotion,
+    pub llm_blockers: LlmPolicy,
     /// Whether verified LLM majors over the threshold fail the check; advisory by default.
-    pub llm_majors: Promotion,
+    pub llm_majors: LlmPolicy,
     /// What an unavailable LLM stage does; `warn` by default (`H-04`). Never applies to gates.
-    pub on_infra_failure: InfraFailurePolicy,
+    pub on_infra_failure: InfraPolicy,
     /// PR classes that always block when the LLM stage is unavailable; both by default (`H-04`).
     pub block_on_infra_for: Vec<PrClass>,
     /// The central cost ledger repository, `owner/name` (ADR-19).
@@ -43,38 +44,6 @@ pub enum RunnerKind {
     ClaudeOauth,
     /// Claude Code with an API key.
     ClaudeApi,
-}
-
-/// Whether an LLM finding class may fail the check (promotion rule `QA-05`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Promotion {
-    /// Published and counted, never failing the check.
-    #[default]
-    Advisory,
-    /// Fails the check.
-    Block,
-}
-
-/// What happens to the LLM stage's verdict when the stage is unavailable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum InfraFailurePolicy {
-    /// Publish without the LLM stage.
-    #[default]
-    Warn,
-    /// Defer, then fail.
-    Block,
-}
-
-/// The closed vocabulary of PR classes (`docs/architecture/03-contracts.md` §1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PrClass {
-    /// A changed file matches the trust-path list.
-    TrustPath,
-    /// A change adds or alters code that runs at build time.
-    ExecSurface,
 }
 
 /// An exact release version, `<major>.<minor>.<patch>` in decimal digits; never a range.
@@ -103,7 +72,17 @@ impl ExactVersion {
     }
 }
 
-/// `block_on_infra_for` when the file omits it (`H-04`).
+/// `llm_blockers` and `llm_majors` when the file omits them: advisory (`QA-05`).
+pub(super) const fn default_llm_policy() -> LlmPolicy {
+    LlmPolicy::Advisory
+}
+
+/// `on_infra_failure` when the file omits it (`H-04`).
+pub(super) const fn default_infra_policy() -> InfraPolicy {
+    InfraPolicy::Warn
+}
+
+/// `block_on_infra_for` when the file omits it: every class (`H-04`).
 pub(super) fn default_block_on_infra_for() -> Vec<PrClass> {
-    vec![PrClass::TrustPath, PrClass::ExecSurface]
+    PrClass::ALL.to_vec()
 }

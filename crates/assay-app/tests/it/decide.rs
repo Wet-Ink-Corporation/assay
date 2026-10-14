@@ -6,8 +6,8 @@ use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    ArtifactJob, AuthenticatedRun, Authentication, Conclusion, DecideError, GateError, JobResult,
-    Moved, OutputsProblem, PlanMismatch, PullOnHead, Refusal, Reported, ReportedGate, Snapshot,
+    ArtifactJob, AuthenticatedRun, Authentication, DecideError, GateError, JobResult, Moved,
+    OutputsProblem, PlanMismatch, PullOnHead, Refusal, Reported, ReportedGate, Snapshot,
     TierDegrade, Unreadable, UpstreamJob,
 };
 use assay_domain::{
@@ -612,7 +612,7 @@ fn a_gate_document_from_another_gate_is_an_invalid_document() -> Result<(), Box<
     let mut scenario = Scenario::new()?;
     scenario.publish_gate(
         (ArtifactJob::GatesStatic, "temper"),
-        Conclusion::Pass,
+        GateConclusion::Pass,
         gate_document("custom-lint", "pass", &json!([])),
     )?;
 
@@ -633,7 +633,7 @@ fn a_failing_exit_outweighs_a_passing_document() -> Result<(), Box<dyn Error>> {
     let mut scenario = Scenario::new()?;
     scenario.publish_gate(
         (ArtifactJob::GatesStatic, "temper"),
-        Conclusion::Fail,
+        GateConclusion::Fail,
         gate_document("temper", "pass", &json!([])),
     )?;
 
@@ -695,7 +695,7 @@ fn a_gate_finding_is_fingerprinted_on_the_tree_line_it_cites() -> Result<(), Box
     ]);
     scenario.publish_gate(
         (ArtifactJob::GatesLint, "temper"),
-        Conclusion::Fail,
+        GateConclusion::Fail,
         gate_document("temper", "fail", &findings),
     )?;
 
@@ -736,7 +736,7 @@ fn a_gate_finding_whose_evidence_is_not_on_its_line_cannot_be_waived() -> Result
     )]);
     scenario.publish_gate(
         (ArtifactJob::GatesStatic, "temper"),
-        Conclusion::Fail,
+        GateConclusion::Fail,
         gate_document("temper", "fail", &findings),
     )?;
 
@@ -758,7 +758,7 @@ fn a_gate_finding_with_no_content_to_fingerprint_errors_its_gate() -> Result<(),
     let findings = json!([gate_finding("raised", "missing.rs", 1, "…")]);
     scenario.publish_gate(
         (ArtifactJob::GatesStatic, "temper"),
-        Conclusion::Fail,
+        GateConclusion::Fail,
         gate_document("temper", "fail", &findings),
     )?;
 

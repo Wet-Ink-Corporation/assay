@@ -19,10 +19,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use assay_app::{
-    CommitId, Conclusion, ContractValidator, GateError, GateJob, GateOutcome, GateRun, GateRunner,
+    CommitId, ContractValidator, GateError, GateJob, GateJobOutcome, GateRun, GateRunner,
     PluginsConfig, Termination, run_gates,
 };
-use assay_domain::{FindingsDocument, Severity, Side};
+use assay_domain::{FindingsDocument, GateConclusion, Severity, Side};
 use assay_gates::{
     CaptureSupervisor, CapturedRun, ProcessSpec, RatchetBase, RatchetDegradation, Revision,
     TemperError,
@@ -235,7 +235,7 @@ type RanLint = Result<GateRun, TemperError<FakeError, crate::temper_support::Fak
 fn outcome(
     pr: &Pr,
     lint: &mut FakeLint,
-) -> Result<(GateOutcome, Option<FindingsDocument>), Box<dyn Error>> {
+) -> Result<(GateJobOutcome, Option<FindingsDocument>), Box<dyn Error>> {
     let config = config()?;
     let settings = pr.settings()?.with_ratchet(ratchet_base()?);
     let mut adapter = assay_gates::TemperAdapter::new(lint, &pr.revisions, settings);
@@ -319,8 +319,8 @@ fn new_code(document: &mut Value, finding: &Value) -> Option<()> {
     Some(())
 }
 
-const PASSED: GateOutcome = GateOutcome::Concluded(Conclusion::Pass);
-const FAILED: GateOutcome = GateOutcome::Concluded(Conclusion::Fail);
+const PASSED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Pass);
+const FAILED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Fail);
 
 #[test]
 fn a_clean_ratchet_against_the_merge_base_passes() -> Result<(), Box<dyn Error>> {
@@ -408,7 +408,7 @@ fn a_ratchet_whose_git_diff_failed_inside_temper_is_degraded() -> Result<(), Box
     );
     assert_eq!(
         outcome,
-        GateOutcome::Error(GateError::RatchetDegraded),
+        GateJobOutcome::Error(GateError::RatchetDegraded),
         "temper said ok, but compared only the totals"
     );
     Ok(())
@@ -638,7 +638,7 @@ fn a_baseline_run_that_does_not_exit_0_or_1_is_a_gate_error() -> Result<(), Box<
 
         let (outcome, _) = outcome(&pr, &mut lint)?;
 
-        assert_eq!(outcome, GateOutcome::Error(expected), "{termination:?}");
+        assert_eq!(outcome, GateJobOutcome::Error(expected), "{termination:?}");
     }
     Ok(())
 }
@@ -981,7 +981,7 @@ fn a_step_past_its_timeout_is_a_gate_error() -> Result<(), Box<dyn Error>> {
 
     let (outcome, _) = outcome(&pr, &mut lint)?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::Timeout));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::Timeout));
     Ok(())
 }
 
@@ -1026,7 +1026,7 @@ fn a_step_that_does_not_exit_is_that_gate_error() -> Result<(), Box<dyn Error>> 
 
         let (outcome, _) = outcome(&pr, &mut lint)?;
 
-        assert_eq!(outcome, GateOutcome::Error(expected), "{termination:?}");
+        assert_eq!(outcome, GateJobOutcome::Error(expected), "{termination:?}");
         assert_eq!(lint.ran(), ran, "{termination:?}: nothing runs after it");
     }
     Ok(())

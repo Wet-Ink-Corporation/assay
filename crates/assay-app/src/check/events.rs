@@ -6,11 +6,11 @@
 
 use std::time::{Duration, SystemTime};
 
-use assay_domain::{Aeu, Event, EventPayload, EventSchema, GateConclusion, GateRun, RunUid};
+use assay_domain::{Aeu, Event, EventPayload, EventSchema, GateRun, RunUid};
 
 use crate::config::Plugin;
 use crate::events::EventSink;
-use crate::gate::{self, BuildJob, Conclusion, GateJob, GateObserver, GateReport};
+use crate::gate::{BuildJob, GateJob, GateJobOutcome, GateJobReport, GateObserver};
 use crate::status::FetchedAt;
 
 /// Micro-AEU in one AEU.
@@ -198,17 +198,15 @@ impl<S: EventSink> GateObserver for GateEvents<'_, '_, S> {
     }
 
     /// A gate that never started (a required one with no report) has no duration.
-    fn ended(&mut self, report: &GateReport, exit: Option<i32>) -> Result<(), Self::Error> {
+    fn ended(&mut self, report: &GateJobReport, exit: Option<i32>) -> Result<(), Self::Error> {
         let now = self.recorder.now();
         let duration_ms = self
             .started
             .take()
             .map(|started| millis_since(started, now));
         let conclusion = match report.outcome {
-            gate::GateOutcome::Concluded(Conclusion::Pass) => Some(GateConclusion::Pass),
-            gate::GateOutcome::Concluded(Conclusion::Fail) => Some(GateConclusion::Fail),
-            gate::GateOutcome::Concluded(Conclusion::Neutral) => Some(GateConclusion::Neutral),
-            gate::GateOutcome::Error(_) => None,
+            GateJobOutcome::Concluded(conclusion) => Some(conclusion),
+            GateJobOutcome::Error(_) => None,
         };
         let run = GateRun {
             plugin: report.plugin.as_str().to_owned(),

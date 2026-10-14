@@ -12,14 +12,13 @@ mod error;
 mod globs;
 mod name;
 mod pin;
+mod reserved;
 
 use std::collections::BTreeSet;
 use std::str::FromStr;
 use std::time::Duration;
 
-pub use self::assay::{
-    AssaySettings, ExactVersion, InfraFailurePolicy, PrClass, Promotion, RunnerKind,
-};
+pub use self::assay::{AssaySettings, ExactVersion, RunnerKind};
 pub use self::builtins::{
     BuiltinAllowlist, BuiltinKind, BuiltinsError, MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS,
 };
@@ -30,6 +29,7 @@ pub use self::name::GateName;
 pub use self::pin::{
     CommitId, ParseCommitIdError, ParseDigestError, ParsePinError, Pin, Sha256Digest,
 };
+use self::reserved::Builtin;
 use crate::gate::BuildJob;
 
 /// A gate's timeout when `timeout_s` is omitted, in seconds.
@@ -298,9 +298,10 @@ impl TryFrom<PluginDto> for Plugin {
     fn try_from(dto: PluginDto) -> Result<Self, Self::Error> {
         let name = GateName::new(dto.name).map_err(|name| ConfigError::Name { name })?;
         let gate = name.as_str();
+        Builtin::check_name(gate, &dto.adapter)?;
         let timeout = timeout(gate, dto.timeout_s.unwrap_or(DEFAULT_TIMEOUT_SECS))?;
-        let adapter = match dto.adapter.as_str() {
-            "builtin:temper" => {
+        let adapter = match Builtin::from_adapter(&dto.adapter) {
+            Some(Builtin::Temper) => {
                 refuse(gate, "exec", dto.exec.is_some())?;
                 refuse(gate, "job", dto.job.is_some())?;
                 let steps = dto
@@ -319,7 +320,7 @@ impl TryFrom<PluginDto> for Plugin {
                     steps,
                 }
             }
-            "builtin:weigh-in" => {
+            Some(Builtin::WeighIn) => {
                 refuse(gate, "exec", dto.exec.is_some())?;
                 refuse(gate, "job", dto.job.is_some())?;
                 refuse(gate, "step", dto.steps.is_some())?;
@@ -327,7 +328,7 @@ impl TryFrom<PluginDto> for Plugin {
                     pin: pin(gate, dto.pin)?,
                 }
             }
-            "exec" => {
+            None if dto.adapter == "exec" => {
                 refuse(gate, "pin", dto.pin.is_some())?;
                 refuse(gate, "step", dto.steps.is_some())?;
                 let argv = dto.exec.ok_or_else(|| missing(gate, "exec"))?;
@@ -337,7 +338,7 @@ impl TryFrom<PluginDto> for Plugin {
                     job: job_of(gate, job)?,
                 }
             }
-            _ => {
+            None => {
                 return Err(ConfigError::UnknownAdapter {
                     gate: gate.to_owned(),
                     adapter: dto.adapter,

@@ -19,7 +19,7 @@ use super::request::{DecideRequest, GateJobOutputs, JobResult, Reported, Upstrea
 use super::{DecideError, Halt, Reader, RunDocument};
 use crate::config::{Plugin, Sha256Digest};
 use crate::contract::{Contract, ContractValidator};
-use crate::gate::{BuildJob, Conclusion, GateError, GateJob, scheduled};
+use crate::gate::{BuildJob, GateError, GateJob, scheduled};
 use crate::plan::{ArtifactJob, PullRequestObjects};
 
 /// The gates of a run, with the gate findings as Z4 anchored them.
@@ -113,7 +113,7 @@ pub(super) fn gates<O: PullRequestObjects, S, A: RunArtifacts>(
 /// What a gate's job reported with a document: its conclusion, the job's artifact and the
 /// digest the job published for the document.
 struct Report<'r> {
-    conclusion: Conclusion,
+    conclusion: GateConclusion,
     artifact: Artifact<'r>,
     digest: &'r Sha256Digest,
 }
@@ -206,7 +206,7 @@ fn errored(detail: &str) -> GateOutcome {
 fn read_document(
     bytes: &[u8],
     plugin: &Plugin,
-    reported: Conclusion,
+    reported: GateConclusion,
     validator: &ContractValidator,
 ) -> State {
     let invalid = || State::Settled(errored(&GateError::InvalidDocument.detail()));
@@ -220,7 +220,7 @@ fn read_document(
     let Some(written) = document.conclusion else {
         return invalid();
     };
-    let conclusion = match (conclusion(reported), written) {
+    let conclusion = match (reported, written) {
         (GateConclusion::Fail, _) | (_, GateConclusion::Fail) => GateConclusion::Fail,
         (from_job, written) if from_job == written => written,
         // The job and the document disagree on a conclusion that is not a failure.
@@ -237,14 +237,6 @@ fn gate_document(value: Value, plugin: &Plugin) -> Option<FindingsDocument> {
     let document: FindingsDocument = serde_json::from_value(value).ok()?;
     (document.source.kind == SourceKind::Gate && document.source.name == plugin.name().as_str())
         .then_some(document)
-}
-
-const fn conclusion(conclusion: Conclusion) -> GateConclusion {
-    match conclusion {
-        Conclusion::Pass => GateConclusion::Pass,
-        Conclusion::Fail => GateConclusion::Fail,
-        Conclusion::Neutral => GateConclusion::Neutral,
-    }
 }
 
 /// The reports, with every finding of a gate that ran anchored on the trees.

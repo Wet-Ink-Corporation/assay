@@ -60,6 +60,18 @@ pub enum ConfigError {
         /// The adapter given.
         adapter: String,
     },
+    /// A plugin takes the name of a built-in adapter (`temper`, `weigh-in`) without being that
+    /// built-in. Rubric rules are keyed by gate name, so another adapter under the name could
+    /// make its findings waivable.
+    #[error("plugin name `{gate}` is reserved for `{reserved_for}`, not `{adapter}`")]
+    ReservedName {
+        /// The plugin.
+        gate: String,
+        /// The adapter given.
+        adapter: String,
+        /// The only adapter a plugin of this name may use.
+        reserved_for: &'static str,
+    },
     /// The adapter needs a key the entry lacks (`pin`, `exec`, `job`).
     #[error("`{gate}` needs `{key}`")]
     MissingKey {

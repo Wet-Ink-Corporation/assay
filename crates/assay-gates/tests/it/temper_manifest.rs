@@ -3,14 +3,14 @@
 
 use std::error::Error;
 
-use assay_app::{Conclusion, GateOutcome};
-use assay_domain::Severity;
+use assay_app::GateJobOutcome;
+use assay_domain::{GateConclusion, Severity};
 use assay_gates::Revision;
 
 use crate::temper_support::{EXCEPTIONS, Pr, Seen, object_id};
 
-const FAILED: GateOutcome = GateOutcome::Concluded(Conclusion::Fail);
-const PASSED: GateOutcome = GateOutcome::Concluded(Conclusion::Pass);
+const FAILED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Fail);
+const PASSED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Pass);
 
 const ROOT: &str = "Cargo.toml";
 const MEMBER: &str = "crates/x/Cargo.toml";
