@@ -281,8 +281,8 @@ fn a_base_branch_that_was_never_fetched_is_refused() -> Result<(), Box<dyn Error
 fn malformed_arguments_are_usage_errors() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new()?;
     let claude = scene.claude()?;
-    let usage = "assay: usage: assay check --local [--base <branch>] [--claude <program>], run \
-                 from the repository root\n";
+    let usage = "assay: usage: assay check --local [--base <branch>] [--claude <program>] \
+                 [--events <path|->], run from the repository root\n";
 
     for args in [
         &[][..],
