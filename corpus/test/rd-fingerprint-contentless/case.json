@@ -1,0 +1,25 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-domain/src/fingerprint.rs",
+      "start_line": 49,
+      "end_line": 58,
+      "class": "logic"
+    },
+    {
+      "file": "crates/assay-domain/src/fingerprint.rs",
+      "start_line": 76,
+      "end_line": 81,
+      "class": "logic"
+    },
+    {
+      "file": "crates/assay-domain/src/finding.rs",
+      "start_line": 171,
+      "end_line": 175,
+      "class": "logic"
+    }
+  ]
+}

@@ -1,0 +1,2796 @@
+diff --git a/crates/assay-app/AGENTS.md b/crates/assay-app/AGENTS.md
+index 85c5cda..37a9c73 100644
+--- a/crates/assay-app/AGENTS.md
++++ b/crates/assay-app/AGENTS.md
+@@ -110,3 +110,4 @@ Integration tests in `tests/it/` drive use cases against in-memory fakes of the
+ | 2026-10-11 | `ContractValidator` is a value built once by the composition root, not a lazily initialised static: no hidden global state, and the fallible compile step surfaces as a typed error. | OWN-11, ERR-01 | Story #47 |
+ | 2026-10-13 | Blind verifier for `lite` (#91), conservative defaults where 04 is silent, each for the owner to confirm: (1) the model tier is the caller's, through a separate `ModelRunner` for the verifier, because `ModelCall` and the 03 §8 argv carry no model; (2) a verdict outside the strict shape is malformed (retried once, then `required-role-degraded`/`llm-degraded` by policy), never read as `unclear`; (3) `unclear` emits `FindingVerified` only, as 03 §5 has no disposition code for its step down; (4) the stage stops at its first failed call, keeps verdicts already given and shows every other candidate as an unverified major at most; (5) the verifier instruction joins bundle v1 (`v1/verifier.md`), which no release has used; (6) the verdict schema is an internal constant, not a `schemas/` contract, since no verdict document is persisted; (7) a candidate over the cap keeps its severity, unverified. `validation`'s injection screen is shared as `is_injection_suspect` for the verdict reason. | wi-b5affa, ARC-02, H-16 | #91; owner to confirm |
+ | 2026-10-13 | Verifier for `full` (#97, folding #203 F2, F3, F4, F6, F9), conservative defaults for the owner to confirm: (1) carried findings are a `&[CarriedFinding]` parameter, empty until re-review (#99) supplies them, and each is a candidate whatever its severity (04 §3); (2) a carried claim uses the same blind five-field object and verifier instruction, since refuting a claim at head asks whether the defect is still there; a distinct instruction would be a prompt-bundle change for #99; (3) the roster's stage total ($0.40 full, $0.24 lite) is enforced, retries included, and nothing left is `cap` (fail closed) rather than an unverified skip (#203 F4); (4) on a stage failure only the candidates within the cap not yet judged become unverified majors; one past the cap keeps its severity (04 §4 step 8, #203 F3). `VerifiedFinding::at` and `VerifierFailure`'s `at` become `ClaimRef`; nothing outside `verify` read them. | wi-b5affa, H-16 | #97; owner to confirm |
++| 2026-10-13 | `check_local` (#107, 02 §6) composes `plan::recompute`, `run_gates`, decide's evidence anchoring and `policy`, `validate`, `run_with_retry` and the domain `decide` over a working tree, through the ports those stages define plus one narrow port, `ChangePatches` (the full `Forge` is #53's). It is never a trust anchor. `LocalReport` is not a contract (`assay.local-check/1`, which `ContractValidator` refuses for every contract), and its `render` replaces control and format characters (`publish::clean`). Two-way defaults, open to the owner: one call reviews (`combined-micro` on `micro`, else `combined`), so a `full` tier reports its specialists missing; the coordinator and verifier do not run, and are `failed: unavailable` where due; a model-written `source` is replaced; the output is used only when the session's init shows exactly `Read`, `Grep` and `Glob` and no MCP server (the version and built-ins of the clean-init rule need CI's pins); no base `suppress` rules or dismissals; a ready, unapproved, non-agent PR with one open PR on its head; Weigh-In `no-evidence` when required. `read_texts` now returns its own `ReadFailure`, and `Contract::schema_text` and `CLEAN_TOOLS` are `pub(crate)`. | ARC-03, H-13, H-16, wi-b5affa | #107; Weigh-In defaults, owner may reopen |
+diff --git a/crates/assay-app/src/check.rs b/crates/assay-app/src/check.rs
+new file mode 100644
+index 0000000..2123435
+--- /dev/null
++++ b/crates/assay-app/src/check.rs
+@@ -0,0 +1,322 @@
++//! `assay check --local` (02 §6, R-10, P9): the pipeline's advisory verdict on a developer's
++//! working tree, before anything is pushed.
++//!
++//! [`check_local`] runs `plan → gate → review → decide` over a snapshot of the working tree
++//! through the narrow ports those stages already define, plus [`ChangePatches`] for the diff the
++//! review reads. Nothing it produces is a contract: the [`LocalReport`] carries its own schema
++//! name, which [`ContractValidator`] refuses for every contract, so no CI reader can accept it.
++//! Local mode is never a trust anchor.
++
++mod gates;
++mod inputs;
++mod pack;
++mod ports;
++mod report;
++mod review;
++
++use std::collections::BTreeSet;
++use std::convert::Infallible;
++use std::path::Path;
++use std::time::Duration;
++
++use assay_domain::{FileChange, Side, decide};
++use thiserror::Error;
++
++pub use self::gates::LocalGate;
++use self::gates::Ran;
++use self::inputs::Facts;
++pub use self::pack::{MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES};
++pub use self::ports::{ChangePatches, FilePatch};
++pub use self::report::{LocalReport, LocalReview, ReviewStatus};
++use self::review::Reviewer;
++use crate::config::CommitId;
++use crate::contract::ContractValidator;
++use crate::decide::{Cited, ReadFailure, Texts, policy, read_texts};
++use crate::gate::GateRunner;
++use crate::golden::parse_rubric;
++use crate::model_runner::ModelRunner;
++use crate::plan::{self, PlanError, PlanRequest, PullRequestObjects};
++use crate::prompt_bundle::PromptBundle;
++use crate::validation::{Change, DiffPaths, FileDiff};
++
++/// What a local check is asked to check.
++#[derive(Debug, Clone, Copy)]
++pub struct CheckRequest<'a> {
++    /// The working tree as a pull request: base is the remote branch's commit, head the
++    /// snapshot commit, and the file lists git's own.
++    pub plan: &'a PlanRequest,
++    /// The tree fingerprint: the snapshot's git tree id (02 §6).
++    pub tree: &'a str,
++    /// The rubric file's bytes (`rubric/v1.toml`).
++    pub rubric: &'a [u8],
++    /// How the review is called.
++    pub review: ReviewSetup<'a>,
++}
++
++/// How the review's one model call is made.
++#[derive(Debug, Clone, Copy)]
++pub struct ReviewSetup<'a> {
++    /// The prompt bundle; its hash is in the plan request's evidence key.
++    pub bundle: &'a PromptBundle,
++    /// The bundle's system prompt file (absolute).
++    pub system_prompt_file: &'a Path,
++    /// A checkout of the snapshot the model may read (absolute): never the working tree
++    /// itself, whose ignored files the model must not see.
++    pub tree_dir: &'a Path,
++    /// The wall-clock limit of each attempt.
++    pub timeout: Duration,
++}
++
++/// The ports a local check runs through.
++#[derive(Debug)]
++pub struct CheckPorts<'p, O, P, G, M> {
++    /// The snapshot's and base's objects.
++    pub objects: &'p O,
++    /// The change's diff.
++    pub patches: &'p P,
++    /// The gates that run locally; any other is `gate-error:not-run`.
++    pub gates: &'p mut G,
++    /// The model (the logged-in interactive CLI in production).
++    pub model: &'p M,
++}
++
++/// Why no local report could be built. Every variant stops the check.
++#[derive(Debug, Error)]
++pub enum CheckError<O, P> {
++    /// The rubric file does not parse.
++    #[error("the rubric does not parse (line {line})")]
++    Rubric {
++        /// The 1-based line of the parse error (0 when it has none).
++        line: usize,
++    },
++    /// `plan` refused the change.
++    #[error("plan refused the change")]
++    Plan(#[source] PlanError<O, Infallible>),
++    /// The change's patches could not be read.
++    #[error("could not read the change's diff")]
++    Patches(#[source] P),
++    /// The patches port returned another number of patches than files asked for.
++    #[error("asked for {asked} patches, read {returned}")]
++    PatchCount {
++        /// Files asked for.
++        asked: usize,
++        /// Patches returned.
++        returned: usize,
++    },
++    /// The changed or cited files could not be read.
++    #[error("could not read the changed files")]
++    Objects(#[source] O),
++    /// The objects port returned another number of blobs than entries asked for.
++    #[error("asked for {asked} blobs, read {returned}")]
++    ShortRead {
++        /// Entries asked for.
++        asked: usize,
++        /// Blobs returned.
++        returned: usize,
++    },
++    /// The review's document could not be encoded.
++    #[error("could not encode the review's findings document")]
++    Encode(#[source] serde_json::Error),
++}
++
++impl<O, P> From<ReadFailure<O>> for CheckError<O, P> {
++    fn from(failure: ReadFailure<O>) -> Self {
++        match failure {
++            ReadFailure::Objects(source) => Self::Objects(source),
++            ReadFailure::ShortRead { asked, returned } => Self::ShortRead { asked, returned },
++        }
++    }
++}
++
++/// Checks the working tree `request` describes as CI would check it as a PR, and decides.
++///
++/// It plans the change, runs every scheduled gate through `ports.gates`, reviews it with one
++/// model call when its tier has an LLM stage, and decides with the rubric. The result is
++/// advisory.
++///
++/// # Errors
++///
++/// [`CheckError`]: the rubric does not parse, `plan` refused the change, or the diff or the
++/// changed files could not be read. A gate or model that fails is an outcome in the report, not
++/// an error.
++pub fn check_local<O, P, G, M>(
++    request: &CheckRequest<'_>,
++    ports: CheckPorts<'_, O, P, G, M>,
++    validator: &ContractValidator,
++) -> Result<LocalReport, CheckError<O::Error, P::Error>>
++where
++    O: PullRequestObjects,
++    P: ChangePatches,
++    G: GateRunner,
++    M: ModelRunner,
++{
++    let CheckPorts {
++        objects,
++        patches,
++        gates: runner,
++        model,
++    } = ports;
++    let rubric = parse_rubric(request.rubric).map_err(|line| CheckError::Rubric { line })?;
++    let event = &request.plan.pull_request;
++    let commits = (&event.base_sha, &event.head_sha);
++    let recomputed = plan::recompute(request.plan, objects).map_err(CheckError::Plan)?;
++    let files = &recomputed.files;
++    let patches = read_patches(patches, commits, files)?;
++    let ran = gates::run(&recomputed.config.plugins, runner, validator);
++    let role = review::role(recomputed.tiering.tier);
++    let paths = match role {
++        Some(_) => diff_paths(objects, commits, files)?,
++        None => Vec::new(),
++    };
++    let texts = read_texts(objects, commits, files, &cite(&ran, &paths))?;
++    let gates = gates::anchor(ran, &texts);
++    let (change, patch_texts) = change(texts, paths, patches);
++    let reviewer = Reviewer {
++        setup: &request.review,
++        model,
++        validator,
++        run_key: recomputed.run_key,
++    };
++    let outcome = role
++        .map(|role| {
++            let pack = pack::context_pack(&change.diffs, &patch_texts);
++            let inputs = review::inputs(event.repo.as_str(), &change, &gates.findings);
++            let outcome = reviewer.review(role, &pack, &inputs)?;
++            Ok((role, outcome))
++        })
++        .transpose()
++        .map_err(CheckError::Encode)?;
++    let facts = Facts {
++        tree: request.tree,
++        run_key: recomputed.run_key,
++        policy: policy(recomputed.config.plugins.assay()),
++        base_ref: event.base_ref.as_str(),
++        tiering: &recomputed.tiering,
++        plugins: &recomputed.config.plugins,
++    };
++    let decision = decide(&rubric, &facts.inputs(gates.reports, outcome.as_ref()));
++    Ok(LocalReport {
++        schema: report::SCHEMA,
++        advisory: true,
++        tree: request.tree.to_owned(),
++        base: event.base_sha.as_str().to_owned(),
++        head: event.head_sha.as_str().to_owned(),
++        tier: recomputed.tiering.tier,
++        gates: gates.local,
++        review: report::review(outcome),
++        decision,
++    })
++}
++
++/// The patch of each of `files`, refusing a reply that is not one patch per file.
++fn read_patches<P: ChangePatches, O>(
++    patches: &P,
++    (base, head): (&CommitId, &CommitId),
++    files: &[FileChange],
++) -> Result<Vec<FilePatch>, CheckError<O, P::Error>> {
++    let read = patches
++        .patches(base, head, files)
++        .map_err(CheckError::Patches)?;
++    if read.len() == files.len() {
++        Ok(read)
++    } else {
++        Err(CheckError::PatchCount {
++            asked: files.len(),
++            returned: read.len(),
++        })
++    }
++}
++
++/// The change validation reads, with each file's hunks, and the patch texts for the pack.
++fn change(texts: Texts, paths: Vec<DiffPaths>, patches: Vec<FilePatch>) -> (Change, Vec<String>) {
++    let (head_files, base_files) = texts.into_sides();
++    let (patch_texts, hunks): (Vec<String>, Vec<_>) = patches
++        .into_iter()
++        .map(|patch| (patch.text, patch.hunks))
++        .unzip();
++    let change = Change {
++        head_files,
++        base_files,
++        diffs: paths
++            .into_iter()
++            .zip(hunks)
++            .map(|(paths, hunks)| FileDiff { paths, hunks })
++            .collect(),
++    };
++    (change, patch_texts)
++}
++
++/// Each changed file's paths, from whether it exists at base and at head.
++fn diff_paths<O: PullRequestObjects, P>(
++    objects: &O,
++    (base, head): (&CommitId, &CommitId),
++    files: &[FileChange],
++) -> Result<Vec<DiffPaths>, CheckError<O::Error, P>> {
++    let listed = |commit| {
++        objects
++            .list(commit, None)
++            .map(|entries| {
++                entries
++                    .into_iter()
++                    .map(|entry| entry.path)
++                    .collect::<BTreeSet<String>>()
++            })
++            .map_err(CheckError::Objects)
++    };
++    let at_base = listed(base)?;
++    let at_head = listed(head)?;
++    Ok(files
++        .iter()
++        .map(|file| {
++            let before = file.renamed_from.as_deref().unwrap_or(&file.path);
++            // Each path is owned by the diff; the change keeps its own.
++            match (
++                &file.renamed_from,
++                at_base.contains(before),
++                at_head.contains(&file.path),
++            ) {
++                (Some(from), _, _) => DiffPaths::Renamed {
++                    base: from.clone(),
++                    head: file.path.clone(),
++                },
++                (None, false, true) => DiffPaths::Added {
++                    head: file.path.clone(),
++                },
++                (None, true, false) => DiffPaths::Deleted {
++                    base: file.path.clone(),
++                },
++                (None, _, _) => DiffPaths::Modified {
++                    path: file.path.clone(),
++                },
++            }
++        })
++        .collect())
++}
++
++/// The files the gates' findings cite, and each changed file on each side it exists on.
++fn cite<'a>(ran: &'a [Ran], paths: &'a [DiffPaths]) -> Cited<'a> {
++    let mut cited = Cited::default();
++    for gate in ran {
++        gate.cite(&mut cited);
++    }
++    for path in paths {
++        cite_both_sides(&mut cited, path);
++    }
++    cited
++}
++
++/// Cites `paths` on each side it exists on.
++fn cite_both_sides<'p>(cited: &mut Cited<'p>, paths: &'p DiffPaths) {
++    match paths {
++        DiffPaths::Added { head } => cited.add_path(Side::Right, head),
++        DiffPaths::Deleted { base } => cited.add_path(Side::Left, base),
++        DiffPaths::Modified { path } => {
++            cited.add_path(Side::Right, path);
++            cited.add_path(Side::Left, path);
++        }
++        DiffPaths::Renamed { base, head } => {
++            cited.add_path(Side::Right, head);
++            cited.add_path(Side::Left, base);
++        }
++    }
++}
+diff --git a/crates/assay-app/src/check/gates.rs b/crates/assay-app/src/check/gates.rs
+new file mode 100644
+index 0000000..6a0a4e3
+--- /dev/null
++++ b/crates/assay-app/src/check/gates.rs
+@@ -0,0 +1,205 @@
++//! Local mode's gates: every plugin the base schedules, run job by job through the local
++//! `GateRunner`, with their findings anchored on the snapshot as `decide` anchors them.
++
++use assay_domain::{
++    Finding, FindingsDocument, GateConclusion, GateFinding, GateOutcome, GateReport, SourceKind,
++    StepAttribution,
++};
++use serde::Serialize;
++
++use crate::config::PluginsConfig;
++use crate::contract::ContractValidator;
++use crate::decide::{Anchors, Cited, Texts};
++use crate::gate::{
++    self, BuildJob, Conclusion, GateError, GateJob, GateRunner, account_for_required, run_gates,
++};
++
++/// Every gate job, in pipeline order.
++const JOBS: [GateJob; 3] = [
++    GateJob::Static,
++    GateJob::Build(BuildJob::Lint),
++    GateJob::Build(BuildJob::Test),
++];
++
++/// One gate of the local run as the report shows it.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
++pub struct LocalGate {
++    /// The plugin.
++    pub name: String,
++    /// The job it ran in: `gates-static`, `gates-lint` or `gates-test`.
++    pub job: &'static str,
++    /// Whether base config requires it.
++    pub required: bool,
++    /// `pass`, `fail`, `neutral` or `gate-error:<detail>`.
++    pub outcome: String,
++    /// Why it is a gate error, in assay's words (`not run in local mode`); never gate output.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub cause: Option<String>,
++    /// Its findings, anchored on the snapshot: a verified one quotes the tree's line.
++    pub findings: Vec<Finding>,
++}
++
++/// One gate run before its findings are anchored.
++pub(super) struct Ran {
++    report: gate::GateReport,
++    /// The document's findings; `None` when a concluded document did not read as this gate's.
++    findings: Option<Vec<Finding>>,
++}
++
++impl Ran {
++    /// The findings this gate cites, for the texts to read.
++    pub(super) fn cite<'f>(&'f self, cited: &mut Cited<'f>) {
++        for finding in self.findings.iter().flatten() {
++            cited.add(finding);
++        }
++    }
++}
++
++/// The gates of the run, for the report and for `decide`.
++#[derive(Debug, Default)]
++pub(super) struct Gates {
++    pub(super) local: Vec<LocalGate>,
++    pub(super) reports: Vec<GateReport>,
++    /// Every finding of a gate that ran, anchored: validation's `gate_findings`.
++    pub(super) findings: Vec<Finding>,
++}
++
++/// Runs every plugin `config` schedules in each job, in job then file order. A required gate
++/// the runner does not run is a gate error, never a pass.
++pub(super) fn run<G: GateRunner>(
++    config: &PluginsConfig,
++    runner: &mut G,
++    validator: &ContractValidator,
++) -> Vec<Ran> {
++    let mut ran = Vec::new();
++    for job in JOBS {
++        let mut reports = run_gates(config, job, runner, validator);
++        account_for_required(config, job, &mut reports);
++        ran.extend(reports.into_iter().map(read));
++    }
++    ran
++}
++
++/// A report with its validated document read as findings.
++fn read(mut report: gate::GateReport) -> Ran {
++    // `run_gates` validated the document; one that still does not read as this gate's is a
++    // drift between schema and type, and the gate is an invalid-document error.
++    let findings = report.document.take().map(|value| {
++        match serde_json::from_value::<FindingsDocument>(value) {
++            Ok(document)
++                if document.source.kind == SourceKind::Gate
++                    && document.source.name == report.plugin.as_str() =>
++            {
++                Some(document.findings)
++            }
++            Ok(_) | Err(_) => None,
++        }
++    });
++    let findings = match (&report.outcome, findings) {
++        (gate::GateOutcome::Concluded(_), Some(read)) => read,
++        _ => Some(Vec::new()),
++    };
++    Ran { report, findings }
++}
++
++/// The reports with every finding anchored on `texts`; a gate with a finding that has no
++/// content to anchor is `gate-error:evidence-missing`, as `decide` has it.
++pub(super) fn anchor(ran: Vec<Ran>, texts: &Texts) -> Gates {
++    let mut anchors = Anchors::new(texts);
++    let mut gates = Gates::default();
++    for Ran { report, findings } in ran {
++        let (outcome, cause, mut findings) = match (report.outcome, findings) {
++            (gate::GateOutcome::Concluded(conclusion), Some(findings)) => {
++                (Settled::Ran(conclusion), report.cause, findings)
++            }
++            (gate::GateOutcome::Concluded(_), None) => (
++                Settled::Error(GateError::InvalidDocument.detail().into_owned()),
++                report.cause,
++                Vec::new(),
++            ),
++            (gate::GateOutcome::Error(error), _) => (
++                Settled::Error(error.detail().into_owned()),
++                report.cause,
++                Vec::new(),
++            ),
++        };
++        let fingerprints: Option<Vec<GateFinding>> = findings
++            .iter_mut()
++            .map(|finding| {
++                let fp = anchors.anchor(finding)?;
++                Some(GateFinding {
++                    fp,
++                    // The decision input and the reported finding each own the rule.
++                    rule: finding.rule.clone(),
++                    severity: finding.severity,
++                })
++            })
++            .collect();
++        let (outcome, reported) = match fingerprints {
++            Some(reported) => (outcome, reported),
++            None => (Settled::Error("evidence-missing".to_owned()), Vec::new()),
++        };
++        gates.local.push(LocalGate {
++            name: report.plugin.as_str().to_owned(),
++            job: job_name(report.job),
++            required: report.required,
++            outcome: outcome.display(),
++            cause,
++            // The report shows the findings; validation reads them too, below.
++            findings: findings.clone(),
++        });
++        gates.reports.push(GateReport {
++            name: report.plugin.as_str().to_owned(),
++            required: report.required,
++            outcome: outcome.into_domain(),
++            findings: reported,
++        });
++        gates.findings.append(&mut findings);
++    }
++    gates
++}
++
++/// How a gate settled, before it becomes the report's text and the decision's outcome.
++enum Settled {
++    Ran(Conclusion),
++    Error(String),
++}
++
++impl Settled {
++    fn display(&self) -> String {
++        match self {
++            Self::Ran(conclusion) => conclusion_code(*conclusion).to_owned(),
++            Self::Error(detail) => format!("gate-error:{detail}"),
++        }
++    }
++
++    fn into_domain(self) -> GateOutcome {
++        match self {
++            Self::Ran(conclusion) => GateOutcome::Ran {
++                conclusion: match conclusion {
++                    Conclusion::Pass => GateConclusion::Pass,
++                    Conclusion::Fail => GateConclusion::Fail,
++                    Conclusion::Neutral => GateConclusion::Neutral,
++                },
++                steps: StepAttribution::Unknown,
++            },
++            Self::Error(detail) => GateOutcome::Error { detail },
++        }
++    }
++}
++
++const fn conclusion_code(conclusion: Conclusion) -> &'static str {
++    match conclusion {
++        Conclusion::Pass => "pass",
++        Conclusion::Fail => "fail",
++        Conclusion::Neutral => "neutral",
++    }
++}
++
++const fn job_name(job: GateJob) -> &'static str {
++    match job {
++        GateJob::Static => "gates-static",
++        GateJob::Build(BuildJob::Lint) => "gates-lint",
++        GateJob::Build(BuildJob::Test) => "gates-test",
++    }
++}
+diff --git a/crates/assay-app/src/check/inputs.rs b/crates/assay-app/src/check/inputs.rs
+new file mode 100644
+index 0000000..4ffc9ea
+--- /dev/null
++++ b/crates/assay-app/src/check/inputs.rs
+@@ -0,0 +1,166 @@
++//! The rubric's inputs for a local check: the facts `plan` recomputed, the local gates and
++//! review, and fixed facts for what a working tree has no PR for.
++//!
++//! A working tree has no approval, author, draft flag or requeue, and no waivers or override:
++//! it is a ready PR by someone other than an agent, never approved and never requeued, the only
++//! open PR on its head. No coordinator or verifier runs locally, so where one would be due the
++//! decision reports it failed rather than pretending it was not needed.
++
++use std::collections::BTreeSet;
++
++use assay_domain::{
++    Authorship, CallFailure, DecisionInputs, Deferral, DegradedRole, GateReport, LlmStage,
++    NotRunReason, OwnerApproval, Policy, PullRequest, Readiness, RequiredRole, ReviewedFinding,
++    Severity, SupportOutcome, Tier, Tiering, WeighIn,
++};
++
++use super::review::{Reviewed, Stage};
++use crate::config::{Adapter, PluginsConfig};
++use crate::plan::EvidenceKey;
++use crate::prompt_bundle::Role;
++
++/// What the decision reads besides the gates and the review.
++#[derive(Debug)]
++pub(super) struct Facts<'a> {
++    /// The tree fingerprint, for the decision key.
++    pub(super) tree: &'a str,
++    pub(super) run_key: EvidenceKey,
++    pub(super) policy: Policy,
++    pub(super) base_ref: &'a str,
++    pub(super) tiering: &'a Tiering,
++    pub(super) plugins: &'a PluginsConfig,
++}
++
++impl Facts<'_> {
++    /// The decision inputs of `gates` and the review, `None` when the tier has no LLM stage.
++    pub(super) fn inputs(
++        self,
++        gates: Vec<GateReport>,
++        reviewed: Option<&(Role, Reviewed)>,
++    ) -> DecisionInputs {
++        let tier = self.tiering.tier;
++        let review = Review::of(reviewed);
++        DecisionInputs {
++            decision_key: format!("local:{}", self.tree),
++            evidence_key: self.run_key.to_string(),
++            policy: self.policy,
++            pr: PullRequest {
++                base_ref: self.base_ref.to_owned(),
++                open_prs_on_head: 1,
++                tier,
++                // The decision input owns the classes; the tiering keeps its own.
++                classes: self.tiering.classes.clone(),
++                owner_approval: OwnerApproval::NotApproved,
++                authorship: Authorship::Other,
++                readiness: Readiness::Ready,
++                requeues: 0,
++            },
++            gates,
++            weigh_in: weigh_in(self.plugins),
++            llm: review.llm,
++            coordinator: support(tier == Tier::Full && !review.findings.is_empty()),
++            verifier: support(
++                matches!(tier, Tier::Full | Tier::Lite)
++                    && review
++                        .findings
++                        .iter()
++                        .any(|finding| finding.severity >= Severity::Major),
++            ),
++            findings: review.findings,
++            dispositions: Vec::new(),
++            completed_roles: review.completed,
++            degraded: review.degraded,
++            waivers: Vec::new(),
++            override_record: None,
++        }
++    }
++}
++
++/// The review's part of the inputs.
++struct Review {
++    llm: LlmStage,
++    findings: Vec<ReviewedFinding>,
++    completed: BTreeSet<RequiredRole>,
++    degraded: Vec<DegradedRole>,
++}
++
++impl Review {
++    fn of(reviewed: Option<&(Role, Reviewed)>) -> Self {
++        let none = Self {
++            llm: LlmStage::NotRun {
++                reason: NotRunReason::NoLlmTier,
++            },
++            findings: Vec::new(),
++            completed: BTreeSet::new(),
++            degraded: Vec::new(),
++        };
++        let Some((role, reviewed)) = reviewed else {
++            return none;
++        };
++        match &reviewed.stage {
++            Stage::Completed(findings) => Self {
++                llm: LlmStage::Completed,
++                findings: findings
++                    .iter()
++                    .map(|valid| ReviewedFinding {
++                        fp: valid.fingerprint,
++                        // Each finding is its own group: no coordinator groups them locally.
++                        group_id: valid.fingerprint.to_string(),
++                        role: role.code().to_owned(),
++                        severity: valid.finding.severity,
++                        pre_existing: valid.finding.pre_existing,
++                        verdict: None,
++                    })
++                    .collect(),
++                completed: BTreeSet::from([required(*role)]),
++                degraded: Vec::new(),
++            },
++            Stage::Degraded(failure) => Self {
++                llm: LlmStage::Completed,
++                degraded: vec![DegradedRole {
++                    role: role.code().to_owned(),
++                    reason: failure.code().to_owned(),
++                }],
++                ..none
++            },
++            Stage::Unavailable => Self {
++                llm: LlmStage::Deferred {
++                    reason: Deferral::InfraLlmUnavailable,
++                },
++                ..none
++            },
++        }
++    }
++}
++
++/// The roster role `role` reports as.
++const fn required(role: Role) -> RequiredRole {
++    match role {
++        Role::Combined => RequiredRole::Combined,
++        Role::CombinedMicro => RequiredRole::CombinedMicro,
++    }
++}
++
++/// A coordinator or verifier: never run locally, so failed when it was `due`.
++const fn support(due: bool) -> SupportOutcome {
++    if due {
++        SupportOutcome::Failed {
++            reason: CallFailure::Unavailable,
++        }
++    } else {
++        SupportOutcome::NotNeeded
++    }
++}
++
++/// The Weigh-In gate does not run locally: when base config requires it, there is no evidence.
++fn weigh_in(plugins: &PluginsConfig) -> WeighIn {
++    let required = plugins
++        .plugins()
++        .iter()
++        .any(|plugin| plugin.required() && matches!(plugin.adapter(), Adapter::WeighIn { .. }));
++    if required {
++        WeighIn::NoEvidence
++    } else {
++        WeighIn::NotRequired
++    }
++}
+diff --git a/crates/assay-app/src/check/pack.rs b/crates/assay-app/src/check/pack.rs
+new file mode 100644
+index 0000000..6967e6f
+--- /dev/null
++++ b/crates/assay-app/src/check/pack.rs
+@@ -0,0 +1,81 @@
++//! The local review's context pack: the changed files with their status, then the diff, each
++//! capped (04 §3 names both; local mode has no base `REVIEW.md` or admit pack yet, #85, #72).
++//!
++//! A file's line or patch goes in whole or not at all, and the pack says how many it left out,
++//! so the model never reads a diff cut mid-hunk.
++
++use crate::validation::{DiffPaths, FileDiff};
++
++/// The most bytes of file list lines (`M <path>\n`) in a context pack: 32 KiB.
++pub const MAX_FILE_LIST_BYTES: usize = 32 << 10;
++
++/// The most bytes of diff in a context pack: 120 KiB (04 §3).
++pub const MAX_DIFF_BYTES: usize = 120 << 10;
++
++/// The pack for `diffs` (the change's files, in order) and their patch texts, one per diff. Linear in the
++/// listed lines and patches; each section stops growing at its cap.
++pub(super) fn context_pack(diffs: &[FileDiff], patches: &[String]) -> String {
++    let mut pack = format!("Changed files ({}):\n", diffs.len());
++    let lines = diffs.iter().map(|diff| status_line(&diff.paths));
++    let unlisted = append_capped(&mut pack, lines, MAX_FILE_LIST_BYTES);
++    if unlisted > 0 {
++        let count = unlisted.to_string();
++        pack.extend(["[", &count, " more ", files(unlisted), " not listed]\n"]);
++    }
++    pack.push_str("\nDiff:\n");
++    let unshown = append_capped(&mut pack, patches.iter(), MAX_DIFF_BYTES);
++    if unshown > 0 {
++        let count = unshown.to_string();
++        let cap = MAX_DIFF_BYTES.to_string();
++        pack.extend([
++            "[",
++            &count,
++            " more ",
++            files(unshown),
++            " not shown: the diff stops at ",
++            &cap,
++            " bytes]\n",
++        ]);
++    }
++    pack
++}
++
++/// Appends each of `pieces` that still fits in `cap` bytes of appended text, and returns how
++/// many non-empty pieces did not.
++fn append_capped<S: AsRef<str>>(
++    pack: &mut String,
++    pieces: impl Iterator<Item = S>,
++    cap: usize,
++) -> usize {
++    let mut used = 0_usize;
++    let mut left_out = 0_usize;
++    for piece in pieces {
++        let piece = piece.as_ref();
++        if piece.is_empty() {
++            continue;
++        }
++        match used.checked_add(piece.len()).filter(|total| *total <= cap) {
++            Some(total) => {
++                used = total;
++                pack.push_str(piece);
++            }
++            None => left_out = left_out.saturating_add(1),
++        }
++    }
++    left_out
++}
++
++/// `file` or `files`.
++const fn files(count: usize) -> &'static str {
++    if count == 1 { "file" } else { "files" }
++}
++
++/// One file's line: its status letter and path, both paths for a rename.
++fn status_line(paths: &DiffPaths) -> String {
++    match paths {
++        DiffPaths::Added { head } => format!("A {head}\n"),
++        DiffPaths::Deleted { base } => format!("D {base}\n"),
++        DiffPaths::Modified { path } => format!("M {path}\n"),
++        DiffPaths::Renamed { base, head } => format!("R {base} -> {head}\n"),
++    }
++}
+diff --git a/crates/assay-app/src/check/ports.rs b/crates/assay-app/src/check/ports.rs
+new file mode 100644
+index 0000000..1402141
+--- /dev/null
++++ b/crates/assay-app/src/check/ports.rs
+@@ -0,0 +1,36 @@
++//! The one port local mode adds to those `plan`, `gate` and the model runner define: the
++//! change's unified diff, file by file.
++
++use assay_domain::FileChange;
++
++use crate::config::CommitId;
++use crate::validation::Hunk;
++
++/// One changed file's unified diff and its hunks, as git prints them over `base...head` with
++/// rename detection and three lines of context (what GitHub shows of a PR).
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub struct FilePatch {
++    /// The diff text, for the review's context pack; empty for an unchanged file.
++    pub text: String,
++    /// Its `@@ -base +head @@` hunks, for validation's placement; none for a binary file.
++    pub hunks: Vec<Hunk>,
++}
++
++/// The change's patches, read as data (nothing is checked out or run).
++pub trait ChangePatches {
++    /// Why the patches could not be read.
++    type Error: std::error::Error;
++
++    /// The patch of each of `files` over `base...head`, in the same order: a renamed file's
++    /// covers both its paths.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when a diff cannot be produced or read.
++    fn patches(
++        &self,
++        base: &CommitId,
++        head: &CommitId,
++        files: &[FileChange],
++    ) -> Result<Vec<FilePatch>, Self::Error>;
++}
+diff --git a/crates/assay-app/src/check/report.rs b/crates/assay-app/src/check/report.rs
+new file mode 100644
+index 0000000..59e7cc5
+--- /dev/null
++++ b/crates/assay-app/src/check/report.rs
+@@ -0,0 +1,248 @@
++//! The local report: what `assay check --local` writes to `.git/assay/<tree>.json` and shows in
++//! the terminal.
++//!
++//! It is not a contract. Its `schema` is `assay.local-check/1`, which no schema in `schemas/`
++//! describes and [`ContractValidator`](crate::ContractValidator) refuses for every contract, and
++//! it says `advisory: true`: CI never reads it (R-10, P9).
++
++use assay_domain::{Aeu, Decision, Finding, Tier};
++use serde::{Serialize, Serializer};
++
++use super::gates::LocalGate;
++use super::review::{Reviewed, Stage};
++use crate::prompt_bundle::Role;
++use crate::publish::clean;
++
++/// The local report's own schema name: never a contract's.
++pub(super) const SCHEMA: &str = "assay.local-check/1";
++
++/// The terminal report's first line.
++const BANNER: &str = "assay check --local: advisory, CI never reads this report";
++
++/// How the local review went.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
++#[serde(rename_all = "kebab-case")]
++pub enum ReviewStatus {
++    /// The tier has no LLM stage.
++    NotRun,
++    /// The model returned structured output, validated as `decide` validates it.
++    Completed,
++    /// The call ran out of budget, turns or time, or its output stayed malformed after the retry.
++    Degraded,
++    /// No usable call could be made: the CLI did not start, the session was not confined, or
++    /// the context pack was not a valid prompt.
++    Unavailable,
++}
++
++/// The local review as the report shows it.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct LocalReview {
++    /// How it went.
++    pub status: ReviewStatus,
++    /// The role that reviewed; `None` when the tier has no LLM stage.
++    pub role: Option<Role>,
++    /// Why it did not complete, or what validation refused, in assay's words.
++    pub note: Option<String>,
++    /// The findings that survived validation; their free text is the model's.
++    pub findings: Vec<Finding>,
++    /// What the attempts cost; a call whose cost is unknown is charged its cap.
++    pub cost: Aeu,
++}
++
++/// [`LocalReview`] as JSON: the role by its code and the cost as AEU text (`0.12`).
++#[derive(Serialize)]
++struct ShownReview<'r> {
++    status: ReviewStatus,
++    role: Option<&'static str>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    note: Option<&'r str>,
++    findings: &'r [Finding],
++    cost: String,
++}
++
++impl Serialize for LocalReview {
++    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
++        ShownReview {
++            status: self.status,
++            role: self.role.map(Role::code),
++            note: self.note.as_deref(),
++            findings: &self.findings,
++            cost: self.cost.to_string(),
++        }
++        .serialize(serializer)
++    }
++}
++
++/// The advisory result of `assay check --local`.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
++pub struct LocalReport {
++    /// Always [`SCHEMA`].
++    pub(super) schema: &'static str,
++    /// Always `true`.
++    pub(super) advisory: bool,
++    pub(super) tree: String,
++    /// The base commit and the snapshot commit.
++    pub(super) base: String,
++    pub(super) head: String,
++    pub(super) tier: Tier,
++    pub(super) gates: Vec<LocalGate>,
++    pub(super) review: LocalReview,
++    pub(super) decision: Decision,
++}
++
++impl LocalReport {
++    /// The tree fingerprint the report is about.
++    #[must_use]
++    pub fn tree(&self) -> &str {
++        &self.tree
++    }
++
++    /// The tier `plan` computed for the working tree.
++    #[must_use]
++    pub const fn tier(&self) -> Tier {
++        self.tier
++    }
++
++    /// Every scheduled gate, in job then file order.
++    #[must_use]
++    pub fn gates(&self) -> &[LocalGate] {
++        &self.gates
++    }
++
++    /// The review.
++    #[must_use]
++    pub const fn review(&self) -> &LocalReview {
++        &self.review
++    }
++
++    /// What the rubric decided from the local inputs.
++    #[must_use]
++    pub const fn decision(&self) -> &Decision {
++        &self.decision
++    }
++
++    /// The report as pretty JSON ending in a newline, for `.git/assay/<tree>.json`.
++    ///
++    /// # Errors
++    ///
++    /// [`serde_json::Error`] when it cannot be encoded.
++    pub fn to_json(&self) -> Result<Vec<u8>, serde_json::Error> {
++        let mut json = serde_json::to_vec_pretty(self)?;
++        json.push(b'\n');
++        Ok(json)
++    }
++
++    /// The report for a terminal: one item per line, every gate, model and path text on one
++    /// line with its control and format characters replaced, so nothing it quotes can move the
++    /// cursor, clear the screen or reorder the text.
++    #[must_use]
++    pub fn render(&self) -> String {
++        let mut lines = vec![
++            BANNER.to_owned(),
++            ["tree ", &clean(&self.tree), ", tier ", self.tier.code()].concat(),
++            "gates:".to_owned(),
++        ];
++        if self.gates.is_empty() {
++            lines.push("  none scheduled".to_owned());
++        }
++        for gate in &self.gates {
++            let mut line = [
++                "  ",
++                &clean(&gate.outcome),
++                " ",
++                &clean(&gate.name),
++                " (",
++                gate.job,
++                ")",
++            ]
++            .concat();
++            if let Some(cause) = &gate.cause {
++                line.extend([": ", &clean(cause)]);
++            }
++            lines.push(line);
++            lines.extend(
++                gate.findings
++                    .iter()
++                    .map(|finding| finding_line("    ", finding)),
++            );
++        }
++        let review = &self.review;
++        let mut line = ["review: ", status_code(review.status)].concat();
++        if let Some(role) = review.role {
++            line.extend([" (", role.code(), ", ", &review.cost.to_string(), " AEU)"]);
++        }
++        if let Some(note) = &review.note {
++            line.extend([": ", &clean(note)]);
++        }
++        lines.push(line);
++        lines.extend(
++            review
++                .findings
++                .iter()
++                .map(|finding| finding_line("  ", finding)),
++        );
++        lines.push(["decision: ", self.decision.conclusion.code()].concat());
++        for reason in &self.decision.reasons {
++            lines.push(["  ", reason.code.code(), ": ", &clean(&reason.detail)].concat());
++        }
++        for degraded in &self.decision.degraded {
++            let (role, why) = (clean(&degraded.role), clean(&degraded.reason));
++            lines.push(["  degraded ", &role, ": ", &why].concat());
++        }
++        let mut text = lines.join("\n");
++        text.push('\n');
++        text
++    }
++}
++
++/// The review part of the report and the decision, from how the review went.
++pub(super) fn review(reviewed: Option<(Role, Reviewed)>) -> LocalReview {
++    let Some((role, reviewed)) = reviewed else {
++        return LocalReview {
++            status: ReviewStatus::NotRun,
++            role: None,
++            note: None,
++            findings: Vec::new(),
++            cost: Aeu::ZERO,
++        };
++    };
++    let (status, findings) = match reviewed.stage {
++        Stage::Completed(valid) => (
++            ReviewStatus::Completed,
++            valid.into_iter().map(|valid| valid.finding).collect(),
++        ),
++        Stage::Degraded(_) => (ReviewStatus::Degraded, Vec::new()),
++        Stage::Unavailable => (ReviewStatus::Unavailable, Vec::new()),
++    };
++    LocalReview {
++        status,
++        role: Some(role),
++        note: reviewed.note,
++        findings,
++        cost: reviewed.cost,
++    }
++}
++
++/// `<indent><severity> <file>:<line> <title>`.
++fn finding_line(indent: &str, finding: &Finding) -> String {
++    [
++        indent,
++        finding.severity.code(),
++        " ",
++        &clean(&finding.file),
++        ":",
++        &finding.line.to_string(),
++        " ",
++        &clean(&finding.title),
++    ]
++    .concat()
++}
++
++const fn status_code(status: ReviewStatus) -> &'static str {
++    match status {
++        ReviewStatus::NotRun => "not-run",
++        ReviewStatus::Completed => "completed",
++        ReviewStatus::Degraded => "degraded",
++        ReviewStatus::Unavailable => "unavailable",
++    }
++}
+diff --git a/crates/assay-app/src/check/review.rs b/crates/assay-app/src/check/review.rs
+new file mode 100644
+index 0000000..5d630c2
+--- /dev/null
++++ b/crates/assay-app/src/check/review.rs
+@@ -0,0 +1,207 @@
++//! The local review: one model call with the tier's role, its output stamped with assay's own
++//! `source` and validated as `decide` validates a review job's documents (04 §4).
++//!
++//! The v1 bundle has two instructions, so `micro` is reviewed by `combined-micro` and `lite` and
++//! `full` by `combined`; a `full` PR's specialist roster is the review job's (#85), and the
++//! decision reports those roles missing.
++
++use assay_domain::{Aeu, CallFailure, Disposition, Finding, FindingsSchema, SourceKind, Tier};
++use serde_json::{Map, Value, json};
++
++use super::ReviewSetup;
++use crate::contract::{Contract, ContractValidator};
++use crate::model_runner::{
++    ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, RetryError, run_with_retry,
++};
++use crate::plan::EvidenceKey;
++use crate::prompt_bundle::Role;
++use crate::session_init::{CLEAN_TOOLS, InitReadError, SessionInit};
++use crate::validation::{Change, FindingRef, Inputs, SuppressRules, ValidFinding, validate};
++
++/// The reviewer name local mode stamps on its document.
++const REVIEWER: &str = "assay-local";
++
++/// The role that reviews `tier`; `None` for a tier without an LLM stage.
++pub(super) const fn role(tier: Tier) -> Option<Role> {
++    match tier {
++        Tier::Micro => Some(Role::CombinedMicro),
++        Tier::Lite | Tier::Full => Some(Role::Combined),
++        Tier::Trivial | Tier::NeedsSplit => None,
++    }
++}
++
++/// No base `suppress` rules: local mode has no parser for them yet, so it shows every finding.
++struct NoSuppression;
++
++impl SuppressRules for NoSuppression {
++    fn suppresses(&self, _finding: &Finding, _file_at_head: &str) -> bool {
++        false
++    }
++}
++
++/// What the review's document is validated against: the change, and the gate findings, as in
++/// Z4. There are no owner dismissals locally.
++pub(super) fn inputs<'a>(
++    repository: &'a str,
++    change: &'a Change,
++    gate_findings: &'a [Finding],
++) -> Inputs<'a> {
++    Inputs {
++        repository,
++        change,
++        suppress: &NoSuppression,
++        dismissals: &[],
++        gate_findings,
++    }
++}
++
++/// How the review ended.
++#[derive(Debug)]
++pub(super) enum Stage {
++    /// The model returned structured output; these findings survived validation.
++    Completed(Vec<ValidFinding>),
++    /// The call ran and produced nothing usable.
++    Degraded(CallFailure),
++    /// No usable call could be made.
++    Unavailable,
++}
++
++/// The review's outcome, with what the report says about it.
++#[derive(Debug)]
++pub(super) struct Reviewed {
++    pub(super) stage: Stage,
++    /// Why it did not complete, or what validation refused, in assay's words.
++    pub(super) note: Option<String>,
++    /// Every attempt's cost; a call whose cost is unknown is charged its cap.
++    pub(super) cost: Aeu,
++}
++
++impl Reviewed {
++    fn unavailable(note: String, cost: Aeu) -> Self {
++        Self {
++            stage: Stage::Unavailable,
++            note: Some(note),
++            cost,
++        }
++    }
++
++    fn degraded(failure: CallFailure, cost: Aeu) -> Self {
++        Self {
++            stage: Stage::Degraded(failure),
++            note: Some(format!("the review degraded: {}", failure.code())),
++            cost,
++        }
++    }
++}
++
++/// Makes the review's call.
++pub(super) struct Reviewer<'a, M> {
++    pub(super) setup: &'a ReviewSetup<'a>,
++    pub(super) model: &'a M,
++    pub(super) validator: &'a ContractValidator,
++    pub(super) run_key: EvidenceKey,
++}
++
++impl<M: ModelRunner> Reviewer<'_, M> {
++    /// Reviews the change `pack` describes as `role`, validating the output against `inputs`.
++    ///
++    /// # Errors
++    ///
++    /// [`serde_json::Error`] when the stamped document cannot be encoded.
++    pub(super) fn review(
++        &self,
++        role: Role,
++        pack: &str,
++        inputs: &Inputs<'_>,
++    ) -> Result<Reviewed, serde_json::Error> {
++        let Ok(user_prompt) = self.setup.bundle.user_prompt(role, pack) else {
++            let note = "the context pack is not a valid prompt".to_owned();
++            return Ok(Reviewed::unavailable(note, Aeu::ZERO));
++        };
++        let call = ModelCall {
++            system_prompt_file: self.setup.system_prompt_file.to_path_buf(),
++            user_prompt,
++            json_schema: Contract::Findings.schema_text().to_owned(),
++            add_dir: self.setup.tree_dir.to_path_buf(),
++            max_turns: role.max_turns(),
++            budget: role.cap(),
++            timeout: self.setup.timeout,
++        };
++        let attempts = match run_with_retry(self.model, &call) {
++            Ok(attempts) => attempts,
++            Err(RetryError::First(error)) => {
++                return Ok(Reviewed::unavailable(error.to_string(), role.cap()));
++            }
++            Err(RetryError::Retry { first, source }) => {
++                let cost = first.cost.saturating_add(role.cap());
++                return Ok(Reviewed::unavailable(source.to_string(), cost));
++            }
++        };
++        let cost = attempts.cost();
++        let ModelAttempts { first, retry } = attempts;
++        let ModelResult { outcome, init, .. } = retry.unwrap_or(first);
++        if let Err(note) = confined(&init) {
++            return Ok(Reviewed::unavailable(note, cost));
++        }
++        let structured = match outcome {
++            ModelOutcome::Ok(structured) => structured,
++            ModelOutcome::Malformed => return Ok(Reviewed::degraded(CallFailure::Malformed, cost)),
++            ModelOutcome::BudgetExhausted => return Ok(Reviewed::degraded(CallFailure::Cap, cost)),
++            ModelOutcome::TurnsExhausted => {
++                return Ok(Reviewed::degraded(CallFailure::Turns, cost));
++            }
++            ModelOutcome::Timeout => return Ok(Reviewed::degraded(CallFailure::Timeout, cost)),
++            ModelOutcome::QuotaExhausted => {
++                return Ok(Reviewed::degraded(CallFailure::Unavailable, cost));
++            }
++        };
++        let document = serde_json::to_vec(&self.stamp(structured.into_value(), role))?;
++        let validated = validate(self.validator, inputs, &[document.as_slice()]);
++        let refused = validated.transitions.iter().any(|transition| {
++            matches!(transition.at, FindingRef::Document { .. })
++                && transition.code == Disposition::Schema
++        });
++        Ok(Reviewed {
++            stage: Stage::Completed(validated.findings),
++            note: refused.then(|| "the model's document failed the findings schema".to_owned()),
++            cost,
++        })
++    }
++
++    /// `output` as an `assay.findings/1` document whose `schema` and `source` are assay's: a
++    /// model-written `source` is replaced, so validation holds the findings to `role`'s
++    /// ceiling. Anything but an object is left alone, and validation refuses it.
++    fn stamp(&self, output: Value, role: Role) -> Value {
++        let mut document: Map<String, Value> = match output {
++            Value::Object(document) => document,
++            other => return other,
++        };
++        document.insert("schema".to_owned(), json!(FindingsSchema::V1.code()));
++        document.insert(
++            "source".to_owned(),
++            json!({
++                "kind": SourceKind::Reviewer.code(),
++                "name": REVIEWER,
++                "version": env!("CARGO_PKG_VERSION"),
++                "role": role.code(),
++                "run_key": self.run_key.to_string(),
++            }),
++        );
++        Value::Object(document)
++    }
++}
++
++/// Whether the session that answered was confined to `Read`, `Grep` and `Glob` with no MCP
++/// server: the part of the clean-init rule (03 §8) that holds whatever CLI version the developer
++/// runs. Its output is not used otherwise.
++fn confined(init: &Result<SessionInit, InitReadError>) -> Result<(), String> {
++    let init = init
++        .as_ref()
++        .map_err(|error| format!("the session's init could not be read: {error}"))?;
++    let mut tools: Vec<&str> = init.tools().iter().map(String::as_str).collect();
++    tools.sort_unstable();
++    if tools != CLEAN_TOOLS || !init.mcp_servers().is_empty() {
++        return Err("the session was not confined to Read, Grep and Glob".to_owned());
++    }
++    Ok(())
++}
+diff --git a/crates/assay-app/src/contract.rs b/crates/assay-app/src/contract.rs
+index 87e9808..453f603 100644
+--- a/crates/assay-app/src/contract.rs
++++ b/crates/assay-app/src/contract.rs
+@@ -72,7 +72,7 @@ impl Contract {
+     }
+ 
+     /// The embedded JSON Schema of the supported version.
+-    const fn schema_text(self) -> &'static str {
++    pub(crate) const fn schema_text(self) -> &'static str {
+         match self {
+             Self::Findings => include_str!("../../../schemas/findings-1.schema.json"),
+             Self::Run => include_str!("../../../schemas/run-1.schema.json"),
+diff --git a/crates/assay-app/src/decide.rs b/crates/assay-app/src/decide.rs
+index c992463..21f1a91 100644
+--- a/crates/assay-app/src/decide.rs
++++ b/crates/assay-app/src/decide.rs
+@@ -29,6 +29,7 @@ use assay_domain::{
+ };
+ use thiserror::Error;
+ 
++pub(crate) use self::evidence::{Anchors, Cited, ReadFailure, Texts, read_texts};
+ pub use self::evidence::{MAX_EVIDENCE_BYTES, MAX_EVIDENCE_FILES, MAX_SYMBOL_BYTES};
+ pub use self::fetch::MAX_FETCHED_BYTES;
+ use self::fetch::{Artifact, Fetch, Fetcher};
+@@ -288,6 +289,15 @@ pub enum DecideError<O, S, A> {
+     Encode(#[source] serde_json::Error),
+ }
+ 
++impl<O, S, A> From<ReadFailure<O>> for DecideError<O, S, A> {
++    fn from(failure: ReadFailure<O>) -> Self {
++        match failure {
++            ReadFailure::Objects(source) => Self::Objects(source),
++            ReadFailure::ShortRead { asked, returned } => Self::ShortRead { asked, returned },
++        }
++    }
++}
++
+ /// The [`DecideError`] of [`authenticate`] over `ports`' error types.
+ pub type DecideFailure<O, S, A> = DecideError<
+     <O as PullRequestObjects>::Error,
+@@ -567,7 +577,7 @@ fn is_document_name(file: &str) -> bool {
+ }
+ 
+ /// Base policy as the rubric reads it.
+-fn policy(settings: &AssaySettings) -> Policy {
++pub(crate) fn policy(settings: &AssaySettings) -> Policy {
+     let llm = |promotion| match promotion {
+         Promotion::Advisory => LlmPolicy::Advisory,
+         Promotion::Block => LlmPolicy::Block,
+diff --git a/crates/assay-app/src/decide/evidence.rs b/crates/assay-app/src/decide/evidence.rs
+index 977a6dc..b559259 100644
+--- a/crates/assay-app/src/decide/evidence.rs
++++ b/crates/assay-app/src/decide/evidence.rs
+@@ -12,7 +12,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
+ 
+ use assay_domain::{FileChange, Finding, Fingerprint, Side, normalise};
+ 
+-use super::DecideError;
+ use crate::config::CommitId;
+ use crate::plan::{EntryKind, PullRequestObjects, TreeEntry};
+ use crate::validation::enclosing_functions;
+@@ -35,7 +34,7 @@ const MAX_EVIDENCE_CHARS: usize = 400;
+ 
+ /// The texts gate findings cite, as far as the budget reads, with renames resolved.
+ #[derive(Debug, Default)]
+-pub(super) struct Texts {
++pub(crate) struct Texts {
+     head: BTreeMap<String, String>,
+     base: BTreeMap<String, String>,
+     /// Head path by base path, for files the change renamed.
+@@ -44,30 +43,51 @@ pub(super) struct Texts {
+ 
+ /// The paths gate findings cite, by side.
+ #[derive(Debug, Default)]
+-pub(super) struct Cited<'f> {
++pub(crate) struct Cited<'f> {
+     head: BTreeSet<&'f str>,
+     base: BTreeSet<&'f str>,
+ }
+ 
+ impl<'f> Cited<'f> {
+     /// Adds the file `finding` cites on its side (head unless it says base).
+-    pub(super) fn add(&mut self, finding: &'f Finding) {
+-        let paths = match finding.side.unwrap_or(Side::Right) {
++    pub(crate) fn add(&mut self, finding: &'f Finding) {
++        self.add_path(finding.side.unwrap_or(Side::Right), finding.file.as_str());
++    }
++
++    /// Adds `path` on `side`.
++    pub(crate) fn add_path(&mut self, side: Side, path: &'f str) {
++        let paths = match side {
+             Side::Right => &mut self.head,
+             Side::Left => &mut self.base,
+         };
+-        paths.insert(finding.file.as_str());
++        paths.insert(path);
+     }
+ }
+ 
++impl Texts {
++    /// The texts read, head then base, each by path.
++    pub(crate) fn into_sides(self) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
++        (self.head, self.base)
++    }
++}
++
++/// Why the cited texts could not be read.
++#[derive(Debug)]
++pub(crate) enum ReadFailure<E> {
++    /// The objects port failed.
++    Objects(E),
++    /// The port returned another number of blobs than it was asked for.
++    ShortRead { asked: usize, returned: usize },
++}
++
+ /// Reads the files `cited` names on each side, head first and in path order, until the budget
+ /// is spent.
+-pub(super) fn read_texts<O: PullRequestObjects, S, A>(
++pub(crate) fn read_texts<O: PullRequestObjects>(
+     objects: &O,
+     (base, head): (&CommitId, &CommitId),
+     files: &[FileChange],
+     cited: &Cited<'_>,
+-) -> Result<Texts, DecideError<O::Error, S, A>> {
++) -> Result<Texts, ReadFailure<O::Error>> {
+     let mut budget = Budget {
+         files: MAX_EVIDENCE_FILES,
+         bytes: MAX_EVIDENCE_BYTES,
+@@ -96,17 +116,17 @@ struct Budget {
+ }
+ 
+ /// The UTF-8 regular files among `paths` at `commit` that fit the budget, read in one batch.
+-fn side_texts<'p, O: PullRequestObjects, S, A>(
++fn side_texts<'p, O: PullRequestObjects>(
+     objects: &O,
+     commit: &CommitId,
+     paths: impl Iterator<Item = &'p str>,
+     budget: &mut Budget,
+-) -> Result<BTreeMap<String, String>, DecideError<O::Error, S, A>> {
++) -> Result<BTreeMap<String, String>, ReadFailure<O::Error>> {
+     let mut paths = paths.peekable();
+     if paths.peek().is_none() {
+         return Ok(BTreeMap::new());
+     }
+-    let listed = objects.list(commit, None).map_err(DecideError::Objects)?;
++    let listed = objects.list(commit, None).map_err(ReadFailure::Objects)?;
+     let by_path: BTreeMap<&str, &TreeEntry> = listed
+         .iter()
+         .filter(|entry| entry.kind == EntryKind::File)
+@@ -128,9 +148,9 @@ fn side_texts<'p, O: PullRequestObjects, S, A>(
+     if wanted.is_empty() {
+         return Ok(BTreeMap::new());
+     }
+-    let blobs = objects.read(&wanted).map_err(DecideError::Objects)?;
++    let blobs = objects.read(&wanted).map_err(ReadFailure::Objects)?;
+     if blobs.len() != wanted.len() {
+-        return Err(DecideError::ShortRead {
++        return Err(ReadFailure::ShortRead {
+             asked: wanted.len(),
+             returned: blobs.len(),
+         });
+@@ -192,14 +212,14 @@ impl<'t> Indexed<'t> {
+ }
+ 
+ /// Anchors gate findings against the texts, indexing each file once.
+-pub(super) struct Anchors<'t> {
++pub(crate) struct Anchors<'t> {
+     texts: &'t Texts,
+     /// Each cited file's index, or `None` for a file that cannot be indexed.
+     indexed: HashMap<(Side, &'t str), Option<Indexed<'t>>>,
+ }
+ 
+ impl<'t> Anchors<'t> {
+-    pub(super) fn new(texts: &'t Texts) -> Self {
++    pub(crate) fn new(texts: &'t Texts) -> Self {
+         Self {
+             texts,
+             indexed: HashMap::new(),
+@@ -208,7 +228,7 @@ impl<'t> Anchors<'t> {
+ 
+     /// `finding`'s fingerprint, with its evidence replaced and its rule kept when it is verified
+     /// and its rule dropped otherwise; `None` when not even its own evidence has content.
+-    pub(super) fn anchor(&mut self, finding: &mut Finding) -> Option<Fingerprint> {
++    pub(crate) fn anchor(&mut self, finding: &mut Finding) -> Option<Fingerprint> {
+         let side = finding.side.unwrap_or(Side::Right);
+         let (function, occurrence) =
+             if let Some((line, function, occurrence)) = self.verified(side, finding) {
+diff --git a/crates/assay-app/src/decide/gates.rs b/crates/assay-app/src/decide/gates.rs
+index 0c2a409..842bbd4 100644
+--- a/crates/assay-app/src/decide/gates.rs
++++ b/crates/assay-app/src/decide/gates.rs
+@@ -16,7 +16,7 @@ use super::ports::RunArtifacts;
+ use super::recompute::AuthenticPlan;
+ use super::refusal::{OutputsProblem, PlanMismatch, Refusal};
+ use super::request::{DecideRequest, GateJobOutputs, JobResult, Reported, UpstreamJob};
+-use super::{Halt, Reader, RunDocument};
++use super::{DecideError, Halt, Reader, RunDocument};
+ use crate::config::{Plugin, Sha256Digest};
+ use crate::contract::{Contract, ContractValidator};
+ use crate::gate::{BuildJob, Conclusion, GateError, GateJob, scheduled};
+@@ -268,7 +268,8 @@ fn anchored<O: PullRequestObjects, S, A>(
+         (&pull_request.base_sha, &pull_request.head_sha),
+         &plan.recomputed.files,
+         &cited,
+-    )?;
++    )
++    .map_err(DecideError::from)?;
+     let mut anchors = Anchors::new(&texts);
+     let mut gates = Gates::default();
+     for gate in pending {
+diff --git a/crates/assay-app/src/golden.rs b/crates/assay-app/src/golden.rs
+index 56dd3fe..e093fe4 100644
+--- a/crates/assay-app/src/golden.rs
++++ b/crates/assay-app/src/golden.rs
+@@ -154,7 +154,7 @@ fn findings(replay: &GoldenReplay<'_>) -> Vec<Finding> {
+ }
+ 
+ /// The rubric, or the 1-based line its parse error points at (1 when it points nowhere).
+-fn parse_rubric(bytes: &[u8]) -> Result<Rubric, usize> {
++pub(crate) fn parse_rubric(bytes: &[u8]) -> Result<Rubric, usize> {
+     let text =
+         str::from_utf8(bytes).map_err(|error| report::line_at(bytes, error.valid_up_to()))?;
+     toml::from_str(text).map_err(|error: toml::de::Error| {
+diff --git a/crates/assay-app/src/lib.rs b/crates/assay-app/src/lib.rs
+index 8062623..d94a441 100644
+--- a/crates/assay-app/src/lib.rs
++++ b/crates/assay-app/src/lib.rs
+@@ -6,6 +6,7 @@
+ //! Every versioned contract is validated on read through [`ContractValidator`]
+ //! (`docs/architecture/03-contracts.md`). Base configuration is parsed into [`PluginsConfig`].
+ 
++mod check;
+ mod config;
+ mod contract;
+ mod decide;
+@@ -35,6 +36,10 @@ pub use session_init::{
+     allowlist_drift, check_init,
+ };
+ 
++pub use check::{
++    ChangePatches, CheckError, CheckPorts, CheckRequest, FilePatch, LocalGate, LocalReport,
++    LocalReview, MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES, ReviewSetup, ReviewStatus, check_local,
++};
+ pub use config::{
+     Adapter, Argv, AssaySettings, BuiltinAllowlist, BuiltinKind, BuiltinsError, CommitId,
+     ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion, GateName, GlobsConfigError,
+diff --git a/crates/assay-app/src/publish.rs b/crates/assay-app/src/publish.rs
+index 9f66873..9893e93 100644
+--- a/crates/assay-app/src/publish.rs
++++ b/crates/assay-app/src/publish.rs
+@@ -29,6 +29,7 @@ pub use self::ports::{
+     InlineComment, LlmEvidence, PublishLedger, SummaryComment, VerdictForge,
+ };
+ pub use self::render::SUMMARY_MARKER;
++pub(crate) use self::render::clean;
+ use self::render::{Projection, Summary};
+ use self::write::Pending;
+ use crate::config::Sha256Digest;
+diff --git a/crates/assay-app/src/publish/render.rs b/crates/assay-app/src/publish/render.rs
+index 37c0247..a6eacce 100644
+--- a/crates/assay-app/src/publish/render.rs
++++ b/crates/assay-app/src/publish/render.rs
+@@ -230,7 +230,7 @@ pub(super) fn is_hidden(c: char) -> bool {
+ 
+ /// `item` on one line: control and format characters (line breaks and bidi controls included)
+ /// become U+FFFD, and past [`MAX_ITEM_CHARS`] characters it is cut and ends with `…`.
+-fn clean(item: &str) -> String {
++pub(crate) fn clean(item: &str) -> String {
+     let mut chars = item.chars();
+     let mut cleaned: String = chars
+         .by_ref()
+diff --git a/crates/assay-app/src/session_init.rs b/crates/assay-app/src/session_init.rs
+index 3765ce7..5d17675 100644
+--- a/crates/assay-app/src/session_init.rs
++++ b/crates/assay-app/src/session_init.rs
+@@ -18,7 +18,7 @@ use crate::config::{
+ };
+ 
+ /// The tools of a clean session, sorted (03 §8: `--tools Read,Grep,Glob`).
+-const CLEAN_TOOLS: [&str; 3] = ["Glob", "Grep", "Read"];
++pub(crate) const CLEAN_TOOLS: [&str; 3] = ["Glob", "Grep", "Read"];
+ 
+ /// The `path` of a plugin the CLI ships.
+ const BUILTIN_PATH: &str = "builtin";
+diff --git a/crates/assay-app/tests/it/check.rs b/crates/assay-app/tests/it/check.rs
+new file mode 100644
+index 0000000..c88002f
+--- /dev/null
++++ b/crates/assay-app/tests/it/check.rs
+@@ -0,0 +1,807 @@
++//! `check_local`: `assay check --local` over a dirty working tree (02 §6, R-10, P9), driven
++//! through fakes of every port (TST-09).
++
++use std::assert_matches;
++use std::error::Error;
++
++use assay_app::CheckPorts;
++use assay_app::{
++    BaseConfigError, ChangedFiles, CheckError, Contract, ContractValidator, GateJob,
++    MAX_DIFF_BYTES, MAX_FILE_LIST_BYTES, ModelOutcome, PlanError, ReadContractError, ReviewStatus,
++    Structured, check_local,
++};
++use assay_domain::{Conclusion, FileChange, Lines, ReasonCode, Severity, Tier};
++use serde_json::{Value, json};
++
++use crate::check_fakes::{
++    FakeGates, FakeModel, FakePatches, NoCli, Setup, TREE, Unreadable, dirty_tree, unwrap_finding,
++};
++use crate::plan_fakes::{BASE, FakePr, HEAD};
++
++fn validator() -> Result<ContractValidator, Box<dyn Error>> {
++    Ok(ContractValidator::new()?)
++}
++
++/// Checks `pr` with the `unwrap` patch, `gates` and `model`.
++fn check(
++    pr: &FakePr,
++    gates: &mut FakeGates,
++    model: &FakeModel,
++) -> Result<assay_app::LocalReport, Box<dyn Error>> {
++    let setup = Setup::of(pr)?;
++    let patches = FakePatches::lib();
++    let ports = CheckPorts {
++        objects: pr,
++        patches: &patches,
++        gates,
++        model,
++    };
++    Ok(check_local(&setup.request(), ports, &validator()?)?)
++}
++
++#[test]
++fn a_dirty_tree_is_planned_gated_reviewed_and_decided() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let model = FakeModel::finding(&[unwrap_finding()]);
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    assert_eq!(report.tree(), TREE);
++    assert_eq!(
++        report
++            .gates()
++            .iter()
++            .map(|gate| (gate.name.as_str(), gate.job, gate.outcome.as_str()))
++            .collect::<Vec<_>>(),
++        [("unit", "gates-test", "pass")]
++    );
++    assert_eq!(report.review().status, ReviewStatus::Completed);
++    assert_eq!(
++        report
++            .review()
++            .findings
++            .iter()
++            .map(|finding| (finding.title.as_str(), finding.line.get()))
++            .collect::<Vec<_>>(),
++        [("unwrap on user input panics", 2)]
++    );
++    assert_eq!(report.decision().conclusion, Conclusion::Success);
++    assert_eq!(report.decision().counts.major, 1, "the finding counts");
++    Ok(())
++}
++
++#[test]
++fn the_model_is_called_once_with_the_role_the_pack_and_the_findings_schema()
++-> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let model = FakeModel::finding(&[]);
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    let calls = model.calls.borrow();
++    let [call] = calls.as_slice() else {
++        return Err(format!("expected one call, got {}", calls.len()).into());
++    };
++    let role = report
++        .review()
++        .role
++        .ok_or("a reviewed tier names its role")?;
++    assert_eq!(report.tier(), Tier::Micro, "a one-line edit is micro");
++    assert_eq!(role.code(), "combined-micro");
++    assert_eq!(
++        call.system_prompt_file.to_str(),
++        Some("/bundle/v1/system.md")
++    );
++    assert_eq!(call.add_dir.to_str(), Some("/scratch/tree"));
++    assert_eq!(
++        (call.max_turns, call.budget),
++        (role.max_turns(), role.cap())
++    );
++    let schema: Value = serde_json::from_str(&call.json_schema)?;
++    assert_eq!(schema["title"], "assay.findings/1");
++    let prompt = call.user_prompt.as_str();
++    assert!(
++        prompt.starts_with("Changed files (1):\nM src/lib.rs\n\nDiff:\ndiff --git a/src/lib.rs"),
++        "the pack lists the files, then the diff: {prompt:?}"
++    );
++    assert!(
++        prompt.ends_with("\n\nINSTRUCTION combined-micro"),
++        "the role's instruction follows the pack: {prompt:?}"
++    );
++    Ok(())
++}
++
++#[test]
++fn a_change_without_an_llm_stage_calls_no_model() -> Result<(), Box<dyn Error>> {
++    let mut pr = dirty_tree();
++    pr.write(HEAD, "README.md", b"# changed\n");
++    pr.write(
++        HEAD,
++        "src/lib.rs",
++        crate::check_fakes::LIB_AT_BASE.as_bytes(),
++    );
++    pr.write(
++        BASE,
++        "src/lib.rs",
++        crate::check_fakes::LIB_AT_BASE.as_bytes(),
++    );
++    pr.changes = ChangedFiles::Listed(vec![FileChange::new(
++        "README.md",
++        Lines::Counted {
++            added: 1,
++            removed: 1,
++        },
++    )]);
++    let model = FakeModel::finding(&[]);
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    assert_eq!(report.tier(), Tier::Trivial);
++    assert_eq!(model.call_count(), 0, "a trivial change gets no review");
++    assert_eq!(report.review().status, ReviewStatus::NotRun);
++    assert_eq!(report.decision().conclusion, Conclusion::Success);
++    Ok(())
++}
++
++#[test]
++fn a_base_without_config_is_refused_by_plan() -> Result<(), Box<dyn Error>> {
++    let mut pr = dirty_tree();
++    pr.remove(BASE, ".assay/plugins.toml");
++    let setup = Setup::of(&pr)?;
++    let model = FakeModel::default();
++    let ports = CheckPorts {
++        objects: &pr,
++        patches: &FakePatches::lib(),
++        gates: &mut FakeGates::passing(),
++        model: &model,
++    };
++
++    let result = check_local(&setup.request(), ports, &validator()?);
++
++    assert_matches!(
++        result,
++        Err(CheckError::Plan(PlanError::BaseConfig(
++            BaseConfigError::Missing
++        )))
++    );
++    assert_eq!(model.call_count(), 0);
++    Ok(())
++}
++
++#[test]
++fn a_required_gate_that_does_not_run_locally_fails_the_decision() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let model = FakeModel::finding(&[]);
++
++    let report = check(&pr, &mut FakeGates::default(), &model)?;
++
++    let [gate] = report.gates() else {
++        return Err("one gate is scheduled".into());
++    };
++    assert_eq!(
++        (gate.outcome.as_str(), gate.cause.as_deref()),
++        ("gate-error:not-run", Some("not run in local mode"))
++    );
++    assert_eq!(report.decision().conclusion, Conclusion::Failure);
++    assert_eq!(
++        report
++            .decision()
++            .reasons
++            .iter()
++            .map(|reason| reason.code)
++            .collect::<Vec<_>>(),
++        [ReasonCode::GateError]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_failing_gate_reports_its_findings() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let finding = json!({
++        "class": "error-handling", "rule": "H-02", "kind": "defect", "severity": "blocker",
++        "file": "src/lib.rs", "line": 2, "evidence": "input.parse().unwrap()",
++        "title": "used `unwrap()`", "body": "H-02: no unwrap in production code.",
++    });
++    let mut gates = FakeGates::concluding("unit", "fail", &json!([finding]));
++
++    let report = check(&pr, &mut gates, &FakeModel::finding(&[]))?;
++
++    let [gate] = report.gates() else {
++        return Err("one gate is scheduled".into());
++    };
++    assert_eq!(gate.outcome, "fail");
++    assert_eq!(
++        gate.findings
++            .iter()
++            .map(|finding| (finding.rule.as_deref(), finding.evidence.as_str()))
++            .collect::<Vec<_>>(),
++        [(Some("H-02"), "    input.parse().unwrap()")],
++        "a verified gate finding keeps its rule and quotes the tree's line"
++    );
++    assert_eq!(report.decision().conclusion, Conclusion::Failure);
++    Ok(())
++}
++
++#[test]
++fn a_gate_finding_without_content_to_anchor_is_a_gate_error() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let finding = json!({
++        "class": "error-handling", "kind": "defect", "severity": "minor",
++        "file": "src/lib.rs", "line": 2, "evidence": "…",
++        "title": "elided", "body": "nothing quoted",
++    });
++    let mut gates = FakeGates::concluding("unit", "pass", &json!([finding]));
++
++    let report = check(&pr, &mut gates, &FakeModel::finding(&[]))?;
++
++    let [gate] = report.gates() else {
++        return Err("one gate is scheduled".into());
++    };
++    assert_eq!(gate.outcome, "gate-error:evidence-missing");
++    assert_eq!(report.decision().conclusion, Conclusion::Failure);
++    Ok(())
++}
++
++#[test]
++fn every_gate_job_is_asked_for_its_plugins() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let mut gates = FakeGates::passing();
++
++    check(&pr, &mut gates, &FakeModel::finding(&[]))?;
++
++    assert_eq!(
++        gates.calls,
++        [("unit".to_owned(), GateJob::Build(assay_app::BuildJob::Test))]
++    );
++    Ok(())
++}
++
++#[test]
++fn output_malformed_after_the_retry_degrades_the_role() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let model = FakeModel::answering([Ok(ModelOutcome::Malformed), Ok(ModelOutcome::Malformed)]);
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    assert_eq!(model.call_count(), 2, "one retry");
++    assert_eq!(report.review().status, ReviewStatus::Degraded);
++    assert_eq!(
++        report
++            .decision()
++            .degraded
++            .iter()
++            .map(|degraded| (degraded.role.as_str(), degraded.reason.as_str()))
++            .collect::<Vec<_>>(),
++        [("combined-micro", "malformed")]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_model_that_cannot_start_leaves_the_review_unavailable() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let model = FakeModel::answering([Err(NoCli)]);
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    assert_eq!(report.review().status, ReviewStatus::Unavailable);
++    assert_eq!(
++        report.review().note.as_deref(),
++        Some("claude could not be started")
++    );
++    assert_eq!(
++        report
++            .decision()
++            .reasons
++            .iter()
++            .map(|reason| (reason.code, reason.detail.as_str()))
++            .collect::<Vec<_>>(),
++        [(ReasonCode::LlmDegraded, "infra-llm-unavailable")],
++        "under the default `warn` policy the decision says the LLM stage was unavailable"
++    );
++    Ok(())
++}
++
++#[test]
++fn a_session_with_another_tool_is_not_used() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let model = FakeModel {
++        tools: Some(&["Read", "Grep", "Glob", "Bash"]),
++        ..FakeModel::finding(&[unwrap_finding()])
++    };
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    assert_eq!(report.review().status, ReviewStatus::Unavailable);
++    assert_eq!(
++        report.review().note.as_deref(),
++        Some("the session was not confined to Read, Grep and Glob")
++    );
++    assert_eq!(report.review().findings, [], "its output is dropped");
++    Ok(())
++}
++
++#[test]
++fn a_session_whose_init_cannot_be_read_is_not_used() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let model = FakeModel {
++        tools: Some(&[]),
++        ..FakeModel::finding(&[unwrap_finding()])
++    };
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    assert_eq!(report.review().status, ReviewStatus::Unavailable);
++    assert_eq!(
++        report.review().note.as_deref(),
++        Some(
++            "the session's init could not be read: the transcript does not start with a \
++             system/init message"
++        )
++    );
++    Ok(())
++}
++
++#[test]
++fn a_call_that_exhausts_its_budget_degrades_the_role_without_a_retry() -> Result<(), Box<dyn Error>>
++{
++    let pr = dirty_tree();
++    let model = FakeModel::answering([Ok(ModelOutcome::BudgetExhausted)]);
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    assert_eq!(model.call_count(), 1);
++    assert_eq!(report.review().status, ReviewStatus::Degraded);
++    assert_eq!(
++        report
++            .decision()
++            .degraded
++            .iter()
++            .map(|degraded| (degraded.role.as_str(), degraded.reason.as_str()))
++            .collect::<Vec<_>>(),
++        [("combined-micro", "cap")]
++    );
++    Ok(())
++}
++
++#[test]
++fn a_retry_that_cannot_start_is_unavailable_and_charges_both_attempts() -> Result<(), Box<dyn Error>>
++{
++    let pr = dirty_tree();
++    let model = FakeModel::answering([Ok(ModelOutcome::Malformed), Err(NoCli)]);
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    assert_eq!(report.review().status, ReviewStatus::Unavailable);
++    assert_eq!(
++        report.review().cost.micros(),
++        120_000 + 250_000,
++        "the malformed attempt's cost plus the failed retry's cap"
++    );
++    Ok(())
++}
++
++#[test]
++fn output_that_is_not_a_findings_object_completes_with_no_finding() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let model = FakeModel::answering([Ok(ModelOutcome::Ok(Structured::new(json!(["x"]))))]);
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    assert_eq!(report.review().status, ReviewStatus::Completed);
++    assert_eq!(report.review().findings, []);
++    assert_eq!(
++        report.review().note.as_deref(),
++        Some("the model's document failed the findings schema")
++    );
++    Ok(())
++}
++
++/// The dirty tree with `src/lib.rs` counted as `added` lines.
++fn sized_tree(added: u64) -> FakePr {
++    let mut pr = dirty_tree();
++    pr.changes = ChangedFiles::Listed(vec![FileChange::new(
++        "src/lib.rs",
++        Lines::Counted { added, removed: 1 },
++    )]);
++    pr
++}
++
++#[test]
++fn a_lite_change_is_reviewed_by_combined_and_owes_a_verifier_for_a_major()
++-> Result<(), Box<dyn Error>> {
++    let pr = sized_tree(30);
++    let model = FakeModel::finding(&[unwrap_finding()]);
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    assert_eq!(report.tier(), Tier::Lite);
++    assert_eq!(
++        report.review().role.map(assay_app::Role::code),
++        Some("combined")
++    );
++    assert_eq!(
++        report
++            .decision()
++            .degraded
++            .iter()
++            .map(|degraded| (degraded.role.as_str(), degraded.reason.as_str()))
++            .collect::<Vec<_>>(),
++        [("verifier", "unavailable")],
++        "no verifier runs locally, so the decision says it failed"
++    );
++    Ok(())
++}
++
++#[test]
++fn a_full_change_reports_the_roster_and_coordinator_local_mode_does_not_run()
++-> Result<(), Box<dyn Error>> {
++    let pr = sized_tree(200);
++    let model = FakeModel::finding(&[unwrap_finding()]);
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    assert_eq!(report.tier(), Tier::Full);
++    let degraded: Vec<(&str, &str)> = report
++        .decision()
++        .degraded
++        .iter()
++        .map(|degraded| (degraded.role.as_str(), degraded.reason.as_str()))
++        .collect();
++    for owed in [
++        ("bugs", "missing"),
++        ("coordinator", "unavailable"),
++        ("verifier", "unavailable"),
++    ] {
++        assert!(degraded.contains(&owed), "{owed:?} in {degraded:?}");
++    }
++    Ok(())
++}
++
++#[test]
++fn a_model_written_source_is_replaced_so_the_role_ceiling_holds() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let mut blocker = unwrap_finding();
++    blocker["severity"] = json!("blocker");
++    let model = FakeModel::answering([Ok(ModelOutcome::Ok(Structured::new(json!({
++        "schema": "assay.findings/1",
++        "source": {"kind": "reviewer", "name": "x", "version": "x", "role": "combined",
++                   "run_key": "x"},
++        "findings": [blocker],
++    }))))]);
++
++    let report = check(&pr, &mut FakeGates::passing(), &model)?;
++
++    assert_eq!(
++        report
++            .review()
++            .findings
++            .iter()
++            .map(|finding| finding.severity)
++            .collect::<Vec<_>>(),
++        [Severity::Major],
++        "combined-micro's findings are capped at major whatever role the model claims"
++    );
++    Ok(())
++}
++
++#[test]
++fn a_context_pack_holding_a_nul_is_not_sent() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let setup = Setup::of(&pr)?;
++    let mut patches = FakePatches::lib();
++    if let Some(patch) = patches.by_path.get_mut("src/lib.rs") {
++        patch.text.push('\0');
++    }
++    let model = FakeModel::finding(&[]);
++    let ports = CheckPorts {
++        objects: &pr,
++        patches: &patches,
++        gates: &mut FakeGates::passing(),
++        model: &model,
++    };
++
++    let report = check_local(&setup.request(), ports, &validator()?)?;
++
++    assert_eq!(model.call_count(), 0);
++    assert_eq!(report.review().status, ReviewStatus::Unavailable);
++    assert_eq!(
++        report.review().note.as_deref(),
++        Some("the context pack is not a valid prompt")
++    );
++    Ok(())
++}
++
++/// The prompt of the one model call a check over `patches` makes.
++fn prompt_with(patches: &FakePatches, pr: &FakePr) -> Result<String, Box<dyn Error>> {
++    let setup = Setup::of(pr)?;
++    let model = FakeModel::finding(&[]);
++    let ports = CheckPorts {
++        objects: pr,
++        patches,
++        gates: &mut FakeGates::passing(),
++        model: &model,
++    };
++    check_local(&setup.request(), ports, &validator()?)?;
++    let calls = model.calls.borrow();
++    let call = calls.first().ok_or("the review ran")?;
++    Ok(call.user_prompt.as_str().to_owned())
++}
++
++#[test]
++fn the_diff_is_sent_whole_at_its_cap_and_left_out_one_byte_over() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let sized = |len: usize| {
++        let mut patches = FakePatches::lib();
++        if let Some(patch) = patches.by_path.get_mut("src/lib.rs") {
++            let pad = len.saturating_sub(patch.text.len());
++            patch.text.push_str(&" ".repeat(pad));
++        }
++        patches
++    };
++
++    let at_cap = prompt_with(&sized(MAX_DIFF_BYTES), &pr)?;
++    let over = prompt_with(&sized(MAX_DIFF_BYTES + 1), &pr)?;
++
++    assert!(
++        at_cap.contains("diff --git a/src/lib.rs"),
++        "a diff at the cap is sent"
++    );
++    assert!(
++        !at_cap.contains("not shown"),
++        "nothing is left out at the cap"
++    );
++    assert!(
++        !over.contains("diff --git a/src/lib.rs"),
++        "a diff over the cap is not cut"
++    );
++    assert!(
++        over.contains("[1 more file not shown: the diff stops at 122880 bytes]"),
++        "the pack says what it left out: {over:?}"
++    );
++    Ok(())
++}
++
++#[test]
++fn the_file_list_is_whole_at_its_cap_and_cut_one_byte_over() -> Result<(), Box<dyn Error>> {
++    // Each listed line is `M <path>\n`; one file whose line is exactly the cap.
++    let listed = |len: usize| -> Result<String, Box<dyn Error>> {
++        let path = format!(
++            "src/{}.rs",
++            "a".repeat(len.saturating_sub("M src/.rs\n".len()))
++        );
++        let mut pr = dirty_tree();
++        pr.write(BASE, &path, b"x\n");
++        pr.write(HEAD, &path, b"y\n");
++        pr.changes = ChangedFiles::Listed(vec![FileChange::new(
++            path.as_str(),
++            Lines::Counted {
++                added: 1,
++                removed: 1,
++            },
++        )]);
++        prompt_with(&FakePatches::default(), &pr)
++    };
++
++    let at_cap = listed(MAX_FILE_LIST_BYTES)?;
++    let over = listed(MAX_FILE_LIST_BYTES + 1)?;
++
++    assert!(
++        at_cap.starts_with("Changed files (1):\nM src/aaa"),
++        "{:?}",
++        at_cap.get(..40)
++    );
++    assert!(!at_cap.contains("not listed"));
++    assert!(
++        over.starts_with("Changed files (1):\n[1 more file not listed]\n"),
++        "{:?}",
++        over.get(..60)
++    );
++    Ok(())
++}
++
++#[test]
++fn the_pack_names_each_file_s_status_from_both_trees() -> Result<(), Box<dyn Error>> {
++    let mut pr = dirty_tree();
++    pr.write(HEAD, "src/new.rs", b"pub fn new() {}\n");
++    pr.write(BASE, "src/old.rs", b"pub fn old() {}\n");
++    pr.write(BASE, "src/was.rs", b"pub fn moved() {}\n");
++    pr.write(HEAD, "src/moved.rs", b"pub fn moved() {}\n");
++    let one = Lines::Counted {
++        added: 1,
++        removed: 0,
++    };
++    pr.changes = ChangedFiles::Listed(vec![
++        FileChange::new("src/new.rs", one),
++        FileChange::new("src/old.rs", one),
++        FileChange::new("src/moved.rs", one).renamed_from("src/was.rs"),
++    ]);
++
++    let prompt = prompt_with(&FakePatches::default(), &pr)?;
++
++    assert!(
++        prompt.starts_with(
++            "Changed files (3):\nA src/new.rs\nD src/old.rs\nR src/was.rs -> src/moved.rs\n"
++        ),
++        "{prompt:?}"
++    );
++    Ok(())
++}
++
++#[test]
++fn a_patch_port_failure_fails_the_check() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let setup = Setup::of(&pr)?;
++    let patches = FakePatches {
++        failing: true,
++        ..FakePatches::lib()
++    };
++    let ports = CheckPorts {
++        objects: &pr,
++        patches: &patches,
++        gates: &mut FakeGates::passing(),
++        model: &FakeModel::default(),
++    };
++
++    let result = check_local(&setup.request(), ports, &validator()?);
++
++    assert_matches!(result, Err(CheckError::Patches(_)));
++    Ok(())
++}
++
++#[test]
++fn a_patch_list_of_the_wrong_length_fails_the_check() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let setup = Setup::of(&pr)?;
++    let patches = FakePatches {
++        short: true,
++        ..FakePatches::lib()
++    };
++    let ports = CheckPorts {
++        objects: &pr,
++        patches: &patches,
++        gates: &mut FakeGates::passing(),
++        model: &FakeModel::default(),
++    };
++
++    let result = check_local(&setup.request(), ports, &validator()?);
++
++    assert_matches!(
++        result,
++        Err(CheckError::PatchCount {
++            asked: 1,
++            returned: 0
++        })
++    );
++    Ok(())
++}
++
++#[test]
++fn an_unreadable_changed_file_fails_the_check() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let setup = Setup::of(&pr)?;
++    let objects = Unreadable {
++        pr: &pr,
++        path: "src/lib.rs",
++        short: false,
++    };
++    let ports = CheckPorts {
++        objects: &objects,
++        patches: &FakePatches::lib(),
++        gates: &mut FakeGates::passing(),
++        model: &FakeModel::default(),
++    };
++
++    let result = check_local(&setup.request(), ports, &validator()?);
++
++    assert_matches!(result, Err(CheckError::Objects(_)));
++    Ok(())
++}
++
++#[test]
++fn a_short_read_of_the_changed_files_fails_the_check() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let setup = Setup::of(&pr)?;
++    let objects = Unreadable {
++        pr: &pr,
++        path: "src/lib.rs",
++        short: true,
++    };
++    let ports = CheckPorts {
++        objects: &objects,
++        patches: &FakePatches::lib(),
++        gates: &mut FakeGates::passing(),
++        model: &FakeModel::default(),
++    };
++
++    let result = check_local(&setup.request(), ports, &validator()?);
++
++    assert_matches!(result, Err(CheckError::ShortRead { .. }));
++    Ok(())
++}
++
++#[test]
++fn a_rubric_that_does_not_parse_fails_the_check_first() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let mut setup = Setup::of(&pr)?;
++    setup.rubric = b"version = \n".to_vec();
++    let model = FakeModel::default();
++    let mut gates = FakeGates::passing();
++    let ports = CheckPorts {
++        objects: &pr,
++        patches: &FakePatches::lib(),
++        gates: &mut gates,
++        model: &model,
++    };
++
++    let result = check_local(&setup.request(), ports, &validator()?);
++
++    assert_matches!(result, Err(CheckError::Rubric { line: 1 }));
++    assert_eq!(gates.calls, [], "nothing runs before the rubric is read");
++    Ok(())
++}
++
++#[test]
++fn ci_refuses_the_local_report_as_every_contract() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let report = check(
++        &pr,
++        &mut FakeGates::passing(),
++        &FakeModel::finding(&[unwrap_finding()]),
++    )?;
++    let json = report.to_json()?;
++    let validator = validator()?;
++
++    let read: Vec<(Contract, bool)> = Contract::ALL
++        .into_iter()
++        .map(|contract| {
++            (
++                contract,
++                matches!(
++                    validator.read(contract, &json),
++                    Err(ReadContractError::UnknownSchema { .. })
++                ),
++            )
++        })
++        .collect();
++
++    // Every CI reader goes through the validator (03 preamble), so no CI path can accept the
++    // file local mode writes: it is advisory and never a trust anchor (R-10, P9).
++    assert_eq!(
++        read,
++        Contract::ALL.map(|contract| (contract, true)),
++        "the local report is no contract CI reads"
++    );
++    let value: Value = serde_json::from_slice(&json)?;
++    assert_eq!(
++        (&value["schema"], &value["advisory"]),
++        (&json!("assay.local-check/1"), &json!(true))
++    );
++    Ok(())
++}
++
++#[test]
++fn the_terminal_report_shows_no_control_character_from_model_text() -> Result<(), Box<dyn Error>> {
++    let pr = dirty_tree();
++    let mut finding = unwrap_finding();
++    finding["title"] = json!("unwrap \u{1b}[2Jcleared\u{202e}reversed");
++    let report = check(
++        &pr,
++        &mut FakeGates::passing(),
++        &FakeModel::finding(&[finding]),
++    )?;
++
++    let text = report.render();
++
++    assert!(
++        text.contains("major src/lib.rs:2 unwrap \u{fffd}[2Jcleared\u{fffd}reversed"),
++        "{text}"
++    );
++    assert!(
++        text.chars().all(|c| c == '\n' || !c.is_control()),
++        "only the report's own line breaks: {text:?}"
++    );
++    assert!(text.starts_with("assay check --local: advisory, CI never reads this report\n"));
++    Ok(())
++}
+diff --git a/crates/assay-app/tests/it/check_fakes.rs b/crates/assay-app/tests/it/check_fakes.rs
+new file mode 100644
+index 0000000..6f8a2bf
+--- /dev/null
++++ b/crates/assay-app/tests/it/check_fakes.rs
+@@ -0,0 +1,362 @@
++//! In-memory fakes for `check_local` (TST-09): the change's patches, the local gate runner, a
++//! scripted model and an objects port that fails on one file. The PR itself is
++//! `plan_fakes::FakePr`.
++
++use std::cell::RefCell;
++use std::collections::{BTreeMap, VecDeque};
++use std::error::Error;
++use std::fmt;
++use std::path::{Path, PathBuf};
++use std::time::Duration;
++
++use assay_app::{
++    BundleFiles, ChangePatches, ChangedFiles, CheckRequest, CommitId, FilePatch, GateDocument,
++    GateJob, GateRun, GateRunner, Hunk, InitParts, InitReadError, LineSpan, ModelCall,
++    ModelOutcome, ModelResult, ModelRunner, PlanRequest, Plugin, PromptBundle, PullRequestObjects,
++    ReviewSetup, SessionInit, Structured, Termination, TreeEntry,
++};
++use assay_domain::{Aeu, FileChange, Lines};
++use serde_json::{Value, json};
++
++use crate::plan_fakes::{BASE, DIGEST, FakeError, FakePr, HEAD, request};
++
++/// `src/lib.rs` at base.
++pub(crate) const LIB_AT_BASE: &str =
++    "pub fn parse(input: &str) -> u32 {\n    input.parse().unwrap_or(0)\n}\n";
++
++/// `src/lib.rs` at head: the fallback became an `unwrap`.
++pub(crate) const LIB_AT_HEAD: &str =
++    "pub fn parse(input: &str) -> u32 {\n    input.parse().unwrap()\n}\n";
++
++/// The tree fingerprint the requests name.
++pub(crate) const TREE: &str = "cccccccccccccccccccccccccccccccccccccccc";
++
++/// A base config with one required `exec` gate, `unit`, in the test job, and `main` protected.
++pub(crate) fn unit_gate_config() -> String {
++    format!(
++        r#"
++[assay]
++digest = "{DIGEST}"
++protected_bases = ["main"]
++
++[[plugin]]
++name = "unit"
++adapter = "exec"
++exec = ["./scripts/test.sh"]
++job = "test"
++required = true
++"#
++    )
++}
++
++/// The fake PR with [`unit_gate_config`] and the `unwrap` edit to `src/lib.rs`.
++pub(crate) fn dirty_tree() -> FakePr {
++    let mut pr = FakePr::new();
++    for commit in [BASE, HEAD] {
++        pr.write(commit, ".assay/plugins.toml", unit_gate_config().as_bytes());
++    }
++    pr.write(BASE, "src/lib.rs", LIB_AT_BASE.as_bytes());
++    pr.write(HEAD, "src/lib.rs", LIB_AT_HEAD.as_bytes());
++    pr.changes = ChangedFiles::Listed(vec![FileChange::new(
++        "src/lib.rs",
++        Lines::Counted {
++            added: 1,
++            removed: 1,
++        },
++    )]);
++    pr
++}
++
++/// The bundle every check uses; its role instructions are recognisable in a prompt.
++pub(crate) fn bundle() -> Result<PromptBundle, Box<dyn Error>> {
++    Ok(PromptBundle::new(BundleFiles {
++        system: "SYSTEM".to_owned(),
++        combined: "INSTRUCTION combined".to_owned(),
++        combined_micro: "INSTRUCTION combined-micro".to_owned(),
++    })?)
++}
++
++/// What a check is asked, borrowed by [`CheckRequest`].
++pub(crate) struct Setup {
++    pub(crate) plan: PlanRequest,
++    pub(crate) bundle: PromptBundle,
++    pub(crate) rubric: Vec<u8>,
++    pub(crate) system: PathBuf,
++    pub(crate) tree_dir: PathBuf,
++}
++
++impl Setup {
++    pub(crate) fn of(pr: &FakePr) -> Result<Self, Box<dyn Error>> {
++        Ok(Self {
++            plan: request(pr)?,
++            bundle: bundle()?,
++            rubric: rubric_bytes()?,
++            system: PathBuf::from("/bundle/v1/system.md"),
++            tree_dir: PathBuf::from("/scratch/tree"),
++        })
++    }
++
++    pub(crate) fn request(&self) -> CheckRequest<'_> {
++        CheckRequest {
++            plan: &self.plan,
++            tree: TREE,
++            rubric: &self.rubric,
++            review: ReviewSetup {
++                bundle: &self.bundle,
++                system_prompt_file: &self.system,
++                tree_dir: &self.tree_dir,
++                timeout: Duration::from_mins(15),
++            },
++        }
++    }
++}
++
++/// `rubric/v1.toml` as bytes.
++pub(crate) fn rubric_bytes() -> Result<Vec<u8>, Box<dyn Error>> {
++    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rubric/v1.toml");
++    Ok(std::fs::read(path)?)
++}
++
++/// Patches by head path; a file without one has an empty patch.
++#[derive(Debug, Default)]
++pub(crate) struct FakePatches {
++    pub(crate) by_path: BTreeMap<String, FilePatch>,
++    /// Every call fails.
++    pub(crate) failing: bool,
++    /// One patch fewer than files asked for.
++    pub(crate) short: bool,
++}
++
++impl FakePatches {
++    /// The `unwrap` edit's patch: one hunk, base and head lines 1 to 3.
++    pub(crate) fn lib() -> Self {
++        let mut patches = Self::default();
++        patches.by_path.insert(
++            "src/lib.rs".to_owned(),
++            FilePatch {
++                text: "diff --git a/src/lib.rs b/src/lib.rs\n@@ -1,3 +1,3 @@\n \
++                       pub fn parse(input: &str) -> u32 {\n-    input.parse().unwrap_or(0)\n\
++                       +    input.parse().unwrap()\n }\n"
++                    .to_owned(),
++                hunks: vec![Hunk {
++                    base: LineSpan { start: 1, count: 3 },
++                    head: LineSpan { start: 1, count: 3 },
++                }],
++            },
++        );
++        patches
++    }
++}
++
++impl ChangePatches for FakePatches {
++    type Error = FakeError;
++
++    fn patches(
++        &self,
++        base: &CommitId,
++        head: &CommitId,
++        files: &[FileChange],
++    ) -> Result<Vec<FilePatch>, FakeError> {
++        if self.failing || (base.as_str(), head.as_str()) != (BASE, HEAD) {
++            return Err(FakeError);
++        }
++        let mut patches: Vec<FilePatch> = files
++            .iter()
++            .map(|file| self.by_path.get(&file.path).cloned().unwrap_or_default())
++            .collect();
++        if self.short {
++            patches.pop();
++        }
++        Ok(patches)
++    }
++}
++
++/// A gate the local runner does not run.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) struct NotLocal;
++
++impl fmt::Display for NotLocal {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str("not run in local mode")
++    }
++}
++
++impl Error for NotLocal {}
++
++/// Runs scripted gates by plugin name; any other plugin is not run locally.
++#[derive(Debug, Default)]
++pub(crate) struct FakeGates {
++    runs: BTreeMap<String, GateRun>,
++    pub(crate) calls: Vec<(String, GateJob)>,
++}
++
++impl FakeGates {
++    /// `gate` exits 0 with a document concluding `conclusion` and holding `findings`.
++    pub(crate) fn concluding(gate: &str, conclusion: &str, findings: &Value) -> Self {
++        let mut gates = Self::default();
++        let document = json!({
++            "schema": "assay.findings/1",
++            "source": {"kind": "gate", "name": gate, "version": "local", "run_key": "local"},
++            "conclusion": conclusion,
++            "findings": findings,
++        });
++        let exit = i32::from(conclusion == "fail");
++        gates.runs.insert(
++            gate.to_owned(),
++            GateRun {
++                termination: Termination::Exited(exit),
++                document: GateDocument::Written(document.to_string().into_bytes()),
++            },
++        );
++        gates
++    }
++
++    /// `unit` passes with no finding.
++    pub(crate) fn passing() -> Self {
++        Self::concluding("unit", "pass", &json!([]))
++    }
++}
++
++impl GateRunner for FakeGates {
++    type Error = NotLocal;
++
++    fn run(&mut self, plugin: &Plugin, job: GateJob) -> Result<GateRun, NotLocal> {
++        self.calls.push((plugin.name().as_str().to_owned(), job));
++        self.runs.remove(plugin.name().as_str()).ok_or(NotLocal)
++    }
++}
++
++/// The scripted model could not be started.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) struct NoCli;
++
++impl fmt::Display for NoCli {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str("claude could not be started")
++    }
++}
++
++impl Error for NoCli {}
++
++/// Answers each call with the next scripted answer, recording the calls. A `RefCell` because
++/// the port takes `&self`; the fake is used by one test thread only.
++#[derive(Debug, Default)]
++pub(crate) struct FakeModel {
++    pub(crate) answers: RefCell<VecDeque<Result<ModelOutcome, NoCli>>>,
++    pub(crate) calls: RefCell<Vec<ModelCall>>,
++    /// The session's tools, when not the clean three; `Some(&[])` is an unreadable init.
++    pub(crate) tools: Option<&'static [&'static str]>,
++}
++
++impl FakeModel {
++    pub(crate) fn answering(
++        answers: impl IntoIterator<Item = Result<ModelOutcome, NoCli>>,
++    ) -> Self {
++        Self {
++            answers: RefCell::new(answers.into_iter().collect()),
++            calls: RefCell::default(),
++            tools: None,
++        }
++    }
++
++    /// One structured answer holding `findings`.
++    pub(crate) fn finding(findings: &[Value]) -> Self {
++        Self::answering([Ok(ModelOutcome::Ok(Structured::new(
++            json!({"findings": findings}),
++        )))])
++    }
++
++    pub(crate) fn call_count(&self) -> usize {
++        self.calls.borrow().len()
++    }
++}
++
++/// A session confined to `Read`, `Grep` and `Glob` with no MCP server.
++pub(crate) fn clean_init() -> Result<SessionInit, InitReadError> {
++    session(&["Read", "Grep", "Glob"])
++}
++
++/// A session with `tools` and nothing else loaded.
++pub(crate) fn session(tools: &[&str]) -> Result<SessionInit, InitReadError> {
++    SessionInit::new(InitParts {
++        cli_version: "2.1.0".to_owned(),
++        tools: tools.iter().map(|tool| (*tool).to_owned()).collect(),
++        mcp_servers: Vec::new(),
++        plugins: Vec::new(),
++        skills: Vec::new(),
++        agents: Vec::new(),
++    })
++}
++
++impl ModelRunner for FakeModel {
++    type Error = NoCli;
++
++    fn run(&self, call: &ModelCall) -> Result<ModelResult, NoCli> {
++        // The fake keeps each call so tests can read what was asked.
++        self.calls.borrow_mut().push(call.clone());
++        let outcome = self
++            .answers
++            .borrow_mut()
++            .pop_front()
++            .unwrap_or(Err(NoCli))?;
++        Ok(ModelResult {
++            outcome,
++            cost: Aeu::from_micros(120_000),
++            rate_limits: Vec::new(),
++            init: match self.tools {
++                None => clean_init(),
++                Some([]) => Err(InitReadError::Missing),
++                Some(tools) => session(tools),
++            },
++        })
++    }
++}
++
++/// The `unwrap` finding on line 2 of `src/lib.rs`, as the model writes it.
++pub(crate) fn unwrap_finding() -> Value {
++    json!({
++        "class": "error-handling",
++        "kind": "defect",
++        "severity": "major",
++        "introduced_by": "diff",
++        "file": "src/lib.rs",
++        "line": 2,
++        "side": "RIGHT",
++        "evidence": "input.parse().unwrap()",
++        "trigger": "a non-numeric input reaches parse",
++        "title": "unwrap on user input panics",
++        "body": "parse fails on non-numeric input, so the caller panics.",
++    })
++}
++
++/// `pr`'s objects, except that reading `path` fails, or comes back one blob short.
++#[derive(Debug)]
++pub(crate) struct Unreadable<'a> {
++    pub(crate) pr: &'a FakePr,
++    pub(crate) path: &'static str,
++    pub(crate) short: bool,
++}
++
++impl PullRequestObjects for Unreadable<'_> {
++    type Error = FakeError;
++
++    fn changed_files(&self, base: &CommitId, head: &CommitId) -> Result<ChangedFiles, FakeError> {
++        self.pr.changed_files(base, head)
++    }
++
++    fn list(&self, commit: &CommitId, path: Option<&str>) -> Result<Vec<TreeEntry>, FakeError> {
++        self.pr.list(commit, path)
++    }
++
++    fn read(&self, entries: &[&TreeEntry]) -> Result<Vec<Vec<u8>>, FakeError> {
++        if !entries.iter().any(|entry| entry.path == self.path) {
++            return self.pr.read(entries);
++        }
++        if !self.short {
++            return Err(FakeError);
++        }
++        let mut blobs = self.pr.read(entries)?;
++        blobs.pop();
++        Ok(blobs)
++    }
++}
+diff --git a/crates/assay-app/tests/it/main.rs b/crates/assay-app/tests/it/main.rs
+index e1b0334..34d34a0 100644
+--- a/crates/assay-app/tests/it/main.rs
++++ b/crates/assay-app/tests/it/main.rs
+@@ -1,6 +1,9 @@
+ //! Integration tests for `assay-app`, compiled as one binary (TST-14).
+ 
+ mod builtins;
++mod check;
++#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
++mod check_fakes;
+ mod config;
+ mod contract;
+ mod decide;

@@ -1,0 +1,19 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "cross-file",
+  "labels": [
+    {
+      "file": "crates/assay-forge/src/process.rs",
+      "start_line": 228,
+      "end_line": 234,
+      "class": "logic"
+    },
+    {
+      "file": "crates/assay-runner/src/headless/supervise.rs",
+      "start_line": 131,
+      "end_line": 136,
+      "class": "logic"
+    }
+  ]
+}

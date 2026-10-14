@@ -1,0 +1,1455 @@
+diff --git a/crates/assay-gates/src/exec.rs b/crates/assay-gates/src/exec.rs
+index 9f0003f..dc82084 100644
+--- a/crates/assay-gates/src/exec.rs
++++ b/crates/assay-gates/src/exec.rs
+@@ -231,7 +231,7 @@ impl<S> ExecAdapter<S> {
+ 
+ /// `program` as the process should be started: a path with a directory part is taken relative
+ /// to the checkout, a bare name is left for the `PATH` lookup.
+-fn resolve(checkout: &Path, program: &str) -> PathBuf {
++pub(crate) fn resolve(checkout: &Path, program: &str) -> PathBuf {
+     let path = Path::new(program);
+     if path.is_relative() && path.components().nth(1).is_some() {
+         checkout.join(path)
+@@ -246,7 +246,7 @@ fn resolve(checkout: &Path, program: &str) -> PathBuf {
+ /// process group gone, so only a process that left the group (`setsid`) could swap the file in
+ /// between; the read stays capped, but a FIFO swapped in could block the open. Closing that
+ /// window needs `O_NOFOLLOW | O_NONBLOCK`, which std cannot name without `libc` (H-16).
+-fn read_document(path: &Path, cap: u64) -> io::Result<GateDocument> {
++pub(crate) fn read_document(path: &Path, cap: u64) -> io::Result<GateDocument> {
+     let metadata = match fs::symlink_metadata(path) {
+         Ok(metadata) => metadata,
+         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(GateDocument::Missing),
+diff --git a/crates/assay-gates/src/lib.rs b/crates/assay-gates/src/lib.rs
+index a8ea5bb..3357860 100644
+--- a/crates/assay-gates/src/lib.rs
++++ b/crates/assay-gates/src/lib.rs
+@@ -30,6 +30,6 @@ pub use exec::{
+ };
+ pub use revision::{EntryKind, Revision, RevisionFiles, TreeEntry};
+ pub use temper::{
+-    CompileTimeReach, TemperAdapter, TemperError, TemperPaths, TemperSettings, TemperSettingsError,
+-    compile_time_reach,
++    CompileTimeReach, RatchetBase, RatchetDegradation, TemperAdapter, TemperError, TemperPaths,
++    TemperSettings, TemperSettingsError, compile_time_reach,
+ };
+diff --git a/crates/assay-gates/src/temper.rs b/crates/assay-gates/src/temper.rs
+index e012fd3..bd4a8b0 100644
+--- a/crates/assay-gates/src/temper.rs
++++ b/crates/assay-gates/src/temper.rs
+@@ -1,6 +1,8 @@
+-//! The `builtin:temper` adapter in `gates-static`, zone Z2s: the decision-relevant temper checks
+-//! that need no compilation, out of a hostile `build.rs`'s reach
+-//! (`docs/architecture/03-contracts.md` §2.1 steps 1-3, ADR-12, 05 T4 and T5).
++//! The `builtin:temper` adapter. In `gates-static`, zone Z2s: the decision-relevant temper
++//! checks that need no compilation, out of a hostile `build.rs`'s reach
++//! (`docs/architecture/03-contracts.md` §2.1 steps 1-4, ADR-12, 05 T4 and T5). In `gates-lint`
++//! (Z2b): the pinned `baseline --check` with its ratchet asserted, and the declared `lint`
++//! steps (steps 5-7, `temper/lint.rs`).
+ //!
+ //! 1. `raised`: `.claude/temper-baseline.json` at base and head; any count that rises, any new
+ //!    entry, and any crate added to or moved in `crates` fails.
+@@ -24,13 +26,17 @@ mod closure;
+ #[cfg(test)]
+ mod corpus;
+ mod error;
++mod evidence;
+ mod exceptions;
+ mod findings;
+ mod gate_config;
+ mod head;
+ mod inventory;
+ mod layout;
++mod lint;
++mod lint_findings;
+ mod manifests;
++mod ratchet;
+ mod reach;
+ mod references;
+ mod report;
+@@ -46,11 +52,15 @@ use std::ffi::OsString;
+ use std::path::PathBuf;
+ use std::time::Duration;
+ 
+-use assay_app::{Adapter, GateDocument, GateJob, GateRun, GateRunner, Plugin, Termination};
++use assay_app::{
++    Adapter, BuildJob, CommitId, GateDocument, GateError, GateJob, GateRun, GateRunner, Plugin,
++    Termination,
++};
+ use assay_domain::{Finding, FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind};
+ 
+ pub use closure::{CompileTimeReach, compile_time_reach};
+ pub use error::{TemperError, TemperSettingsError};
++pub use ratchet::RatchetDegradation;
+ 
+ use self::baseline::Totals;
+ use self::exceptions::Allowlist;
+@@ -75,6 +85,16 @@ const MAX_SCAN_OUTPUT_BYTES: usize = 16 << 20;
+ /// How [`TemperError::Revision`] names the whole tree.
+ const TREE: &str = ".";
+ 
++/// The commits `gates-lint`'s ratchet is checked against (03 §2.1 step 5).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct RatchetBase {
++    /// The PR's base commit, passed to temper as `--base` (never a moving `origin/<x>` ref).
++    pub base: CommitId,
++    /// The merge base of the base and head commits, computed by assay in Z2s; temper's
++    /// `ratchet.base` must equal it.
++    pub merge_base: CommitId,
++}
++
+ /// Where the temper adapter's programs and trees are in this job. Every path is absolute.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct TemperPaths {
+@@ -93,9 +113,11 @@ pub struct TemperSettings {
+     node: PathBuf,
+     pinned: PathBuf,
+     head_tree: PathBuf,
++    script: String,
+     scan_args: Vec<String>,
+     scan_env: Vec<(OsString, OsString)>,
+     run_key: String,
++    ratchet: Option<RatchetBase>,
+ }
+ 
+ impl TemperSettings {
+@@ -149,7 +171,9 @@ impl TemperSettings {
+             ("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()),
+             ("GIT_CEILING_DIRECTORIES".into(), ceiling),
+         ]);
+-        let scan_args = [script]
++        // The scan's argv keeps its own copy of the script path; `gates-lint` builds its argv
++        // from `script`.
++        let scan_args = [script.clone()]
+             .into_iter()
+             .chain(SCAN.map(str::to_owned))
+             .collect();
+@@ -157,11 +181,41 @@ impl TemperSettings {
+             node,
+             pinned,
+             head_tree,
++            script,
+             scan_args,
+             scan_env,
+             run_key,
++            ratchet: None,
+         })
+     }
++
++    /// These settings, able to run `gates-lint`: temper's ratchet runs against `ratchet.base`
++    /// and is believed only when its base is `ratchet.merge_base`. Without it, `gates-lint`
++    /// is [`TemperError::NoRatchetBase`].
++    #[must_use]
++    pub fn with_ratchet(self, ratchet: RatchetBase) -> Self {
++        Self {
++            ratchet: Some(ratchet),
++            ..self
++        }
++    }
++
++    /// `<pinned>/temper.mjs baseline --check --locked --base <base> --findings-out <out>`, when
++    /// a ratchet base is set.
++    fn lint_args(&self) -> Option<Vec<String>> {
++        let base = self.ratchet.as_ref()?.base.as_str();
++        let args = [
++            &self.script,
++            "baseline",
++            "--check",
++            "--locked",
++            "--base",
++            base,
++            "--findings-out",
++            lint::FINDINGS_OUT,
++        ];
++        Some(args.map(str::to_owned).to_vec())
++    }
+ }
+ 
+ /// Whether every entry of `environment`'s `PATH` is an absolute directory. An empty entry
+@@ -201,25 +255,48 @@ type ErrorOf<S, R> = TemperError<<S as CaptureSupervisor>::Error, <R as Revision
+ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R> {
+     type Error = ErrorOf<S, R>;
+ 
+-    /// Runs the Z2s checks and reports them as one `assay.findings/1` document that concludes
+-    /// `fail` when `raised`, `exception`, a blind spot or the gate-config diff found anything.
++    /// In `gates-static`, runs the Z2s checks and reports them as one `assay.findings/1`
++    /// document that concludes `fail` when `raised`, `exception`, a blind spot, the gate-config
++    /// diff or a step 4 check found anything. In `gates-lint`, runs the pinned `baseline
++    /// --check` and the declared `lint` steps, and concludes `fail` when the ratchet fails, a
++    /// `raised` or unadmitted `exception` entry is reported, or a step exits non-zero; a run
++    /// that does not exit, or a `baseline --check` exit other than 0 or 1, is reported as that
++    /// termination.
+     ///
+     /// # Errors
+     ///
+-    /// [`TemperError`] without running anything when `plugin` is not temper or `job` is not
+-    /// `gates-static`; and when a file the checks need is missing, not a regular file or
+-    /// unparsable, the head tree cannot be read, the scan cannot run, does not exit 0 or 1 or
+-    /// prints unreadable output, or the pinned copy cannot be read.
++    /// [`TemperError`] without running anything when `plugin` is not temper, `job` is
++    /// `gates-test`, or `gates-lint` has no [`RatchetBase`]; when a file the checks need is
++    /// missing, not a regular file or unparsable, the head tree cannot be read, a process
++    /// cannot run, the scan does not exit 0 or 1 or prints unreadable output, or the pinned
++    /// copy cannot be read; and in `gates-lint` when temper's findings document is unusable
++    /// or its ratchet is degraded ([`TemperError::RatchetDegraded`]).
+     fn run(&mut self, plugin: &Plugin, job: GateJob) -> Result<GateRun, Self::Error> {
+-        let Adapter::Temper { pin, .. } = plugin.adapter() else {
++        let Adapter::Temper { pin, steps } = plugin.adapter() else {
+             return Err(TemperError::NotTemper {
+                 plugin: plugin.name().as_str().to_owned(),
+             });
+         };
+-        if job != GateJob::Static {
+-            return Err(TemperError::OutsideStatic { job });
+-        }
+         let pin = pin.to_string();
++        match job {
++            GateJob::Static => self.run_static(plugin, pin),
++            GateJob::Build(BuildJob::Lint) => self.run_lint(plugin, pin, steps),
++            GateJob::Build(BuildJob::Test) => Err(TemperError::UnsupportedJob { job }),
++        }
++    }
++
++    /// [`GateError::RatchetDegraded`] for a degraded ratchet, [`GateError::NotRun`] otherwise.
++    fn gate_error(error: &Self::Error) -> GateError {
++        match error {
++            TemperError::RatchetDegraded { .. } => GateError::RatchetDegraded,
++            _ => GateError::NotRun,
++        }
++    }
++}
++
++impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
++    /// The Z2s checks, steps 1-4.
++    fn run_static(&mut self, plugin: &Plugin, pin: String) -> Result<GateRun, ErrorOf<S, R>> {
+         let allowlist = self.allowlist()?;
+         let mut failing = self.raised()?;
+         failing.extend(self.gate_config(&allowlist)?);
+@@ -253,6 +330,17 @@ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R>
+             GateConclusion::Fail
+         };
+         failing.extend(drift);
++        self.document(plugin, pin, (conclusion, failing))
++    }
++
++    /// The run's `assay.findings/1` document: `plugin` at `pin` concludes `conclusion` with
++    /// `findings`, as a clean exit.
++    fn document(
++        &self,
++        plugin: &Plugin,
++        pin: String,
++        (conclusion, findings): (GateConclusion, Vec<Finding>),
++    ) -> Result<GateRun, ErrorOf<S, R>> {
+         let document = FindingsDocument {
+             schema: FindingsSchema::V1,
+             source: Source {
+@@ -264,7 +352,7 @@ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R>
+                 run_key: self.settings.run_key.clone(),
+             },
+             conclusion: Some(conclusion),
+-            findings: failing,
++            findings,
+             stats: None,
+         };
+         let bytes = serde_json::to_vec(&document).map_err(TemperError::Document)?;
+@@ -273,9 +361,6 @@ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R>
+             document: GateDocument::Written(bytes),
+         })
+     }
+-}
+-
+-impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
+     /// Step 1: the baseline diff, counts and crates.
+     fn raised(&self) -> Result<Vec<Finding>, ErrorOf<S, R>> {
+         let base = self.required(Revision::Base, baseline::PATH)?;
+diff --git a/crates/assay-gates/src/temper/error.rs b/crates/assay-gates/src/temper/error.rs
+index 33f6d6a..31c0b9a 100644
+--- a/crates/assay-gates/src/temper/error.rs
++++ b/crates/assay-gates/src/temper/error.rs
+@@ -1,5 +1,6 @@
+ //! Why the temper adapter produced no [`GateRun`](assay_app::GateRun). Every one fails closed:
+-//! the `gate` use case records it as `gate-error:not-run`, never as a pass.
++//! the `gate` use case records it as `gate-error:not-run`, or a degraded ratchet as
++//! `gate-error:ratchet-degraded`, never as a pass.
+ 
+ use std::io;
+ use std::path::PathBuf;
+@@ -7,6 +8,7 @@ use std::path::PathBuf;
+ use assay_app::{GateJob, Termination};
+ use thiserror::Error;
+ 
++use super::ratchet::RatchetDegradation;
+ use crate::revision::Revision;
+ 
+ /// Why the temper adapter did not conclude, generic over the supervisor's error `S` and the
+@@ -19,12 +21,48 @@ pub enum TemperError<S, R> {
+         /// The plugin.
+         plugin: String,
+     },
+-    /// The job is not `gates-static`: the Z2b part of the adapter is not built yet.
+-    #[error("the temper adapter runs only in gates-static, not in {job}")]
+-    OutsideStatic {
++    /// The job is `gates-test`, whose declared steps are not built yet (#67).
++    #[error("the temper adapter does not run in {job} yet")]
++    UnsupportedJob {
+         /// The job asked for.
+         job: GateJob,
+     },
++    /// `gates-lint` was asked for without the base SHA and the merge base Z2s computed
++    /// ([`TemperSettings::with_ratchet`](super::TemperSettings::with_ratchet)).
++    #[error("the temper adapter has no ratchet base for gates-lint")]
++    NoRatchetBase,
++    /// The ratchet did not diff against the expected merge base: recorded as
++    /// `gate-error:ratchet-degraded`, never believed.
++    #[error("the temper ratchet is degraded: {why}")]
++    RatchetDegraded {
++        /// What gave it away.
++        why: RatchetDegradation,
++    },
++    /// The findings document could not be cleared before the run or read after it.
++    #[error("could not prepare or read the temper findings document {}", path.display())]
++    FindingsOut {
++        /// The document's path.
++        path: PathBuf,
++        /// The file system's error.
++        #[source]
++        source: io::Error,
++    },
++    /// The findings document is absent, not a regular file, too large, not the shape temper
++    /// 1.3.0 writes, or disagrees with temper's exit code; the detail never quotes it.
++    #[error("the temper findings document is unusable: {detail}")]
++    FindingsOutput {
++        /// What was wrong.
++        detail: String,
++    },
++    /// The supervisor could not run `baseline --check` or a declared step.
++    #[error("could not run {process} in gates-lint")]
++    Lint {
++        /// `baseline --check`, or the step's name.
++        process: String,
++        /// The supervisor's error.
++        #[source]
++        source: S,
++    },
+     /// A file or the tree of the PR could not be read.
+     #[error("could not read {path} at {revision}")]
+     Revision {
+diff --git a/crates/assay-gates/src/temper/evidence.rs b/crates/assay-gates/src/temper/evidence.rs
+new file mode 100644
+index 0000000..d477d4a
+--- /dev/null
++++ b/crates/assay-gates/src/temper/evidence.rs
+@@ -0,0 +1,178 @@
++//! Step 6: the evidence of a `gates-lint` finding is the line at its `file:line`, read by the
++//! adapter from the head commit, or from base when head does not hold that line
++//! (`docs/architecture/03-contracts.md` §2.1). Never temper's own text, and never the checkout
++//! on disk, which a build script could have rewritten.
++//!
++//! Each side's tree is listed once and the cited files are read in one batch, within a byte
++//! budget charged by listed size; a file past it keeps a synthesised quote.
++
++use std::collections::{BTreeMap, BTreeSet, HashMap};
++use std::num::NonZeroU64;
++
++use assay_domain::Side;
++
++use super::report::{Spot, line_evidence};
++use crate::revision::{EntryKind, Revision, RevisionFiles, TreeEntry};
++
++/// Most bytes of cited files read for evidence in one run (H-13).
++pub(super) const MAX_EVIDENCE_BYTES: u64 = 16 << 20;
++
++/// The quoted lines found, by (file, line).
++#[derive(Debug, Default)]
++pub(super) struct Lines<'w>(HashMap<(&'w str, NonZeroU64), (Side, String)>);
++
++impl Lines<'_> {
++    /// Where a finding at `file:line` sits: its line's text on the side that holds it, or
++    /// `fallback` on head when no side does.
++    pub(super) fn spot(&self, file: &str, line: NonZeroU64, fallback: &str) -> Spot {
++        match self.0.get(&(file, line)) {
++            Some((side, evidence)) => Spot {
++                file: file.to_owned(),
++                line,
++                side: *side,
++                evidence: evidence.to_owned(),
++            },
++            None => Spot::at(file.to_owned(), line, None, fallback),
++        }
++    }
++}
++
++/// Reads the lines `wanted` cites: head first, then base for the lines head does not hold.
++///
++/// # Errors
++///
++/// The side whose tree or blobs could not be read, with the reader's error.
++pub(super) fn gather<'w, R: RevisionFiles>(
++    revisions: &R,
++    wanted: impl IntoIterator<Item = (&'w str, NonZeroU64)>,
++    budget: u64,
++) -> Result<Lines<'w>, (Revision, R::Error)> {
++    let mut pending: BTreeMap<&'w str, BTreeSet<NonZeroU64>> = BTreeMap::new();
++    for (file, line) in wanted {
++        pending.entry(file).or_default().insert(line);
++    }
++    let mut lines = Lines::default();
++    let mut left = budget;
++    for (revision, side) in [(Revision::Head, Side::Right), (Revision::Base, Side::Left)] {
++        if pending.is_empty() {
++            break;
++        }
++        let failed = |error| (revision, error);
++        let entries = revisions.list(revision, None).map_err(failed)?;
++        let cited = entries.iter().filter(|entry| {
++            entry.kind == EntryKind::File && pending.contains_key(entry.path.as_str())
++        });
++        let chosen = within_budget(cited, &mut left);
++        let blobs = revisions.read(&chosen).map_err(failed)?;
++        for (entry, bytes) in chosen.iter().zip(blobs) {
++            let Some((file, needed)) = pending.remove_entry(entry.path.as_str()) else {
++                continue;
++            };
++            let unread = quote_into(&mut lines, (file, side), needed, &bytes);
++            if !unread.is_empty() {
++                pending.insert(file, unread);
++            }
++        }
++    }
++    Ok(lines)
++}
++
++/// The entries of `cited` whose listed size fits in what is `left` of the budget, in order;
++/// each one taken is charged.
++fn within_budget<'e>(
++    cited: impl Iterator<Item = &'e TreeEntry>,
++    left: &mut u64,
++) -> Vec<&'e TreeEntry> {
++    cited
++        .filter(|entry| {
++            let Some(rest) = entry.size.and_then(|size| left.checked_sub(size)) else {
++                return false;
++            };
++            *left = rest;
++            true
++        })
++        .collect()
++}
++
++/// Quotes the `needed` lines of `bytes` into `lines` for `file` on `side`, and returns those
++/// past its end. A line that is there but blank is quoted by nobody: the finding falls back.
++fn quote_into<'w>(
++    lines: &mut Lines<'w>,
++    (file, side): (&'w str, Side),
++    mut needed: BTreeSet<NonZeroU64>,
++    bytes: &[u8],
++) -> BTreeSet<NonZeroU64> {
++    let text = String::from_utf8_lossy(bytes);
++    for (index, line) in text.lines().enumerate() {
++        let number = u64::try_from(index)
++            .ok()
++            .and_then(|index| index.checked_add(1))
++            .and_then(NonZeroU64::new);
++        let Some(number) = number else {
++            break;
++        };
++        if needed.remove(&number)
++            && let Some(evidence) = line_evidence(line)
++        {
++            lines.0.insert((file, number), (side, evidence));
++        }
++        if needed.is_empty() {
++            break;
++        }
++    }
++    needed
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn entry(path: &str, size: u64) -> TreeEntry {
++        TreeEntry {
++            path: path.to_owned(),
++            kind: EntryKind::File,
++            object: "0".repeat(40),
++            size: Some(size),
++        }
++    }
++
++    #[test]
++    fn takes_files_up_to_exactly_the_budget_and_skips_one_past_it() {
++        let entries = [entry("a", 4), entry("b", 6), entry("c", 1)];
++        let mut left = 10;
++
++        let chosen: Vec<&str> = within_budget(entries.iter(), &mut left)
++            .into_iter()
++            .map(|entry| entry.path.as_str())
++            .collect();
++
++        assert_eq!(
++            (chosen, left),
++            (vec!["a", "b"], 0),
++            "c is one byte past the budget"
++        );
++    }
++
++    #[test]
++    fn quotes_only_the_lines_asked_for_and_returns_those_past_the_end() {
++        let mut lines = Lines::default();
++        let needed: BTreeSet<NonZeroU64> =
++            [1, 3, 9].into_iter().filter_map(NonZeroU64::new).collect();
++
++        let unread = quote_into(
++            &mut lines,
++            ("f.rs", Side::Right),
++            needed,
++            b"one\n\n  three  \n",
++        );
++
++        let three = NonZeroU64::new(3).map(|line| lines.spot("f.rs", line, "x").evidence);
++        assert_eq!(
++            (
++                unread.into_iter().map(NonZeroU64::get).collect::<Vec<_>>(),
++                three
++            ),
++            (vec![9], Some("three".to_owned()))
++        );
++    }
++}
+diff --git a/crates/assay-gates/src/temper/findings.rs b/crates/assay-gates/src/temper/findings.rs
+index 60d74fb..9c821a4 100644
+--- a/crates/assay-gates/src/temper/findings.rs
++++ b/crates/assay-gates/src/temper/findings.rs
+@@ -169,7 +169,8 @@ fn admitted(request: &Request, analysis: &Analysis<'_>, allowlist: &Allowlist) -
+     named && all_admitted
+ }
+ 
+-fn unadmitted(request: Request) -> Finding {
++/// The `exception` finding for `request`, which base does not admit.
++pub(super) fn unadmitted(request: Request) -> Finding {
+     let lint = request
+         .lint
+         .as_deref()
+diff --git a/crates/assay-gates/src/temper/head.rs b/crates/assay-gates/src/temper/head.rs
+index 0a7f85b..f48ff4f 100644
+--- a/crates/assay-gates/src/temper/head.rs
++++ b/crates/assay-gates/src/temper/head.rs
+@@ -17,11 +17,17 @@ use super::tokens::{Lexed, Source, Unlexable};
+ use crate::revision::{EntryKind, TreeEntry};
+ 
+ /// Whether `path` names Rust source: its extension is `rs` in any case, so a `.RS` file the
+-/// scan's walk would pass over is still read here.
++/// scan's walk would pass over is still read here, or its file name is `.rs` in any case,
++/// which has no extension but which temper's `*.rs` walk scans and a target `path` can name
++/// (#177). Either way, a name that is not exactly `*.rs` with a stem is an `Extension` blind
++/// spot.
+ pub(super) fn is_rust(path: &str) -> bool {
+-    Path::new(path)
+-        .extension()
++    let path = Path::new(path);
++    path.extension()
+         .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
++        || path
++            .file_name()
++            .is_some_and(|name| name.eq_ignore_ascii_case(".rs"))
+ }
+ 
+ /// Whether `path` names a Cargo manifest, which decides the crate roots `layout.rs` reads.
+@@ -41,8 +47,8 @@ pub(super) enum Why {
+     SkippedDirectory,
+     /// A submodule: its files are not in this tree.
+     Submodule,
+-    /// A symlinked Rust file or `Cargo.toml`, or a symlink that does not resolve, inside the tree and through
+-    /// real directories only, to a regular file.
++    /// A symlinked Rust file or `Cargo.toml`, or a symlink that does not resolve, inside the
++    /// tree and through real directories only, to a regular file.
+     Symlink,
+     /// A Rust file whose extension is not exactly `.rs` (`lib.RS`), which the scan's walk
+     /// skips.
+diff --git a/crates/assay-gates/src/temper/lint.rs b/crates/assay-gates/src/temper/lint.rs
+new file mode 100644
+index 0000000..c41ef6b
+--- /dev/null
++++ b/crates/assay-gates/src/temper/lint.rs
+@@ -0,0 +1,272 @@
++//! The temper adapter in `gates-lint`, zone Z2b (`docs/architecture/03-contracts.md` §2.1 steps
++//! 5-7): the base's pinned `temper baseline --check --locked --base <base_sha> --findings-out
++//! target/temper/findings.json` from the head checkout, its ratchet believed only against the
++//! merge base Z2s computed, then the plugin's declared `lint` steps (`fmt`, `deny`) under their
++//! own timeouts.
++//!
++//! A run that does not exit (timeout, signal, output cap), or a `baseline --check` exit other
++//! than 0 or 1, is handed to the gate use case as that termination, so it is the matching
++//! `gate-error`. A step that exits non-zero fails the gate.
++
++use std::fs;
++use std::io;
++use std::path::Path;
++use std::time::Duration;
++
++use assay_app::{BuildJob, GateDocument, GateRun, Plugin, Step, Termination};
++use assay_domain::{Finding, GateConclusion};
++
++use super::evidence::{self, MAX_EVIDENCE_BYTES};
++use super::exceptions::Allowlist;
++use super::lint_findings::{self, Shown};
++use super::ratchet::{self, Checked, Refused};
++use super::{ErrorOf, TREE, TemperAdapter, TemperError, TemperSettings, baseline};
++use crate::capture::CaptureSupervisor;
++use crate::exec::{ProcessSpec, read_document, resolve};
++use crate::revision::{Revision, RevisionFiles};
++
++/// Where `baseline --check` writes its collection and ratchet, relative to the head tree; temper
++/// accepts only paths under `target/` or `.temper/`.
++pub(super) const FINDINGS_OUT: &str = "target/temper/findings.json";
++
++/// Largest findings document read, in bytes; a larger one is refused unparsed (H-13).
++pub(super) const MAX_FINDINGS_OUT_BYTES: u64 = 64 << 20;
++
++/// Most bytes of stdout (and, separately, stderr) of `baseline --check` and of each step.
++const MAX_LINT_OUTPUT_BYTES: usize = 16 << 20;
++
++/// How `baseline --check` is named in errors.
++const BASELINE_CHECK: &str = "temper baseline --check";
++
++/// A process run that ended without exiting: the gate use case reports its termination.
++fn stopped(termination: Termination) -> GateRun {
++    GateRun {
++        termination,
++        document: GateDocument::Missing,
++    }
++}
++
++impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
++    /// Runs `gates-lint` for `plugin`, whose declared steps are `steps`.
++    pub(super) fn run_lint(
++        &mut self,
++        plugin: &Plugin,
++        pin: String,
++        steps: &[Step],
++    ) -> Result<GateRun, ErrorOf<S, R>> {
++        let Some(args) = self.settings.lint_args() else {
++            return Err(TemperError::NoRatchetBase);
++        };
++        let allowlist = self.allowlist()?;
++        let out = self.settings.head_tree.join(FINDINGS_OUT);
++        remove_stale(&out)?;
++        let run = capture(
++            &mut self.supervisor,
++            &self.settings,
++            (BASELINE_CHECK, &self.settings.node, &args),
++            plugin.timeout(),
++        )?;
++        let exit_failed = match run {
++            Termination::Exited(0) => false,
++            Termination::Exited(1) => true,
++            other => return Ok(stopped(other)),
++        };
++        let checked = self.checked(&out)?;
++        if checked.ok == exit_failed {
++            return Err(TemperError::FindingsOutput {
++                detail: "temper's exit code disagrees with ratchet.ok".to_owned(),
++            });
++        }
++        let mut failed = exit_failed;
++        for step in steps.iter().filter(|step| step.job() == BuildJob::Lint) {
++            match self.step(step)? {
++                Termination::Exited(0) => {}
++                Termination::Exited(_) => failed = true,
++                other => return Ok(stopped(other)),
++            }
++        }
++        let findings = self.lint_findings(&checked, &allowlist)?;
++        failed |= findings.failing;
++        let conclusion = if failed {
++            GateConclusion::Fail
++        } else {
++            GateConclusion::Pass
++        };
++        self.document(plugin, pin, (conclusion, findings.findings))
++    }
++
++    /// The findings document `baseline --check` left at `out`, read strictly and believed only
++    /// against the expected merge base.
++    fn checked(&self, out: &Path) -> Result<Checked, ErrorOf<S, R>> {
++        let bytes = findings_out(out, MAX_FINDINGS_OUT_BYTES)?;
++        let merge_base = self
++            .settings
++            .ratchet
++            .as_ref()
++            .map(|ratchet| ratchet.merge_base.as_str())
++            .ok_or(TemperError::NoRatchetBase)?;
++        ratchet::check(&bytes, merge_base).map_err(|refused| match refused {
++            Refused::Malformed(detail) => TemperError::FindingsOutput { detail },
++            Refused::Degraded(why) => TemperError::RatchetDegraded { why },
++        })
++    }
++
++    /// Runs one declared step from the head tree with the gate environment.
++    fn step(&mut self, step: &Step) -> Result<Termination, ErrorOf<S, R>> {
++        let program = resolve(&self.settings.head_tree, step.command().program());
++        let command = (
++            step.name().as_str(),
++            program.as_path(),
++            step.command().args(),
++        );
++        capture(
++            &mut self.supervisor,
++            &self.settings,
++            command,
++            step.timeout(),
++        )
++    }
++
++    /// The failures and the display findings of `checked`, with evidence from the trees.
++    fn lint_findings(
++        &self,
++        checked: &Checked,
++        allowlist: &Allowlist,
++    ) -> Result<LintFindings, ErrorOf<S, R>> {
++        let head_baseline = self.read(Revision::Head, baseline::PATH)?;
++        let text = head_baseline
++            .as_deref()
++            .and_then(|bytes| str::from_utf8(bytes).ok());
++        let mut findings = lint_findings::failures(checked, allowlist, text);
++        let failing = !findings.is_empty();
++        let shown = lint_findings::shown(checked, findings.len());
++        let lines = evidence::gather(
++            &self.revisions,
++            shown.iter().filter_map(Shown::cites),
++            MAX_EVIDENCE_BYTES,
++        )
++        .map_err(|(revision, source)| TemperError::Revision {
++            revision,
++            path: TREE,
++            source,
++        })?;
++        findings.extend(
++            shown
++                .into_iter()
++                .map(|shown| lint_findings::display(shown, &lines)),
++        );
++        findings.truncate(lint_findings::MAX_REPORTED);
++        Ok(LintFindings { failing, findings })
++    }
++}
++
++/// Runs `(process, program, args)` from the head tree with the gate environment under
++/// `timeout`; `process` names it in errors.
++fn capture<S: CaptureSupervisor, R>(
++    supervisor: &mut S,
++    settings: &TemperSettings,
++    (process, program, args): (&str, &Path, &[String]),
++    timeout: Duration,
++) -> Result<Termination, TemperError<S::Error, R>> {
++    let spec = ProcessSpec {
++        program,
++        args,
++        cwd: &settings.head_tree,
++        env: &settings.scan_env,
++        timeout,
++        max_output_bytes: MAX_LINT_OUTPUT_BYTES,
++    };
++    supervisor
++        .capture(&spec)
++        .map(|run| run.termination)
++        .map_err(|source| TemperError::Lint {
++            process: process.to_owned(),
++            source,
++        })
++}
++
++/// The findings of one `gates-lint` run.
++struct LintFindings {
++    /// Whether a `raised` or unadmitted `exception` entry was found.
++    failing: bool,
++    findings: Vec<Finding>,
++}
++
++/// Removes a findings document an earlier run or a restored `target/` left, so only this run's
++/// can be read. Nothing there is fine; anything that cannot be removed is an error.
++fn remove_stale<S, R>(out: &Path) -> Result<(), TemperError<S, R>> {
++    match fs::remove_file(out) {
++        Ok(()) => Ok(()),
++        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
++        Err(source) => Err(TemperError::FindingsOut {
++            path: out.to_path_buf(),
++            source,
++        }),
++    }
++}
++
++/// The bytes of the regular file at `out`, never through a symlink and at most `cap` of them.
++fn findings_out<S, R>(out: &Path, cap: u64) -> Result<Vec<u8>, TemperError<S, R>> {
++    let document = read_document(out, cap).map_err(|source| TemperError::FindingsOut {
++        path: out.to_path_buf(),
++        source,
++    })?;
++    let detail = match document {
++        GateDocument::Written(bytes) => return Ok(bytes),
++        GateDocument::Missing => "temper wrote no findings document".to_owned(),
++        GateDocument::NotAFile => "the findings document is not a regular file".to_owned(),
++        GateDocument::TooLarge => format!("the findings document is over {cap} bytes"),
++    };
++    Err(TemperError::FindingsOutput { detail })
++}
++
++#[cfg(test)]
++mod tests {
++    use std::error::Error;
++
++    use super::*;
++
++    type Read = Result<Vec<u8>, TemperError<io::Error, io::Error>>;
++
++    #[test]
++    fn reads_a_document_of_exactly_the_cap() -> Result<(), Box<dyn Error>> {
++        let dir = tempfile::tempdir()?;
++        let out = dir.path().join("findings.json");
++        fs::write(&out, b"0123456789")?;
++
++        let read: Read = findings_out(&out, 10);
++
++        assert_eq!(read.ok(), Some(b"0123456789".to_vec()));
++        Ok(())
++    }
++
++    #[test]
++    fn refuses_a_document_one_byte_past_the_cap() -> Result<(), Box<dyn Error>> {
++        let dir = tempfile::tempdir()?;
++        let out = dir.path().join("findings.json");
++        fs::write(&out, b"0123456789A")?;
++
++        let read: Read = findings_out(&out, 10);
++
++        assert!(
++            matches!(&read, Err(TemperError::FindingsOutput { detail }) if detail.contains("over 10 bytes")),
++            "{read:?}"
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn removing_a_directory_in_the_documents_place_fails() -> Result<(), Box<dyn Error>> {
++        let dir = tempfile::tempdir()?;
++        let out = dir.path().join("findings.json");
++        fs::create_dir(&out)?;
++
++        let removed: Result<(), TemperError<io::Error, io::Error>> = remove_stale(&out);
++
++        assert!(
++            matches!(removed, Err(TemperError::FindingsOut { .. })),
++            "{removed:?}"
++        );
++        Ok(())
++    }
++}
+diff --git a/crates/assay-gates/src/temper/lint_findings.rs b/crates/assay-gates/src/temper/lint_findings.rs
+new file mode 100644
+index 0000000..719de45
+--- /dev/null
++++ b/crates/assay-gates/src/temper/lint_findings.rs
+@@ -0,0 +1,293 @@
++//! The `gates-lint` findings (`docs/architecture/03-contracts.md` §2.1 steps 5-6).
++//!
++//! Failures: every `raised` entry, and every `exception` hit base `.assay/exceptions.toml` does
++//! not admit by file and lint. They can only add to temper's verdict, and their absence proves
++//! nothing (Z2s checks both from the trees). Display: the findings on changed lines, each count
++//! above the baseline, and each located compile error, with temper's severity mapped
++//! `must` to `blocker`, `should` to `major`, `consider` and `unmapped` to `minor`. Display never
++//! decides the gate. At most [`MAX_REPORTED`] findings are reported, failures first.
++
++use std::collections::HashMap;
++use std::num::NonZeroU64;
++
++use assay_domain::{Class, Finding, Severity};
++
++use super::baseline::{self, Raise};
++use super::evidence::Lines;
++use super::exceptions::Allowlist;
++use super::findings;
++use super::ratchet::{self, BuildError, Checked, Increase, Level, Tool};
++use super::report::{Rule, Spot, finding, plain};
++use super::scan::Request;
++
++/// Most findings in one `gates-lint` document, so it stays far below the 8 MiB contract cap.
++pub(super) const MAX_REPORTED: usize = 1_000;
++
++/// The scan key temper reports for the `#[expect]` attribute itself.
++const EXPECT_ATTR: &str = "scan:expect-attr";
++
++/// Rule ids `decide` may waive (`rubric/v1.toml`); a lint named like one is prefixed, so no
++/// clippy or rustdoc finding can ever be waived.
++const WAIVABLE: [&str; 5] = [
++    "raised",
++    "exception",
++    "gate-config",
++    "test-inventory",
++    "manifest-switch",
++];
++
++/// Rule of a compile error.
++const COMPILE_ERROR: &str = "compile-error";
++
++/// The `raised` and unadmitted `exception` findings: each fails the gate.
++pub(super) fn failures(
++    checked: &Checked,
++    allowlist: &Allowlist,
++    head_baseline: Option<&str>,
++) -> Vec<Finding> {
++    let raises: Vec<Raise<'_>> = checked
++        .raised
++        .iter()
++        .map(|raised| Raise {
++            krate: &raised.krate,
++            lint: &raised.lint,
++            // temper counts an entry base lacks from 0.
++            from: (raised.from > 0).then_some(raised.from),
++            to: raised.to,
++        })
++        .collect();
++    let mut found = findings::raised(&raises, head_baseline);
++    found.extend(
++        checked
++            .findings
++            .iter()
++            .filter_map(|hit| Some((hit, hit.exception.as_deref()?)))
++            .filter(|(hit, lint)| !allowlist.admits_exception(&hit.file, lint))
++            .map(|(hit, lint)| {
++                // The request, and then the document, own the path and the lint.
++                findings::unadmitted(Request {
++                    file: hit.file.clone(),
++                    attribute: hit.lint == EXPECT_ATTR,
++                    line: hit.line,
++                    lint: Some(lint.to_owned()),
++                    text: None,
++                })
++            }),
++    );
++    found
++}
++
++/// One finding to display, before its evidence is read.
++#[derive(Debug, Clone, Copy)]
++pub(super) enum Shown<'c> {
++    /// A finding on a changed line.
++    Code(&'c ratchet::Finding),
++    /// A count above the baseline, with the highest severity temper gave that lint.
++    Increase(&'c Increase, Level),
++    /// A compile error at a file and line.
++    Error(&'c str, NonZeroU64),
++}
++
++impl<'c> Shown<'c> {
++    /// The file and line whose text is its evidence, if any.
++    pub(super) const fn cites(&self) -> Option<(&'c str, NonZeroU64)> {
++        match *self {
++            Self::Code(code) => Some((code.file.as_str(), code.line)),
++            Self::Increase(..) => None,
++            Self::Error(file, line) => Some((file, line)),
++        }
++    }
++}
++
++/// What to display after `failing` failures, in order, within [`MAX_REPORTED`] in all.
++pub(super) fn shown(checked: &Checked, failing: usize) -> Vec<Shown<'_>> {
++    let mut highest: HashMap<&str, Level> = HashMap::new();
++    for hit in &checked.findings {
++        let level = highest.entry(hit.lint.as_str()).or_insert(hit.severity);
++        *level = (*level).max(hit.severity);
++    }
++    let increases = checked.increases.iter().map(|increase| {
++        let level = highest
++            .get(increase.lint.as_str())
++            .copied()
++            .unwrap_or(Level::Unmapped);
++        Shown::Increase(increase, level)
++    });
++    let errors = checked.errors.iter().filter_map(located);
++    checked
++        .new_code
++        .iter()
++        .map(Shown::Code)
++        .chain(increases)
++        .chain(errors)
++        .take(MAX_REPORTED.saturating_sub(failing))
++        .collect()
++}
++
++/// A compile error with a file and a line.
++fn located(error: &BuildError) -> Option<Shown<'_>> {
++    let line = NonZeroU64::new(error.line?)?;
++    Some(Shown::Error(error.file.as_deref()?, line))
++}
++
++/// The finding for `shown`, quoting `lines`.
++pub(super) fn display(shown: Shown<'_>, lines: &Lines<'_>) -> Finding {
++    match shown {
++        Shown::Code(code) => changed_line(code, lines),
++        Shown::Increase(increase, level) => increased(increase, level),
++        Shown::Error(file, line) => {
++            let spot = lines.spot(file, line, COMPILE_ERROR);
++            let body = "The pinned temper `baseline --check` reports a compile error here; the \
++                        ratchet needs a workspace that builds.";
++            let rule = rule(Class::Logic, Severity::Blocker);
++            let error = finding(rule, spot, "the workspace does not build here", body);
++            under(error, COMPILE_ERROR)
++        }
++    }
++}
++
++/// A finding on a line this PR changed.
++fn changed_line(code: &ratchet::Finding, lines: &Lines<'_>) -> Finding {
++    let lint = plain(&code.lint);
++    let level = level_name(code.severity);
++    let spot = lines.spot(&code.file, code.line, &lint);
++    let (tool, class) = match code.tool {
++        Tool::Clippy => ("clippy", Class::Compliance),
++        Tool::Rustdoc => ("rustdoc", Class::Docs),
++        Tool::Scan => ("temper scan", Class::Compliance),
++    };
++    let body = format!(
++        "The pinned temper `baseline --check` reports `{lint}` (temper severity `{level}`) on a \
++         line this PR changed. The ratchet fails on any finding in changed code (H-15)."
++    );
++    let rule = rule(class, severity(code.severity));
++    under(
++        finding(rule, spot, &format!("{tool}: `{lint}`"), &body),
++        &code.lint,
++    )
++}
++
++/// A (crate, lint) count above the baseline, at the baseline.
++fn increased(increase: &Increase, level: Level) -> Finding {
++    let (lint, krate) = (plain(&increase.lint), plain(&increase.krate));
++    let (was, now) = (increase.baseline, increase.current);
++    let spot = Spot::synthesised(baseline::PATH, &format!("{krate} {lint}: {was} -> {now}"));
++    let body = format!(
++        "`{lint}` in `{krate}` has {now} findings, above the baseline's {was}. The ratchet \
++         fails when a count rises, even on lines this PR did not change."
++    );
++    let class = if increase.lint.starts_with("rustdoc::") {
++        Class::Docs
++    } else {
++        Class::Compliance
++    };
++    let title = format!("temper count rose: `{lint}` in `{krate}`");
++    under(
++        finding(rule(class, severity(level)), spot, &title, &body),
++        &increase.lint,
++    )
++}
++
++/// A display rule of `class` and `severity`; its id is replaced by [`under`].
++const fn rule(class: Class, severity: Severity) -> Rule {
++    Rule {
++        id: COMPILE_ERROR,
++        severity,
++        class,
++    }
++}
++
++/// `shown` under the rule `lint`, made safe and never one `decide` can waive.
++fn under(mut shown: Finding, lint: &str) -> Finding {
++    let id = plain(lint);
++    shown.rule = Some(if WAIVABLE.contains(&id.as_str()) {
++        format!("lint:{id}")
++    } else {
++        id
++    });
++    shown
++}
++
++/// 03 §2.1 step 6, for display only.
++const fn severity(level: Level) -> Severity {
++    match level {
++        Level::Must => Severity::Blocker,
++        Level::Should => Severity::Major,
++        Level::Consider | Level::Unmapped => Severity::Minor,
++    }
++}
++
++const fn level_name(level: Level) -> &'static str {
++    match level {
++        Level::Must => "must",
++        Level::Should => "should",
++        Level::Consider => "consider",
++        Level::Unmapped => "unmapped",
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    const MERGE_BASE: &str = "5e1f0b9c2d3a4e5f60718293a4b5c6d7e8f90a1b";
++
++    /// A believed ratchet with `count` findings on changed lines.
++    fn with_new_code(count: usize) -> Checked {
++        let hit = serde_json::json!({
++            "tool": "clippy", "lint": "clippy::x", "crate": "c", "file": "f.rs", "line": 1,
++            "message": "m", "rules": [], "severity": "must",
++        });
++        let document = serde_json::json!({
++            "temper_findings": 1, "at": "t", "commit": null, "toolchain": null, "host": null,
++            "sources": [], "workspace_root": ".", "crates": [], "findings": [], "errors": [],
++            "ratchet": {
++                "ok": false, "mode": "diff+totals", "base": MERGE_BASE,
++                "new_code": vec![hit; count], "increases": [], "fixed": [], "fixed_count": 0,
++                "legacy_total": 0, "baseline_total": 0, "raised": [], "errors": [], "notes": [],
++            },
++        });
++        ratchet::check(document.to_string().as_bytes(), MERGE_BASE).expect("a believed ratchet")
++    }
++
++    #[test]
++    fn shows_every_finding_up_to_the_cap() {
++        let checked = with_new_code(MAX_REPORTED);
++
++        assert_eq!(shown(&checked, 0).len(), MAX_REPORTED);
++    }
++
++    #[test]
++    fn shows_none_past_the_cap_and_leaves_room_for_the_failures() {
++        let checked = with_new_code(MAX_REPORTED + 1);
++
++        let lengths = (shown(&checked, 0).len(), shown(&checked, 3).len());
++
++        assert_eq!(lengths, (MAX_REPORTED, MAX_REPORTED - 3));
++    }
++
++    #[test]
++    fn a_lint_named_like_a_waivable_rule_is_prefixed() {
++        let rule = rule(Class::Compliance, Severity::Minor);
++        let plain = finding(rule, Spot::synthesised("f.rs", "x"), "t", "b");
++
++        let shown = under(plain, "raised");
++
++        assert_eq!(shown.rule.as_deref(), Some("lint:raised"));
++    }
++
++    #[test]
++    fn severities_map_as_03_says() {
++        let mapped = [Level::Must, Level::Should, Level::Consider, Level::Unmapped].map(severity);
++
++        assert_eq!(
++            mapped,
++            [
++                Severity::Blocker,
++                Severity::Major,
++                Severity::Minor,
++                Severity::Minor
++            ]
++        );
++    }
++}
+diff --git a/crates/assay-gates/src/temper/ratchet.rs b/crates/assay-gates/src/temper/ratchet.rs
+new file mode 100644
+index 0000000..57d2db6
+--- /dev/null
++++ b/crates/assay-gates/src/temper/ratchet.rs
+@@ -0,0 +1,289 @@
++//! Step 5: what the pinned `temper baseline --check --findings-out` wrote, read strictly
++//! (`docs/architecture/03-contracts.md` §2.1).
++//!
++//! temper 1.3.0 writes its collection (`collectFindings`, `lib/findings.mjs`) with the ratchet
++//! result (`ratchet`, `lib/baseline.mjs`) under `ratchet`. When `git diff` throws, `ratchet`
++//! silently compares only the totals: `mode` becomes `totals`, `base` `null`, a note says "only
++//! the totals were compared", and `ok` can still be true. So the ratchet is believed only in
++//! `diff+totals` mode, with no such note, against exactly the merge base assay computed.
++//!
++//! Anything else temper 1.3.0 does not write is refused: a repeated key, an unknown field, an
++//! unknown severity or tool, a line of 0 (refuse rather than model, wi-b5affa).
++
++use std::fmt;
++use std::num::NonZeroU64;
++
++use serde::Deserialize;
++use serde::de::IgnoredAny;
++
++use super::report::json_detail;
++
++/// The only collection format this adapter reads (`"temper_findings": 1`).
++const FORMAT: u64 = 1;
++
++/// The only ratchet mode that compared changed lines against a base.
++const DIFF_AND_TOTALS: &str = "diff+totals";
++
++/// What `ratchet` notes when `git diff` threw and it fell back to the totals.
++const TOTALS_ONLY: &str = "only the totals";
++
++/// Why a ratchet is not believed (`gate-error:ratchet-degraded`).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum RatchetDegradation {
++    /// `ratchet.mode` is not `diff+totals` (`totals`, `strict` or unknown).
++    Mode,
++    /// A note says only the totals were compared.
++    TotalsNote,
++    /// `ratchet.base` is not the merge base assay computed.
++    Base,
++}
++
++impl fmt::Display for RatchetDegradation {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str(match self {
++            Self::Mode => "its mode is not diff+totals",
++            Self::TotalsNote => "a note says only the totals were compared",
++            Self::Base => "its base is not the merge base assay computed",
++        })
++    }
++}
++
++/// Why a findings document was refused.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(super) enum Refused {
++    /// It is not what temper 1.3.0 writes; the detail never quotes it.
++    Malformed(String),
++    /// It is, but its ratchet is degraded.
++    Degraded(RatchetDegradation),
++}
++
++/// temper's severity for a finding: the highest level among its rules.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
++#[serde(rename_all = "lowercase")]
++pub(super) enum Level {
++    Unmapped,
++    Consider,
++    Should,
++    Must,
++}
++
++/// The source that reported a finding.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
++#[serde(rename_all = "lowercase")]
++pub(super) enum Tool {
++    Clippy,
++    Rustdoc,
++    Scan,
++}
++
++#[derive(Debug, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct CheckDto {
++    temper_findings: u64,
++    #[serde(rename = "at")]
++    _at: IgnoredAny,
++    #[serde(rename = "commit")]
++    _commit: IgnoredAny,
++    #[serde(rename = "toolchain")]
++    _toolchain: IgnoredAny,
++    #[serde(rename = "host")]
++    _host: IgnoredAny,
++    #[serde(rename = "sources")]
++    _sources: IgnoredAny,
++    #[serde(rename = "workspace_root")]
++    _workspace_root: IgnoredAny,
++    #[serde(rename = "crates")]
++    _crates: IgnoredAny,
++    #[serde(rename = "logs", default)]
++    _logs: Option<IgnoredAny>,
++    findings: Vec<Finding>,
++    #[serde(rename = "errors")]
++    _errors: Vec<BuildError>,
++    ratchet: RatchetDto,
++}
++
++#[derive(Debug, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct RatchetDto {
++    ok: bool,
++    mode: String,
++    base: Option<String>,
++    new_code: Vec<Finding>,
++    increases: Vec<Increase>,
++    #[serde(rename = "fixed")]
++    _fixed: IgnoredAny,
++    #[serde(rename = "fixed_count")]
++    _fixed_count: IgnoredAny,
++    #[serde(rename = "legacy_total")]
++    _legacy_total: IgnoredAny,
++    #[serde(rename = "baseline_total")]
++    _baseline_total: IgnoredAny,
++    raised: Vec<Raised>,
++    errors: Vec<BuildError>,
++    notes: Vec<String>,
++}
++
++/// One finding of temper's collection (clippy, rustdoc or the scan).
++#[derive(Debug, Clone, PartialEq, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub(super) struct Finding {
++    pub(super) tool: Tool,
++    pub(super) lint: String,
++    #[serde(rename = "crate")]
++    pub(super) krate: Option<String>,
++    pub(super) file: String,
++    pub(super) line: NonZeroU64,
++    #[serde(rename = "end_line", default)]
++    _end_line: Option<IgnoredAny>,
++    #[serde(rename = "column", default)]
++    _column: Option<IgnoredAny>,
++    #[serde(rename = "expansion", default)]
++    _expansion: Option<IgnoredAny>,
++    #[serde(rename = "message")]
++    _message: IgnoredAny,
++    #[serde(rename = "rules")]
++    _rules: IgnoredAny,
++    pub(super) severity: Level,
++    /// The lint an `#[expect]` excepts, on the scan's `ask` hits.
++    #[serde(default)]
++    pub(super) exception: Option<String>,
++}
++
++/// A (crate, lint) count above the baseline.
++#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub(super) struct Increase {
++    #[serde(rename = "crate")]
++    pub(super) krate: String,
++    pub(super) lint: String,
++    pub(super) baseline: u64,
++    pub(super) current: u64,
++}
++
++/// A baseline count higher than at the merge base.
++#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub(super) struct Raised {
++    #[serde(rename = "crate")]
++    pub(super) krate: String,
++    pub(super) lint: String,
++    pub(super) from: u64,
++    pub(super) to: u64,
++}
++
++/// A compile error: the ratchet needs a workspace that builds.
++#[derive(Debug, Clone, PartialEq, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub(super) struct BuildError {
++    #[serde(rename = "tool")]
++    _tool: IgnoredAny,
++    #[serde(rename = "code")]
++    _code: IgnoredAny,
++    pub(super) file: Option<String>,
++    pub(super) line: Option<u64>,
++    #[serde(rename = "message")]
++    _message: IgnoredAny,
++    #[serde(rename = "target", default)]
++    _target: Option<IgnoredAny>,
++}
++
++/// A believed ratchet and the collection it came with.
++#[derive(Debug, Clone, PartialEq)]
++pub(super) struct Checked {
++    /// temper's own verdict on clippy, rustdoc and the scan's hard hits.
++    pub(super) ok: bool,
++    /// Every finding of the collection.
++    pub(super) findings: Vec<Finding>,
++    /// The findings on changed lines.
++    pub(super) new_code: Vec<Finding>,
++    pub(super) increases: Vec<Increase>,
++    pub(super) raised: Vec<Raised>,
++    pub(super) errors: Vec<BuildError>,
++}
++
++/// Reads `bytes`, temper's `--findings-out` document, and believes its ratchet only when it
++/// diffed against `merge_base`.
++///
++/// The document is parsed once, refusing any repeated key (`assay_app::parse_json_strict`),
++/// and only that parse is read.
++pub(super) fn check(bytes: &[u8], merge_base: &str) -> Result<Checked, Refused> {
++    let malformed = |error: serde_json::Error| Refused::Malformed(json_detail(&error));
++    let value = assay_app::parse_json_strict(bytes).map_err(malformed)?;
++    let dto: CheckDto = serde_json::from_value(value).map_err(malformed)?;
++    if dto.temper_findings != FORMAT {
++        return Err(Refused::Malformed(format!(
++            "\"temper_findings\" is not {FORMAT}, the only format this adapter reads"
++        )));
++    }
++    let ratchet = dto.ratchet;
++    if ratchet.mode != DIFF_AND_TOTALS {
++        return Err(Refused::Degraded(RatchetDegradation::Mode));
++    }
++    if ratchet.notes.iter().any(|note| note.contains(TOTALS_ONLY)) {
++        return Err(Refused::Degraded(RatchetDegradation::TotalsNote));
++    }
++    if ratchet.base.as_deref() != Some(merge_base) {
++        return Err(Refused::Degraded(RatchetDegradation::Base));
++    }
++    Ok(Checked {
++        ok: ratchet.ok,
++        findings: dto.findings,
++        new_code: ratchet.new_code,
++        increases: ratchet.increases,
++        raised: ratchet.raised,
++        errors: ratchet.errors,
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    const MERGE_BASE: &str = "5e1f0b9c2d3a4e5f60718293a4b5c6d7e8f90a1b";
++
++    fn document(ratchet: &str) -> String {
++        format!(
++            r#"{{"temper_findings": 1, "at": "t", "commit": null, "toolchain": null,
++                "host": null, "sources": [], "workspace_root": ".", "crates": [],
++                "findings": [], "errors": [], "ratchet": {ratchet}}}"#
++        )
++    }
++
++    fn ratchet(mode: &str, base: &str, notes: &str) -> String {
++        document(&format!(
++            r#"{{"ok": true, "mode": "{mode}", "base": {base}, "new_code": [],
++                "increases": [], "fixed": [], "fixed_count": 0, "legacy_total": 0,
++                "baseline_total": 0, "raised": [], "errors": [], "notes": [{notes}]}}"#
++        ))
++    }
++
++    #[test]
++    fn believes_a_diff_and_totals_ratchet_against_the_merge_base() {
++        let text = ratchet("diff+totals", &format!("\"{MERGE_BASE}\""), "");
++
++        let checked = check(text.as_bytes(), MERGE_BASE);
++
++        assert_eq!(
++            checked.map(|checked| checked.ok),
++            Ok(true),
++            "the one shape that is believed"
++        );
++    }
++
++    #[test]
++    fn a_note_mentioning_the_totals_in_other_words_is_not_degraded() {
++        let note = "\"the baseline was recorded on Rust 1.97 and this run used 1.98\"";
++        let text = ratchet("diff+totals", &format!("\"{MERGE_BASE}\""), note);
++
++        assert_eq!(check(text.as_bytes(), MERGE_BASE).map(|c| c.ok), Ok(true));
++    }
++
++    #[test]
++    fn levels_order_from_unmapped_to_must() {
++        assert!(Level::Unmapped < Level::Consider && Level::Consider < Level::Should);
++        assert!(
++            Level::Should < Level::Must,
++            "the increase severity takes the highest"
++        );
++    }
++}
+diff --git a/crates/assay-gates/src/temper/report.rs b/crates/assay-gates/src/temper/report.rs
+index f8fe3c7..69f2c78 100644
+--- a/crates/assay-gates/src/temper/report.rs
++++ b/crates/assay-gates/src/temper/report.rs
+@@ -76,7 +76,7 @@ impl Spot {
+ }
+ 
+ /// `line` trimmed and clipped, or `None` when nothing is left to quote.
+-fn line_evidence(line: &str) -> Option<String> {
++pub(super) fn line_evidence(line: &str) -> Option<String> {
+     let trimmed = line.trim();
+     (!trimmed.is_empty()).then(|| clip(trimmed, EVIDENCE_CHARS))
+ }

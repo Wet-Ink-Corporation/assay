@@ -1,0 +1,13 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-app/src/contract.rs",
+      "start_line": 132,
+      "end_line": 141,
+      "class": "security"
+    }
+  ]
+}

@@ -1,0 +1,2237 @@
+diff --git a/crates/assay-domain/AGENTS.md b/crates/assay-domain/AGENTS.md
+index 1dbe0e5..4571fb5 100644
+--- a/crates/assay-domain/AGENTS.md
++++ b/crates/assay-domain/AGENTS.md
+@@ -24,6 +24,7 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
+ - `ContentHash` (`of_files`, `as_bytes`, `Display` as `sha256:<64 lowercase hex>`): SHA-256 over named files, each name and content prefixed by its byte length as a big-endian `u64`. The prompt bundle hash (04 §3) is one.
+ - `Dismissal` (`judge`) and `DismissalMatch` (`Unrelated`, `Suppressed`, `MoreSevere`): the fuzzy dismissal match of 03 §3 and R3-25.
+ - `Tier` and `PrClass` (04 §2.3, 03 §1), closed vocabularies.
++- `tier(&RepoGlobs, &ChangeSet) -> Tiering`: deterministic tiering (04 §2.1 to §2.3, T17), pure and total. Inputs: `ChangeSet` (`FileChange` with `Lines`, `ManifestTrustChange` with the closed `ManifestKey`, the `include_*!` targets of #64, `PackageDiff` and `PackageChange` with the closed `ExecCause` from #65, `BaselineChange`) and `RepoGlobs` (base `.assay/globs.toml` additions, parsed by `assay-app`). Output: `Tiering` (tier, `TierReason`s, classes, `RequiredRole`s, trust paths and exec surface changed, `FilteredStats`). `Glob` (`FromStr`, `matches`) and `GlobError`: the hand-rolled path glob it matches with.
+ - `Rubric` (`version`, `majors_block_threshold`, `max_requeues`, `is_micro_role`, `is_waivable`): the validated data of `rubric/v1.toml`, built only by deserialising; the caller parses the TOML.
+ - `decide(&Rubric, &DecisionInputs) -> Decision`: rubric v1 rules 1 to 9, waive and override (04 §5), pure and total. `DecisionInputs` and its parts (`Policy`, `PullRequest`, `Readiness`, `GateReport`, `GateOutcome`, `StepAttribution`, `GateFinding`, `ReviewedFinding`, `WeighIn`, `LlmStage` (`effective`), `NotRunReason`, `Deferral`, `LlmPolicy`, `InfraPolicy`, `OwnerApproval`, `Authorship`, `Waiver`, `Override`, `OverrideScope`) are a decide-specific projection, not a versioned contract.
+ - `Decision` with `DecisionSchema`, `Conclusion`, `Reason`, `Counts`, `FindingDisposition`, `Waived`, `DegradedRole`: `assay.decision/1` (03 §5); `Decision::reasons_digest` is the digest an override quotes.
+@@ -35,12 +36,14 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
+ - `Finding::anchor` gives every omission a fifth field: a missing `expected_behavior` becomes `""`, so an unvalidated omission never hashes or matches as a defect.
+ - The fuzzy dismissal match compares the whole normalised evidence (and, for omissions, the normalised `expected_behavior`), by Levenshtein ratio over characters (`1 - distance / longer length`), in integers so 0.8 is exact. Evidence without a line of content, and an omission's `expected_behavior` without content, match nothing; text over 400 characters (the schema cap) is never similar. All three fail safe by publishing.
+ - `decide` is total and deterministic: equal rubric and inputs give byte-identical JSON. Its conclusion is that of the first rule that fires in the order 1, 2, 2a, 3, 4, 5, 6, 7, 8a, 8b, 8c; its reasons are those of every firing rule, in that order; `pending` comes only from rule 8a. `inputs_digest` is `sha256:<hex>` over a canonical length-prefixed encoding of the rubric and every input field (`src/decide/digest.rs`); the reasons digest is `sha256:<hex>` of the sorted reason codes, one per line, `override` excluded.
++- Tiering fails closed: every path rule reads both sides of a rename; `.rs`, `build.rs`, shell, script, CI and manifest files, vendored files and trust paths are never excluded; code, agent instructions and `include_*!` targets are never `trivial`; a binary numstat forces `full`; an unavailable package diff is exec surface; repo globs only add to the shipped lists in `src/tiering/lists.rs`, so no addition removes a trust path or lowers a tier for one (property tests in `tests/it/tiering_properties.rs`). Lists that raise a tier match wide (ASCII case-insensitive, any ancestor directory); lists that lower one match exactly. Glob matching is one dynamic-programming pass per pattern, linear in segments, so a crafted path cannot make it exponential.
+ - Contract types serialise to exactly their schema's wire names and reject unknown fields and versions on deserialisation. They are plain data with `pub` fields: length caps, formats and conditional requirements are the schema's, checked by `assay-app` on read. `Severity` orders `nit < minor < major < blocker`.
+ 
+ ## Errors
+ - `RubricError` (`EmptyVersion`): a rubric file that would make decisions without a `rubric_version`.
+ - `ParseFingerprintError` (`Length`, `Digit`): text that is not 16 lowercase hex digits.
+-- `decide` cannot fail: every input it is given has a decision.
++- `GlobError` (`Empty`, `Absolute`, `Reserved`, `UnbalancedBrace`, `NestedBrace`, `SlashInBrace`, `TooManyAlternatives`, `EmptySegment`, `DotSegment`, `PartialDoubleStar`): a pattern outside the glob syntax, refused rather than read literally.
++- `decide` and `tier` cannot fail: every input they are given has a result.
+ Rejections are `thiserror` enums per operation; business outcomes only, never infrastructure (ERR-10).
+ 
+ ## Test strategy
+@@ -62,4 +65,5 @@ Unit tests beside the code. `tests/it/` (dev-dependencies `serde_json` and `prop
+ | 2026-10-12 | wi-b2ac94 default revised on review: fuzzy match uses whole normalised evidence (the fingerprint stays first-line, 03 §3). Stricter, so it fails safe. | 03 §3, R3-25 | #49 review |
+ | 2026-10-12 | Omissions fingerprint and fuzzy-match on their normalised `expected_behavior` as well as the signature line, so two omissions in one function stay apart; a fifth length-prefixed field, absent for defects. | 03 §3 | owner (Weigh-In wi-f39f2e, option A) |
+ | 2026-10-12 | `ContentHash` added (#90) so the prompt bundle is content-addressed with the `sha2` already here; the encoding is the fingerprint's length prefixing, pinned by a golden vector computed independently. | ARC-02 | #90 |
++| 2026-10-12 | Tiering (#50) lives here as a pure function over typed inputs; `toml` and `serde_json` parsing of manifests, the temper baseline and `.assay/globs.toml` stay in `assay-app`. Globs are hand-rolled (no glob crate is allowed here, and `regex` is not either); builtins compile without validation and a unit test validates every one. `include_*!` targets (#64) and the package-set diff (#65) are inputs, not computed here. Spec readings, open to the owner: a binary numstat forces `full` but adds no lines (04 §2.1 "forces full"), so it cannot make a PR `needs-split`; trust-path file names tools discover in any directory match in any directory, and trust, risk and never-trivial lists ignore ASCII case and match ancestor directories; a risk glob or a package change also refuses `trivial`; an empty file list is `micro`; `meta` is required for exec surface as well as trust paths (04 §3 roster); CI files of other systems (`.gitlab-ci.yml`, `.circleci/`) and `.py` scripts are code, never excluded, but not trust paths. | ARC-02, H-16, T17 | #50 |
+ | 2026-10-12 | Content-less anchors fail closed: `Anchor::fingerprint` returns `Option` rather than taking a validated constructor, because `Anchor` is a short-lived borrowed view whose only producer is `Finding::anchor` and whose fuzzy match already judges content per call; a constructor would add a type and an error for the same check. | ERR-03, API-03 | #49 re-review |
+diff --git a/crates/assay-domain/src/lib.rs b/crates/assay-domain/src/lib.rs
+index 84aad67..a4b288c 100644
+--- a/crates/assay-domain/src/lib.rs
++++ b/crates/assay-domain/src/lib.rs
+@@ -26,6 +26,7 @@ mod rubric;
+ mod run_uid;
+ mod severity;
+ mod tier;
++mod tiering;
+ 
+ pub use aeu::Aeu;
+ pub use content_hash::ContentHash;
+@@ -53,3 +54,8 @@ pub use rubric::{Rubric, RubricError};
+ pub use run_uid::RunUid;
+ pub use severity::{Marker, Severity};
+ pub use tier::{PrClass, Tier};
++pub use tiering::{
++    BaselineChange, ChangeSet, ExecCause, FileChange, FilteredStats, Glob, GlobError, Lines,
++    ManifestKey, ManifestTrustChange, PackageChange, PackageDiff, RepoGlobs, RequiredRole,
++    TierReason, Tiering, tier,
++};
+diff --git a/crates/assay-domain/src/tiering.rs b/crates/assay-domain/src/tiering.rs
+new file mode 100644
+index 0000000..62e794c
+--- /dev/null
++++ b/crates/assay-domain/src/tiering.rs
+@@ -0,0 +1,356 @@
++//! Deterministic tiering (`docs/architecture/04-pipeline.md` §2.1 to §2.3, `05-security.md`
++//! T17): from the changed files, the facts other stages computed about them and the base globs,
++//! the tier, its reasons, the PR classes and the required roles of the run description (03 §4).
++//!
++//! Every rule fails closed: both sides of a rename are read, code is never excluded and never
++//! `trivial`, a binary numstat forces `full`, and a repository's globs only add.
++
++mod change;
++mod glob;
++mod lists;
++
++use std::collections::BTreeSet;
++
++pub use change::{
++    BaselineChange, ChangeSet, ExecCause, FileChange, Lines, ManifestKey, ManifestTrustChange,
++    PackageChange, PackageDiff,
++};
++pub use glob::{Glob, GlobError};
++pub use lists::RepoGlobs;
++use lists::{Lists, TEMPER_BASELINE};
++
++use crate::tier::{PrClass, Tier};
++use crate::vocabulary::closed_enum;
++
++/// More filtered changed lines than this need a split (04 §2.3, `A-05`).
++const SPLIT_ABOVE: u64 = 5_000;
++
++/// More filtered changed lines than this are `full`.
++const FULL_ABOVE: u64 = 150;
++
++/// More filtered changed lines than this are at least `lite`.
++const LITE_ABOVE: u64 = 20;
++
++/// What the exec-surface list names when the package-set diff could not be computed.
++const PACKAGES_UNAVAILABLE: &str = "package set (unavailable)";
++
++/// The tiering of one PR head: the `plan` fields of the run description (03 §4).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Tiering {
++    /// The first matching row of 04 §2.3.
++    pub tier: Tier,
++    /// Every condition of that row that holds, in table order.
++    pub tier_reasons: Vec<TierReason>,
++    /// The PR's classes, in vocabulary order.
++    pub classes: Vec<PrClass>,
++    /// The roles the tier requires (04 §3).
++    pub required_roles: Vec<RequiredRole>,
++    /// Matched trust paths, both sides of renames, and `<manifest> (<key>)` for manifest trust
++    /// keys; sorted, without duplicates.
++    pub trust_paths_changed: Vec<String>,
++    /// Build scripts, and `<package> (<cause>)` for exec-surface packages; sorted, without
++    /// duplicates.
++    pub exec_surface_changed: Vec<String>,
++    /// What the model sees.
++    pub filtered: FilteredStats,
++}
++
++/// The changed files left after filtering (04 §2.1).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct FilteredStats {
++    /// Files not excluded.
++    pub files: usize,
++    /// Changed lines of the files not excluded.
++    pub lines: u64,
++    /// Excluded files, still named to reviewers, in change order.
++    pub excluded: Vec<String>,
++}
++
++closed_enum! {
++    /// Why a PR got its tier: one condition of 04 §2.3.
++    pub enum TierReason {
++        /// More than 5,000 filtered changed lines.
++        SplitSize => "split-size",
++        /// Every changed file is in the docs allowlist.
++        DocsOnly => "docs-only",
++        /// A trust path changed.
++        TrustPath => "trust-path",
++        /// Exec surface changed.
++        ExecSurface => "exec-surface",
++        /// More than 150 filtered changed lines.
++        FullSize => "full-size",
++        /// A file git reports as binary, taken as the maximum size.
++        BinaryFile => "binary-file",
++        /// A file matches a risk glob.
++        RiskGlob => "risk-glob",
++        /// 21 to 150 filtered changed lines.
++        LiteSize => "lite-size",
++        /// A lockfile dependency changed.
++        LockfileDependency => "lockfile-dependency",
++        /// A new or bumped registry package.
++        RegistryPackage => "registry-package",
++        /// A change under `vendor/`.
++        Vendor => "vendor",
++        /// Anything else: up to 20 filtered lines outside the docs allowlist.
++        MicroSize => "micro-size",
++    }
++}
++
++closed_enum! {
++    /// A reviewer role a tier requires (04 §3 "Required roles").
++    pub enum RequiredRole {
++        /// Logic and edge cases (`full`).
++        Bugs => "bugs",
++        /// Security (`full`).
++        Security => "security",
++        /// Design and layering (`full`).
++        Design => "design",
++        /// Authority granted and checks weakened (`full`, trust path or exec surface).
++        Meta => "meta",
++        /// Bugs, security and design in one pass (`lite`).
++        Combined => "combined",
++        /// A short pass on a tiny diff (`micro`).
++        CombinedMicro => "combined-micro",
++    }
++}
++
++/// Tiers `changes` under the shipped globs plus the repository's `globs`. Pure and total.
++///
++/// # Examples
++///
++/// ```
++/// use assay_domain::{
++///     BaselineChange, ChangeSet, FileChange, Lines, PackageDiff, RepoGlobs, Tier, tier,
++/// };
++///
++/// let changes = ChangeSet {
++///     files: vec![
++///         FileChange::new("src/session.rs", Lines::Counted { added: 1, removed: 1 })
++///             .renamed_from("src/auth/session.rs"),
++///     ],
++///     manifests: Vec::new(),
++///     include_targets: Vec::new(),
++///     packages: PackageDiff::Computed(Vec::new()),
++///     temper_baseline: BaselineChange::Other,
++/// };
++///
++/// assert_eq!(tier(&RepoGlobs::default(), &changes).tier, Tier::Full);
++/// ```
++#[must_use]
++pub fn tier(globs: &RepoGlobs, changes: &ChangeSet) -> Tiering {
++    let lists = Lists::new(globs);
++    let trust_paths_changed = trust_paths(&lists, changes);
++    let exec_surface_changed = exec_surface(&lists, changes);
++    let filtered = filter(&lists, &changes.files);
++    let package = |wanted: fn(&PackageChange) -> bool| match &changes.packages {
++        PackageDiff::Computed(packages) => packages.iter().any(wanted),
++        PackageDiff::Unavailable => true,
++    };
++    let held: Vec<TierReason> = [
++        (filtered.lines > SPLIT_ABOVE, TierReason::SplitSize),
++        (docs_only(&lists, changes), TierReason::DocsOnly),
++        (!trust_paths_changed.is_empty(), TierReason::TrustPath),
++        (!exec_surface_changed.is_empty(), TierReason::ExecSurface),
++        (filtered.lines > FULL_ABOVE, TierReason::FullSize),
++        (
++            changes.files.iter().any(|file| file.lines == Lines::Binary),
++            TierReason::BinaryFile,
++        ),
++        (
++            any_side(&changes.files, |path| lists.is_risk(path)),
++            TierReason::RiskGlob,
++        ),
++        (filtered.lines > LITE_ABOVE, TierReason::LiteSize),
++        (
++            package(|change| matches!(change, PackageChange::Lockfile { .. })),
++            TierReason::LockfileDependency,
++        ),
++        (
++            package(|change| matches!(change, PackageChange::Registry { .. })),
++            TierReason::RegistryPackage,
++        ),
++        (
++            any_side(&changes.files, |path| lists.is_vendor(path)),
++            TierReason::Vendor,
++        ),
++    ]
++    .into_iter()
++    .filter_map(|(holds, reason)| holds.then_some(reason))
++    .collect();
++    let (tier, tier_reasons) = first_row(&held);
++    let classes: Vec<PrClass> = [
++        (TierReason::TrustPath, PrClass::TrustPath),
++        (TierReason::ExecSurface, PrClass::ExecSurface),
++    ]
++    .into_iter()
++    .filter_map(|(reason, class)| held.contains(&reason).then_some(class))
++    .collect();
++    Tiering {
++        tier,
++        tier_reasons,
++        required_roles: required_roles(tier, !classes.is_empty()),
++        classes,
++        trust_paths_changed,
++        exec_surface_changed,
++        filtered,
++    }
++}
++
++/// The table row a condition belongs to.
++const fn row(reason: TierReason) -> Tier {
++    match reason {
++        TierReason::SplitSize => Tier::NeedsSplit,
++        TierReason::DocsOnly => Tier::Trivial,
++        TierReason::TrustPath
++        | TierReason::ExecSurface
++        | TierReason::FullSize
++        | TierReason::BinaryFile
++        | TierReason::RiskGlob => Tier::Full,
++        TierReason::LiteSize
++        | TierReason::LockfileDependency
++        | TierReason::RegistryPackage
++        | TierReason::Vendor => Tier::Lite,
++        TierReason::MicroSize => Tier::Micro,
++    }
++}
++
++/// The first row of 04 §2.3 with a condition in `held`, and its conditions there. `trivial` is
++/// also refused by a trust path, exec surface, a risk glob or any package change, whatever the
++/// paths (fail closed: a repo risk glob on a docs file means review).
++fn first_row(held: &[TierReason]) -> (Tier, Vec<TierReason>) {
++    let blocks_trivial = |reason: &TierReason| {
++        !matches!(
++            reason,
++            TierReason::SplitSize
++                | TierReason::DocsOnly
++                | TierReason::FullSize
++                | TierReason::BinaryFile
++                | TierReason::LiteSize
++                | TierReason::MicroSize
++        )
++    };
++    let trivial_allowed = !held.iter().any(blocks_trivial);
++    [Tier::NeedsSplit, Tier::Trivial, Tier::Full, Tier::Lite]
++        .into_iter()
++        .filter(|&tier| tier != Tier::Trivial || trivial_allowed)
++        .find_map(|tier| {
++            let reasons: Vec<TierReason> = held
++                .iter()
++                .copied()
++                .filter(|&reason| row(reason) == tier)
++                .collect();
++            (!reasons.is_empty()).then_some((tier, reasons))
++        })
++        .unwrap_or_else(|| (Tier::Micro, vec![TierReason::MicroSize]))
++}
++
++/// 04 §3: full = bugs, security, design (+ meta for a trust path or exec surface); lite =
++/// combined; micro = combined-micro; no LLM for trivial or needs-split.
++fn required_roles(tier: Tier, trust_class: bool) -> Vec<RequiredRole> {
++    match tier {
++        Tier::NeedsSplit | Tier::Trivial => Vec::new(),
++        Tier::Full => {
++            let mut roles = vec![
++                RequiredRole::Bugs,
++                RequiredRole::Security,
++                RequiredRole::Design,
++            ];
++            if trust_class {
++                roles.push(RequiredRole::Meta);
++            }
++            roles
++        }
++        Tier::Lite => vec![RequiredRole::Combined],
++        Tier::Micro => vec![RequiredRole::CombinedMicro],
++    }
++}
++
++fn any_side(files: &[FileChange], predicate: impl Fn(&str) -> bool) -> bool {
++    files.iter().flat_map(FileChange::sides).any(predicate)
++}
++
++/// Trust-path matches on either side of every file, and manifest trust keys. Only an in-place
++/// edit of the temper baseline that lowers or keeps every count is spared.
++fn trust_paths(lists: &Lists<'_>, changes: &ChangeSet) -> Vec<String> {
++    let spared = |file: &FileChange, path: &str| {
++        path == TEMPER_BASELINE
++            && file.renamed_from.is_none()
++            && changes.temper_baseline == BaselineChange::LoweredOrUnchanged
++    };
++    let globbed = changes.files.iter().flat_map(|file| {
++        file.sides()
++            .filter(move |path| !spared(file, path) && lists.is_trust(path))
++            .map(str::to_owned)
++    });
++    let manifests = changes
++        .manifests
++        .iter()
++        .map(|change| format!("{} ({})", change.path, change.key.code()));
++    globbed
++        .chain(manifests)
++        .collect::<BTreeSet<_>>()
++        .into_iter()
++        .collect()
++}
++
++/// Build scripts on either side of every file, and exec-surface packages.
++fn exec_surface(lists: &Lists<'_>, changes: &ChangeSet) -> Vec<String> {
++    let scripts = changes
++        .files
++        .iter()
++        .flat_map(FileChange::sides)
++        .filter(|path| lists.is_build_script(path))
++        .map(str::to_owned);
++    let packages: Vec<String> = match &changes.packages {
++        PackageDiff::Computed(packages) => packages
++            .iter()
++            .filter_map(|change| match change {
++                PackageChange::ExecSurface { package, cause } => {
++                    Some(format!("{package} ({})", cause.code()))
++                }
++                PackageChange::Registry { .. } | PackageChange::Lockfile { .. } => None,
++            })
++            .collect(),
++        PackageDiff::Unavailable => vec![PACKAGES_UNAVAILABLE.to_owned()],
++    };
++    scripts
++        .chain(packages)
++        .collect::<BTreeSet<_>>()
++        .into_iter()
++        .collect()
++}
++
++/// Whether there is at least one file and every side of every file is allowlisted docs that no
++/// `include_*!` names.
++fn docs_only(lists: &Lists<'_>, changes: &ChangeSet) -> bool {
++    let included = |path: &str| changes.include_targets.iter().any(|target| target == path);
++    !changes.files.is_empty()
++        && changes
++            .files
++            .iter()
++            .flat_map(FileChange::sides)
++            .all(|path| lists.is_docs(path) && !included(path))
++}
++
++/// Splits the files into excluded and counted (04 §2.1). A file is excluded when it is binary
++/// or every side matches an exclusion glob, unless a side is never excluded.
++fn filter(lists: &Lists<'_>, files: &[FileChange]) -> FilteredStats {
++    let mut stats = FilteredStats {
++        files: 0,
++        lines: 0,
++        excluded: Vec::new(),
++    };
++    for file in files {
++        let protected = file.sides().any(|path| lists.is_never_excluded(path));
++        let excludable = file.sides().all(|path| lists.is_excludable(path));
++        match file.lines {
++            Lines::Counted { added, removed } if protected || !excludable => {
++                stats.files = stats.files.saturating_add(1);
++                stats.lines = stats.lines.saturating_add(added.saturating_add(removed));
++            }
++            Lines::Binary if protected => stats.files = stats.files.saturating_add(1),
++            Lines::Counted { .. } | Lines::Binary => stats.excluded.push(file.path.clone()),
++        }
++    }
++    stats
++}
+diff --git a/crates/assay-domain/src/tiering/change.rs b/crates/assay-domain/src/tiering/change.rs
+new file mode 100644
+index 0000000..fa01144
+--- /dev/null
++++ b/crates/assay-domain/src/tiering/change.rs
+@@ -0,0 +1,165 @@
++//! What tiering reads: the changed files and the facts other stages computed about them.
++
++use std::iter;
++
++use crate::vocabulary::closed_enum;
++
++/// Everything one tiering depends on besides the base globs.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ChangeSet {
++    /// The files of `git diff --name-status base...head`, with `--numstat --text` line counts.
++    pub files: Vec<FileChange>,
++    /// Trust keys that differ between the base and head manifests, found by TOML parsing.
++    pub manifests: Vec<ManifestTrustChange>,
++    /// Files named by `include_str!`, `include_bytes!` or `#[doc = include_str!(..)]` in a `.rs`
++    /// file at base or head (the Z2s `syn` scan): never `trivial`.
++    pub include_targets: Vec<String>,
++    /// The package-set diff, base vs head.
++    pub packages: PackageDiff,
++    /// How `.claude/temper-baseline.json` changed, when it did.
++    pub temper_baseline: BaselineChange,
++}
++
++/// One changed file.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct FileChange {
++    /// The path at head (at base for a deletion).
++    pub path: String,
++    /// The path at base when the file was renamed or copied: every rule reads both sides.
++    pub renamed_from: Option<String>,
++    /// The `--numstat --text` line counts.
++    pub lines: Lines,
++}
++
++impl FileChange {
++    /// A change to `path` that was not renamed.
++    #[must_use]
++    pub fn new(path: impl Into<String>, lines: Lines) -> Self {
++        Self {
++            path: path.into(),
++            renamed_from: None,
++            lines,
++        }
++    }
++
++    /// The same change, renamed from `old`.
++    #[must_use]
++    pub fn renamed_from(self, old: impl Into<String>) -> Self {
++        Self {
++            renamed_from: Some(old.into()),
++            ..self
++        }
++    }
++
++    /// The head path, then the base path of a rename.
++    pub fn sides(&self) -> impl Iterator<Item = &str> {
++        iter::once(self.path.as_str()).chain(self.renamed_from.as_deref())
++    }
++}
++
++/// One file's `git diff --numstat --text` result.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum Lines {
++    /// Lines added and removed.
++    Counted {
++        /// Lines added.
++        added: u64,
++        /// Lines removed.
++        removed: u64,
++    },
++    /// `-`: git reports the file as binary, so its size is unknown and taken as the maximum.
++    Binary,
++}
++
++/// A manifest whose trust keys differ between base and head (04 §2.2).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ManifestTrustChange {
++    /// The manifest's path.
++    pub path: String,
++    /// The key that changed.
++    pub key: ManifestKey,
++}
++
++closed_enum! {
++    /// A manifest key whose change is a trust-path change (04 §2.2).
++    pub enum ManifestKey {
++        /// `[lints]`.
++        Lints => "lints",
++        /// `[workspace.lints]`.
++        WorkspaceLints => "workspace.lints",
++        /// `[patch]`.
++        Patch => "patch",
++        /// `[replace]`.
++        Replace => "replace",
++        /// `[workspace] members`.
++        WorkspaceMembers => "workspace.members",
++        /// `[workspace] exclude`.
++        WorkspaceExclude => "workspace.exclude",
++        /// `rust-version`, in `[package]` or `[workspace.package]`.
++        RustVersion => "rust-version",
++        /// `edition`, in `[package]` or `[workspace.package]`.
++        Edition => "edition",
++        /// A target's `test`, `doctest` or `harness`, or `autotests` or `autobenches`.
++        TestSwitch => "test-switch",
++        /// One side does not parse, so every key is taken as changed.
++        Unparseable => "unparseable",
++    }
++}
++
++/// The package-set diff of `cargo metadata`, base vs head (04 §2.2, computed by #65).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum PackageDiff {
++    /// The diff, one entry per changed package; empty when no package changed.
++    Computed(Vec<PackageChange>),
++    /// The diff could not be computed: taken as exec surface.
++    Unavailable,
++}
++
++/// One package that differs between the base and head package sets.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum PackageChange {
++    /// Code that runs at build time was added or altered.
++    ExecSurface {
++        /// The package name.
++        package: String,
++        /// Why it is exec surface.
++        cause: ExecCause,
++    },
++    /// A new or bumped registry package with no `custom-build` or `proc-macro` target: at
++    /// least `lite`, and the `cargo deny` gate.
++    Registry {
++        /// The package name.
++        package: String,
++    },
++    /// Any other lockfile dependency change: at least `lite`.
++    Lockfile {
++        /// The package name.
++        package: String,
++    },
++}
++
++closed_enum! {
++    /// Why a package change is exec surface (04 §2.2).
++    pub enum ExecCause {
++        /// A new or bumped package with a `custom-build` target.
++        BuildScript => "build-script",
++        /// A crate with a `proc-macro` target.
++        ProcMacro => "proc-macro",
++        /// A `[build-dependencies]` change.
++        BuildDependency => "build-dependency",
++        /// The package's `source` changed (registry, git or path).
++        SourceChanged => "source-changed",
++        /// A path dependency was added.
++        PathDependency => "path-dependency",
++    }
++}
++
++/// How `.claude/temper-baseline.json` changed between base and head.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub enum BaselineChange {
++    /// Both sides parse and no count went up: not a trust-path change (04 §2.2).
++    LoweredOrUnchanged,
++    /// Anything else, including a file that does not parse or was added or removed.
++    #[default]
++    Other,
++}
+diff --git a/crates/assay-domain/src/tiering/glob.rs b/crates/assay-domain/src/tiering/glob.rs
+new file mode 100644
+index 0000000..9686d32
+--- /dev/null
++++ b/crates/assay-domain/src/tiering/glob.rs
+@@ -0,0 +1,437 @@
++//! Path globs for tiering (`docs/architecture/04-pipeline.md` §2): a small, total matcher, so
++//! the domain needs no glob crate.
++
++use std::fmt;
++use std::str::FromStr;
++
++use thiserror::Error;
++
++/// The most alternatives one glob's braces may expand to.
++const MAX_ALTERNATIVES: usize = 64;
++
++/// Characters reserved for syntax this matcher does not implement, so a pattern using them is
++/// refused rather than read literally.
++const RESERVED: [char; 5] = ['?', '[', ']', '\\', '!'];
++
++/// A path glob over `/`-separated repository paths, matched against the whole path.
++///
++/// `*` matches any run of characters within one segment (dot files included), a `**` segment
++/// matches zero or more whole segments, and `{a,b}` offers alternatives within one segment.
++/// `?`, `[`, `]`, `\` and `!` are reserved, and empty, `.` and `..` segments are refused.
++///
++/// # Examples
++///
++/// ```
++/// use assay_domain::Glob;
++///
++/// let docs: Glob = "docs/**/*.{md,txt}".parse()?;
++/// assert!(docs.matches("docs/guide/intro.md"));
++/// assert!(!docs.matches("src/lib.rs"));
++/// # Ok::<(), assay_domain::GlobError>(())
++/// ```
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Glob {
++    pattern: String,
++    /// The pattern after brace expansion, each alternative split into segments.
++    alternatives: Vec<Vec<Segment>>,
++}
++
++/// One `/`-separated part of an expanded pattern.
++#[derive(Debug, Clone, PartialEq, Eq)]
++enum Segment {
++    /// `**`: zero or more whole segments.
++    AnyDepth,
++    /// Literal bytes and `*` wildcards.
++    Name(String),
++}
++
++/// How a glob is compared with a path.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Reach {
++    /// Case-sensitive, whole path only.
++    Exact,
++    /// ASCII case-insensitive, and a match on any ancestor directory counts: the fail-closed
++    /// reading for lists that raise a tier.
++    Wide,
++}
++
++/// Why a glob was refused.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
++pub enum GlobError {
++    /// The pattern is empty.
++    #[error("a glob may not be empty")]
++    Empty,
++    /// The pattern starts with `/`; repository paths are relative.
++    #[error("a glob may not start with `/`")]
++    Absolute,
++    /// The pattern uses a reserved character.
++    #[error("`{0}` is reserved in a glob")]
++    Reserved(char),
++    /// A `{` without its `}`, or a `}` without its `{`.
++    #[error("a glob's braces are unbalanced")]
++    UnbalancedBrace,
++    /// A `{` inside braces.
++    #[error("a glob's braces may not nest")]
++    NestedBrace,
++    /// A `/` inside braces.
++    #[error("a glob's braces may not contain `/`")]
++    SlashInBrace,
++    /// The braces expand to more than 64 alternatives.
++    #[error("a glob's braces expand to more than {MAX_ALTERNATIVES} alternatives")]
++    TooManyAlternatives,
++    /// An empty segment: `a//b`, or a trailing `/`.
++    #[error("a glob may not have an empty segment")]
++    EmptySegment,
++    /// A `.` or `..` segment, which no repository path contains.
++    #[error("a glob may not have a `.` or `..` segment")]
++    DotSegment,
++    /// `**` that is not a whole segment, such as `a**`.
++    #[error("`**` must be a whole segment")]
++    PartialDoubleStar,
++}
++
++impl Glob {
++    /// A glob from a pattern this crate ships, compiled without validation; the unit tests
++    /// assert that every shipped pattern validates.
++    pub(crate) fn builtin(pattern: &str) -> Self {
++        Self {
++            pattern: pattern.to_owned(),
++            alternatives: compile(pattern),
++        }
++    }
++
++    /// The pattern as written.
++    #[must_use]
++    pub fn as_str(&self) -> &str {
++        &self.pattern
++    }
++
++    /// Whether `path` matches the whole pattern, case-sensitively.
++    #[must_use]
++    pub fn matches(&self, path: &str) -> bool {
++        self.matches_with(path, Reach::Exact)
++    }
++
++    /// Whether `path`, or any directory above it, matches ignoring ASCII case: the reading for
++    /// trust, risk and never-trivial lists, where a wider match fails closed.
++    pub(crate) fn matches_wide(&self, path: &str) -> bool {
++        self.matches_with(path, Reach::Wide)
++    }
++
++    fn matches_with(&self, path: &str, reach: Reach) -> bool {
++        let segments: Vec<&str> = path.split('/').collect();
++        self.alternatives.iter().any(|pattern| {
++            let matched = matched_prefixes(pattern, &segments, reach);
++            match reach {
++                Reach::Exact => matched.last().copied().unwrap_or(false),
++                Reach::Wide => matched.iter().skip(1).any(|&prefix| prefix),
++            }
++        })
++    }
++}
++
++impl FromStr for Glob {
++    type Err = GlobError;
++
++    fn from_str(pattern: &str) -> Result<Self, Self::Err> {
++        validate(pattern)?;
++        Ok(Self::builtin(pattern))
++    }
++}
++
++/// Checks the syntax `compile` relies on.
++fn validate(pattern: &str) -> Result<(), GlobError> {
++    if pattern.is_empty() {
++        return Err(GlobError::Empty);
++    }
++    if pattern.starts_with('/') {
++        return Err(GlobError::Absolute);
++    }
++    if let Some(reserved) = pattern.chars().find(|c| RESERVED.contains(c)) {
++        return Err(GlobError::Reserved(reserved));
++    }
++    validate_braces(pattern)?;
++    for segment in pattern.split('/') {
++        match segment {
++            "" => return Err(GlobError::EmptySegment),
++            "." | ".." => return Err(GlobError::DotSegment),
++            "**" => {}
++            _ if segment.contains("**") => return Err(GlobError::PartialDoubleStar),
++            _ => {}
++        }
++    }
++    Ok(())
++}
++
++/// Braces are balanced, flat, slash-free and expand to at most `MAX_ALTERNATIVES` patterns.
++fn validate_braces(pattern: &str) -> Result<(), GlobError> {
++    let mut expansions: usize = 1;
++    let mut group: Option<usize> = None;
++    for c in pattern.chars() {
++        group = match (c, group) {
++            ('{', Some(_)) => return Err(GlobError::NestedBrace),
++            ('{', None) => Some(1),
++            ('}', None) => return Err(GlobError::UnbalancedBrace),
++            ('}', Some(choices)) => {
++                expansions = expansions.saturating_mul(choices);
++                None
++            }
++            ('/', Some(_)) => return Err(GlobError::SlashInBrace),
++            (',', Some(choices)) => Some(choices.saturating_add(1)),
++            (_, open) => open,
++        };
++    }
++    if group.is_some() {
++        return Err(GlobError::UnbalancedBrace);
++    }
++    if expansions > MAX_ALTERNATIVES {
++        return Err(GlobError::TooManyAlternatives);
++    }
++    Ok(())
++}
++
++/// The pattern's alternatives, split into segments. Total: an unmatched brace is literal.
++fn compile(pattern: &str) -> Vec<Vec<Segment>> {
++    expand_braces(pattern)
++        .iter()
++        .map(|alternative| {
++            alternative
++                .split('/')
++                .map(|segment| match segment {
++                    "**" => Segment::AnyDepth,
++                    name => Segment::Name(name.to_owned()),
++                })
++                .collect()
++        })
++        .collect()
++}
++
++/// Every pattern the braces of `pattern` stand for, at most `MAX_ALTERNATIVES` of them.
++fn expand_braces(pattern: &str) -> Vec<String> {
++    let Some((head, rest)) = pattern.split_once('{') else {
++        return vec![pattern.to_owned()];
++    };
++    let Some((choices, tail)) = rest.split_once('}') else {
++        return vec![pattern.to_owned()];
++    };
++    let tails = expand_braces(tail);
++    choices
++        .split(',')
++        .flat_map(|choice| tails.iter().map(move |end| format!("{head}{choice}{end}")))
++        .take(MAX_ALTERNATIVES)
++        .collect()
++}
++
++/// For each `j` in `0..=path.len()`, whether `pattern` matches `path[..j]`: one forward pass of
++/// dynamic programming over segment positions, so neither several `**` nor a deep path can
++/// make matching exponential, and every prefix is answered at once.
++fn matched_prefixes(pattern: &[Segment], path: &[&str], reach: Reach) -> Vec<bool> {
++    // `matched[j]`: whether the pattern segments processed so far match `path[..j]`.
++    let mut matched: Vec<bool> = (0..=path.len()).map(|j| j == 0).collect();
++    for segment in pattern {
++        matched = match segment {
++            Segment::AnyDepth => matched
++                .iter()
++                .scan(false, |seen, &here| {
++                    *seen = *seen || here;
++                    Some(*seen)
++                })
++                .collect(),
++            Segment::Name(name) => std::iter::once(false)
++                .chain(matched.iter().zip(path).map(|(&before, part)| {
++                    before && match_name(name.as_bytes(), part.as_bytes(), reach)
++                }))
++                .collect(),
++        };
++    }
++    matched
++}
++
++/// Whether one segment pattern of literal bytes and `*` matches `name`: the linear
++/// two-pointer wildcard match, retrying from the last `*` on a mismatch.
++fn match_name(pattern: &[u8], name: &[u8], reach: Reach) -> bool {
++    let same = |a: u8, b: u8| match reach {
++        Reach::Exact => a == b,
++        Reach::Wide => a.eq_ignore_ascii_case(&b),
++    };
++    let (mut p, mut n) = (0_usize, 0_usize);
++    // After the last `*`: the pattern position following it and the name position it has
++    // absorbed up to.
++    let mut star: Option<(usize, usize)> = None;
++    loop {
++        match (pattern.get(p), name.get(n)) {
++            (Some(b'*'), _) => {
++                star = Some((p.saturating_add(1), n));
++                p = p.saturating_add(1);
++            }
++            (Some(&want), Some(&got)) if same(want, got) => {
++                p = p.saturating_add(1);
++                n = n.saturating_add(1);
++            }
++            (None, None) => return true,
++            _ => match star {
++                Some((resume, absorbed)) if absorbed < name.len() => {
++                    let absorbed = absorbed.saturating_add(1);
++                    star = Some((resume, absorbed));
++                    p = resume;
++                    n = absorbed;
++                }
++                _ => return false,
++            },
++        }
++    }
++}
++
++impl fmt::Display for Glob {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str(&self.pattern)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn glob(pattern: &str) -> Glob {
++        pattern.parse().expect("a valid test glob")
++    }
++
++    #[test]
++    fn literal_matches_only_the_same_path() {
++        let readme = glob("README.md");
++
++        assert_eq!(
++            [
++                readme.matches("README.md"),
++                readme.matches("docs/README.md")
++            ],
++            [true, false]
++        );
++    }
++
++    #[test]
++    fn star_stays_within_one_segment() {
++        let star = glob("docs/*.md");
++
++        assert_eq!(
++            [
++                star.matches("docs/a.md"),
++                star.matches("docs/.md"),
++                star.matches("docs/x/a.md"),
++                star.matches("docs/a.txt"),
++            ],
++            [true, true, false, false]
++        );
++    }
++
++    #[test]
++    fn double_star_matches_zero_or_more_segments() {
++        let leading = glob("**/auth/**");
++
++        assert_eq!(
++            [
++                leading.matches("auth/x.rs"),
++                leading.matches("src/a/auth/b/x.rs"),
++                leading.matches("auth"),
++                leading.matches("authz/x.rs"),
++            ],
++            [true, true, true, false]
++        );
++    }
++
++    #[test]
++    fn braces_offer_alternatives_within_a_segment() {
++        let images = glob("docs/**/*.{png,jpg,svg}");
++
++        assert_eq!(
++            [
++                images.matches("docs/a.png"),
++                images.matches("docs/x/y/b.svg"),
++                images.matches("docs/a.gif"),
++            ],
++            [true, true, false]
++        );
++    }
++
++    #[test]
++    fn matching_is_case_sensitive() {
++        assert!(!glob("README.md").matches("readme.md"));
++    }
++
++    #[test]
++    fn wide_matching_ignores_ascii_case_and_counts_ancestor_directories() {
++        let unsafe_glob = glob("**/unsafe*");
++
++        assert_eq!(
++            [
++                unsafe_glob.matches_wide("src/Unsafe/mod.rs"),
++                unsafe_glob.matches_wide("src/UNSAFE_impl.rs"),
++                unsafe_glob.matches("src/unsafe/mod.rs"),
++                unsafe_glob.matches_wide("src/safe/mod.rs"),
++            ],
++            [true, true, false, false]
++        );
++    }
++
++    #[test]
++    fn many_double_stars_match_without_blowing_up() {
++        let pattern = glob("**/a/**/b/**/c/**/d");
++        let path = vec!["x"; 4_000].join("/");
++
++        assert!(!pattern.matches_wide(&path), "no `a` segment in the path");
++    }
++
++    #[test]
++    fn unmatched_brace_in_a_shipped_pattern_is_literal() {
++        assert!(Glob::builtin("a{b").matches("a{b"), "compile is total");
++    }
++
++    #[test]
++    fn several_stars_in_a_segment_backtrack() {
++        let pattern = glob("*.min.*");
++
++        assert_eq!(
++            [
++                pattern.matches("app.min.js"),
++                pattern.matches("a.b.min.c.d"),
++                pattern.matches("app.js"),
++            ],
++            [true, true, false]
++        );
++    }
++
++    #[test]
++    fn refuses_malformed_patterns() {
++        let cases = [
++            ("", GlobError::Empty),
++            ("/abs", GlobError::Absolute),
++            ("a//b", GlobError::EmptySegment),
++            ("a/", GlobError::EmptySegment),
++            ("a/./b", GlobError::DotSegment),
++            ("../a", GlobError::DotSegment),
++            ("a**", GlobError::PartialDoubleStar),
++            ("**b/c", GlobError::PartialDoubleStar),
++            ("a?", GlobError::Reserved('?')),
++            ("[ab]", GlobError::Reserved('[')),
++            ("a]", GlobError::Reserved(']')),
++            ("a\\b", GlobError::Reserved('\\')),
++            ("!a", GlobError::Reserved('!')),
++            ("{a,b", GlobError::UnbalancedBrace),
++            ("a}", GlobError::UnbalancedBrace),
++            ("{a,{b}}", GlobError::NestedBrace),
++            ("{a,b/c}", GlobError::SlashInBrace),
++            (
++                "{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}",
++                GlobError::TooManyAlternatives,
++            ),
++        ];
++
++        let refused: Vec<_> = cases
++            .iter()
++            .map(|(pattern, _)| pattern.parse::<Glob>().err())
++            .collect();
++
++        let expected: Vec<_> = cases.iter().map(|(_, error)| Some(*error)).collect();
++        assert_eq!(refused, expected);
++    }
++}
+diff --git a/crates/assay-domain/src/tiering/lists.rs b/crates/assay-domain/src/tiering/lists.rs
+new file mode 100644
+index 0000000..4be62c8
+--- /dev/null
++++ b/crates/assay-domain/src/tiering/lists.rs
+@@ -0,0 +1,245 @@
++//! The glob lists of 04 §2.1 to §2.3: the shipped defaults, which a repo can only add to.
++//!
++//! Lists that raise a tier or protect a file (trust, risk, code, never-trivial, vendor, build
++//! scripts) match wide: ignoring ASCII case and counting a match on any ancestor directory.
++//! Lists that lower one (docs allowlist, exclusion) match exactly. Both directions fail closed.
++
++use super::glob::Glob;
++
++/// Trust paths (04 §2.2). Files tools discover in any directory match in any directory.
++const TRUST: [&str; 24] = [
++    ".github/**",
++    ".assay/**",
++    "**/.claude/**",
++    "**/REVIEW.md",
++    "**/AGENTS.md",
++    "**/CLAUDE.md",
++    "**/CODEOWNERS",
++    "**/.gitattributes",
++    "**/.githooks/**",
++    "**/clippy.toml",
++    "**/.clippy.toml",
++    "**/rustfmt.toml",
++    "**/.rustfmt.toml",
++    "**/rust-toolchain*",
++    "**/deny.toml",
++    "**/.cargo/**",
++    "scripts/**",
++    "xtask/**",
++    "**/Makefile",
++    "**/GNUmakefile",
++    "**/justfile",
++    "**/.justfile",
++    "**/package.json",
++    "**/Dockerfile*",
++];
++
++/// Base risk globs (04 §2.3).
++const RISK: [&str; 5] = [
++    "**/auth/**",
++    "**/crypto/**",
++    "**/migrations/**",
++    "**/unsafe*",
++    "**/*.sql",
++];
++
++/// Code: `.rs`, build scripts, shell and script files, CI and manifests. Never excluded and
++/// never `trivial`, wherever they live (04 §2.1).
++const CODE: [&str; 16] = [
++    "**/*.rs",
++    "**/build.rs",
++    "**/*.sh",
++    "**/*.bash",
++    "**/*.zsh",
++    "**/*.fish",
++    "**/*.ps1",
++    "**/*.bat",
++    "**/*.cmd",
++    "**/*.py",
++    "**/Cargo.toml",
++    "**/pyproject.toml",
++    ".circleci/**",
++    ".buildkite/**",
++    "**/azure-pipelines.yml",
++    "**/.gitlab-ci.yml",
++];
++
++/// Executable agent instructions: never `trivial`, even inside the docs allowlist (04 §2.3).
++const NEVER_TRIVIAL: [&str; 10] = [
++    "**/SKILL.md",
++    "**/agents/*.md",
++    "**/commands/*.md",
++    "**/hooks/**",
++    "**/.kb/**",
++    "**/REVIEW.md",
++    "**/AGENTS.md",
++    "**/CLAUDE.md",
++    "**/plugin/**",
++    "**/skills/**",
++];
++
++/// The docs allowlist (04 §2.3).
++const DOCS: [&str; 6] = [
++    "README.md",
++    "CHANGELOG.md",
++    "LICENSE*",
++    "docs/**/*.md",
++    "docs/**/*.txt",
++    "docs/**/*.{png,jpg,svg}",
++];
++
++/// Excluded from model context and line counts (04 §2.1): lockfiles' text, minified files and
++/// snapshots. Binary files are excluded by their numstat.
++const EXCLUDED: [&str; 6] = [
++    "**/Cargo.lock",
++    "**/package-lock.json",
++    "**/yarn.lock",
++    "**/pnpm-lock.yaml",
++    "**/*.min.*",
++    "**/*.snap",
++];
++
++/// Vendored code: at least `lite`, never excluded (04 §2.2).
++const VENDOR: [&str; 1] = ["**/vendor/**"];
++
++/// Build scripts: exec surface wherever they live, `vendor/` included (04 §2.2).
++const BUILD_SCRIPT: [&str; 1] = ["**/build.rs"];
++
++/// The temper baseline, whose lowering alone is not a trust-path change (04 §2.2).
++pub(super) const TEMPER_BASELINE: &str = ".claude/temper-baseline.json";
++
++/// Globs a repository adds in base `.assay/globs.toml`. They only add to the shipped lists:
++/// no addition removes a trust path, a risk glob, a never-excluded file or a never-trivial file.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++pub struct RepoGlobs {
++    /// Extra risk globs: matching files are `full`.
++    pub risk: Vec<Glob>,
++    /// Extra trust paths, temper's `protected` globs included.
++    pub trust: Vec<Glob>,
++    /// Extra generated-output globs excluded from model context and line counts.
++    pub exclude: Vec<Glob>,
++    /// Extra docs-allowlist globs.
++    pub docs: Vec<Glob>,
++}
++
++/// One shipped list, compiled, and the repository's additions to it, borrowed.
++#[derive(Debug)]
++struct List<'a> {
++    shipped: Vec<Glob>,
++    added: &'a [Glob],
++}
++
++impl<'a> List<'a> {
++    fn new(shipped: &[&str], added: &'a [Glob]) -> Self {
++        Self {
++            shipped: shipped
++                .iter()
++                .map(|pattern| Glob::builtin(pattern))
++                .collect(),
++            added,
++        }
++    }
++
++    fn globs(&self) -> impl Iterator<Item = &Glob> {
++        self.shipped.iter().chain(self.added)
++    }
++
++    /// Ignoring ASCII case, on the path or any directory above it.
++    fn matches_wide(&self, path: &str) -> bool {
++        self.globs().any(|glob| glob.matches_wide(path))
++    }
++
++    /// Case-sensitively, on the whole path.
++    fn matches_exact(&self, path: &str) -> bool {
++        self.globs().any(|glob| glob.matches(path))
++    }
++}
++
++/// The shipped lists joined with a repository's additions.
++#[derive(Debug)]
++pub(super) struct Lists<'a> {
++    trust: List<'a>,
++    risk: List<'a>,
++    code: List<'a>,
++    never_trivial: List<'a>,
++    docs: List<'a>,
++    excluded: List<'a>,
++    vendor: List<'a>,
++    build_script: List<'a>,
++}
++
++impl<'a> Lists<'a> {
++    pub(super) fn new(repo: &'a RepoGlobs) -> Self {
++        Self {
++            trust: List::new(&TRUST, &repo.trust),
++            risk: List::new(&RISK, &repo.risk),
++            code: List::new(&CODE, &[]),
++            never_trivial: List::new(&NEVER_TRIVIAL, &[]),
++            docs: List::new(&DOCS, &repo.docs),
++            excluded: List::new(&EXCLUDED, &repo.exclude),
++            vendor: List::new(&VENDOR, &[]),
++            build_script: List::new(&BUILD_SCRIPT, &[]),
++        }
++    }
++
++    pub(super) fn is_trust(&self, path: &str) -> bool {
++        self.trust.matches_wide(path)
++    }
++
++    pub(super) fn is_risk(&self, path: &str) -> bool {
++        self.risk.matches_wide(path)
++    }
++
++    pub(super) fn is_vendor(&self, path: &str) -> bool {
++        self.vendor.matches_wide(path)
++    }
++
++    pub(super) fn is_build_script(&self, path: &str) -> bool {
++        self.build_script.matches_wide(path)
++    }
++
++    /// In the docs allowlist and not code, vendored or an agent instruction.
++    pub(super) fn is_docs(&self, path: &str) -> bool {
++        self.docs.matches_exact(path)
++            && !self.code.matches_wide(path)
++            && !self.never_trivial.matches_wide(path)
++            && !self.is_vendor(path)
++    }
++
++    /// Matches an exclusion glob.
++    pub(super) fn is_excludable(&self, path: &str) -> bool {
++        self.excluded.matches_exact(path)
++    }
++
++    /// Code, a trust path or vendored: never excluded, whatever the exclusion globs say.
++    pub(super) fn is_never_excluded(&self, path: &str) -> bool {
++        self.code.matches_wide(path) || self.is_trust(path) || self.is_vendor(path)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn every_shipped_glob_is_valid() {
++        let lists: [&[&str]; 8] = [
++            &TRUST,
++            &RISK,
++            &CODE,
++            &NEVER_TRIVIAL,
++            &DOCS,
++            &EXCLUDED,
++            &VENDOR,
++            &BUILD_SCRIPT,
++        ];
++
++        let invalid: Vec<_> = lists
++            .iter()
++            .flat_map(|list| list.iter())
++            .filter(|pattern| pattern.parse::<Glob>().is_err())
++            .collect();
++
++        assert_eq!(invalid, Vec::<&&str>::new());
++    }
++}
+diff --git a/crates/assay-domain/tests/it/main.rs b/crates/assay-domain/tests/it/main.rs
+index 8b65fb0..6672d6f 100644
+--- a/crates/assay-domain/tests/it/main.rs
++++ b/crates/assay-domain/tests/it/main.rs
+@@ -14,4 +14,6 @@ mod round_trip;
+ mod rubric;
+ #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+ mod support;
++mod tiering;
++mod tiering_properties;
+ mod vocabulary;
+diff --git a/crates/assay-domain/tests/it/support.rs b/crates/assay-domain/tests/it/support.rs
+index 1095937..a2130bd 100644
+--- a/crates/assay-domain/tests/it/support.rs
++++ b/crates/assay-domain/tests/it/support.rs
+@@ -12,6 +12,9 @@ use assay_domain::{
+     Reason, ReasonCode, ReviewedFinding, Rubric, Severity, StepAttribution, Tier, VerifierVerdict,
+     WeighIn,
+ };
++use assay_domain::{
++    BaselineChange, ChangeSet, FileChange, Glob, GlobError, Lines, PackageDiff, RepoGlobs,
++};
+ use serde::Serialize;
+ use serde_json::Value;
+ 
+@@ -248,3 +251,38 @@ fn fixtures(contract: &str, validity: &str) -> io::Result<BTreeMap<String, Vec<u
+     }
+     Ok(found)
+ }
++
++/// A modified file with numstat `added` and `removed`.
++pub(crate) fn file(path: &str, added: u64, removed: u64) -> FileChange {
++    FileChange::new(path, Lines::Counted { added, removed })
++}
++
++/// A change set of `files` with no manifest trust keys, no `include_*!` targets, no package
++/// changes and no temper baseline change.
++pub(crate) fn changes(files: Vec<FileChange>) -> ChangeSet {
++    ChangeSet {
++        files,
++        manifests: Vec::new(),
++        include_targets: Vec::new(),
++        packages: PackageDiff::Computed(Vec::new()),
++        temper_baseline: BaselineChange::Other,
++    }
++}
++
++/// Repo glob additions, as `.assay/globs.toml` would give them.
++pub(crate) fn globs(
++    risk: &[&str],
++    trust: &[&str],
++    exclude: &[&str],
++    docs: &[&str],
++) -> Result<RepoGlobs, GlobError> {
++    let parse = |patterns: &[&str]| -> Result<Vec<Glob>, GlobError> {
++        patterns.iter().map(|p| p.parse()).collect()
++    };
++    Ok(RepoGlobs {
++        risk: parse(risk)?,
++        trust: parse(trust)?,
++        exclude: parse(exclude)?,
++        docs: parse(docs)?,
++    })
++}
+diff --git a/crates/assay-domain/tests/it/tiering.rs b/crates/assay-domain/tests/it/tiering.rs
+new file mode 100644
+index 0000000..56048b1
+--- /dev/null
++++ b/crates/assay-domain/tests/it/tiering.rs
+@@ -0,0 +1,724 @@
++//! Tiering (`docs/architecture/04-pipeline.md` §2.1 to §2.3, `05-security.md` T17): one test
++//! per row of the tier table, per trust-path glob, per risk glob and per filtering rule.
++
++use assay_domain::{
++    BaselineChange, ExecCause, FileChange, Lines, ManifestKey, ManifestTrustChange, PackageChange,
++    PackageDiff, PrClass, RepoGlobs, RequiredRole, Tier, TierReason, tier,
++};
++
++use crate::support::{changes, file, globs};
++
++const FULL_ROLES: [RequiredRole; 3] = [
++    RequiredRole::Bugs,
++    RequiredRole::Security,
++    RequiredRole::Design,
++];
++
++const META_ROLES: [RequiredRole; 4] = [
++    RequiredRole::Bugs,
++    RequiredRole::Security,
++    RequiredRole::Design,
++    RequiredRole::Meta,
++];
++
++/// The tier and reasons of `files` with no repo globs.
++fn tier_of(files: Vec<FileChange>) -> (Tier, Vec<TierReason>) {
++    let tiering = tier(&RepoGlobs::default(), &changes(files));
++    (tiering.tier, tiering.tier_reasons)
++}
++
++#[test]
++fn one_character_rust_change_is_micro_not_trivial() {
++    let tiering = tier(
++        &RepoGlobs::default(),
++        &changes(vec![file("src/lib.rs", 1, 1)]),
++    );
++
++    assert_eq!(
++        (tiering.tier, tiering.tier_reasons, tiering.required_roles),
++        (
++            Tier::Micro,
++            vec![TierReason::MicroSize],
++            vec![RequiredRole::CombinedMicro]
++        )
++    );
++}
++
++#[test]
++fn over_5000_filtered_lines_needs_split() {
++    assert_eq!(
++        tier_of(vec![file("src/lib.rs", 4_000, 1_001)]),
++        (Tier::NeedsSplit, vec![TierReason::SplitSize])
++    );
++}
++
++#[test]
++fn exactly_5000_lines_is_full_not_split() {
++    assert_eq!(
++        tier_of(vec![file("src/lib.rs", 5_000, 0)]),
++        (Tier::Full, vec![TierReason::FullSize])
++    );
++}
++
++#[test]
++fn needs_split_has_no_required_roles() {
++    let tiering = tier(
++        &RepoGlobs::default(),
++        &changes(vec![file("a.rs", 5_001, 0)]),
++    );
++
++    assert_eq!(tiering.required_roles, Vec::new());
++}
++
++#[test]
++fn docs_only_change_is_trivial_with_no_roles() {
++    let tiering = tier(
++        &RepoGlobs::default(),
++        &changes(vec![file("README.md", 3, 1), file("docs/guide.md", 40, 0)]),
++    );
++
++    assert_eq!(
++        (tiering.tier, tiering.tier_reasons, tiering.required_roles),
++        (Tier::Trivial, vec![TierReason::DocsOnly], Vec::new())
++    );
++}
++
++#[test]
++fn empty_change_is_micro_not_trivial() {
++    assert_eq!(
++        tier_of(Vec::new()),
++        (Tier::Micro, vec![TierReason::MicroSize])
++    );
++}
++
++#[test]
++fn over_150_lines_is_full_without_meta() {
++    let tiering = tier(
++        &RepoGlobs::default(),
++        &changes(vec![file("src/lib.rs", 100, 51)]),
++    );
++
++    assert_eq!(
++        (tiering.tier, tiering.tier_reasons, tiering.required_roles),
++        (Tier::Full, vec![TierReason::FullSize], FULL_ROLES.to_vec())
++    );
++}
++
++#[test]
++fn lines_21_to_150_are_lite() {
++    let tiers = [21, 150].map(|lines| tier_of(vec![file("src/lib.rs", lines, 0)]));
++
++    assert_eq!(
++        tiers,
++        [0, 0].map(|_| (Tier::Lite, vec![TierReason::LiteSize]))
++    );
++}
++
++#[test]
++fn lite_requires_the_combined_role() {
++    let tiering = tier(
++        &RepoGlobs::default(),
++        &changes(vec![file("src/lib.rs", 30, 0)]),
++    );
++
++    assert_eq!(tiering.required_roles, vec![RequiredRole::Combined]);
++}
++
++#[test]
++fn up_to_20_lines_outside_the_docs_allowlist_are_micro() {
++    assert_eq!(
++        tier_of(vec![file("src/lib.rs", 10, 10)]),
++        (Tier::Micro, vec![TierReason::MicroSize])
++    );
++}
++
++#[test]
++fn zero_line_snapshot_only_change_is_micro() {
++    let tiering = tier(
++        &RepoGlobs::default(),
++        &changes(vec![file("tests/snapshots/out.snap", 12, 3)]),
++    );
++
++    assert_eq!(
++        (
++            tiering.tier,
++            tiering.filtered.lines,
++            tiering.filtered.excluded
++        ),
++        (Tier::Micro, 0, vec!["tests/snapshots/out.snap".to_owned()])
++    );
++}
++
++#[test]
++fn binary_numstat_counts_as_maximum_size_and_forces_full() {
++    let binary = FileChange::new("assets/logo.bin", Lines::Binary);
++
++    assert_eq!(
++        tier_of(vec![binary]),
++        (Tier::Full, vec![TierReason::BinaryFile])
++    );
++}
++
++#[test]
++fn binary_file_adds_no_lines_toward_needs_split() {
++    let files = vec![
++        FileChange::new("assets/logo.bin", Lines::Binary),
++        file("src/lib.rs", 4_990, 0),
++    ];
++
++    assert_eq!(
++        tier_of(files),
++        (
++            Tier::Full,
++            vec![TierReason::FullSize, TierReason::BinaryFile]
++        )
++    );
++}
++
++#[test]
++fn build_script_is_exec_surface_wherever_it_lives() {
++    let tierings = ["build.rs", "vendor/openssl-sys/build.rs"].map(|path| {
++        let tiering = tier(&RepoGlobs::default(), &changes(vec![file(path, 1, 0)]));
++        (tiering.tier, tiering.classes, tiering.exec_surface_changed)
++    });
++
++    assert_eq!(
++        tierings,
++        [
++            (
++                Tier::Full,
++                vec![PrClass::ExecSurface],
++                vec!["build.rs".to_owned()]
++            ),
++            (
++                Tier::Full,
++                vec![PrClass::ExecSurface],
++                vec!["vendor/openssl-sys/build.rs".to_owned()]
++            ),
++        ]
++    );
++}
++
++#[test]
++fn exec_surface_package_forces_full_with_meta() {
++    let mut set = changes(vec![file("Cargo.lock", 4, 2)]);
++    set.packages = PackageDiff::Computed(vec![PackageChange::ExecSurface {
++        package: "serde_derive".to_owned(),
++        cause: ExecCause::ProcMacro,
++    }]);
++
++    let tiering = tier(&RepoGlobs::default(), &set);
++
++    assert_eq!(
++        (
++            tiering.tier,
++            tiering.tier_reasons,
++            tiering.classes,
++            tiering.required_roles,
++            tiering.exec_surface_changed,
++        ),
++        (
++            Tier::Full,
++            vec![TierReason::ExecSurface],
++            vec![PrClass::ExecSurface],
++            META_ROLES.to_vec(),
++            vec!["serde_derive (proc-macro)".to_owned()],
++        )
++    );
++}
++
++#[test]
++fn unavailable_package_diff_is_exec_surface() {
++    let mut set = changes(vec![file("README.md", 1, 0)]);
++    set.packages = PackageDiff::Unavailable;
++
++    let tiering = tier(&RepoGlobs::default(), &set);
++
++    assert_eq!(
++        (tiering.tier, tiering.classes),
++        (Tier::Full, vec![PrClass::ExecSurface])
++    );
++}
++
++#[test]
++fn lockfile_dependency_change_is_lite() {
++    let mut set = changes(vec![file("Cargo.lock", 6, 6)]);
++    set.packages = PackageDiff::Computed(vec![PackageChange::Lockfile {
++        package: "itoa".to_owned(),
++    }]);
++
++    let tiering = tier(&RepoGlobs::default(), &set);
++
++    assert_eq!(
++        (tiering.tier, tiering.tier_reasons),
++        (Tier::Lite, vec![TierReason::LockfileDependency])
++    );
++}
++
++#[test]
++fn new_registry_package_is_lite() {
++    let mut set = changes(vec![file("Cargo.toml", 1, 0)]);
++    set.packages = PackageDiff::Computed(vec![PackageChange::Registry {
++        package: "itoa".to_owned(),
++    }]);
++
++    let tiering = tier(&RepoGlobs::default(), &set);
++
++    assert_eq!(
++        (tiering.tier, tiering.tier_reasons),
++        (Tier::Lite, vec![TierReason::RegistryPackage])
++    );
++}
++
++#[test]
++fn vendor_change_is_at_least_lite() {
++    assert_eq!(
++        tier_of(vec![file("vendor/zlib/inflate.c", 2, 2)]),
++        (Tier::Lite, vec![TierReason::Vendor])
++    );
++}
++
++#[test]
++fn every_trust_path_glob_forces_full_with_meta() {
++    let paths = [
++        ".github/workflows/ci.yml",
++        ".github/dependabot.yml",
++        ".assay/globs.toml",
++        ".claude/settings.json",
++        "crates/x/.claude/settings.json",
++        "REVIEW.md",
++        "crates/x/REVIEW.md",
++        "AGENTS.md",
++        "crates/x/AGENTS.md",
++        "CLAUDE.md",
++        "crates/x/CLAUDE.md",
++        "CODEOWNERS",
++        ".github/CODEOWNERS",
++        "docs/CODEOWNERS",
++        ".gitattributes",
++        "assets/.gitattributes",
++        ".githooks/pre-commit",
++        "clippy.toml",
++        "crates/x/clippy.toml",
++        ".clippy.toml",
++        "rustfmt.toml",
++        ".rustfmt.toml",
++        "rust-toolchain",
++        "rust-toolchain.toml",
++        "deny.toml",
++        ".cargo/config.toml",
++        "crates/x/.cargo/config.toml",
++        "scripts/release.sh",
++        "xtask/src/main.rs",
++        "Makefile",
++        "makefile",
++        "GNUmakefile",
++        "tools/Makefile",
++        "justfile",
++        ".justfile",
++        "package.json",
++        "web/package.json",
++        "Dockerfile",
++        "Dockerfile.ci",
++        "docker/Dockerfile",
++    ];
++
++    let wrong: Vec<_> = paths
++        .iter()
++        .filter(|path| {
++            let tiering = tier(&RepoGlobs::default(), &changes(vec![file(path, 1, 0)]));
++            (
++                tiering.tier,
++                tiering.classes,
++                tiering.required_roles,
++                tiering.trust_paths_changed,
++            ) != (
++                Tier::Full,
++                vec![PrClass::TrustPath],
++                META_ROLES.to_vec(),
++                vec![(**path).to_owned()],
++            )
++        })
++        .collect();
++
++    assert_eq!(wrong, Vec::<&&str>::new());
++}
++
++#[test]
++fn trust_path_matching_ignores_ascii_case() {
++    let tiering = tier(
++        &RepoGlobs::default(),
++        &changes(vec![file(".GitHub/Workflows/ci.yml", 1, 0)]),
++    );
++
++    assert_eq!(tiering.classes, vec![PrClass::TrustPath]);
++}
++
++#[test]
++fn near_misses_of_trust_globs_are_not_trust_paths() {
++    let paths = [
++        "src/github.rs",
++        "docs/scripts.md",
++        "crates/x/src/makefile_parser.rs",
++    ];
++
++    let classes: Vec<_> = paths
++        .iter()
++        .map(|path| tier(&RepoGlobs::default(), &changes(vec![file(path, 1, 0)])).classes)
++        .collect();
++
++    assert_eq!(classes, vec![Vec::<PrClass>::new(); 3]);
++}
++
++#[test]
++fn every_manifest_trust_key_forces_full() {
++    let wrong: Vec<_> = ManifestKey::ALL
++        .into_iter()
++        .filter(|key| {
++            let mut set = changes(vec![file("crates/x/Cargo.toml", 1, 1)]);
++            set.manifests = vec![ManifestTrustChange {
++                path: "crates/x/Cargo.toml".to_owned(),
++                key: *key,
++            }];
++            let tiering = tier(&RepoGlobs::default(), &set);
++            (tiering.tier, tiering.classes, tiering.trust_paths_changed)
++                != (
++                    Tier::Full,
++                    vec![PrClass::TrustPath],
++                    vec![format!("crates/x/Cargo.toml ({})", key.code())],
++                )
++        })
++        .collect();
++
++    assert_eq!(wrong, Vec::new());
++}
++
++#[test]
++fn repo_trust_glob_adds_a_trust_path() -> Result<(), assay_domain::GlobError> {
++    let repo = globs(&[], &["crates/**"], &[], &[])?;
++
++    let tiering = tier(&repo, &changes(vec![file("crates/x/src/lib.rs", 1, 0)]));
++
++    assert_eq!(
++        (tiering.tier, tiering.classes),
++        (Tier::Full, vec![PrClass::TrustPath])
++    );
++    Ok(())
++}
++
++#[test]
++fn rename_out_of_auth_stays_full() {
++    let moved = file("src/session/login.rs", 1, 1).renamed_from("src/auth/login.rs");
++
++    assert_eq!(
++        tier_of(vec![moved]),
++        (Tier::Full, vec![TierReason::RiskGlob])
++    );
++}
++
++#[test]
++fn rename_out_of_a_trust_path_names_the_old_path() {
++    let moved = file("ci/build.yml", 0, 0).renamed_from(".github/workflows/build.yml");
++
++    let tiering = tier(&RepoGlobs::default(), &changes(vec![moved]));
++
++    assert_eq!(
++        (tiering.tier, tiering.trust_paths_changed),
++        (Tier::Full, vec![".github/workflows/build.yml".to_owned()])
++    );
++}
++
++#[test]
++fn rename_out_of_docs_is_not_trivial() {
++    let moved = file("src/notes.md", 0, 0).renamed_from("docs/notes.md");
++
++    assert_eq!(
++        tier_of(vec![moved]),
++        (Tier::Micro, vec![TierReason::MicroSize])
++    );
++}
++
++#[test]
++fn every_risk_glob_forces_full_without_a_class() {
++    let paths = [
++        "src/auth/login.rs",
++        "auth/mod.rs",
++        "src/Auth/token.rs",
++        "src/crypto/aes.rs",
++        "db/migrations/001_init.rs",
++        "src/unsafe_impl.rs",
++        "src/unsafe/mod.rs",
++        "queries/report.sql",
++    ];
++
++    let wrong: Vec<_> = paths
++        .iter()
++        .filter(|path| {
++            let tiering = tier(&RepoGlobs::default(), &changes(vec![file(path, 1, 0)]));
++            (tiering.tier, tiering.tier_reasons, tiering.classes)
++                != (Tier::Full, vec![TierReason::RiskGlob], Vec::new())
++        })
++        .collect();
++
++    assert_eq!(wrong, Vec::<&&str>::new());
++}
++
++#[test]
++fn repo_risk_glob_forces_full() -> Result<(), assay_domain::GlobError> {
++    let repo = globs(&["**/billing/**"], &[], &[], &[])?;
++
++    let tiering = tier(&repo, &changes(vec![file("src/billing/invoice.rs", 1, 0)]));
++
++    assert_eq!(
++        (tiering.tier, tiering.tier_reasons),
++        (Tier::Full, vec![TierReason::RiskGlob])
++    );
++    Ok(())
++}
++
++#[test]
++fn repo_risk_glob_on_a_docs_file_blocks_trivial() -> Result<(), assay_domain::GlobError> {
++    let repo = globs(&["docs/security/**"], &[], &[], &[])?;
++
++    let tiering = tier(&repo, &changes(vec![file("docs/security/model.md", 1, 0)]));
++
++    assert_eq!(tiering.tier, Tier::Full);
++    Ok(())
++}
++
++#[test]
++fn every_docs_allowlist_glob_is_trivial() {
++    let paths = [
++        "README.md",
++        "CHANGELOG.md",
++        "LICENSE",
++        "LICENSE-MIT",
++        "docs/guide.md",
++        "docs/a/b/notes.txt",
++        "docs/img/diagram.png",
++        "docs/photo.jpg",
++        "docs/arch.svg",
++    ];
++
++    let wrong: Vec<_> = paths
++        .iter()
++        .filter(|path| tier_of(vec![file(path, 2, 1)]).0 != Tier::Trivial)
++        .collect();
++
++    assert_eq!(wrong, Vec::<&&str>::new());
++}
++
++#[test]
++fn files_outside_the_docs_allowlist_are_not_trivial() {
++    let paths = [
++        "crates/x/README.md",
++        "readme.md",
++        "docs/page.html",
++        "notes.txt",
++    ];
++
++    let wrong: Vec<_> = paths
++        .iter()
++        .filter(|path| tier_of(vec![file(path, 2, 1)]).0 == Tier::Trivial)
++        .collect();
++
++    assert_eq!(wrong, Vec::<&&str>::new());
++}
++
++#[test]
++fn never_trivial_files_stay_out_of_trivial_even_when_a_repo_allows_them()
++-> Result<(), assay_domain::GlobError> {
++    let repo = globs(&[], &[], &[], &["**"])?;
++    let paths = [
++        "skills/review/SKILL.md",
++        "docs/agents/reviewer.md",
++        "docs/commands/run.md",
++        "docs/hooks/pre.md",
++        ".kb/index.md",
++        "REVIEW.md",
++        "AGENTS.md",
++        "CLAUDE.md",
++        "plugin/prompts/v1/system.md",
++        "skills/notes.txt",
++        "src/lib.rs",
++        "build.rs",
++        "tools/run.sh",
++        "Cargo.toml",
++    ];
++
++    let trivial: Vec<_> = paths
++        .iter()
++        .filter(|path| tier(&repo, &changes(vec![file(path, 1, 0)])).tier == Tier::Trivial)
++        .collect();
++
++    assert_eq!(trivial, Vec::<&&str>::new());
++    Ok(())
++}
++
++#[test]
++fn repo_docs_glob_extends_the_allowlist() -> Result<(), assay_domain::GlobError> {
++    let repo = globs(&[], &[], &[], &["guides/**/*.md"])?;
++
++    let tiering = tier(&repo, &changes(vec![file("guides/setup.md", 5, 0)]));
++
++    assert_eq!(tiering.tier, Tier::Trivial);
++    Ok(())
++}
++
++#[test]
++fn readme_referenced_by_include_str_is_not_trivial() {
++    let mut set = changes(vec![file("README.md", 1, 1)]);
++    set.include_targets = vec!["README.md".to_owned()];
++
++    let tiering = tier(&RepoGlobs::default(), &set);
++
++    assert_eq!(
++        (tiering.tier, tiering.tier_reasons),
++        (Tier::Micro, vec![TierReason::MicroSize])
++    );
++}
++
++#[test]
++fn excluded_files_are_named_and_not_counted() -> Result<(), assay_domain::GlobError> {
++    let repo = globs(&[], &[], &["gen/**"], &[])?;
++    let files = vec![
++        file("Cargo.lock", 300, 200),
++        file("web/package-lock.json", 900, 0),
++        file("yarn.lock", 10, 0),
++        file("pnpm-lock.yaml", 10, 0),
++        file("static/app.min.js", 1, 1),
++        file("tests/snapshots/x.snap", 40, 0),
++        file("gen/schema.json", 2_000, 0),
++        file("src/lib.rs", 3, 0),
++    ];
++
++    let filtered = tier(&repo, &changes(files)).filtered;
++
++    assert_eq!(
++        (filtered.files, filtered.lines, filtered.excluded),
++        (
++            1,
++            3,
++            [
++                "Cargo.lock",
++                "web/package-lock.json",
++                "yarn.lock",
++                "pnpm-lock.yaml",
++                "static/app.min.js",
++                "tests/snapshots/x.snap",
++                "gen/schema.json",
++            ]
++            .map(str::to_owned)
++            .to_vec()
++        )
++    );
++    Ok(())
++}
++
++#[test]
++fn code_scripts_manifests_vendor_and_trust_paths_are_never_excluded()
++-> Result<(), assay_domain::GlobError> {
++    let repo = globs(&[], &[], &["**"], &[])?;
++    let paths = [
++        "src/lib.rs",
++        "gen/out.min.rs",
++        "build.rs",
++        "vendor/x/build.rs",
++        "tools/run.sh",
++        "tools/run.bash",
++        "tools/gen.py",
++        "scripts/x.txt",
++        "Cargo.toml",
++        "vendor/zlib/inflate.c",
++        ".github/workflows/ci.yml",
++        ".claude/settings.json",
++    ];
++
++    let excluded: Vec<_> = paths
++        .iter()
++        .filter(|path| {
++            !tier(&repo, &changes(vec![file(path, 1, 0)]))
++                .filtered
++                .excluded
++                .is_empty()
++        })
++        .collect();
++
++    assert_eq!(excluded, Vec::<&&str>::new());
++    Ok(())
++}
++
++#[test]
++fn exclusion_needs_both_sides_of_a_rename() -> Result<(), assay_domain::GlobError> {
++    let repo = globs(&[], &[], &["gen/**"], &[])?;
++    let moved = file("gen/handler.json", 30, 0).renamed_from("api/handler.json");
++
++    let filtered = tier(&repo, &changes(vec![moved])).filtered;
++
++    assert_eq!((filtered.lines, filtered.excluded), (30, Vec::new()));
++    Ok(())
++}
++
++#[test]
++fn lowered_temper_baseline_is_not_a_trust_path() {
++    let mut set = changes(vec![file(".claude/temper-baseline.json", 2, 2)]);
++    set.temper_baseline = BaselineChange::LoweredOrUnchanged;
++
++    let tiering = tier(&RepoGlobs::default(), &set);
++
++    assert_eq!((tiering.tier, tiering.classes), (Tier::Micro, Vec::new()));
++}
++
++#[test]
++fn raised_temper_baseline_is_a_trust_path() {
++    let mut set = changes(vec![file(".claude/temper-baseline.json", 2, 2)]);
++    set.temper_baseline = BaselineChange::Other;
++
++    let tiering = tier(&RepoGlobs::default(), &set);
++
++    assert_eq!(tiering.classes, vec![PrClass::TrustPath]);
++}
++
++#[test]
++fn renamed_temper_baseline_is_a_trust_path_even_when_lowered() {
++    let moved =
++        file(".claude/temper-baseline.json", 0, 0).renamed_from(".claude/old-baseline.json");
++    let mut set = changes(vec![moved]);
++    set.temper_baseline = BaselineChange::LoweredOrUnchanged;
++
++    let tiering = tier(&RepoGlobs::default(), &set);
++
++    assert_eq!(tiering.classes, vec![PrClass::TrustPath]);
++}
++
++#[test]
++fn both_classes_are_reported_in_order() {
++    let tiering = tier(
++        &RepoGlobs::default(),
++        &changes(vec![file("build.rs", 1, 0), file("deny.toml", 1, 0)]),
++    );
++
++    assert_eq!(
++        (tiering.tier_reasons, tiering.classes),
++        (
++            vec![TierReason::TrustPath, TierReason::ExecSurface],
++            vec![PrClass::TrustPath, PrClass::ExecSurface]
++        )
++    );
++}
++
++#[test]
++fn trust_paths_are_sorted_and_deduplicated() {
++    let files = vec![
++        file("deny.toml", 1, 0),
++        file("AGENTS.md", 1, 0),
++        file("deny.toml", 1, 0),
++    ];
++
++    let tiering = tier(&RepoGlobs::default(), &changes(files));
++
++    assert_eq!(
++        tiering.trust_paths_changed,
++        vec!["AGENTS.md".to_owned(), "deny.toml".to_owned()]
++    );
++}
+diff --git a/crates/assay-domain/tests/it/tiering_properties.rs b/crates/assay-domain/tests/it/tiering_properties.rs
+new file mode 100644
+index 0000000..1b8df31
+--- /dev/null
++++ b/crates/assay-domain/tests/it/tiering_properties.rs
+@@ -0,0 +1,155 @@
++//! Properties of tiering over generated change sets and repo globs: a repository's globs only
++//! add, so a risk glob never lowers a tier, no addition moves a trust path below `full`, code
++//! is never `trivial`, and a rename tiers the same whichever side is the head.
++
++use assay_domain::{FileChange, Glob, Lines, RepoGlobs, Tier, tier};
++use proptest::collection::vec;
++use proptest::prelude::*;
++use proptest::sample::select;
++
++use crate::support::changes;
++
++/// Paths that exercise every list: docs, code, trust paths, risk globs, exclusions, vendor.
++const PATHS: [&str; 16] = [
++    "README.md",
++    "docs/guide.md",
++    "docs/img/a.png",
++    "src/lib.rs",
++    "src/auth/login.rs",
++    "build.rs",
++    ".github/workflows/ci.yml",
++    "AGENTS.md",
++    "Cargo.toml",
++    "Cargo.lock",
++    "static/app.min.js",
++    "tests/out.snap",
++    "vendor/zlib/inflate.c",
++    "web/index.html",
++    "skills/x/SKILL.md",
++    "gen/schema.json",
++];
++
++/// Patterns a repository might add to any list.
++const PATTERNS: [&str; 10] = [
++    "**",
++    "**/*.md",
++    "**/*.rs",
++    "docs/**",
++    "src/**",
++    "gen/**",
++    "**/*.{json,html}",
++    ".github/**",
++    "web/*",
++    "**/vendor/**",
++];
++
++/// The order "lowering" refers to: `needs-split` stops the PR, so it ranks highest.
++fn rank(tier: Tier) -> u8 {
++    match tier {
++        Tier::Trivial => 0,
++        Tier::Micro => 1,
++        Tier::Lite => 2,
++        Tier::Full => 3,
++        Tier::NeedsSplit => 4,
++    }
++}
++
++fn path() -> impl Strategy<Value = String> {
++    select(PATHS.to_vec()).prop_map(str::to_owned)
++}
++
++fn lines() -> impl Strategy<Value = Lines> {
++    prop_oneof![
++        8 => (0_u64..120, 0_u64..120).prop_map(|(added, removed)| Lines::Counted { added, removed }),
++        1 => Just(Lines::Binary),
++    ]
++}
++
++fn file_change() -> impl Strategy<Value = FileChange> {
++    (path(), proptest::option::of(path()), lines()).prop_map(|(path, old, lines)| {
++        let change = FileChange::new(path, lines);
++        match old {
++            Some(old) => change.renamed_from(old),
++            None => change,
++        }
++    })
++}
++
++fn globs() -> impl Strategy<Value = Vec<Glob>> {
++    vec(select(PATTERNS.to_vec()), 0..3).prop_map(|patterns| {
++        patterns
++            .into_iter()
++            .filter_map(|pattern| pattern.parse().ok())
++            .collect()
++    })
++}
++
++fn repo_globs() -> impl Strategy<Value = RepoGlobs> {
++    (globs(), globs(), globs(), globs()).prop_map(|(risk, trust, exclude, docs)| RepoGlobs {
++        risk,
++        trust,
++        exclude,
++        docs,
++    })
++}
++
++proptest! {
++    #[test]
++    fn adding_a_risk_glob_never_lowers_the_tier(
++        files in vec(file_change(), 0..6),
++        repo in repo_globs(),
++        extra in select(PATTERNS.to_vec()),
++    ) {
++        let set = changes(files);
++        let before = tier(&repo, &set).tier;
++        let mut riskier = repo;
++        riskier.risk.push(extra.parse().map_err(|e| TestCaseError::fail(format!("{e}")))?);
++
++        let after = tier(&riskier, &set).tier;
++
++        prop_assert!(rank(after) >= rank(before), "{before:?} became {after:?}");
++    }
++
++    #[test]
++    fn no_repo_glob_moves_a_trust_path_below_full(
++        files in vec(file_change(), 0..6),
++        repo in repo_globs(),
++    ) {
++        let mut files = files;
++        files.push(FileChange::new(".github/workflows/ci.yml", Lines::Counted { added: 1, removed: 0 }));
++
++        let tiered = tier(&repo, &changes(files)).tier;
++
++        prop_assert!(rank(tiered) >= rank(Tier::Full), "trust path tiered {tiered:?}");
++    }
++
++    #[test]
++    fn rust_code_is_never_trivial(
++        files in vec(file_change(), 0..6),
++        repo in repo_globs(),
++        added in 0_u64..3,
++    ) {
++        let mut files = files;
++        files.push(FileChange::new("src/main.rs", Lines::Counted { added, removed: 0 }));
++
++        let tiered = tier(&repo, &changes(files)).tier;
++
++        prop_assert_ne!(tiered, Tier::Trivial);
++    }
++
++    #[test]
++    fn a_rename_tiers_the_same_whichever_side_is_the_head(
++        old in path(),
++        new in path(),
++        lines in lines(),
++        repo in repo_globs(),
++    ) {
++        let forward = tier(&repo, &changes(vec![FileChange::new(new.clone(), lines).renamed_from(old.clone())]));
++        let backward = tier(&repo, &changes(vec![FileChange::new(old, lines).renamed_from(new)]));
++
++        prop_assert_eq!(
++            (forward.tier, forward.tier_reasons, forward.classes, forward.trust_paths_changed),
++            (backward.tier, backward.tier_reasons, backward.classes, backward.trust_paths_changed)
++        );
++    }
++}

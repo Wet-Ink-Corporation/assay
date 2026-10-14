@@ -1,0 +1,1752 @@
+diff --git a/crates/assay-app/src/decide.rs b/crates/assay-app/src/decide.rs
+index 88a94a3..c992463 100644
+--- a/crates/assay-app/src/decide.rs
++++ b/crates/assay-app/src/decide.rs
+@@ -39,7 +39,7 @@ pub use self::request::{
+     AdmitJob, ArtifactDocument, DecideRequest, GateJobOutputs, JobResult, PlanJob, Reported,
+     ReportedGate, ReviewJob, TierDegrade, UpstreamJob,
+ };
+-use crate::config::{self, AssaySettings, InfraFailurePolicy, Promotion};
++use crate::config::{self, AssaySettings, InfraFailurePolicy, Promotion, Sha256Digest};
+ use crate::contract::ContractValidator;
+ use crate::plan::{ArtifactJob, EvidenceKey, PlanError, PullRequestEvent, PullRequestObjects};
+ 
+@@ -74,6 +74,54 @@ pub struct AuthenticatedRun {
+     gates: Vec<GateReport>,
+     gate_findings: Vec<Finding>,
+     review_documents: Vec<Vec<u8>>,
++    /// The bundle's record of the run's artifact documents (#57).
++    record: RunRecord,
++}
++
++/// What `decide` read and authenticated, kept for the `RunInputs` bundle (02 §5).
++#[derive(Debug)]
++pub(crate) struct RunRecord {
++    /// The `decide` job's own artifact.
++    pub(crate) bundle_artifact: String,
++    /// `run.json`, then every authentic gate document, in job then file order.
++    pub(crate) documents: Vec<RunDocument>,
++    /// The `review` documents' names and digests, one per entry of `review_documents`.
++    pub(crate) review_files: Vec<ArtifactDocument>,
++}
++
++impl RunRecord {
++    /// The record of a run whose plan is `plan`, whose authentic gate documents are `gates` and
++    /// whose review documents were all fetched, in the order `request` lists them.
++    fn new(
++        request: &DecideRequest,
++        bundle_artifact: String,
++        plan: RunDocument,
++        gates: Vec<RunDocument>,
++    ) -> Self {
++        let mut documents = Vec::with_capacity(gates.len().saturating_add(1));
++        documents.push(plan);
++        documents.extend(gates);
++        Self {
++            bundle_artifact,
++            documents,
++            // `review_documents` fetched each of these in order, so the two line up; the
++            // record owns its copy of the names and digests.
++            review_files: request.review.documents.clone(),
++        }
++    }
++}
++
++/// An artifact document whose bytes hash to its producing job's output digest.
++#[derive(Debug)]
++pub(crate) struct RunDocument {
++    /// The producing job.
++    pub(crate) job: ArtifactJob,
++    /// The file in its artifact.
++    pub(crate) file: String,
++    /// The digest the job published, which the bytes match.
++    pub(crate) digest: Sha256Digest,
++    /// The bytes as fetched.
++    pub(crate) bytes: Vec<u8>,
+ }
+ 
+ /// The facts of GitHub's state snapshot a decision needs about the PR (#58's to compute).
+@@ -147,6 +195,11 @@ impl AuthenticatedRun {
+         &self.review_documents
+     }
+ 
++    /// What the bundle records of the run's artifacts.
++    pub(crate) const fn record(&self) -> &RunRecord {
++        &self.record
++    }
++
+     /// The PR as rubric v1 reads it: Z4's facts with the snapshot's.
+     #[must_use]
+     pub fn pull_request(&self, snapshot: Snapshot) -> PullRequest {
+@@ -259,6 +312,8 @@ struct Reader<'r, O, A> {
+     objects: &'r O,
+     fetcher: Fetcher<'r, A>,
+     validator: &'r ContractValidator,
++    /// Every authentic gate document read, valid or not, for the bundle.
++    kept: Vec<RunDocument>,
+ }
+ 
+ /// [`Halt`] over `ports`' error types.
+@@ -377,6 +432,7 @@ fn run<O: PullRequestObjects, S: PullRequestState, A: RunArtifacts>(
+         objects: ports.objects,
+         fetcher: Fetcher::new(ports.artifacts),
+         validator,
++        kept: Vec::new(),
+     };
+     let plan = recompute::authenticate_plan(request, &mut reader)?;
+     let pulls = state
+@@ -387,8 +443,11 @@ fn run<O: PullRequestObjects, S: PullRequestState, A: RunArtifacts>(
+     let AuthenticPlan {
+         recomputed,
+         artifact_names,
++        bundle_artifact,
++        document,
+         tier,
+     } = plan;
++    let record = RunRecord::new(request, bundle_artifact, document, reader.kept);
+     Ok(Authentication::Authenticated(Box::new(AuthenticatedRun {
+         run_key: recomputed.run_key,
+         artifact_names,
+@@ -401,6 +460,7 @@ fn run<O: PullRequestObjects, S: PullRequestState, A: RunArtifacts>(
+         gates: gates.reports,
+         gate_findings: gates.findings,
+         review_documents,
++        record,
+     })))
+ }
+ 
+diff --git a/crates/assay-app/src/decide/gates.rs b/crates/assay-app/src/decide/gates.rs
+index 0601b2e..0c2a409 100644
+--- a/crates/assay-app/src/decide/gates.rs
++++ b/crates/assay-app/src/decide/gates.rs
+@@ -16,7 +16,7 @@ use super::ports::RunArtifacts;
+ use super::recompute::AuthenticPlan;
+ use super::refusal::{OutputsProblem, PlanMismatch, Refusal};
+ use super::request::{DecideRequest, GateJobOutputs, JobResult, Reported, UpstreamJob};
+-use super::{Halt, Reader};
++use super::{Halt, Reader, RunDocument};
+ use crate::config::{Plugin, Sha256Digest};
+ use crate::contract::{Contract, ContractValidator};
+ use crate::gate::{BuildJob, Conclusion, GateError, GateJob, scheduled};
+@@ -119,7 +119,7 @@ struct Report<'r> {
+ }
+ 
+ /// The state of a gate whose job `reported` a document. A document whose bytes are not the
+-/// published ones refuses the run (F18).
++/// published ones refuses the run (F18); authentic ones, valid or not, are kept for the bundle.
+ fn documented<O: PullRequestObjects, S, A: RunArtifacts>(
+     reported: &Report<'_>,
+     plugin: &Plugin,
+@@ -141,12 +141,15 @@ fn documented<O: PullRequestObjects, S, A: RunArtifacts>(
+             return Ok(State::Settled(errored(&detail)));
+         }
+     };
+-    Ok(read_document(
+-        &bytes,
+-        plugin,
+-        reported.conclusion,
+-        reader.validator,
+-    ))
++    let state = read_document(&bytes, plugin, reported.conclusion, reader.validator);
++    reader.kept.push(RunDocument {
++        job: reported.artifact.job,
++        file,
++        // The bundle records the digest beside the bytes; the request keeps its own.
++        digest: reported.digest.clone(),
++        bytes,
++    });
++    Ok(state)
+ }
+ 
+ /// The job's reports by plugin, refusing outputs that name a plugin base config does not
+diff --git a/crates/assay-app/src/decide/recompute.rs b/crates/assay-app/src/decide/recompute.rs
+index 7c946d4..d157cb2 100644
+--- a/crates/assay-app/src/decide/recompute.rs
++++ b/crates/assay-app/src/decide/recompute.rs
+@@ -12,7 +12,7 @@ use super::fetch::{Artifact, Fetch};
+ use super::ports::RunArtifacts;
+ use super::refusal::{PlanMismatch, PlanRefusal, Refusal, Unreadable};
+ use super::request::{DecideRequest, JobResult, TierDegrade};
+-use super::{DecideError, Halt, Reader};
++use super::{DecideError, Halt, Reader, RunDocument};
+ use crate::contract::Contract;
+ use crate::plan::{
+     ArtifactJob, ArtifactNonce, PlanError, PullRequestObjects, Recomputed, recompute,
+@@ -26,6 +26,10 @@ pub(super) const PLAN_FILE: &str = "run.json";
+ pub(super) struct AuthenticPlan {
+     pub(super) recomputed: Recomputed,
+     pub(super) artifact_names: BTreeMap<ArtifactJob, String>,
++    /// The `decide` job's own artifact, where the bundle goes.
++    pub(super) bundle_artifact: String,
++    /// The authentic `run.json`, for the bundle.
++    pub(super) document: RunDocument,
+     /// The tier the LLM stage was run at: the recomputed one, or `lite` after `admit`'s
+     /// accepted degrade.
+     pub(super) tier: Tier,
+@@ -62,7 +66,7 @@ pub(super) fn authenticate_plan<O: PullRequestObjects, S, A: RunArtifacts>(
+         .validator
+         .read(Contract::Run, &bytes)
+         .map_err(|_invalid| Refusal::from(PlanMismatch::Invalid))?;
+-    let artifact_names =
++    let (artifact_names, bundle_artifact) =
+         artifact_names(&document, &job.artifact).ok_or(PlanMismatch::ArtifactNames)?;
+     let recomputed = recompute::<O, Infallible>(&request.plan, reader.objects).map_err(refused)?;
+     let expected = recomputed
+@@ -73,9 +77,18 @@ pub(super) fn authenticate_plan<O: PullRequestObjects, S, A: RunArtifacts>(
+         return Err(Refusal::from(PlanMismatch::Field { name }).into());
+     }
+     let tier = degraded_tier(request, &recomputed)?;
++    let authentic = RunDocument {
++        job: ArtifactJob::Plan,
++        file: PLAN_FILE.to_owned(),
++        // The bundle records the digest beside the bytes; the request keeps its own.
++        digest: job.document.clone(),
++        bytes,
++    };
+     Ok(AuthenticPlan {
+         recomputed,
+         artifact_names,
++        bundle_artifact,
++        document: authentic,
+         tier,
+     })
+ }
+@@ -94,8 +107,11 @@ fn refused<O, S, A>(error: PlanError<O, Infallible>) -> Halt<O, S, A> {
+ }
+ 
+ /// The plan's artifact names, one `assay-<job>-<nonce>` per job with distinct nonces and its
+-/// own equal to the `plan` job's output; `None` otherwise.
+-fn artifact_names(document: &Value, plan_artifact: &str) -> Option<BTreeMap<ArtifactJob, String>> {
++/// own equal to the `plan` job's output, with the `decide` job's own; `None` otherwise.
++fn artifact_names(
++    document: &Value,
++    plan_artifact: &str,
++) -> Option<(BTreeMap<ArtifactJob, String>, String)> {
+     let names = document.get("artifact_names")?.as_object()?;
+     if names.len() != ArtifactJob::ALL.len() {
+         return None;
+@@ -115,7 +131,10 @@ fn artifact_names(document: &Value, plan_artifact: &str) -> Option<BTreeMap<Arti
+         }
+         parsed.insert(job, name.to_owned());
+     }
+-    (parsed.get(&ArtifactJob::Plan).map(String::as_str) == Some(plan_artifact)).then_some(parsed)
++    // The run keeps the bundle's artifact name beside the map, which owns its own.
++    let bundle = parsed.get(&ArtifactJob::Decide)?.clone();
++    let own = parsed.get(&ArtifactJob::Plan)? == plan_artifact;
++    own.then_some((parsed, bundle))
+ }
+ 
+ /// The first top-level field, in key order, whose value differs between Z4's document and the
+diff --git a/crates/assay-app/src/lib.rs b/crates/assay-app/src/lib.rs
+index 490c605..aacac23 100644
+--- a/crates/assay-app/src/lib.rs
++++ b/crates/assay-app/src/lib.rs
+@@ -14,6 +14,7 @@ mod golden;
+ mod model_runner;
+ mod plan;
+ mod prompt_bundle;
++mod publish;
+ mod tiering;
+ 
+ pub use config::{
+@@ -52,6 +53,13 @@ pub use plan::{
+ pub use prompt_bundle::{
+     BundleFile, BundleFileError, BundleFiles, InvalidBundle, PromptBundle, Role,
+ };
++pub use publish::{
++    BUNDLE_FILE, BundleError, BundleStore, CheckConclusion, CheckName, CheckRun, CheckRunId,
++    CheckState, CheckStatus, CheckUpdate, CommentId, Decided, EvidenceEntry, EvidencePointer,
++    EvidenceRecord, ForgeStep, LlmEvidence, MAX_BUNDLE_BYTES, PersistFailure, Publication,
++    PublishError, PublishFailure, PublishLedger, PublishOutcome, PublishPorts, Published,
++    SUMMARY_MARKER, Stale, SummaryComment, Target, Unlock, Verdict, VerdictForge, Written, publish,
++};
+ pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
+ pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};
+ 
+diff --git a/crates/assay-app/src/publish.rs b/crates/assay-app/src/publish.rs
+new file mode 100644
+index 0000000..43bf588
+--- /dev/null
++++ b/crates/assay-app/src/publish.rs
+@@ -0,0 +1,331 @@
++//! `decide`'s publication (S8) and persistence (S9), `docs/architecture/02-architecture.md` §5
++//! and `04-pipeline.md` §6: the one verdict check, written under the per-head ledger lock and
++//! only while the stamp the writer read still stands (R3-09); the summary comment; the
++//! `RunInputs` bundle, its evidence pointer and evidence record (R3-08, R3-17).
++//!
++//! A superseded or yielding run writes nothing (R3-06); its ledger cost record and slot release
++//! are the `release` job's, never `decide`'s. An App check that already carries the decision key
++//! with a final conclusion is left alone, with no other call. Persisting fails closed for
++//! trust-path and exec-surface PRs (`failure persist-error`) and is a visible warning otherwise.
++
++mod bundle;
++mod ports;
++mod render;
++mod write;
++
++use assay_domain::{Aeu, Conclusion, ContentHash, DecisionInputs, Event, Reason, Rubric, RunUid};
++use thiserror::Error;
++
++pub use self::bundle::{BUNDLE_FILE, BundleError, MAX_BUNDLE_BYTES};
++pub use self::ports::{
++    BundleStore, CheckConclusion, CheckName, CheckRun, CheckRunId, CheckState, CheckStatus,
++    CheckUpdate, CommentId, EvidenceEntry, EvidencePointer, EvidenceRecord, LlmEvidence,
++    PublishLedger, SummaryComment, VerdictForge,
++};
++pub use self::render::SUMMARY_MARKER;
++use self::render::{Projection, Summary};
++use self::write::Pending;
++use crate::config::Sha256Digest;
++use crate::decide::{AuthenticatedRun, Refusal};
++use crate::plan::PullRequestEvent;
++
++/// What `decide` publishes for one run.
++#[derive(Debug)]
++pub struct Publication<'a> {
++    /// The run and the PR it publishes for.
++    pub target: Target<'a>,
++    /// What it concluded.
++    pub verdict: Verdict<'a>,
++}
++
++/// The run that publishes and the PR it publishes for.
++#[derive(Debug, Clone, Copy)]
++pub struct Target<'a> {
++    /// This run (attempt 1: `authenticate` refuses any other).
++    pub run_uid: RunUid,
++    /// The PR as the run was planned for it, whose head and base ref `authenticate` re-checked.
++    pub pull_request: &'a PullRequestEvent,
++    /// The repository's default branch, which names the check (R3-03).
++    pub default_branch: &'a str,
++}
++
++/// What `decide` concluded about a run.
++#[derive(Debug, Clone, Copy)]
++pub enum Verdict<'a> {
++    /// The run was superseded, or yields to a newer run: write nothing at all (R3-06).
++    Silent,
++    /// `authenticate` refused the run: publish `failure` with its reason. Nothing it read is
++    /// authenticated, so no bundle or evidence is persisted.
++    Refused(&'a Refusal),
++    /// The rubric decides over authenticated inputs.
++    Decided(Decided<'a>),
++}
++
++/// An authenticated run and what the rubric is given about it.
++#[derive(Debug, Clone, Copy)]
++pub struct Decided<'a> {
++    /// The run `authenticate` established.
++    pub run: &'a AuthenticatedRun,
++    /// Rubric v1.
++    pub rubric: &'a Rubric,
++    /// The decision inputs built over `run`: `evidence_key` is its run key and
++    /// `decision_key` is `sha256:<64 hex>` (#58 computes it).
++    pub inputs: &'a DecisionInputs,
++    /// Every job's events, merged into the bundle in `(job, idx)` order.
++    pub events: &'a [Event],
++    /// What the run's LLM stage cost.
++    pub cost: Aeu,
++}
++
++/// The ports `publish` writes through, borrowed for one call.
++#[derive(Debug)]
++pub struct PublishPorts<'p, F, L, B> {
++    /// The verdict check and the summary comment.
++    pub forge: &'p F,
++    /// The per-head lock and the PR's ledger state.
++    pub ledger: &'p L,
++    /// The run's artifacts.
++    pub bundles: &'p B,
++}
++
++/// What `publish` did.
++#[derive(Debug)]
++pub enum Published<L, B> {
++    /// Nothing: the run was superseded or yields to a newer one.
++    Nothing,
++    /// Nothing: the App's check already carries this decision key with a final conclusion.
++    Unchanged,
++    /// Nothing: the check is no longer this run's to write (R3-09).
++    Yielded {
++        /// Why.
++        stale: Stale,
++        /// What became of the lock.
++        unlock: Unlock<L>,
++    },
++    /// The check, and the summary comment where it differed, were written.
++    Written(Written<L, B>),
++}
++
++/// Why a writer yielded (R3-09).
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum Stale {
++    /// The check's stamp is neither this run's `pending:` stamp nor its decision key: the lock
++    /// was not taken.
++    Foreign,
++    /// The check changed between the writer's first read and its read under the lock.
++    Moved,
++}
++
++/// What was written.
++#[derive(Debug)]
++pub struct Written<L, B> {
++    /// The check's new state.
++    pub state: CheckState,
++    /// Why the bundle or its evidence was not persisted, if it was not. On a trust-path or
++    /// exec-surface PR the check then fails with `persist-error`; otherwise its summary warns.
++    pub persist: Option<PersistFailure<L, B>>,
++    /// What became of the lock.
++    pub unlock: Unlock<L>,
++}
++
++/// Why the bundle or its evidence was not persisted (S9).
++#[derive(Debug)]
++pub enum PersistFailure<L, B> {
++    /// The bundle could not be built.
++    Bundle(BundleError),
++    /// The bundle could not be uploaded; no pointer was written.
++    Upload(B),
++    /// The bundle was uploaded but its pointer and record could not be written.
++    Ledger(L),
++}
++
++impl<L, B> PersistFailure<L, B> {
++    /// The word the summary and the `persist-error` reason use for it.
++    #[must_use]
++    pub const fn code(&self) -> &'static str {
++        match self {
++            Self::Bundle(BundleError::NotUtf8 { .. }) => "bundle-not-utf8",
++            Self::Bundle(BundleError::TooLarge) => "bundle-too-large",
++            Self::Bundle(BundleError::Encode(_)) => "bundle-encode",
++            Self::Upload(_) => "upload",
++            Self::Ledger(_) => "ledger",
++        }
++    }
++}
++
++/// What became of the per-head lock.
++#[derive(Debug)]
++pub enum Unlock<L> {
++    /// It was never taken.
++    NotTaken,
++    /// It was released.
++    Released,
++    /// Releasing it failed; it expires with its TTL.
++    Failed(L),
++}
++
++/// The forge call that failed while the lock was held.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum ForgeStep {
++    /// Re-reading the check under the lock.
++    ReadCheck,
++    /// Writing the check.
++    UpdateCheck,
++    /// Finding the summary comment.
++    FindSummary,
++    /// Posting or editing the summary comment.
++    WriteSummary,
++}
++
++impl ForgeStep {
++    const fn describe(self) -> &'static str {
++        match self {
++            Self::ReadCheck => "re-read the verdict check",
++            Self::UpdateCheck => "write the verdict check",
++            Self::FindSummary => "find the summary comment",
++            Self::WriteSummary => "write the summary comment",
++        }
++    }
++}
++
++/// Why `publish` could not publish. The job fails; `reconcile` later closes a check left
++/// `in_progress` as `failure publish-error` (06 §4).
++#[derive(Debug, Error)]
++pub enum PublishError<F, L> {
++    /// The decision key is not `sha256:<64 hex>`, so it could be mistaken for a stamp.
++    #[error("the decision key is not a sha256 digest")]
++    DecisionKey,
++    /// The decision inputs were built over another run's evidence.
++    #[error("the decision inputs' evidence key is not the run's")]
++    EvidenceKey,
++    /// The App's check for the head does not exist: `open` creates it, never `decide`.
++    #[error("there is no verdict check for the head")]
++    CheckMissing,
++    /// The check could not be read before taking the lock.
++    #[error("could not read the verdict check")]
++    Observe(#[source] F),
++    /// The lock could not be taken.
++    #[error("could not take the per-head publish lock")]
++    Lock(#[source] L),
++    /// Another writer held the lock past the adapter's wait.
++    #[error("the per-head publish lock is held by another writer")]
++    LockBusy,
++    /// A forge call failed while the lock was held.
++    #[error("could not {} under the lock", step.describe())]
++    Locked {
++        /// The call.
++        step: ForgeStep,
++        /// The forge's error.
++        #[source]
++        source: F,
++        /// What became of the lock.
++        unlock: Unlock<L>,
++    },
++}
++
++/// The [`PublishError`] of [`publish`] over `ports`' error types.
++pub type PublishFailure<F, L> =
++    PublishError<<F as VerdictForge>::Error, <L as PublishLedger>::Error>;
++
++/// What [`publish`] returns over `ports`' error types.
++pub type PublishOutcome<F, L, B> =
++    Result<Published<<L as PublishLedger>::Error, <B as BundleStore>::Error>, PublishFailure<F, L>>;
++
++/// Publishes `publication`'s verdict through `ports`.
++///
++/// # Examples
++///
++/// ```
++/// use assay_app::{
++///     BundleStore, PublishLedger, PublishOutcome, PublishPorts, Publication, Published,
++///     VerdictForge, publish,
++/// };
++///
++/// # fn demo<F: VerdictForge, L: PublishLedger, B: BundleStore>(
++/// #     publication: &Publication<'_>,
++/// #     ports: &PublishPorts<'_, F, L, B>,
++/// # ) -> PublishOutcome<F, L, B> {
++/// let published = publish(publication, ports)?;
++/// if let Published::Written(written) = &published {
++///     // Report `written.persist` and `written.unlock`; a trust-path PR's check already
++///     // fails on a persist error.
++///     drop(&written.persist);
++/// }
++/// # Ok(published)
++/// # }
++/// ```
++///
++/// # Errors
++///
++/// [`PublishError`] when the inputs do not fit together ([`PublishError::DecisionKey`],
++/// [`PublishError::EvidenceKey`]), there is no check to write, the lock cannot be taken, or a
++/// forge call fails. A stale writer yields ([`Published::Yielded`]); that is not an error.
++pub fn publish<F: VerdictForge, L: PublishLedger, B: BundleStore>(
++    publication: &Publication<'_>,
++    ports: &PublishPorts<'_, F, L, B>,
++) -> PublishOutcome<F, L, B> {
++    let target = &publication.target;
++    match publication.verdict {
++        Verdict::Silent => Ok(Published::Nothing),
++        Verdict::Refused(refusal) => {
++            write::write(target, ports, Pending::Refused(refused(target, refusal)))
++        }
++        Verdict::Decided(decided) => {
++            let inputs = decided.inputs;
++            if inputs.decision_key.parse::<Sha256Digest>().is_err() {
++                return Err(PublishError::DecisionKey);
++            }
++            if inputs.evidence_key != decided.run.run_key().to_string() {
++                return Err(PublishError::EvidenceKey);
++            }
++            let decision = assay_domain::decide(decided.rubric, inputs);
++            write::write(
++                target,
++                ports,
++                Pending::Decided {
++                    decided: &decided,
++                    decision: &decision,
++                },
++            )
++        }
++    }
++}
++
++/// The check update for a refusal: `failure` with its reason, keyed by the run and the reason.
++fn refused(target: &Target<'_>, refusal: &Refusal) -> CheckUpdate {
++    let reason = refusal.reason();
++    let key = refusal_key(target.run_uid, &reason);
++    let reasons = [reason];
++    CheckUpdate {
++        state: CheckState::Completed(CheckConclusion::Failure),
++        title: render::title(Conclusion::Failure, &reasons),
++        summary: render::summary(&Summary {
++            conclusion: Conclusion::Failure,
++            reasons: &reasons,
++            facts: None,
++            warning: None,
++        }),
++        text: render::text(&Projection {
++            decision_key: &key,
++            inputs_digest: None,
++            evidence: None,
++        }),
++        external_id: key,
++    }
++}
++
++/// The key a refusal is published under, `sha256:<hex>` over the run and the reason: the same
++/// refusal of the same run has the same key.
++fn refusal_key(run_uid: RunUid, reason: &Reason) -> String {
++    let repository = run_uid.repo_id.to_string();
++    let workflow_run = run_uid.run_id.to_string();
++    let attempt = run_uid.run_attempt.to_string();
++    ContentHash::of_files([
++        ("refusal", reason.code.code().as_bytes()),
++        ("detail", reason.detail.as_bytes()),
++        ("repo_id", repository.as_bytes()),
++        ("run_id", workflow_run.as_bytes()),
++        ("run_attempt", attempt.as_bytes()),
++    ])
++    .to_string()
++}
+diff --git a/crates/assay-app/src/publish/bundle.rs b/crates/assay-app/src/publish/bundle.rs
+new file mode 100644
+index 0000000..fdef0a2
+--- /dev/null
++++ b/crates/assay-app/src/publish/bundle.rs
+@@ -0,0 +1,206 @@
++//! The `RunInputs` bundle `decide` persists (`assay.run-inputs/1`, 02 §5, 04 §8): everything a
++//! decision replay reads, in one JSON file whose sha256 the ledger's evidence pointer records.
++
++use std::io::{self, Write};
++
++use assay_domain::{Decision, DecisionInputs, Event, RunUid};
++use serde::Serialize;
++use thiserror::Error;
++
++use crate::decide::{AuthenticatedRun, RunDocument};
++use crate::plan::ArtifactJob;
++
++/// The bundle's file in the `decide` job's artifact.
++pub const BUNDLE_FILE: &str = "run-inputs.json";
++
++/// The largest bundle `decide` writes, in bytes (96 MiB): the 64 MiB the run fetched, room for
++/// JSON escaping, the decision inputs and the events (H-13).
++pub const MAX_BUNDLE_BYTES: usize = 96 << 20;
++
++/// Why the bundle could not be built. Persisting then fails (S9).
++#[derive(Debug, Error)]
++pub enum BundleError {
++    /// A document is not UTF-8, so it cannot be kept as text without being changed.
++    #[error("the {} document {file} is not UTF-8", job.name())]
++    NotUtf8 {
++        /// The producing job.
++        job: ArtifactJob,
++        /// The file in its artifact.
++        file: String,
++    },
++    /// The bundle would be larger than [`MAX_BUNDLE_BYTES`].
++    #[error("the bundle is larger than {MAX_BUNDLE_BYTES} bytes")]
++    TooLarge,
++    /// The bundle could not be encoded: a defect in `decide`.
++    #[error("could not encode the bundle")]
++    Encode(#[source] serde_json::Error),
++}
++
++/// What `decide` read for one run, as the bundle records it.
++pub(super) struct Contents<'a> {
++    pub(super) run_uid: RunUid,
++    pub(super) run: &'a AuthenticatedRun,
++    pub(super) inputs: &'a DecisionInputs,
++    pub(super) decision: &'a Decision,
++    pub(super) events: &'a [Event],
++}
++
++/// `assay.run-inputs/1`.
++#[derive(Serialize)]
++struct RunInputs<'a> {
++    schema: &'static str,
++    run_uid: RunUid,
++    evidence_key: &'a str,
++    documents: Vec<Document<'a>>,
++    inputs: &'a DecisionInputs,
++    rubric_version: &'a str,
++    decision: &'a Decision,
++    events: Vec<&'a Event>,
++}
++
++/// One authentic artifact document, kept as the exact text its digest covers.
++#[derive(Serialize)]
++struct Document<'a> {
++    job: &'static str,
++    file: &'a str,
++    sha256: &'a str,
++    text: &'a str,
++}
++
++/// The bundle's bytes: `run.json`, the gate documents and the review documents as their exact
++/// text, the decision inputs, the rubric version, the decision and the events ordered by
++/// `(job, idx)`.
++///
++/// # Errors
++///
++/// [`BundleError`] when a document is not UTF-8 or the bundle would be too large.
++pub(super) fn bundle(contents: &Contents<'_>) -> Result<Vec<u8>, BundleError> {
++    let record = contents.run.record();
++    let review = record
++        .review_files
++        .iter()
++        .zip(contents.run.review_documents())
++        .map(|(file, bytes)| document(ArtifactJob::Review, &file.file, &file.digest, bytes));
++    let documents = record
++        .documents
++        .iter()
++        .map(|run_document| {
++            let RunDocument {
++                job,
++                file,
++                digest,
++                bytes,
++            } = run_document;
++            document(*job, file, digest, bytes)
++        })
++        .chain(review)
++        .collect::<Result<Vec<_>, _>>()?;
++    let mut events: Vec<&Event> = contents.events.iter().collect();
++    events.sort_by(|a, b| (a.job.as_str(), a.idx).cmp(&(b.job.as_str(), b.idx)));
++    let inputs = RunInputs {
++        schema: "assay.run-inputs/1",
++        run_uid: contents.run_uid,
++        evidence_key: &contents.inputs.evidence_key,
++        documents,
++        inputs: contents.inputs,
++        rubric_version: &contents.decision.rubric_version,
++        decision: contents.decision,
++        events,
++    };
++    let mut out = Capped::new(MAX_BUNDLE_BYTES);
++    match serde_json::to_writer(&mut out, &inputs) {
++        Ok(()) => Ok(out.bytes),
++        Err(_over) if out.over => Err(BundleError::TooLarge),
++        Err(error) => Err(BundleError::Encode(error)),
++    }
++}
++
++/// A document as the bundle keeps it.
++fn document<'a>(
++    job: ArtifactJob,
++    file: &'a str,
++    digest: &'a crate::config::Sha256Digest,
++    bytes: &'a [u8],
++) -> Result<Document<'a>, BundleError> {
++    let text = std::str::from_utf8(bytes).map_err(|_not_utf8| BundleError::NotUtf8 {
++        job,
++        file: file.to_owned(),
++    })?;
++    Ok(Document {
++        job: job.name(),
++        file,
++        sha256: digest.as_str(),
++        text,
++    })
++}
++
++/// A buffer that refuses to grow past its cap, so an oversized bundle is never held whole.
++struct Capped {
++    bytes: Vec<u8>,
++    cap: usize,
++    over: bool,
++}
++
++impl Capped {
++    const fn new(cap: usize) -> Self {
++        Self {
++            bytes: Vec::new(),
++            cap,
++            over: false,
++        }
++    }
++}
++
++impl Write for Capped {
++    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
++        let fits = self
++            .bytes
++            .len()
++            .checked_add(buf.len())
++            .is_some_and(|len| len <= self.cap);
++        if !fits {
++            self.over = true;
++            return Err(io::Error::other("the bundle is over its cap"));
++        }
++        self.bytes.extend_from_slice(buf);
++        Ok(buf.len())
++    }
++
++    fn flush(&mut self) -> io::Result<()> {
++        Ok(())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use std::io::Write;
++
++    use super::{Capped, MAX_BUNDLE_BYTES};
++
++    #[test]
++    fn the_cap_holds_exactly_its_bytes() {
++        let mut out = Capped::new(MAX_BUNDLE_BYTES);
++
++        let written = out.write_all(&vec![b'x'; MAX_BUNDLE_BYTES]);
++
++        assert_eq!(written.ok(), Some(()));
++        assert_eq!(out.bytes.len(), MAX_BUNDLE_BYTES);
++        assert!(!out.over, "a bundle of exactly the cap fits");
++    }
++
++    #[test]
++    fn one_byte_past_the_cap_is_refused_and_not_kept() {
++        let mut out = Capped::new(MAX_BUNDLE_BYTES);
++        out.write_all(&vec![b'x'; MAX_BUNDLE_BYTES])
++            .expect("the cap itself fits");
++
++        let written = out.write_all(b"x");
++
++        assert_eq!(
++            written.map_err(|error| error.kind()),
++            Err(std::io::ErrorKind::Other)
++        );
++        assert_eq!(out.bytes.len(), MAX_BUNDLE_BYTES);
++        assert!(out.over, "the writer remembers it was over");
++    }
++}
+diff --git a/crates/assay-app/src/publish/ports.rs b/crates/assay-app/src/publish/ports.rs
+new file mode 100644
+index 0000000..4b04aa3
+--- /dev/null
++++ b/crates/assay-app/src/publish/ports.rs
+@@ -0,0 +1,281 @@
++//! The ports `decide` publishes through: the verdict check and summary comment on GitHub, the
++//! per-head lock and per-PR state in the ledger, and the run's artifact store (02 §5, 06 §1).
++
++use std::fmt;
++use std::num::NonZeroU64;
++
++use assay_domain::Tier;
++
++use crate::config::{CommitId, Sha256Digest};
++
++/// The verdict check and the summary comment, written with the `assay-verdict` App's token.
++/// Implemented by the forge adapter (#53).
++pub trait VerdictForge {
++    /// Why GitHub could not be read or written.
++    type Error: std::error::Error;
++
++    /// The check run named `name` on `head` that the `assay-verdict` App authored, if any. A
++    /// same-named check from any other app is never returned.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the check runs cannot be listed.
++    fn find_check(
++        &self,
++        head: &CommitId,
++        name: &CheckName,
++    ) -> Result<Option<CheckRun>, Self::Error>;
++
++    /// Overwrites the check's status, conclusion, output and `external_id` with `update`. The
++    /// update carries no annotations, so none ever accumulate on the verdict check (R3-11).
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the check cannot be updated.
++    fn update_check(&self, id: CheckRunId, update: &CheckUpdate) -> Result<(), Self::Error>;
++
++    /// The comment on PR `number` that the App authored and whose body contains `marker`, if
++    /// any. A comment by anyone else is never returned, whatever it contains.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the comments cannot be listed.
++    fn find_summary(
++        &self,
++        number: NonZeroU64,
++        marker: &str,
++    ) -> Result<Option<SummaryComment>, Self::Error>;
++
++    /// Posts `body` as a new comment on PR `number`.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the comment cannot be posted.
++    fn create_summary(&self, number: NonZeroU64, body: &str) -> Result<(), Self::Error>;
++
++    /// Replaces the body of comment `id` with `body`.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the comment cannot be edited.
++    fn update_summary(&self, id: CommentId, body: &str) -> Result<(), Self::Error>;
++}
++
++/// The ledger repository, written with the App's ledger installation token. Implemented by the
++/// ledger adapter (#70).
++pub trait PublishLedger {
++    /// Why the ledger could not be read or written.
++    type Error: std::error::Error;
++    /// Proof of holding the per-head lock: what releasing it compares and sets.
++    type Lease;
++
++    /// Takes the per-head publish lock `refs/heads/lock-<repo_id>-<head>` by creating it (2-minute
++    /// TTL). `None` when another writer holds it and the adapter's bounded wait ran out.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the ledger cannot be reached.
++    fn acquire(
++        &self,
++        repo_id: NonZeroU64,
++        head: &CommitId,
++    ) -> Result<Option<Self::Lease>, Self::Error>;
++
++    /// Releases the lock `lease` holds, by compare-and-set: a lock another writer took after this
++    /// one expired is never released.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the lock could not be released; it then expires with its TTL.
++    fn release(&self, lease: Self::Lease) -> Result<(), Self::Error>;
++
++    /// Writes `entry`'s evidence pointer and evidence record into the PR's state
++    /// `state/<repo_id>/<pr>.json`, by compare-and-set on the file.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the state file could not be written.
++    fn record_evidence(&self, entry: &EvidenceEntry) -> Result<(), Self::Error>;
++}
++
++/// The run's artifact store, written with the run's token. Implemented by the forge adapter.
++pub trait BundleStore {
++    /// Why the artifact could not be uploaded.
++    type Error: std::error::Error;
++
++    /// Uploads `bytes` as `file` of a new artifact named `artifact`, kept 90 days.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the upload failed.
++    fn upload(&self, artifact: &str, file: &str, bytes: &[u8]) -> Result<(), Self::Error>;
++}
++
++/// The verdict check's name: `assay / verdict` on the default branch, `assay / verdict @<base>`
++/// on any other base, so a verdict never passes for a base it was not decided for (R3-03).
++#[derive(Debug, Clone, PartialEq, Eq, Hash)]
++pub struct CheckName(String);
++
++impl CheckName {
++    /// The name of the verdict check for a PR into `base_ref` in a repository whose default
++    /// branch is `default_branch`.
++    #[must_use]
++    pub fn for_base(base_ref: &str, default_branch: &str) -> Self {
++        if base_ref == default_branch {
++            Self("assay / verdict".to_owned())
++        } else {
++            Self(format!("assay / verdict @{base_ref}"))
++        }
++    }
++
++    /// The name as GitHub shows it.
++    #[must_use]
++    pub fn as_str(&self) -> &str {
++        &self.0
++    }
++}
++
++impl fmt::Display for CheckName {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str(&self.0)
++    }
++}
++
++/// A check run's numeric id.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
++pub struct CheckRunId(pub NonZeroU64);
++
++/// An issue comment's numeric id.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
++pub struct CommentId(pub NonZeroU64);
++
++/// The App's verdict check as GitHub shows it.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct CheckRun {
++    /// Its id.
++    pub id: CheckRunId,
++    /// `pending:<run_id>:<seq>` as `open` stamped it, or the decision key `decide` wrote.
++    pub external_id: String,
++    /// Its status.
++    pub status: CheckStatus,
++}
++
++/// A check run's status.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum CheckStatus {
++    /// Queued.
++    Queued,
++    /// In progress: `open` stamped it, or a decision is pending.
++    InProgress,
++    /// Completed with a final conclusion.
++    Completed,
++}
++
++/// Everything `decide` writes to the verdict check. There is no annotations field: location
++/// data travels in inline comments and the per-gate checks (R3-11).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct CheckUpdate {
++    /// Status and conclusion.
++    pub state: CheckState,
++    /// `output.title`.
++    pub title: String,
++    /// `output.summary`: counts, reasons, tier, degraded roles, AEU and how to respond.
++    pub summary: String,
++    /// `output.text`: the ledger state it projects.
++    pub text: String,
++    /// The decision key (02 §5).
++    pub external_id: String,
++}
++
++/// The status and conclusion `decide` gives the verdict check.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum CheckState {
++    /// A `pending` decision (rule 8a), shown as `in_progress`, never `neutral` (03 §5).
++    InProgress,
++    /// Completed with this conclusion.
++    Completed(CheckConclusion),
++}
++
++/// A final conclusion of the verdict check.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum CheckConclusion {
++    /// `success`.
++    Success,
++    /// `failure`.
++    Failure,
++    /// `neutral`: an owner override.
++    Neutral,
++}
++
++/// The App's summary comment on a PR.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct SummaryComment {
++    /// Its id.
++    pub id: CommentId,
++    /// Its body as GitHub returns it.
++    pub body: String,
++}
++
++/// What `decide` records in the PR's ledger state for one evidence bundle (02 §5).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct EvidenceEntry {
++    /// The repository's numeric id.
++    pub repo_id: NonZeroU64,
++    /// The PR number.
++    pub pr: NonZeroU64,
++    /// Where the bundle is: replay and decide-only read it only through this (R3-08).
++    pub pointer: EvidencePointer,
++    /// What the bundle holds, for `admit`'s reuse check (R3-17).
++    pub record: EvidenceRecord,
++}
++
++/// The evidence pointer `{run_id, run_attempt, sha256}` (02 §5, R3-08).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct EvidencePointer {
++    /// The workflow run that uploaded the bundle.
++    pub run_id: NonZeroU64,
++    /// Its attempt, always 1.
++    pub run_attempt: NonZeroU64,
++    /// The sha256 of the uploaded bundle file.
++    pub sha256: Sha256Digest,
++}
++
++/// The evidence record `{evidence_key, bundle_sha256, llm, tier}` (02 §5, R3-17).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct EvidenceRecord {
++    /// The evidence key the bundle's run was planned under.
++    pub evidence_key: String,
++    /// The sha256 of the bundle, as in the pointer.
++    pub bundle_sha256: Sha256Digest,
++    /// How the LLM stage ran.
++    pub llm: LlmEvidence,
++    /// The tier the LLM stage ran at.
++    pub tier: Tier,
++}
++
++/// How the LLM stage of an evidence bundle ran: only `Complete` can stand in for an LLM review
++/// (R3-17).
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum LlmEvidence {
++    /// It completed with no degraded role, or the tier has no LLM stage.
++    Complete,
++    /// It did not run because the PR was a draft (gates only).
++    SkippedDraft,
++    /// It was deferred, or did not run when it should have.
++    Deferred,
++    /// It completed with a degraded role.
++    Degraded,
++}
++
++impl LlmEvidence {
++    /// The record's wire word: `complete`, `skipped(draft)`, `deferred`, `degraded`.
++    #[must_use]
++    pub const fn code(self) -> &'static str {
++        match self {
++            Self::Complete => "complete",
++            Self::SkippedDraft => "skipped(draft)",
++            Self::Deferred => "deferred",
++            Self::Degraded => "degraded",
++        }
++    }
++}
+diff --git a/crates/assay-app/src/publish/render.rs b/crates/assay-app/src/publish/render.rs
+new file mode 100644
+index 0000000..30087f5
+--- /dev/null
++++ b/crates/assay-app/src/publish/render.rs
+@@ -0,0 +1,302 @@
++//! The verdict check's output and the summary comment (04 §6): fixed text, closed vocabularies
++//! and digests `decide` computed, with every other string inside one fenced block per list, so
++//! nothing a PR or a model wrote renders as Markdown.
++
++use assay_domain::{Aeu, Conclusion, Counts, DegradedRole, PrClass, Reason, Tier};
++
++use super::ports::EvidenceEntry;
++
++/// The hidden marker the summary comment is found by (02 §5).
++pub const SUMMARY_MARKER: &str = "<!-- assay-summary -->";
++
++/// The most items of a list rendered; the rest are counted (H-13).
++pub(super) const MAX_ITEMS: usize = 50;
++
++/// The most characters of one item rendered; a longer item is clipped and marked (H-13).
++pub(super) const MAX_ITEM_CHARS: usize = 200;
++
++/// What the summary shows.
++pub(super) struct Summary<'a> {
++    pub(super) conclusion: Conclusion,
++    pub(super) reasons: &'a [Reason],
++    /// What the run established; `None` for a run refused before the rubric.
++    pub(super) facts: Option<Facts<'a>>,
++    /// Why the bundle was not persisted, when that is only a warning.
++    pub(super) warning: Option<&'static str>,
++}
++
++/// What an authenticated run's decision adds to the summary.
++pub(super) struct Facts<'a> {
++    pub(super) tier: Tier,
++    pub(super) classes: &'a [PrClass],
++    pub(super) counts: Counts,
++    pub(super) degraded: &'a [DegradedRole],
++    pub(super) cost: Aeu,
++    pub(super) reasons_digest: String,
++}
++
++/// What `output.text` projects of the ledger state.
++pub(super) struct Projection<'a> {
++    pub(super) decision_key: &'a str,
++    pub(super) inputs_digest: Option<&'a str>,
++    pub(super) evidence: Option<&'a EvidenceEntry>,
++}
++
++/// `output.title`: the conclusion and the first reason code.
++pub(super) fn title(conclusion: Conclusion, reasons: &[Reason]) -> String {
++    match reasons {
++        [] => format!("assay: {}", conclusion.code()),
++        [only] => format!("assay: {} ({})", conclusion.code(), only.code.code()),
++        [first, rest @ ..] => format!(
++            "assay: {} ({} and {} more)",
++            conclusion.code(),
++            first.code.code(),
++            rest.len()
++        ),
++    }
++}
++
++/// `output.summary`: conclusion, tier and classes, AEU, counts, reasons, degraded roles, the
++/// reasons digest and how to respond.
++pub(super) fn summary(summary: &Summary<'_>) -> String {
++    let mut lines = vec![
++        format!("**assay: {}**", summary.conclusion.code()),
++        String::new(),
++    ];
++    if let Some(facts) = &summary.facts {
++        lines.extend(header(facts));
++    }
++    lines.push("Reasons:".to_owned());
++    let reasons = summary.reasons.iter().map(|reason| {
++        let fp = reason.fp.map(|fp| format!(" ({fp})")).unwrap_or_default();
++        [
++            reason.code.code(),
++            ": ",
++            reason.detail.as_str(),
++            fp.as_str(),
++        ]
++        .concat()
++    });
++    block(&mut lines, summary.reasons.len(), reasons);
++    if let Some(facts) = &summary.facts {
++        lines.push(String::new());
++        lines.push("Degraded roles:".to_owned());
++        let degraded = facts
++            .degraded
++            .iter()
++            .map(|role| [role.role.as_str(), ": ", role.reason.as_str()].concat());
++        block(&mut lines, facts.degraded.len(), degraded);
++    }
++    if let Some(warning) = summary.warning {
++        lines.push(String::new());
++        lines.push(format!(
++            "**Warning:** this run's input bundle was not persisted (`{warning}`): replay and \
++             decide-only cannot use it; a new run is needed for them."
++        ));
++    }
++    if let Some(facts) = &summary.facts {
++        lines.push(String::new());
++        lines.push(format!(
++            "Reasons digest, for `/assay override`: `{}`",
++            facts.reasons_digest
++        ));
++    }
++    lines.extend(
++        [
++            "",
++            "How to respond (an eligible owner, then `/assay recheck`):",
++            "- `/assay waive <finding-id>` waives one human-decision gate finding;",
++            "- `/assay override llm|all <reasons_digest> <reason>` overrides the verdict;",
++            "- `/assay dismiss <fp> <reason>` dismisses one reviewer finding.",
++        ]
++        .map(str::to_owned),
++    );
++    lines.join("\n")
++}
++
++/// The summary's first facts: tier, classes and AEU, the finding counts, then a blank line.
++fn header(facts: &Facts<'_>) -> [String; 3] {
++    let classes: Vec<&str> = facts.classes.iter().map(|class| class.code()).collect();
++    let classes = if classes.is_empty() {
++        "none".to_owned()
++    } else {
++        classes.join(", ")
++    };
++    let counts = facts.counts;
++    [
++        format!(
++            "Tier: {} · Classes: {classes} · AEU: {}",
++            facts.tier.code(),
++            facts.cost
++        ),
++        format!(
++            "Findings: {} blocker · {} major · {} minor · {} nit",
++            counts.blocker, counts.major, counts.minor, counts.nit
++        ),
++        String::new(),
++    ]
++}
++
++/// `output.text`: the ledger state the check projects.
++pub(super) fn text(projection: &Projection<'_>) -> String {
++    let mut lines = vec![
++        "```text".to_owned(),
++        format!("decision_key: {}", projection.decision_key),
++    ];
++    if let Some(digest) = projection.inputs_digest {
++        lines.push(format!("inputs_digest: {digest}"));
++    }
++    match projection.evidence {
++        Some(entry) => {
++            let pointer = &entry.pointer;
++            let record = &entry.record;
++            lines.push(format!(
++                "evidence pointer: run_id {}, run_attempt {}, sha256 {}",
++                pointer.run_id, pointer.run_attempt, pointer.sha256
++            ));
++            lines.push(format!(
++                "evidence record: evidence_key {}, bundle_sha256 {}, llm {}, tier {}",
++                record.evidence_key,
++                record.bundle_sha256,
++                record.llm.code(),
++                record.tier.code()
++            ));
++        }
++        None => lines.push("evidence pointer: none".to_owned()),
++    }
++    lines.push("```".to_owned());
++    lines.join("\n")
++}
++
++/// The summary comment: the marker, then the summary.
++pub(super) fn comment(summary: &str) -> String {
++    [SUMMARY_MARKER, "\n\n", summary].concat()
++}
++
++/// Appends up to [`MAX_ITEMS`] of `total` items as one fenced block whose fence is longer than
++/// any backtick run inside it, each item cleaned and clipped, then how many were left out.
++fn block(lines: &mut Vec<String>, total: usize, items: impl Iterator<Item = String>) {
++    if total == 0 {
++        lines.push("none".to_owned());
++        return;
++    }
++    let shown: Vec<String> = items.take(MAX_ITEMS).map(|item| clean(&item)).collect();
++    let longest = shown.iter().map(|item| longest_backtick_run(item)).max();
++    let fence = "`".repeat(longest.unwrap_or(0).saturating_add(1).max(3));
++    lines.push([fence.as_str(), "text"].concat());
++    let rest = total.saturating_sub(shown.len());
++    lines.extend(shown);
++    lines.push(fence);
++    if rest > 0 {
++        lines.push(format!("and {rest} more, listed in the decision."));
++    }
++}
++
++/// `item` on one line: control characters (line breaks included) become U+FFFD, and past
++/// [`MAX_ITEM_CHARS`] characters it is cut and ends with `…`.
++fn clean(item: &str) -> String {
++    let mut chars = item.chars();
++    let mut cleaned: String = chars
++        .by_ref()
++        .take(MAX_ITEM_CHARS)
++        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
++        .collect();
++    if chars.next().is_some() {
++        cleaned.push('…');
++    }
++    cleaned
++}
++
++/// The length of the longest run of backticks in `text`.
++fn longest_backtick_run(text: &str) -> usize {
++    text.split(|c| c != '`').map(str::len).max().unwrap_or(0)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{MAX_ITEM_CHARS, MAX_ITEMS, block, clean, longest_backtick_run};
++
++    fn rendered(items: &[String]) -> Vec<String> {
++        let mut lines = Vec::new();
++        block(&mut lines, items.len(), items.iter().cloned());
++        lines
++    }
++
++    #[test]
++    fn a_list_of_the_cap_is_rendered_whole() {
++        let items: Vec<String> = (0..MAX_ITEMS).map(|i| format!("item {i}")).collect();
++
++        let lines = rendered(&items);
++
++        assert_eq!(lines.len(), MAX_ITEMS + 2, "fence, every item, fence");
++        assert_eq!(lines.last().map(String::as_str), Some("```"));
++    }
++
++    #[test]
++    fn a_list_past_the_cap_counts_what_it_leaves_out() {
++        let items: Vec<String> = (0..=MAX_ITEMS).map(|i| format!("item {i}")).collect();
++
++        let lines = rendered(&items);
++
++        assert_eq!(
++            lines.len(),
++            MAX_ITEMS + 3,
++            "fence, the cap, fence, the count"
++        );
++        assert_eq!(
++            lines.last().map(String::as_str),
++            Some("and 1 more, listed in the decision.")
++        );
++    }
++
++    #[test]
++    fn an_empty_list_says_none() {
++        assert_eq!(rendered(&[]), ["none"]);
++    }
++
++    #[test]
++    fn an_item_of_the_cap_is_kept_whole() {
++        let item = "a".repeat(MAX_ITEM_CHARS);
++
++        assert_eq!(clean(&item), item);
++    }
++
++    #[test]
++    fn an_item_past_the_cap_is_clipped_and_marked() {
++        let item = "é".repeat(MAX_ITEM_CHARS + 1);
++
++        assert_eq!(
++            clean(&item),
++            ["é".repeat(MAX_ITEM_CHARS), "…".to_owned()].concat()
++        );
++    }
++
++    #[test]
++    fn control_characters_cannot_break_out_of_the_line() {
++        assert_eq!(clean("a\nb\r\u{1b}c"), "a\u{fffd}b\u{fffd}\u{fffd}c");
++    }
++
++    #[test]
++    fn the_fence_is_longer_than_any_backtick_run_inside() {
++        let lines = rendered(&["````\n</details>".to_owned()]);
++
++        assert_eq!(
++            lines,
++            ["`````text", "````\u{fffd}</details>", "`````"],
++            "a four-backtick run gets a five-backtick fence"
++        );
++    }
++
++    #[test]
++    fn a_short_backtick_run_keeps_the_three_backtick_fence() {
++        let lines = rendered(&["`code`".to_owned()]);
++
++        assert_eq!(lines, ["```text", "`code`", "```"]);
++    }
++
++    #[test]
++    fn backtick_runs_are_measured() {
++        assert_eq!(longest_backtick_run("a``b```c`"), 3);
++        assert_eq!(longest_backtick_run("plain"), 0);
++    }
++}
+diff --git a/crates/assay-app/src/publish/write.rs b/crates/assay-app/src/publish/write.rs
+new file mode 100644
+index 0000000..1177814
+--- /dev/null
++++ b/crates/assay-app/src/publish/write.rs
+@@ -0,0 +1,337 @@
++//! Writing the verdict: the two-phase stamp check around the per-head lock (02 §5, R3-09), the
++//! bundle upload and evidence record (S9), the check and the summary comment (S8).
++
++use std::borrow::Cow;
++
++use assay_domain::{Conclusion, Decision, LlmStage, NotRunReason, Reason, ReasonCode};
++
++use super::bundle::{self, BUNDLE_FILE, Contents};
++use super::ports::{
++    BundleStore, CheckConclusion, CheckName, CheckRun, CheckState, CheckStatus, CheckUpdate,
++    EvidenceEntry, EvidencePointer, EvidenceRecord, LlmEvidence, PublishLedger, VerdictForge,
++};
++use super::render::{self, Facts, Projection, SUMMARY_MARKER, Summary};
++use super::{
++    Decided, ForgeStep, PersistFailure, PublishError, PublishOutcome, PublishPorts, Published,
++    Stale, Target, Unlock, Written,
++};
++use crate::config::Sha256Digest;
++
++/// What one writer publishes.
++pub(super) enum Pending<'w> {
++    /// A refusal, whose update is ready.
++    Refused(CheckUpdate),
++    /// A decision, whose update depends on whether persisting it succeeds.
++    Decided {
++        decided: &'w Decided<'w>,
++        decision: &'w Decision,
++    },
++}
++
++impl Pending<'_> {
++    /// The key the check carries once this is published.
++    fn key(&self) -> &str {
++        match self {
++            Self::Refused(update) => &update.external_id,
++            Self::Decided { decision, .. } => &decision.key,
++        }
++    }
++}
++
++/// A pending publication with its bundle uploaded, or why it was not.
++enum Prepared<'w, L, B> {
++    Refused(CheckUpdate),
++    Decided {
++        decided: &'w Decided<'w>,
++        decision: &'w Decision,
++        uploaded: Result<Sha256Digest, PersistFailure<L, B>>,
++    },
++}
++
++/// What happened under the lock.
++enum Locked<L, B> {
++    Stale,
++    Written {
++        state: CheckState,
++        persist: Option<PersistFailure<L, B>>,
++    },
++}
++
++/// What happened under the lock, or the forge call that failed there.
++type UnderLock<F, L, B> = Result<Locked<L, B>, (ForgeStep, F)>;
++
++/// Publishes `pending` when the check is still this run's to write.
++pub(super) fn write<F: VerdictForge, L: PublishLedger, B: BundleStore>(
++    target: &Target<'_>,
++    ports: &PublishPorts<'_, F, L, B>,
++    pending: Pending<'_>,
++) -> PublishOutcome<F, L, B> {
++    let event = target.pull_request;
++    let name = CheckName::for_base(&event.base_ref, target.default_branch);
++    let observed = ports
++        .forge
++        .find_check(&event.head_sha, &name)
++        .map_err(PublishError::Observe)?
++        .ok_or(PublishError::CheckMissing)?;
++    let key = pending.key();
++    if observed.external_id == key && observed.status == CheckStatus::Completed {
++        return Ok(Published::Unchanged);
++    }
++    if observed.external_id != key && !is_own_stamp(&observed.external_id, target) {
++        return Ok(Published::Yielded {
++            stale: Stale::Foreign,
++            unlock: Unlock::NotTaken,
++        });
++    }
++    // Uploaded before the lock: it is slow, and an artifact nothing points to is harmless.
++    let prepared = match pending {
++        Pending::Refused(update) => Prepared::Refused(update),
++        Pending::Decided { decided, decision } => Prepared::Decided {
++            decided,
++            decision,
++            uploaded: upload(target, decided, decision, ports),
++        },
++    };
++    let Some(lease) = ports
++        .ledger
++        .acquire(target.run_uid.repo_id, &event.head_sha)
++        .map_err(PublishError::Lock)?
++    else {
++        return Err(PublishError::LockBusy);
++    };
++    let locked = under_lock(target, ports, (&name, &observed), prepared);
++    let unlock = match ports.ledger.release(lease) {
++        Ok(()) => Unlock::Released,
++        Err(error) => Unlock::Failed(error),
++    };
++    match locked {
++        Ok(Locked::Stale) => Ok(Published::Yielded {
++            stale: Stale::Moved,
++            unlock,
++        }),
++        Ok(Locked::Written { state, persist }) => Ok(Published::Written(Written {
++            state,
++            persist,
++            unlock,
++        })),
++        Err((step, source)) => Err(PublishError::Locked {
++            step,
++            source,
++            unlock,
++        }),
++    }
++}
++
++/// Whether `external_id` is `open`'s stamp for this run: `pending:<run_id>:<seq>`, with `seq`
++/// one or more ASCII digits and nothing else.
++fn is_own_stamp(external_id: &str, target: &Target<'_>) -> bool {
++    let prefix = format!("pending:{}:", target.run_uid.run_id);
++    external_id
++        .strip_prefix(&prefix)
++        .is_some_and(|seq| !seq.is_empty() && seq.bytes().all(|byte| byte.is_ascii_digit()))
++}
++
++/// Builds and uploads the bundle; its digest when both succeed.
++fn upload<F, L: PublishLedger, B: BundleStore>(
++    target: &Target<'_>,
++    decided: &Decided<'_>,
++    decision: &Decision,
++    ports: &PublishPorts<'_, F, L, B>,
++) -> Result<Sha256Digest, PersistFailure<L::Error, B::Error>> {
++    let bytes = bundle::bundle(&Contents {
++        run_uid: target.run_uid,
++        run: decided.run,
++        inputs: decided.inputs,
++        decision,
++        events: decided.events,
++    })
++    .map_err(PersistFailure::Bundle)?;
++    let artifact = &decided.run.record().bundle_artifact;
++    ports
++        .bundles
++        .upload(artifact, BUNDLE_FILE, &bytes)
++        .map_err(PersistFailure::Upload)?;
++    Ok(Sha256Digest::of(&bytes))
++}
++
++/// Re-reads the check under the lock and, when it is unchanged, records the evidence and writes
++/// the check and the summary comment.
++fn under_lock<F: VerdictForge, L: PublishLedger, B: BundleStore>(
++    target: &Target<'_>,
++    ports: &PublishPorts<'_, F, L, B>,
++    (name, observed): (&CheckName, &CheckRun),
++    prepared: Prepared<'_, L::Error, B::Error>,
++) -> UnderLock<F::Error, L::Error, B::Error> {
++    let event = target.pull_request;
++    let current = ports
++        .forge
++        .find_check(&event.head_sha, name)
++        .map_err(|error| (ForgeStep::ReadCheck, error))?;
++    if current.as_ref() != Some(observed) {
++        return Ok(Locked::Stale);
++    }
++    let (update, persist) = match prepared {
++        Prepared::Refused(update) => (update, None),
++        Prepared::Decided {
++            decided,
++            decision,
++            uploaded,
++        } => {
++            let (entry, persist) = match uploaded {
++                Ok(digest) => {
++                    let entry = evidence_entry(target, decided, decision, digest);
++                    match ports.ledger.record_evidence(&entry) {
++                        Ok(()) => (Some(entry), None),
++                        Err(error) => (None, Some(PersistFailure::Ledger(error))),
++                    }
++                }
++                Err(failure) => (None, Some(failure)),
++            };
++            let update = decided_update(decided, decision, entry.as_ref(), persist.as_ref());
++            (update, persist)
++        }
++    };
++    ports
++        .forge
++        .update_check(observed.id, &update)
++        .map_err(|error| (ForgeStep::UpdateCheck, error))?;
++    upsert_summary(ports.forge, target, &update.summary)?;
++    Ok(Locked::Written {
++        state: update.state,
++        persist,
++    })
++}
++
++/// The evidence pointer and record of an uploaded bundle (02 §5).
++fn evidence_entry(
++    target: &Target<'_>,
++    decided: &Decided<'_>,
++    decision: &Decision,
++    digest: Sha256Digest,
++) -> EvidenceEntry {
++    let run_uid = target.run_uid;
++    EvidenceEntry {
++        repo_id: run_uid.repo_id,
++        pr: target.pull_request.number,
++        pointer: EvidencePointer {
++            run_id: run_uid.run_id,
++            run_attempt: run_uid.run_attempt,
++            // The pointer and the record each own the digest.
++            sha256: digest.clone(),
++        },
++        record: EvidenceRecord {
++            // The ledger record owns its copy of the key.
++            evidence_key: decided.inputs.evidence_key.clone(),
++            bundle_sha256: digest,
++            llm: llm_evidence(decided, decision),
++            tier: decided.run.tier(),
++        },
++    }
++}
++
++/// How the LLM stage ran, as the evidence record says it: only a stage that completed with no
++/// degraded role, or a tier without one, is `complete` (R3-17).
++fn llm_evidence(decided: &Decided<'_>, decision: &Decision) -> LlmEvidence {
++    let inputs = decided.inputs;
++    match inputs.llm.effective(&inputs.pr) {
++        LlmStage::Deferred { .. } => LlmEvidence::Deferred,
++        LlmStage::NotRun {
++            reason: NotRunReason::Draft,
++        } => LlmEvidence::SkippedDraft,
++        LlmStage::Completed
++        | LlmStage::NotRun {
++            reason: NotRunReason::NoLlmTier,
++        } => {
++            if decision.degraded.is_empty() {
++                LlmEvidence::Complete
++            } else {
++                LlmEvidence::Degraded
++            }
++        }
++    }
++}
++
++/// The check update for a decision: its conclusion, or `failure persist-error` when persisting
++/// failed on a trust-path or exec-surface PR (S9).
++fn decided_update<L, B>(
++    decided: &Decided<'_>,
++    decision: &Decision,
++    evidence: Option<&EvidenceEntry>,
++    persist: Option<&PersistFailure<L, B>>,
++) -> CheckUpdate {
++    let classes = &decided.run.tiering().classes;
++    let fail_closed = persist.filter(|_| !classes.is_empty());
++    let (conclusion, reasons) = match fail_closed {
++        Some(failure) => {
++            let mut reasons = decision.reasons.clone();
++            reasons.push(Reason {
++                code: ReasonCode::PersistError,
++                detail: failure.code().to_owned(),
++                fp: None,
++            });
++            (Conclusion::Failure, Cow::Owned(reasons))
++        }
++        None => (
++            decision.conclusion,
++            Cow::Borrowed(decision.reasons.as_slice()),
++        ),
++    };
++    let warning = match fail_closed {
++        Some(_) => None,
++        None => persist.map(PersistFailure::code),
++    };
++    let summary = render::summary(&Summary {
++        conclusion,
++        reasons: &reasons,
++        facts: Some(Facts {
++            tier: decided.run.tier(),
++            classes,
++            counts: decision.counts,
++            degraded: &decision.degraded,
++            cost: decided.cost,
++            reasons_digest: decision.reasons_digest(),
++        }),
++        warning,
++    });
++    CheckUpdate {
++        state: state_of(conclusion),
++        title: render::title(conclusion, &reasons),
++        summary,
++        text: render::text(&Projection {
++            decision_key: &decision.key,
++            inputs_digest: Some(&decision.inputs_digest),
++            evidence,
++        }),
++        // The check owns its external id; the decision keeps its key.
++        external_id: decision.key.clone(),
++    }
++}
++
++/// The check state a conclusion is published as: `pending` is `in_progress`, never `neutral`.
++const fn state_of(conclusion: Conclusion) -> CheckState {
++    match conclusion {
++        Conclusion::Success => CheckState::Completed(CheckConclusion::Success),
++        Conclusion::Failure => CheckState::Completed(CheckConclusion::Failure),
++        Conclusion::Neutral => CheckState::Completed(CheckConclusion::Neutral),
++        Conclusion::Pending => CheckState::InProgress,
++    }
++}
++
++/// Posts the summary comment, or edits it when its body differs (write-if-changed).
++fn upsert_summary<F: VerdictForge>(
++    forge: &F,
++    target: &Target<'_>,
++    summary: &str,
++) -> Result<(), (ForgeStep, F::Error)> {
++    let number = target.pull_request.number;
++    let body = render::comment(summary);
++    let found = forge
++        .find_summary(number, SUMMARY_MARKER)
++        .map_err(|error| (ForgeStep::FindSummary, error))?;
++    let written = match found {
++        Some(comment) if comment.body == body => return Ok(()),
++        Some(comment) => forge.update_summary(comment.id, &body),
++        None => forge.create_summary(number, &body),
++    };
++    written.map_err(|error| (ForgeStep::WriteSummary, error))
++}

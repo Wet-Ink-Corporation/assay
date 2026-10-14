@@ -1,0 +1,25 @@
+[package]
+name = "assay-app"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Workspace edge allowed: assay-domain only (02 §2). Added by the story that first uses it.
+# `toml` also lets the tests read rubric/v1.toml (Story #51).
+[dependencies]
+assay-domain = { workspace = true }
+jsonschema = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+# `decide` authenticates each artifact by its sha256 against the producing job's outputs (#56).
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+
+# Property tests of evidence relocation and validation (Story #86, pre-approved).
+[dev-dependencies]
+proptest = { workspace = true }

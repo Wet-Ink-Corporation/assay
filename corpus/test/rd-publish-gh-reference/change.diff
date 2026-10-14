@@ -1,0 +1,2611 @@
+diff --git a/crates/assay-app/AGENTS.md b/crates/assay-app/AGENTS.md
+index ba46f04..fa82667 100644
+--- a/crates/assay-app/AGENTS.md
++++ b/crates/assay-app/AGENTS.md
+@@ -46,6 +46,7 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
+ - Validation errors never quote the rejected value (it is untrusted text), nor an object key the schema does not name: such keys are reported as `*`, and unexpected properties are counted, not listed (`src/contract/violation.rs`).
+ - `authenticate` refuses rather than models (wi-b5affa). It refuses a `run_attempt` other than 1 before any port call (R3-05). It re-fetches the PR first: a moved head or base ref is `Superseded`, whatever else is wrong (R3-03, R3-06). A cancelled upstream job yields to a newer run for the head, and is otherwise `gate-error:<job>: cancelled`; a `plan` job that did not succeed is `gate-error`. Every artifact byte is fetched under one document's limit and the run's 64 MiB budget and compared with the sha256 its producing job published; any mismatch refuses the whole run as `gate-error:artifact-digest: <job>/<file>` (F18). The plan document must pass `run-1.schema.json`, name seven `assay-<job>-<nonce>` artifacts with distinct nonces (its own being the `plan` job's), and equal, field by field, the document Z4 renders from its own recomputation through the code `plan` runs (base config, file list, tiering, classes, required roles and plugins, pins, SHAs, run key); a difference is `plan-mismatch` naming the first differing field, and a PR that `plan` would refuse is `plan-mismatch` too. `admit`'s full-to-lite degrade is accepted only from a successful `admit`, a `full` tier and no classes; any other degrade, one from an `admit` that did not succeed included, is `plan-mismatch` (R3-27). Outputs that name a plugin their job does not schedule, name one twice, come from a skipped job, or come from a successful job that leaves out a scheduled plugin refuse the run, as do documents reported by a skipped `review` job; a reported gate document whose job has no artifact name is `plan-mismatch`. Every scheduled gate gets one report: unreported, it is `gate-error:job-failed` after a failed job and `gate-skipped` after a skipped one; a reported document that is missing, too large, schema-invalid, from another plugin, or disagreeing with the job's non-failing conclusion is a gate error. Gate findings get Z4's evidence and fingerprint: one whose cited line exists on its side and normalises to its evidence's first line of content takes that tree line as evidence and is fingerprinted in its enclosing function with its occurrence index; any other keeps its evidence, is fingerprinted at file scope and loses its rule, so no waiver clears it. Evidence reads list each side once and stop at the first cited file past 1,000 files or 64 MiB (by listed size). Each cited file is indexed once, with every line normalised once, so a finding costs its own quote and one comparison, never its cited line again; a file declaring a function name longer than 256 bytes is not indexed and its findings stay unverified, so no occurrence key or fingerprint hashes an unbounded name (H-13). `open_prs_on_head` counts the PR plus each other open PR on the head into the same base once (R3-19).
+ - `publish` writes nothing for a superseded or yielding run (R3-06), and never releases the slot (the `release` job's). It checks its inputs before any port call: the decision key must be a `sha256:` digest and the inputs' evidence key the run's. It reads the App check for (head, `CheckName::for_base`): absent is `CheckMissing`; carrying this decision key and completed is `Unchanged`, with no write at all; carrying neither this key nor this run's stamp (`pending:<run_id>:` and one or more ASCII digits) yields without taking the lock. A decided run's bundle is built and uploaded before the lock; under the lock the check is read again and must equal the first read exactly, or the writer yields (R3-09); then the evidence record (after a successful upload only), the check (`external_id` the decision key, never `output.annotations`, R3-11) and the summary comment (written only when its body differs). The lock is released after every outcome that took it, and a failed release is reported beside the outcome, never instead of it. A persist failure (bundle not UTF-8 or over its cap, upload, ledger) makes a trust-path or exec-surface PR `failure persist-error` and is otherwise a warning on a decision left unchanged; either way there is no evidence pointer. A refused run publishes `failure` with its refusal reason and persists nothing. Rendering never lets text escape its block: every dynamic string sits in a fenced block longer than any backtick run in it, with control characters and format characters (general category Cf as of Unicode 15.1: bidi embeddings, overrides and isolates, zero-width characters, the byte-order mark, tags) replaced by U+FFFD, at most 50 items of 200 characters each and then "and N more, listed in the decision".
++- Inline comments and per-gate checks (04 §6, #88, `src/publish/findings.rs`): `publish_findings(&FindingsPublication, &impl CommentForge, &impl PublishLedger) -> FindingsOutcome`, after `publish` wrote the verdict. `FindingsPublication { target, decision_key, gates: &[GateReport], findings: &[ValidFinding] }`; `CommentForge: VerdictForge` adds `app_review_comments(number)` (bodies of the App's own review comments only), `create_review_comment(number, &InlineComment)` (`commit_id`, `path`, `line`, `start_line`, `side`, `body`) and `create_check(head, &CheckName, &CheckUpdate)`. `FindingsPublished` is `Yielded { unlock }` or `Written(FindingsWritten { posted, already_posted, unlock })`. Inputs (repository `owner/name`, decision key, gate names) are checked and every body rendered before any port call; under the per-head lock the verdict check must carry the decision key (else it yields), then the App's review comments are read (more than `MAX_PRIOR_COMMENTS`, 1,024, refuses), each gate's `assay / gate: <name>` check is created or updated unless completed under this key, and each of at most `MAX_INLINE_COMMENTS` (8) findings (inline placement, severity, then confidence, then input order, one per fingerprint) is posted unless an App comment's first line, `<!-- assay-finding <fp> -->`, already names its fingerprint. The sanitiser (`src/publish/sanitise.rs`, #175, wi-b5affa) parses no Markdown: model prose has every ASCII punctuation character backslash-escaped, `@` and `#` made fullwidth, `://` and `www.` defanged, leading whitespace dropped and control and format characters replaced, after a per-field cap; the only links are publisher-built permalinks (percent-encoded path, none for a path with an empty, `.` or `..` segment) and the only fences its own, with an info string from a closed list that has no `suggestion`.
+ 
+ ## Errors
+ - `ReadContractError` (`TooLarge`, `Malformed` (including a repeated key), `MissingSchema`, `UnknownSchema`, `UnknownVersion`, `Invalid`): every variant maps to disposition `schema` through `disposition()`.
+@@ -59,6 +60,7 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
+ - `GateError` is an outcome, not a failure of the use case: a `GateRunner` error becomes `GateError::NotRun`, with the runner's message kept in `GateReport::cause`.
+ - `DecideError<O, S, A>` (`NotFirstAttempt`, `State` with the failed call as `StateStep::{Current, PullsOnHead, NewerRun}`, `Artifacts { job, file }`, `Recompute` (a port failed while recomputing the plan), `Objects`, `ShortRead`, `Encode`): `decide` could not reach a verdict; nothing is published and the job fails. `DecideFailure<O, S, A>` names it over the ports' error types. A refusal to publish is a `Refusal` inside `Authentication`, not an error.
+ - `PublishError<F, L>` (`DecisionKey`, `EvidenceKey`, `CheckMissing`, `Observe`, `Lock`, `LockBusy`, `Locked { step: ForgeStep, source, unlock }`): nothing was published (for `Locked`, a forge call under the lock failed at `step`, possibly after the evidence record); the job fails. `PublishFailure` names it over the ports' error types. `PersistFailure<L, B>` (`Bundle(BundleError)`, `Upload`, `Ledger`, with `code()`) and `BundleError` (`NotUtf8 { job, file }`, `TooLarge`, `Encode`) are outcomes inside `Written`, not errors: the verdict is still published.
++- `FindingsError<F, L>` (`Repository`, `DecisionKey`, `GateName { name }`, `Lock`, `LockBusy`, `Locked { step: CommentStep, source, unlock }`, `TooManyComments { count, unlock }`): the first three before any port call; `Locked` after the calls before `step` took effect (a re-run skips the comments already posted); `TooManyComments` before any write.
+ - Use cases to come: one `thiserror` enum each; port failures surface through each port's associated error type.
+ 
+ ## Test strategy
+diff --git a/crates/assay-app/src/lib.rs b/crates/assay-app/src/lib.rs
+index 874696e..53355e3 100644
+--- a/crates/assay-app/src/lib.rs
++++ b/crates/assay-app/src/lib.rs
+@@ -67,10 +67,13 @@ pub use prompt_bundle::{
+ };
+ pub use publish::{
+     BUNDLE_FILE, BundleError, BundleStore, CheckConclusion, CheckName, CheckRun, CheckRunId,
+-    CheckState, CheckStatus, CheckUpdate, CommentId, Decided, EvidenceEntry, EvidencePointer,
+-    EvidenceRecord, ForgeStep, LlmEvidence, MAX_BUNDLE_BYTES, PersistFailure, Publication,
++    CheckState, CheckStatus, CheckUpdate, CommentForge, CommentId, CommentStep, Decided,
++    EvidenceEntry, EvidencePointer, EvidenceRecord, FindingsError, FindingsOutcome,
++    FindingsPublication, FindingsPublished, FindingsWritten, ForgeStep, InlineComment, LlmEvidence,
++    MAX_BUNDLE_BYTES, MAX_INLINE_COMMENTS, MAX_PRIOR_COMMENTS, PersistFailure, Publication,
+     PublishError, PublishFailure, PublishLedger, PublishOutcome, PublishPorts, Published,
+     SUMMARY_MARKER, Stale, SummaryComment, Target, Unlock, Verdict, VerdictForge, Written, publish,
++    publish_findings,
+ };
+ pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
+ pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};
+diff --git a/crates/assay-app/src/publish.rs b/crates/assay-app/src/publish.rs
+index f274198..9f66873 100644
+--- a/crates/assay-app/src/publish.rs
++++ b/crates/assay-app/src/publish.rs
+@@ -9,18 +9,24 @@
+ //! trust-path and exec-surface PRs (`failure persist-error`) and is a visible warning otherwise.
+ 
+ mod bundle;
++mod findings;
+ mod ports;
+ mod render;
++mod sanitise;
+ mod write;
+ 
+ use assay_domain::{Aeu, Conclusion, ContentHash, DecisionInputs, Event, Reason, Rubric, RunUid};
+ use thiserror::Error;
+ 
+ pub use self::bundle::{BUNDLE_FILE, BundleError, MAX_BUNDLE_BYTES};
++pub use self::findings::{
++    CommentStep, FindingsError, FindingsOutcome, FindingsPublication, FindingsPublished,
++    FindingsWritten, MAX_INLINE_COMMENTS, MAX_PRIOR_COMMENTS, publish_findings,
++};
+ pub use self::ports::{
+     BundleStore, CheckConclusion, CheckName, CheckRun, CheckRunId, CheckState, CheckStatus,
+-    CheckUpdate, CommentId, EvidenceEntry, EvidencePointer, EvidenceRecord, LlmEvidence,
+-    PublishLedger, SummaryComment, VerdictForge,
++    CheckUpdate, CommentForge, CommentId, EvidenceEntry, EvidencePointer, EvidenceRecord,
++    InlineComment, LlmEvidence, PublishLedger, SummaryComment, VerdictForge,
+ };
+ pub use self::render::SUMMARY_MARKER;
+ use self::render::{Projection, Summary};
+diff --git a/crates/assay-app/src/publish/findings.rs b/crates/assay-app/src/publish/findings.rs
+new file mode 100644
+index 0000000..664944f
+--- /dev/null
++++ b/crates/assay-app/src/publish/findings.rs
+@@ -0,0 +1,319 @@
++//! Inline comments and per-gate checks (04 §6), written by the run whose decision the verdict
++//! check carries, under the per-head lock (R3-09).
++//!
++//! Each published finding is one review comment, at most [`MAX_INLINE_COMMENTS`] per run,
++//! most severe first and then by confidence; its body names its fingerprint in a hidden marker
++//! on its first line, and a fingerprint already named by one of the App's review comments on
++//! the PR is never posted again, so a re-run posts no duplicate. Every free-text field of a
++//! finding is model text and is made inert by the sanitiser before it is posted (#175).
++
++mod comment;
++mod gates;
++mod select;
++
++#[cfg(test)]
++mod fixture;
++
++use std::collections::BTreeSet;
++
++use assay_domain::{Fingerprint, GateReport, Side};
++use thiserror::Error;
++
++use self::gates::GateCheck;
++use super::ports::{
++    CheckName, CheckStatus, CommentForge, InlineComment, PublishLedger, VerdictForge,
++};
++use super::sanitise::Repository;
++use super::{Target, Unlock};
++use crate::config::{CommitId, Sha256Digest};
++use crate::validation::ValidFinding;
++
++/// The most findings published inline per run (04 §4 step 7).
++pub const MAX_INLINE_COMMENTS: usize = 8;
++
++/// The most App review comments on one PR that are read for fingerprint markers; more refuses
++/// the publication, posting nothing (H-13).
++pub const MAX_PRIOR_COMMENTS: usize = 1024;
++
++/// What [`publish_findings`] publishes for one run.
++#[derive(Debug, Clone, Copy)]
++pub struct FindingsPublication<'a> {
++    /// The run and the PR; the PR's `repo` names the repository permalinks point into.
++    pub target: Target<'a>,
++    /// The decision key `publish` wrote to the verdict check: the comments are this
++    /// decision's, and the gate checks carry it as their `external_id`.
++    pub decision_key: &'a str,
++    /// Every gate of the plan, one non-required check each.
++    pub gates: &'a [GateReport],
++    /// The findings Z4 validated, with the severity the verifier left them at.
++    pub findings: &'a [ValidFinding],
++}
++
++/// What [`publish_findings`] did.
++#[derive(Debug)]
++pub enum FindingsPublished<L> {
++    /// Nothing: the verdict check is missing or carries another decision (R3-09).
++    Yielded {
++        /// What became of the lock.
++        unlock: Unlock<L>,
++    },
++    /// The gate checks and the comments not yet on the PR were written.
++    Written(FindingsWritten<L>),
++}
++
++/// What was written.
++#[derive(Debug)]
++pub struct FindingsWritten<L> {
++    /// The fingerprints posted now, in publication order.
++    pub posted: Vec<Fingerprint>,
++    /// The selected fingerprints the App had already posted on the PR, in publication order.
++    pub already_posted: Vec<Fingerprint>,
++    /// What became of the lock.
++    pub unlock: Unlock<L>,
++}
++
++/// The forge call that failed while the lock was held.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum CommentStep {
++    /// Reading the verdict check.
++    ReadCheck,
++    /// Listing the App's review comments.
++    ReadComments,
++    /// Reading a gate check.
++    ReadGateCheck,
++    /// Creating or updating a gate check.
++    WriteGateCheck,
++    /// Posting an inline comment.
++    PostComment,
++}
++
++impl CommentStep {
++    const fn describe(self) -> &'static str {
++        match self {
++            Self::ReadCheck => "read the verdict check",
++            Self::ReadComments => "list the review comments",
++            Self::ReadGateCheck => "read a gate check",
++            Self::WriteGateCheck => "write a gate check",
++            Self::PostComment => "post an inline comment",
++        }
++    }
++}
++
++/// Why [`publish_findings`] could not publish.
++#[derive(Debug, Error)]
++pub enum FindingsError<F, L> {
++    /// The PR's repository is not `owner/name` as GitHub spells them, so no permalink into it
++    /// can be built safely.
++    #[error("the repository name is not owner/name")]
++    Repository,
++    /// The decision key is not `sha256:<64 hex>`.
++    #[error("the decision key is not a sha256 digest")]
++    DecisionKey,
++    /// A gate's name is not a plugin name.
++    #[error("gate name {name:?} is not a plugin name")]
++    GateName {
++        /// The name as the inputs gave it.
++        name: String,
++    },
++    /// The lock could not be taken.
++    #[error("could not take the per-head publish lock")]
++    Lock(#[source] L),
++    /// Another writer held the lock past the adapter's wait.
++    #[error("the per-head publish lock is held by another writer")]
++    LockBusy,
++    /// A forge call failed while the lock was held; the calls before it took effect.
++    #[error("could not {} under the lock", step.describe())]
++    Locked {
++        /// The call.
++        step: CommentStep,
++        /// The forge's error.
++        #[source]
++        source: F,
++        /// What became of the lock.
++        unlock: Unlock<L>,
++    },
++    /// The App has more review comments on the PR than are read: nothing was written.
++    #[error("the PR has {count} App review comments, more than {MAX_PRIOR_COMMENTS}")]
++    TooManyComments {
++        /// How many the forge returned.
++        count: usize,
++        /// What became of the lock.
++        unlock: Unlock<L>,
++    },
++}
++
++/// What [`publish_findings`] returns over its ports' error types.
++pub type FindingsOutcome<F, L> = Result<
++    FindingsPublished<<L as PublishLedger>::Error>,
++    FindingsError<<F as VerdictForge>::Error, <L as PublishLedger>::Error>,
++>;
++
++/// Publishes `publication`'s gate checks and inline comments through `forge`, under the
++/// per-head lock taken from `ledger`, after `publish` wrote the verdict.
++///
++/// Its inputs are checked and every body rendered before any port call. Under the lock the
++/// verdict check is read: unless it carries `decision_key` the run yields, writing nothing.
++/// Then the App's review comments are read (refused past [`MAX_PRIOR_COMMENTS`]), each gate's
++/// check is created, or updated unless it is already completed under this key, and each
++/// selected finding whose fingerprint no App comment names is posted. The lock is released
++/// after every outcome that took it.
++///
++/// # Errors
++///
++/// [`FindingsError`] when the inputs are malformed (before any port call), the lock cannot be
++/// taken, there are too many prior comments, or a forge call fails under the lock.
++pub fn publish_findings<F: CommentForge, L: PublishLedger>(
++    publication: &FindingsPublication<'_>,
++    forge: &F,
++    ledger: &L,
++) -> FindingsOutcome<F, L> {
++    let target = &publication.target;
++    let event = target.pull_request;
++    let repository = Repository::parse(&event.repo).ok_or(FindingsError::Repository)?;
++    if publication.decision_key.parse::<Sha256Digest>().is_err() {
++        return Err(FindingsError::DecisionKey);
++    }
++    let gate_checks = gates::gate_checks(publication.gates, publication.decision_key)
++        .map_err(|name| FindingsError::GateName { name })?;
++    let comments: Vec<(Fingerprint, InlineComment<'_>)> = select::select(publication.findings)
++        .into_iter()
++        .map(|found| {
++            let comment = inline(found, repository, &event.head_sha);
++            (found.fingerprint, comment)
++        })
++        .collect();
++    let Some(lease) = ledger
++        .acquire(target.run_uid.repo_id, &event.head_sha)
++        .map_err(FindingsError::Lock)?
++    else {
++        return Err(FindingsError::LockBusy);
++    };
++    let locked = under_lock(publication, forge, &gate_checks, &comments);
++    let unlock = match ledger.release(lease) {
++        Ok(()) => Unlock::Released,
++        Err(error) => Unlock::Failed(error),
++    };
++    match locked {
++        Ok(Locked::Stale) => Ok(FindingsPublished::Yielded { unlock }),
++        Ok(Locked::Written {
++            posted,
++            already_posted,
++        }) => Ok(FindingsPublished::Written(FindingsWritten {
++            posted,
++            already_posted,
++            unlock,
++        })),
++        Err(Refused::Forge(step, source)) => Err(FindingsError::Locked {
++            step,
++            source,
++            unlock,
++        }),
++        Err(Refused::TooManyComments(count)) => {
++            Err(FindingsError::TooManyComments { count, unlock })
++        }
++    }
++}
++
++/// The inline comment for `found` at `head`: a span over several lines starts at its first.
++fn inline<'a>(
++    found: &'a ValidFinding,
++    repository: Repository<'_>,
++    head: &'a CommitId,
++) -> InlineComment<'a> {
++    let finding = &found.finding;
++    let (line, start_line) = match finding.end_line {
++        Some(end) if end > finding.line => (end, Some(finding.line)),
++        _ => (finding.line, None),
++    };
++    InlineComment {
++        commit_id: head,
++        path: &found.file_at_head,
++        line,
++        start_line,
++        side: finding.side.unwrap_or(Side::Right),
++        body: comment::body(found, repository, head),
++    }
++}
++
++/// What happened under the lock.
++enum Locked {
++    Stale,
++    Written {
++        posted: Vec<Fingerprint>,
++        already_posted: Vec<Fingerprint>,
++    },
++}
++
++/// Why nothing more was written under the lock.
++enum Refused<F> {
++    Forge(CommentStep, F),
++    TooManyComments(usize),
++}
++
++/// The calls under the lock, in order: verdict check, prior comments, gate checks, comments.
++fn under_lock<F: CommentForge>(
++    publication: &FindingsPublication<'_>,
++    forge: &F,
++    gate_checks: &[GateCheck],
++    comments: &[(Fingerprint, InlineComment<'_>)],
++) -> Result<Locked, Refused<F::Error>> {
++    let target = &publication.target;
++    let event = target.pull_request;
++    let key = publication.decision_key;
++    let verdict = CheckName::for_base(&event.base_ref, target.default_branch);
++    let current = forge
++        .find_check(&event.head_sha, &verdict)
++        .map_err(|error| Refused::Forge(CommentStep::ReadCheck, error))?;
++    if current.is_none_or(|check| check.external_id != key) {
++        return Ok(Locked::Stale);
++    }
++    let prior = forge
++        .app_review_comments(event.number)
++        .map_err(|error| Refused::Forge(CommentStep::ReadComments, error))?;
++    if prior.len() > MAX_PRIOR_COMMENTS {
++        return Err(Refused::TooManyComments(prior.len()));
++    }
++    let mut on_pr: BTreeSet<Fingerprint> = prior
++        .iter()
++        .filter_map(|body| comment::posted_fingerprint(body))
++        .collect();
++    for check in gate_checks {
++        write_gate_check(forge, &event.head_sha, check, key)?;
++    }
++    let mut posted = Vec::new();
++    let mut already_posted = Vec::new();
++    for (fp, comment) in comments {
++        if !on_pr.insert(*fp) {
++            already_posted.push(*fp);
++            continue;
++        }
++        forge
++            .create_review_comment(event.number, comment)
++            .map_err(|error| Refused::Forge(CommentStep::PostComment, error))?;
++        posted.push(*fp);
++    }
++    Ok(Locked::Written {
++        posted,
++        already_posted,
++    })
++}
++
++/// Creates `check`, or updates it unless it is already completed under `key`.
++fn write_gate_check<F: CommentForge>(
++    forge: &F,
++    head: &CommitId,
++    check: &GateCheck,
++    key: &str,
++) -> Result<(), Refused<F::Error>> {
++    let existing = forge
++        .find_check(head, &check.name)
++        .map_err(|error| Refused::Forge(CommentStep::ReadGateCheck, error))?;
++    let written = match existing {
++        Some(found) if found.external_id == key && found.status == CheckStatus::Completed => {
++            return Ok(());
++        }
++        Some(found) => forge.update_check(found.id, &check.update),
++        None => forge.create_check(head, &check.name, &check.update),
++    };
++    written.map_err(|error| Refused::Forge(CommentStep::WriteGateCheck, error))
++}
+diff --git a/crates/assay-app/src/publish/findings/comment.rs b/crates/assay-app/src/publish/findings/comment.rs
+new file mode 100644
+index 0000000..ba173a4
+--- /dev/null
++++ b/crates/assay-app/src/publish/findings/comment.rs
+@@ -0,0 +1,349 @@
++//! An inline comment's body: fixed text and closed vocabularies around model prose made inert
++//! by [`prose`], publisher-built permalinks and fences, the hidden fingerprint marker and the
++//! feedback footer (04 §6).
++
++use assay_domain::{Fingerprint, Severity};
++
++use crate::config::CommitId;
++use crate::publish::sanitise::{Info, Repository, code_block, permalink, prose};
++use crate::validation::ValidFinding;
++
++/// What the hidden marker line starts with; the fingerprint and [`MARKER_END`] follow.
++const MARKER_START: &str = "<!-- assay-finding ";
++
++/// What the hidden marker line ends with.
++const MARKER_END: &str = " -->";
++
++/// The most characters of a title shown (the findings schema's cap).
++const MAX_TITLE_CHARS: usize = 100;
++
++/// The most characters of a body shown (the findings schema's cap).
++const MAX_BODY_CHARS: usize = 1200;
++
++/// The most characters of a trigger or expected behaviour shown (the findings schema's cap).
++const MAX_CLAIM_CHARS: usize = 300;
++
++/// The most characters of a suggested fix shown (the findings schema's cap).
++const MAX_FIX_CHARS: usize = 600;
++
++/// The most characters of a rule id shown.
++const MAX_RULE_CHARS: usize = 100;
++
++/// The body of the inline comment for `found`, whose permalinks point into `repository` at
++/// `head`: the marker line, a header of closed vocabularies, the title, body and labelled
++/// fields as inert prose, the caller's permalink and code, the evidence, a note on a similar
++/// dismissal, and the footer inviting a reaction. Each free-text field is capped before it is
++/// escaped, so the body's length is bounded whatever the finding holds.
++pub(super) fn body(found: &ValidFinding, repository: Repository<'_>, head: &CommitId) -> String {
++    let finding = &found.finding;
++    let fp = found.fingerprint;
++    let mut header = format!(
++        "{} **{}** · {} · {} · confidence {}",
++        finding.marker(),
++        finding.severity.code(),
++        finding.class.code(),
++        finding.kind.code(),
++        finding
++            .confidence
++            .map_or("unstated", |confidence| confidence.code()),
++    );
++    if finding.pre_existing {
++        header.push_str(" · pre-existing");
++    }
++    let mut parts = vec![
++        [MARKER_START, &fp.to_string(), MARKER_END, "\n", &header].concat(),
++        format!("**{}**", prose(&finding.title, MAX_TITLE_CHARS)),
++        prose(&finding.body, MAX_BODY_CHARS),
++    ];
++    let labelled = [
++        ("Trigger", finding.trigger.as_deref(), MAX_CLAIM_CHARS),
++        (
++            "Expected behaviour",
++            finding.expected_behavior.as_deref(),
++            MAX_CLAIM_CHARS,
++        ),
++        ("Rule", finding.rule.as_deref(), MAX_RULE_CHARS),
++    ];
++    for (label, text, cap) in labelled {
++        if let Some(text) = text {
++            parts.push(format!("**{label}:** {}", prose(text, cap)));
++        }
++    }
++    if let Some(caller) = &finding.caller {
++        parts.push(format!(
++            "**Caller:** {}",
++            permalink(repository, head, &caller.file, caller.line)
++        ));
++        parts.push(code_block(&caller.evidence, Info::for_path(&caller.file)));
++    }
++    if let Some(fix) = &finding.fix {
++        parts.push(format!("**Suggested fix:** {}", prose(fix, MAX_FIX_CHARS)));
++    }
++    parts.push(code_block(
++        &finding.evidence,
++        Info::for_path(&found.file_at_head),
++    ));
++    if let Some(dismissed) = found.previously_dismissed {
++        parts.push(dismissed_note(dismissed));
++    }
++    parts.push(format!(
++        "React with 👍 if this finding is useful or 👎 if it is not. Fingerprint `{fp}`; an \
++         eligible owner can dismiss it with `/assay dismiss {fp} <reason>`."
++    ));
++    parts.join("\n\n")
++}
++
++/// The note on a finding that resembles one dismissed at a lower severity (03 §3).
++fn dismissed_note(dismissed: Severity) -> String {
++    format!(
++        "A similar finding was dismissed before, at **{}**; this one is more severe.",
++        dismissed.code()
++    )
++}
++
++/// The fingerprint a comment body's marker names: its first line, exactly the marker with 16
++/// lowercase hex digits. Only the first line counts, because later lines may quote the
++/// repository's code, which could spell a marker. Any other body names none.
++pub(super) fn posted_fingerprint(body: &str) -> Option<Fingerprint> {
++    let line = body.lines().next()?;
++    let hex = line.strip_prefix(MARKER_START)?.strip_suffix(MARKER_END)?;
++    // Text that is not a fingerprint is simply not a marker.
++    hex.parse().ok()
++}
++
++#[cfg(test)]
++mod tests {
++    use std::num::NonZeroU64;
++
++    use assay_domain::{Caller, Confidence, FindingKind, Fingerprint, IntroducedBy, Severity};
++
++    use super::{body, posted_fingerprint};
++    use crate::config::CommitId;
++    use crate::publish::findings::fixture::valid;
++    use crate::publish::sanitise::Repository;
++    use crate::validation::ValidFinding;
++
++    const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
++
++    fn head() -> CommitId {
++        HEAD.parse().expect("40 lowercase hex digits")
++    }
++
++    fn repository() -> Repository<'static> {
++        Repository::parse("owner/repo").expect("a valid repository")
++    }
++
++    fn rendered(found: &ValidFinding) -> String {
++        body(found, repository(), &head())
++    }
++
++    #[test]
++    fn a_finding_renders_with_marker_evidence_and_footer() {
++        let found = valid(0xab, Severity::Major, Some(Confidence::High)).expect("fixture");
++
++        assert_eq!(
++            rendered(&found),
++            "<!-- assay-finding 00000000000000ab -->\n\
++             🟡 **major** · logic · defect · confidence high\n\
++             \n\
++             **Event recorded twice**\n\
++             \n\
++             The retry path records the event again\\.\n\
++             \n\
++             ```rust\n\
++             record_event(id);\n\
++             ```\n\
++             \n\
++             React with 👍 if this finding is useful or 👎 if it is not. Fingerprint \
++             `00000000000000ab`; an eligible owner can dismiss it with \
++             `/assay dismiss 00000000000000ab <reason>`."
++        );
++    }
++
++    /// A finding whose text slipped past the step-5 injection screen: every construct the
++    /// screen exists to catch, in every free-text field.
++    fn slipped() -> ValidFinding {
++        let mut found = valid(0x51, Severity::Blocker, None).expect("fixture");
++        let finding = &mut found.finding;
++        finding.title = "[click](https://evil.example) @owner".to_owned();
++        finding.body = "![x](https://evil/p.png) <img src=x> <!-- hide -->\n\
++                        ```suggestion\nrm -rf /\n```\n\
++                        <https://evil> www.evil.com other/repo#1 &#64;admin"
++            .to_owned();
++        finding.trigger = Some("`code` [ref]: https://evil".to_owned());
++        finding.expected_behavior = Some("<details>open</details>".to_owned());
++        finding.rule = Some("@team/x".to_owned());
++        finding.fix = Some("~~~suggestion\nevil()\n~~~".to_owned());
++        finding.kind = FindingKind::Omission;
++        found
++    }
++
++    #[test]
++    fn a_finding_that_slipped_past_the_screen_renders_inert() {
++        assert_eq!(
++            rendered(&slipped()),
++            "<!-- assay-finding 0000000000000051 -->\n\
++             🔴 **blocker** · logic · omission · confidence unstated\n\
++             \n\
++             **\\[click\\]\\(https\\[\\:\\]\\/\\/evil\\.example\\) \u{ff20}owner**\n\
++             \n\
++             \\!\\[x\\]\\(https\\[\\:\\]\\/\\/evil\\/p\\.png\\) \\<img src\\=x\\> \
++             \\<\\!\\-\\- hide \\-\\-\\>\n\
++             \\`\\`\\`suggestion\n\
++             rm \\-rf \\/\n\
++             \\`\\`\\`\n\
++             \\<https\\[\\:\\]\\/\\/evil\\> www\\[\\.\\]evil\\.com other\\/repo\u{ff03}1 \
++             \\&\u{ff03}64\\;admin\n\
++             \n\
++             **Trigger:** \\`code\\` \\[ref\\]\\: https\\[\\:\\]\\/\\/evil\n\
++             \n\
++             **Expected behaviour:** \\<details\\>open\\<\\/details\\>\n\
++             \n\
++             **Rule:** \u{ff20}team\\/x\n\
++             \n\
++             **Suggested fix:** \\~\\~\\~suggestion\n\
++             evil\\(\\)\n\
++             \\~\\~\\~\n\
++             \n\
++             ```rust\n\
++             record_event(id);\n\
++             ```\n\
++             \n\
++             React with 👍 if this finding is useful or 👎 if it is not. Fingerprint \
++             `0000000000000051`; an eligible owner can dismiss it with \
++             `/assay dismiss 0000000000000051 <reason>`."
++        );
++    }
++
++    #[test]
++    fn the_only_live_link_is_the_publishers_permalink() {
++        let mut found = slipped();
++        found.finding.introduced_by = Some(IntroducedBy::Interaction);
++        found.finding.caller = Some(Caller {
++            file: "src/main.rs".to_owned(),
++            line: NonZeroU64::MIN.saturating_add(9),
++            evidence: "run(@x);".to_owned(),
++        });
++
++        let text = rendered(&found);
++
++        let links: Vec<&str> = text
++            .match_indices("](")
++            .filter_map(|(at, _)| text.get(at..))
++            .collect();
++        assert_eq!(links.len(), 1, "{text}");
++        assert!(
++            links[0].starts_with(&format!(
++                "](https://github.com/owner/repo/blob/{HEAD}/src/main.rs#L10)"
++            )),
++            "{text}"
++        );
++        assert!(
++            text.contains(
++                "**Caller:** [src\\/main\\.rs\\:10](https://github.com/owner/repo/blob/\
++                 0123456789abcdef0123456789abcdef01234567/src/main.rs#L10)\n\
++                 \n\
++                 ```rust\n\
++                 run(@x);\n\
++                 ```\n"
++            ),
++            "{text}"
++        );
++    }
++
++    #[test]
++    fn a_pre_existing_finding_is_marked_purple() {
++        let mut found = valid(1, Severity::Minor, Some(Confidence::Low)).expect("fixture");
++        found.finding.pre_existing = true;
++
++        let text = rendered(&found);
++
++        assert!(
++            text.contains("\n🟣 **minor** · logic · defect · confidence low · pre-existing\n"),
++            "{text}"
++        );
++    }
++
++    #[test]
++    fn a_previously_dismissed_similar_finding_says_so() {
++        let mut found = valid(1, Severity::Major, None).expect("fixture");
++        found.previously_dismissed = Some(Severity::Minor);
++
++        let text = rendered(&found);
++
++        assert!(
++            text.contains(
++                "\n\nA similar finding was dismissed before, at **minor**; this one is \
++                 more severe.\n\n"
++            ),
++            "{text}"
++        );
++    }
++
++    #[test]
++    fn free_text_is_capped_before_escaping() {
++        let mut found = valid(1, Severity::Major, None).expect("fixture");
++        found.finding.title = "t".repeat(101);
++        found.finding.body = "b".repeat(1201);
++
++        let text = rendered(&found);
++
++        assert!(
++            text.contains(&format!("**{}…**", "t".repeat(100))),
++            "{text}"
++        );
++        assert!(
++            text.contains(&format!("\n{}…\n", "b".repeat(1200))),
++            "{text}"
++        );
++    }
++
++    #[test]
++    fn the_largest_finding_fits_a_github_comment() {
++        let mut found = slipped();
++        let hostile = "@<[`".repeat(1000);
++        let finding = &mut found.finding;
++        finding.title.clone_from(&hostile);
++        finding.body.clone_from(&hostile);
++        finding.trigger = Some(hostile.clone());
++        finding.expected_behavior = Some(hostile.clone());
++        finding.rule = Some(hostile.clone());
++        finding.fix = Some(hostile.clone());
++        finding.evidence = "`".repeat(10_000);
++        finding.caller = Some(Caller {
++            file: "p/".repeat(5000),
++            line: NonZeroU64::MAX,
++            evidence: "`".repeat(10_000),
++        });
++
++        let chars = rendered(&found).chars().count();
++
++        assert!(chars < 16_000, "{chars} characters");
++    }
++
++    #[test]
++    fn the_marker_names_the_posted_fingerprint() {
++        let found = valid(0xab, Severity::Major, None).expect("fixture");
++
++        let posted = posted_fingerprint(&rendered(&found));
++
++        assert_eq!(
++            posted,
++            Some("00000000000000ab".parse::<Fingerprint>().expect("hex"))
++        );
++    }
++
++    #[test]
++    fn a_body_without_a_well_formed_marker_names_none() {
++        let bodies = [
++            "no marker",
++            "<!-- assay-finding 00000000000000AB -->",
++            "<!-- assay-finding 00000000000000ab -->x",
++            "x <!-- assay-finding 00000000000000ab -->",
++            "<!-- assay-finding 0ab -->",
++            "quoted code:\n<!-- assay-finding 00000000000000ab -->",
++        ];
++
++        assert_eq!(bodies.map(posted_fingerprint), [None; 6]);
++    }
++}
+diff --git a/crates/assay-app/src/publish/findings/fixture.rs b/crates/assay-app/src/publish/findings/fixture.rs
+new file mode 100644
+index 0000000..55240b2
+--- /dev/null
++++ b/crates/assay-app/src/publish/findings/fixture.rs
+@@ -0,0 +1,50 @@
++//! Validated findings for the unit tests of selection and rendering.
++
++use std::num::NonZeroU64;
++
++use assay_domain::{
++    Class, Confidence, Finding, FindingKind, Fingerprint, ParseFingerprintError, Severity, Side,
++};
++
++use crate::validation::{FindingRef, Placement, ValidFinding};
++
++/// An inline finding on `src/lib.rs` line 3 with fingerprint `fp`.
++pub(super) fn valid(
++    fp: u64,
++    severity: Severity,
++    confidence: Option<Confidence>,
++) -> Result<ValidFinding, ParseFingerprintError> {
++    Ok(ValidFinding {
++        at: FindingRef::Finding {
++            document: 0,
++            index: 0,
++        },
++        finding: Finding {
++            class: Class::Logic,
++            rule: None,
++            kind: FindingKind::Defect,
++            severity,
++            introduced_by: None,
++            pre_existing: false,
++            file: "src/lib.rs".to_owned(),
++            line: NonZeroU64::MIN.saturating_add(2),
++            end_line: None,
++            side: Some(Side::Right),
++            evidence: "record_event(id);".to_owned(),
++            expected_behavior: None,
++            trigger: None,
++            caller: None,
++            title: "Event recorded twice".to_owned(),
++            body: "The retry path records the event again.".to_owned(),
++            fix: None,
++            confidence,
++            group_hint: None,
++        },
++        file_at_head: "src/lib.rs".to_owned(),
++        enclosing_symbol: "f".to_owned(),
++        occurrence_index: 0,
++        fingerprint: format!("{fp:016x}").parse::<Fingerprint>()?,
++        placement: Placement::Inline,
++        previously_dismissed: None,
++    })
++}
+diff --git a/crates/assay-app/src/publish/findings/gates.rs b/crates/assay-app/src/publish/findings/gates.rs
+new file mode 100644
+index 0000000..2b38bfb
+--- /dev/null
++++ b/crates/assay-app/src/publish/findings/gates.rs
+@@ -0,0 +1,103 @@
++//! The non-required per-plugin checks `assay / gate: <name>` (04 §6): each gate's conclusion
++//! and its findings, beside the one required verdict check.
++
++use std::iter;
++
++use assay_domain::{GateConclusion, GateOutcome, GateReport, Severity};
++
++use crate::config::GateName;
++use crate::publish::ports::{CheckConclusion, CheckName, CheckState, CheckUpdate};
++use crate::publish::render;
++
++/// One gate check to write.
++pub(super) struct GateCheck {
++    /// `assay / gate: <name>`.
++    pub(super) name: CheckName,
++    /// What it shows.
++    pub(super) update: CheckUpdate,
++}
++
++/// The check of every gate in `gates`, keyed by `decision_key`, or the first gate name that is
++/// not a plugin name (base config admits no other, so this is a defect upstream).
++pub(super) fn gate_checks(
++    gates: &[GateReport],
++    decision_key: &str,
++) -> Result<Vec<GateCheck>, String> {
++    gates
++        .iter()
++        .map(|gate| {
++            // The validated name owns its copy of the plugin name.
++            let name = GateName::new(gate.name.clone())?;
++            Ok(GateCheck {
++                update: update(&name, gate, decision_key),
++                name: CheckName::for_gate(&name),
++            })
++        })
++        .collect()
++}
++
++/// The check update for `gate`: `success`, `failure` or `neutral` as the gate concluded, and
++/// `failure` for a gate that errored or was skipped, which is never a pass.
++fn update(name: &GateName, gate: &GateReport, decision_key: &str) -> CheckUpdate {
++    let (conclusion, word) = match &gate.outcome {
++        GateOutcome::Ran { conclusion, .. } => (
++            match conclusion {
++                GateConclusion::Pass => CheckConclusion::Success,
++                GateConclusion::Fail => CheckConclusion::Failure,
++                GateConclusion::Neutral => CheckConclusion::Neutral,
++            },
++            conclusion.code(),
++        ),
++        GateOutcome::Error { .. } => (CheckConclusion::Failure, "error"),
++        GateOutcome::Skipped => (CheckConclusion::Failure, "skipped"),
++    };
++    CheckUpdate {
++        state: CheckState::Completed(conclusion),
++        title: format!("assay gate {name}: {word}"),
++        summary: summary(gate),
++        text: ["```text\ndecision_key: ", decision_key, "\n```"].concat(),
++        // The check owns its external id.
++        external_id: decision_key.to_owned(),
++    }
++}
++
++/// The gate's error or skip, its finding counts and its findings, each in a fenced block.
++fn summary(gate: &GateReport) -> String {
++    let mut lines = Vec::new();
++    match &gate.outcome {
++        GateOutcome::Ran { .. } => {}
++        GateOutcome::Error { detail } => {
++            lines.push("The gate errored:".to_owned());
++            // The block renders an owned copy of the detail.
++            render::block(&mut lines, 1, iter::once(detail.clone()));
++            lines.push(String::new());
++        }
++        GateOutcome::Skipped => {
++            lines.push("The gate did not run.".to_owned());
++            lines.push(String::new());
++        }
++    }
++    let count = |severity: Severity| {
++        gate.findings
++            .iter()
++            .filter(|finding| finding.severity == severity)
++            .count()
++    };
++    lines.push(format!(
++        "Findings: {} blocker · {} major · {} minor · {} nit",
++        count(Severity::Blocker),
++        count(Severity::Major),
++        count(Severity::Minor),
++        count(Severity::Nit),
++    ));
++    lines.push(String::new());
++    let items = gate.findings.iter().map(|finding| {
++        let severity = finding.severity.code();
++        match &finding.rule {
++            Some(rule) => format!("{severity} {rule} ({})", finding.fp),
++            None => format!("{severity} ({})", finding.fp),
++        }
++    });
++    render::block(&mut lines, gate.findings.len(), items);
++    lines.join("\n")
++}
+diff --git a/crates/assay-app/src/publish/findings/select.rs b/crates/assay-app/src/publish/findings/select.rs
+new file mode 100644
+index 0000000..77a1e5c
+--- /dev/null
++++ b/crates/assay-app/src/publish/findings/select.rs
+@@ -0,0 +1,137 @@
++//! Which validated findings become inline comments (04 §4 step 7, 04 §6).
++
++use std::cmp::Reverse;
++use std::collections::BTreeSet;
++
++use assay_domain::Confidence;
++
++use super::MAX_INLINE_COMMENTS;
++use crate::validation::{Placement, ValidFinding};
++
++/// The findings published inline, at most [`MAX_INLINE_COMMENTS`]: those placed inline, most
++/// severe first, then by confidence (high, medium, low, unstated), then in input order; one per
++/// fingerprint, its most severe copy. O(n log n) in the findings.
++pub(super) fn select(findings: &[ValidFinding]) -> Vec<&ValidFinding> {
++    let mut inline: Vec<&ValidFinding> = findings
++        .iter()
++        .filter(|found| found.placement == Placement::Inline)
++        .collect();
++    // Stable, so equal findings keep their input order.
++    inline.sort_by_key(|found| {
++        (
++            Reverse(found.finding.severity),
++            Reverse(confidence_rank(found.finding.confidence)),
++        )
++    });
++    let mut seen = BTreeSet::new();
++    inline.retain(|found| seen.insert(found.fingerprint));
++    inline.truncate(MAX_INLINE_COMMENTS);
++    inline
++}
++
++/// Higher for surer findings; an unstated confidence ranks lowest.
++const fn confidence_rank(confidence: Option<Confidence>) -> u8 {
++    match confidence {
++        Some(Confidence::High) => 3,
++        Some(Confidence::Medium) => 2,
++        Some(Confidence::Low) => 1,
++        None => 0,
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use assay_domain::{Confidence, Fingerprint, Severity};
++
++    use super::select;
++    use crate::publish::findings::MAX_INLINE_COMMENTS;
++    use crate::publish::findings::fixture::valid;
++    use crate::validation::{Placement, ValidFinding};
++
++    fn fingerprints(selected: &[&ValidFinding]) -> Vec<Fingerprint> {
++        selected.iter().map(|found| found.fingerprint).collect()
++    }
++
++    fn fp(value: u64) -> Fingerprint {
++        format!("{value:016x}").parse().expect("16 hex digits")
++    }
++
++    #[test]
++    fn blockers_come_first_then_majors_by_confidence() {
++        let findings = [
++            valid(1, Severity::Minor, Some(Confidence::High)).expect("fixture"),
++            valid(2, Severity::Major, Some(Confidence::Low)).expect("fixture"),
++            valid(3, Severity::Major, None).expect("fixture"),
++            valid(4, Severity::Blocker, Some(Confidence::Low)).expect("fixture"),
++            valid(5, Severity::Major, Some(Confidence::High)).expect("fixture"),
++            valid(6, Severity::Nit, Some(Confidence::High)).expect("fixture"),
++            valid(7, Severity::Major, Some(Confidence::Medium)).expect("fixture"),
++        ];
++
++        let selected = select(&findings);
++
++        assert_eq!(
++            fingerprints(&selected),
++            [4, 5, 7, 2, 3, 1, 6].map(fp),
++            "blocker, majors high > medium > low > unstated, minor, nit"
++        );
++    }
++
++    #[test]
++    fn equal_findings_keep_their_input_order() {
++        let findings = [
++            valid(9, Severity::Major, Some(Confidence::High)).expect("fixture"),
++            valid(8, Severity::Major, Some(Confidence::High)).expect("fixture"),
++        ];
++
++        assert_eq!(fingerprints(&select(&findings)), [9, 8].map(fp));
++    }
++
++    #[test]
++    fn the_cap_of_inline_findings_is_kept_whole() {
++        let findings: Vec<ValidFinding> = (1..=8)
++            .map(|n| valid(n, Severity::Major, None).expect("fixture"))
++            .collect();
++
++        assert_eq!(select(&findings).len(), MAX_INLINE_COMMENTS);
++    }
++
++    #[test]
++    fn findings_past_the_cap_are_not_inline() {
++        let findings: Vec<ValidFinding> = (1..=9)
++            .map(|n| valid(n, Severity::Major, None).expect("fixture"))
++            .collect();
++
++        assert_eq!(
++            fingerprints(&select(&findings)),
++            (1..=8).map(fp).collect::<Vec<_>>()
++        );
++    }
++
++    #[test]
++    fn a_fingerprint_is_selected_once() {
++        let findings = [
++            valid(1, Severity::Minor, None).expect("fixture"),
++            valid(1, Severity::Blocker, None).expect("fixture"),
++            valid(2, Severity::Nit, None).expect("fixture"),
++        ];
++
++        let selected = select(&findings);
++
++        assert_eq!(fingerprints(&selected), [1, 2].map(fp));
++        assert_eq!(
++            selected.first().map(|found| found.finding.severity),
++            Some(Severity::Blocker),
++            "the most severe copy is the one published"
++        );
++    }
++
++    #[test]
++    fn summary_findings_are_not_inline() {
++        let mut moved = valid(1, Severity::Blocker, None).expect("fixture");
++        moved.placement = Placement::Summary;
++        let findings = [moved, valid(2, Severity::Nit, None).expect("fixture")];
++
++        assert_eq!(fingerprints(&select(&findings)), [fp(2)]);
++    }
++}
+diff --git a/crates/assay-app/src/publish/ports.rs b/crates/assay-app/src/publish/ports.rs
+index 32294dc..bd2a000 100644
+--- a/crates/assay-app/src/publish/ports.rs
++++ b/crates/assay-app/src/publish/ports.rs
+@@ -4,9 +4,9 @@
+ use std::fmt;
+ use std::num::NonZeroU64;
+ 
+-use assay_domain::Tier;
++use assay_domain::{Side, Tier};
+ 
+-use crate::config::{CommitId, Sha256Digest};
++use crate::config::{CommitId, GateName, Sha256Digest};
+ 
+ /// The verdict check and the summary comment, written with the `assay-verdict` App's token.
+ /// Implemented by the forge adapter (#53).
+@@ -61,6 +61,60 @@ pub trait VerdictForge {
+     fn update_summary(&self, id: CommentId, body: &str) -> Result<(), Self::Error>;
+ }
+ 
++/// The inline review comments and the per-gate checks, written with the `assay-verdict` App's
++/// token beside the verdict check. Implemented by the forge adapter (#53).
++pub trait CommentForge: VerdictForge {
++    /// The bodies of every review comment on PR `number` that the App authored, across all
++    /// pages. A comment by anyone else is never returned, whatever it contains, so no one else
++    /// can mark a fingerprint as posted.
++    ///
++    /// # Errors
++    ///
++    /// [`VerdictForge::Error`] when the review comments cannot be listed.
++    fn app_review_comments(&self, number: NonZeroU64) -> Result<Vec<String>, Self::Error>;
++
++    /// Posts `comment` on the diff of PR `number`, as a single review comment.
++    ///
++    /// # Errors
++    ///
++    /// [`VerdictForge::Error`] when the comment cannot be posted.
++    fn create_review_comment(
++        &self,
++        number: NonZeroU64,
++        comment: &InlineComment<'_>,
++    ) -> Result<(), Self::Error>;
++
++    /// Creates the check run `name` on `head` with `update`'s status, conclusion, output and
++    /// `external_id`. Never called for the verdict check, which only `open` creates.
++    ///
++    /// # Errors
++    ///
++    /// [`VerdictForge::Error`] when the check cannot be created.
++    fn create_check(
++        &self,
++        head: &CommitId,
++        name: &CheckName,
++        update: &CheckUpdate,
++    ) -> Result<(), Self::Error>;
++}
++
++/// One inline review comment: where on the diff it goes and its body, already sanitised.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct InlineComment<'a> {
++    /// The head commit the comment is anchored at.
++    pub commit_id: &'a CommitId,
++    /// The file's path at head (the base path for a deleted file).
++    pub path: &'a str,
++    /// The last line of the span, as GitHub's `line`.
++    pub line: NonZeroU64,
++    /// The first line of a span over several lines, as GitHub's `start_line`.
++    pub start_line: Option<NonZeroU64>,
++    /// The side of the diff the lines are on.
++    pub side: Side,
++    /// The Markdown body, with the hidden fingerprint marker on its first line.
++    pub body: String,
++}
++
+ /// The ledger repository, written with the App's ledger installation token. Implemented by the
+ /// ledger adapter (#70).
+ pub trait PublishLedger {
+@@ -135,6 +189,11 @@ impl CheckName {
+         }
+     }
+ 
++    /// The name of the non-required check for plugin `gate`: `assay / gate: <name>`.
++    pub(crate) fn for_gate(gate: &GateName) -> Self {
++        Self(format!("assay / gate: {gate}"))
++    }
++
+     /// The name as GitHub shows it.
+     #[must_use]
+     pub fn as_str(&self) -> &str {
+diff --git a/crates/assay-app/src/publish/render.rs b/crates/assay-app/src/publish/render.rs
+index 3ecb998..37c0247 100644
+--- a/crates/assay-app/src/publish/render.rs
++++ b/crates/assay-app/src/publish/render.rs
+@@ -175,7 +175,7 @@ pub(super) fn comment(summary: &str) -> String {
+ 
+ /// Appends up to [`MAX_ITEMS`] of `total` items as one fenced block whose fence is longer than
+ /// any backtick run inside it, each item cleaned and clipped, then how many were left out.
+-fn block(lines: &mut Vec<String>, total: usize, items: impl Iterator<Item = String>) {
++pub(super) fn block(lines: &mut Vec<String>, total: usize, items: impl Iterator<Item = String>) {
+     if total == 0 {
+         lines.push("none".to_owned());
+         return;
+@@ -221,7 +221,7 @@ const FORMAT: [(char, char); 21] = [
+ ];
+ 
+ /// Whether `c` renders as something other than itself: a control or a format character.
+-fn is_hidden(c: char) -> bool {
++pub(super) fn is_hidden(c: char) -> bool {
+     c.is_control()
+         || FORMAT
+             .iter()
+diff --git a/crates/assay-app/src/publish/sanitise.rs b/crates/assay-app/src/publish/sanitise.rs
+new file mode 100644
+index 0000000..b1bea5a
+--- /dev/null
++++ b/crates/assay-app/src/publish/sanitise.rs
+@@ -0,0 +1,283 @@
++//! The publication-side backstop for model-authored text (04 §6 "Sanitisation", #175).
++//!
++//! Policy wi-b5affa, "refuse rather than model": nothing here reads Markdown. Model prose is
++//! made inert by construction instead. Every ASCII punctuation character is backslash-escaped,
++//! which Markdown allows for every one of them, so no inline or block construct (link, image,
++//! autolink, raw HTML, code span, fence, emphasis, table, heading, quote, list) can start. What
++//! GitHub turns live without punctuation is defanged by substitution: `@` (mentions, email
++//! autolinks) and `#` (cross-repository references) become their fullwidth forms, `://` and
++//! `www.` (extended autolinks) are written `[:]//` and `www[.]`. Lines lose their leading
++//! whitespace (no indented code) and control and format characters become U+FFFD. The only
++//! live links are the permalinks [`permalink`] builds and the only fences [`code_block`]'s,
++//! whose info string comes from the closed [`Info`] list, which has no `suggestion`.
++
++use std::num::NonZeroU64;
++
++use super::render::is_hidden;
++use crate::config::CommitId;
++
++/// What a clipped text ends with.
++const ELLIPSIS: char = '…';
++
++/// The most lines of code a fenced block shows (H-13).
++pub(super) const MAX_CODE_LINES: usize = 20;
++
++/// The most characters of code a fenced block shows (H-13).
++pub(super) const MAX_CODE_CHARS: usize = 1000;
++
++/// The longest path, in bytes, a permalink is built for; a longer one is shown as plain text.
++pub(super) const MAX_PATH_BYTES: usize = 1024;
++
++/// The longest owner or repository name GitHub allows.
++const MAX_NAME_BYTES: usize = 100;
++
++/// `text` as inert Markdown: at most `max_chars` characters of it (then `…`), escaped and
++/// defanged as the module documentation describes. Runs of blank lines become one.
++pub(super) fn prose(text: &str, max_chars: usize) -> String {
++    let (clipped, cut) = clip(text, max_chars);
++    let mut out = String::with_capacity(clipped.len().saturating_mul(2));
++    let mut blank = false;
++    for line in clipped.split('\n') {
++        let line = line.strip_suffix('\r').unwrap_or(line).trim();
++        if line.is_empty() {
++            blank = !out.is_empty();
++            continue;
++        }
++        if !out.is_empty() {
++            out.push_str(if blank { "\n\n" } else { "\n" });
++        }
++        blank = false;
++        escape_line_into(line, &mut out);
++    }
++    if cut {
++        out.push(ELLIPSIS);
++    }
++    out
++}
++
++/// The first `max_chars` characters of `text`, and whether anything was cut.
++fn clip(text: &str, max_chars: usize) -> (&str, bool) {
++    match text
++        .char_indices()
++        .nth(max_chars)
++        .and_then(|(at, _)| text.split_at_checked(at))
++    {
++        Some((kept, _)) => (kept, true),
++        None => (text, false),
++    }
++}
++
++/// Appends `line` (no line feed in it) escaped and defanged.
++fn escape_line_into(line: &str, out: &mut String) {
++    let mut chars = line.chars();
++    loop {
++        let rest = chars.as_str();
++        if let Some(after) = rest.strip_prefix("://") {
++            out.push_str(r"\[\:\]\/\/");
++            chars = after.chars();
++            continue;
++        }
++        if let Some((www, after)) = rest.split_at_checked(4)
++            && www.eq_ignore_ascii_case("www.")
++        {
++            out.extend(www.chars().take(3));
++            out.push_str(r"\[\.\]");
++            chars = after.chars();
++            continue;
++        }
++        let Some(c) = chars.next() else {
++            break;
++        };
++        match c {
++            '@' => out.push('\u{ff20}'),
++            '#' => out.push('\u{ff03}'),
++            c if c.is_ascii_punctuation() => {
++                out.push('\\');
++                out.push(c);
++            }
++            c if is_hidden(c) => out.push('\u{fffd}'),
++            c => out.push(c),
++        }
++    }
++}
++
++/// The info strings a publisher-written fence may carry: a closed list, so `suggestion` (a
++/// one-click change GitHub offers to apply) cannot be written.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub(super) enum Info {
++    /// `text`: anything without a known language.
++    Text,
++    /// `rust`.
++    Rust,
++    /// `toml`.
++    Toml,
++    /// `json`.
++    Json,
++    /// `yaml`.
++    Yaml,
++    /// `sh`.
++    Shell,
++}
++
++impl Info {
++    /// Every info string, for tests of the allowlist.
++    #[cfg(test)]
++    const ALL: [Self; 6] = [
++        Self::Text,
++        Self::Rust,
++        Self::Toml,
++        Self::Json,
++        Self::Yaml,
++        Self::Shell,
++    ];
++
++    /// The info string for code from `path`, by its extension.
++    pub(super) fn for_path(path: &str) -> Self {
++        let extension = path
++            .rsplit_once('/')
++            .map_or(path, |(_, file)| file)
++            .rsplit_once('.')
++            .map(|(_, extension)| extension);
++        match extension {
++            Some("rs") => Self::Rust,
++            Some("toml") => Self::Toml,
++            Some("json") => Self::Json,
++            Some("yml" | "yaml") => Self::Yaml,
++            Some("sh") => Self::Shell,
++            _ => Self::Text,
++        }
++    }
++
++    /// The info string as written after the fence.
++    pub(super) const fn as_str(self) -> &'static str {
++        match self {
++            Self::Text => "text",
++            Self::Rust => "rust",
++            Self::Toml => "toml",
++            Self::Json => "json",
++            Self::Yaml => "yaml",
++            Self::Shell => "sh",
++        }
++    }
++}
++
++/// `code` in a fenced block tagged `info`: at most [`MAX_CODE_LINES`] lines and
++/// [`MAX_CODE_CHARS`] characters (then a `…` line), control and format characters other than
++/// tabs replaced by U+FFFD, under a backtick fence longer than any backtick run inside, so
++/// nothing in it can close the block.
++pub(super) fn code_block(code: &str, info: Info) -> String {
++    let (clipped, mut cut) = clip(code, MAX_CODE_CHARS);
++    let mut body = String::with_capacity(clipped.len());
++    for (index, line) in clipped.split('\n').enumerate() {
++        if index == MAX_CODE_LINES {
++            cut = true;
++            break;
++        }
++        if index > 0 {
++            body.push('\n');
++        }
++        let line = line.strip_suffix('\r').unwrap_or(line);
++        body.extend(line.chars().map(|c| {
++            if c != '\t' && is_hidden(c) {
++                '\u{fffd}'
++            } else {
++                c
++            }
++        }));
++    }
++    if cut {
++        body.push('\n');
++        body.push(ELLIPSIS);
++    }
++    let longest = body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
++    let fence = "`".repeat(longest.saturating_add(1).max(3));
++    [fence.as_str(), info.as_str(), "\n", &body, "\n", &fence].concat()
++}
++
++/// A repository `owner/name` as GitHub spells them: ASCII letters, digits and `-` for the
++/// owner, plus `.` and `_` for the name, which is never `.` or `..`.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(super) struct Repository<'a> {
++    owner: &'a str,
++    name: &'a str,
++}
++
++impl<'a> Repository<'a> {
++    /// `full_name` when it has that shape.
++    pub(super) fn parse(full_name: &'a str) -> Option<Self> {
++        let (owner, name) = full_name.split_once('/')?;
++        let owner_ok = valid_name(owner, |byte| byte.is_ascii_alphanumeric() || byte == b'-');
++        let name_ok = valid_name(name, |byte| {
++            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_')
++        }) && name != "."
++            && name != "..";
++        (owner_ok && name_ok).then_some(Self { owner, name })
++    }
++}
++
++/// Whether `name` is 1 to [`MAX_NAME_BYTES`] bytes, each `allowed`.
++fn valid_name(name: &str, allowed: impl Fn(u8) -> bool) -> bool {
++    (1..=MAX_NAME_BYTES).contains(&name.len()) && name.bytes().all(allowed)
++}
++
++/// A live link to line `line` of `path` at `commit` in `repository`, its text `path:line`
++/// escaped as prose. A path that could leave the repository's tree once a browser resolves it
++/// (empty, `.` or `..` segments, a leading `/`) or is over [`MAX_PATH_BYTES`] gets no link,
++/// only the escaped text. Every path byte outside `A-Z a-z 0-9 - . _ ~ /` is percent-encoded,
++/// so the destination holds no space, parenthesis or angle bracket.
++pub(super) fn permalink(
++    repository: Repository<'_>,
++    commit: &CommitId,
++    path: &str,
++    line: NonZeroU64,
++) -> String {
++    // `:` and up to 20 digits follow the path.
++    let text = prose(&format!("{path}:{line}"), MAX_PATH_BYTES.saturating_add(21));
++    let stays_in_tree = path.len() <= MAX_PATH_BYTES
++        && path
++            .split('/')
++            .all(|segment| !matches!(segment, "" | "." | ".."));
++    if !stays_in_tree {
++        return text;
++    }
++    let mut url = format!(
++        "https://github.com/{}/{}/blob/{}/",
++        repository.owner,
++        repository.name,
++        commit.as_str()
++    );
++    for byte in path.bytes() {
++        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
++            url.push(char::from(byte));
++        } else {
++            url.push('%');
++            url.extend([byte >> 4, byte & 0x0f].map(hex_digit));
++        }
++    }
++    format!("[{text}]({url}#L{line})")
++}
++
++/// The uppercase hexadecimal digit of `nibble`'s low four bits.
++const fn hex_digit(nibble: u8) -> char {
++    match nibble & 0x0f {
++        0 => '0',
++        1 => '1',
++        2 => '2',
++        3 => '3',
++        4 => '4',
++        5 => '5',
++        6 => '6',
++        7 => '7',
++        8 => '8',
++        9 => '9',
++        10 => 'A',
++        11 => 'B',
++        12 => 'C',
++        13 => 'D',
++        14 => 'E',
++        _ => 'F',
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/assay-app/src/publish/sanitise/tests.rs b/crates/assay-app/src/publish/sanitise/tests.rs
+new file mode 100644
+index 0000000..3bd3bc3
+--- /dev/null
++++ b/crates/assay-app/src/publish/sanitise/tests.rs
+@@ -0,0 +1,392 @@
++//! Fixtures for each construct the sanitiser neutralises, its caps and its invariants.
++
++use std::num::NonZeroU64;
++
++use proptest::prelude::*;
++
++use super::{
++    Info, MAX_CODE_CHARS, MAX_CODE_LINES, MAX_PATH_BYTES, Repository, code_block, permalink, prose,
++};
++use crate::config::CommitId;
++
++/// Room for every fixture: none is clipped.
++const ROOMY: usize = 10_000;
++
++fn inert(text: &str) -> String {
++    prose(text, ROOMY)
++}
++
++/// Each construct model prose might use, and how it is published (one fixture each).
++const FIXTURES: [(&str, &str, &str); 34] = [
++    (
++        "inline link",
++        "see [docs](https://evil.example/x)",
++        r"see \[docs\]\(https\[\:\]\/\/evil\.example\/x\)",
++    ),
++    (
++        "image",
++        "![x](https://evil/p.png)",
++        r"\!\[x\]\(https\[\:\]\/\/evil\/p\.png\)",
++    ),
++    (
++        "angle autolink",
++        "<https://evil>",
++        r"\<https\[\:\]\/\/evil\>",
++    ),
++    (
++        "bare URL",
++        "go to http://evil.example now",
++        r"go to http\[\:\]\/\/evil\.example now",
++    ),
++    (
++        "www autolink in any case",
++        "visit WWW.evil.com",
++        r"visit WWW\[\.\]evil\.com",
++    ),
++    (
++        "raw HTML",
++        "<img src=x onerror=alert(1)>",
++        r"\<img src\=x onerror\=alert\(1\)\>",
++    ),
++    ("HTML comment", "<!-- hidden -->", r"\<\!\-\- hidden \-\-\>"),
++    (
++        "details block",
++        "<details><summary>x</summary>",
++        r"\<details\>\<summary\>x\<\/summary\>",
++    ),
++    ("mention", "cc @owner please", "cc \u{ff20}owner please"),
++    ("team mention", "@org/team", "\u{ff20}org\\/team"),
++    ("email autolink", "a@b.com", "a\u{ff20}b\\.com"),
++    ("numeric entity", "&#64;owner", "\\&\u{ff03}64\\;owner"),
++    ("named entity", "&lt;b&gt;", r"\&lt\;b\&gt\;"),
++    ("ATX heading", "# Approve", "\u{ff03} Approve"),
++    (
++        "cross-repository reference",
++        "see other/repo#12",
++        "see other\\/repo\u{ff03}12",
++    ),
++    ("emphasis", "**bold** _it_", r"\*\*bold\*\* \_it\_"),
++    ("strikethrough", "~~gone~~", r"\~\~gone\~\~"),
++    ("table row", "| a | b |", r"\| a \| b \|"),
++    ("code span", "`x`", r"\`x\`"),
++    (
++        "suggestion fence",
++        "```suggestion\nfoo\n```",
++        "\\`\\`\\`suggestion\nfoo\n\\`\\`\\`",
++    ),
++    (
++        "tilde fence",
++        "~~~suggestion\nfoo\n~~~",
++        "\\~\\~\\~suggestion\nfoo\n\\~\\~\\~",
++    ),
++    ("block quote", "> quoted", r"\> quoted"),
++    (
++        "list markers",
++        "- item\n1. one\n2) two",
++        "\\- item\n1\\. one\n2\\) two",
++    ),
++    (
++        "reference definition",
++        "[x]: https://evil",
++        r"\[x\]\: https\[\:\]\/\/evil",
++    ),
++    ("pre-escaped bracket", r"\[x](y)", r"\\\[x\]\(y\)"),
++    ("indented code", "    code", "code"),
++    ("setext underline", "Title\n===", "Title\n\\=\\=\\="),
++    ("thematic break", "***", r"\*\*\*"),
++    ("hard break backslash", "a\\\nb", "a\\\\\nb"),
++    (
++        "bidi and zero-width",
++        "a\u{202e}b\u{200d}c",
++        "a\u{fffd}b\u{fffd}c",
++    ),
++    ("lone carriage return", "a\rb", "a\u{fffd}b"),
++    ("CRLF line ending", "a\r\nb", "a\nb"),
++    ("blank lines", "\n a\n\n\n\nb\n", "a\n\nb"),
++    ("letters and symbols", "é 日本 ✓ —", "é 日本 ✓ —"),
++];
++
++#[test]
++fn each_construct_is_published_inert() {
++    for (construct, model, published) in FIXTURES {
++        assert_eq!(inert(model), published, "{construct}");
++    }
++}
++
++#[test]
++fn prose_of_the_cap_is_kept_whole() {
++    assert_eq!(prose(&"a".repeat(5), 5), "aaaaa");
++}
++
++#[test]
++fn prose_past_the_cap_is_clipped_and_marked() {
++    assert_eq!(prose(&"é".repeat(6), 5), "ééééé…");
++}
++
++#[test]
++fn clipping_counts_characters_before_escaping() {
++    assert_eq!(prose("<<<", 2), r"\<\<…");
++}
++
++/// Undoes the backslash escapes, failing on any ASCII punctuation left unescaped or any
++/// escape of something else: the published text must parse as plain text only.
++fn rendered(published: &str) -> Result<String, String> {
++    let mut text = String::new();
++    let mut chars = published.chars();
++    while let Some(c) = chars.next() {
++        match c {
++            '\\' => match chars.next() {
++                Some(escaped) if escaped.is_ascii_punctuation() => text.push(escaped),
++                other => return Err(format!("a bare backslash before {other:?}")),
++            },
++            c if c.is_ascii_punctuation() => return Err(format!("unescaped {c:?}")),
++            c => text.push(c),
++        }
++    }
++    Ok(text)
++}
++
++/// Text built from the pieces most likely to form a construct.
++fn hostile() -> impl Strategy<Value = String> {
++    let piece = prop_oneof![
++        Just("www.".to_owned()),
++        Just("WwW.".to_owned()),
++        Just("://".to_owned()),
++        Just(":/".to_owned()),
++        Just("/".to_owned()),
++        Just("@".to_owned()),
++        Just("#".to_owned()),
++        Just("\\".to_owned()),
++        Just("\n".to_owned()),
++        Just("\r".to_owned()),
++        Just("    ".to_owned()),
++        Just("\u{200d}".to_owned()),
++        "[<>!\\[\\]`*_|~&]",
++        "[a-z]{1,3}",
++        any::<char>().prop_map(String::from),
++    ];
++    prop::collection::vec(piece, 0..40).prop_map(|pieces| pieces.concat())
++}
++
++proptest! {
++    #[test]
++    fn prose_always_renders_as_plain_text(model in hostile()) {
++        let published = inert(&model);
++
++        let text = rendered(&published).map_err(TestCaseError::fail)?;
++        prop_assert!(!text.contains('@'), "{text:?}");
++        prop_assert!(!text.contains('#'), "{text:?}");
++        prop_assert!(!text.contains("://"), "{text:?}");
++        prop_assert!(!text.to_ascii_lowercase().contains("www."), "{text:?}");
++        prop_assert!(
++            !text.chars().any(|c| c != '\n' && super::is_hidden(c)),
++            "{text:?}"
++        );
++        prop_assert!(
++            !text.lines().any(|line| line.starts_with(char::is_whitespace)),
++            "{text:?}"
++        );
++    }
++}
++
++#[test]
++fn code_is_fenced_with_its_info_string() {
++    assert_eq!(
++        code_block("let x = 1;", Info::Rust),
++        "```rust\nlet x = 1;\n```"
++    );
++}
++
++#[test]
++fn the_code_fence_is_longer_than_any_backtick_run_inside() {
++    assert_eq!(
++        code_block("a ```` b\n```", Info::Text),
++        "`````text\na ```` b\n```\n`````"
++    );
++}
++
++#[test]
++fn code_keeps_tabs_and_replaces_other_hidden_characters() {
++    assert_eq!(
++        code_block("\tx\u{202e}\r\ny\rz", Info::Text),
++        "```text\n\tx\u{fffd}\ny\u{fffd}z\n```"
++    );
++}
++
++#[test]
++fn code_of_the_line_cap_is_kept_whole() {
++    let code = vec!["x"; MAX_CODE_LINES].join("\n");
++
++    assert_eq!(
++        code_block(&code, Info::Text),
++        format!("```text\n{code}\n```")
++    );
++}
++
++#[test]
++fn code_past_the_line_cap_is_clipped_and_marked() {
++    let code = vec!["x"; MAX_CODE_LINES + 1].join("\n");
++
++    let kept = vec!["x"; MAX_CODE_LINES].join("\n");
++    assert_eq!(
++        code_block(&code, Info::Text),
++        format!("```text\n{kept}\n…\n```")
++    );
++}
++
++#[test]
++fn code_of_the_character_cap_is_kept_whole() {
++    let code = "x".repeat(MAX_CODE_CHARS);
++
++    assert_eq!(
++        code_block(&code, Info::Text),
++        format!("```text\n{code}\n```")
++    );
++}
++
++#[test]
++fn code_past_the_character_cap_is_clipped_and_marked() {
++    let code = "x".repeat(MAX_CODE_CHARS + 1);
++
++    let kept = "x".repeat(MAX_CODE_CHARS);
++    assert_eq!(
++        code_block(&code, Info::Text),
++        format!("```text\n{kept}\n…\n```")
++    );
++}
++
++#[test]
++fn info_strings_come_from_the_path_extension() {
++    let infos = [
++        "src/lib.rs",
++        "Cargo.toml",
++        "a/b.json",
++        "ci.yml",
++        "x.yaml",
++        "run.sh",
++        "README",
++        "evil.suggestion",
++        "dir.rs/file",
++    ]
++    .map(Info::for_path);
++
++    assert_eq!(
++        infos,
++        [
++            Info::Rust,
++            Info::Toml,
++            Info::Json,
++            Info::Yaml,
++            Info::Yaml,
++            Info::Shell,
++            Info::Text,
++            Info::Text,
++            Info::Text
++        ]
++    );
++}
++
++#[test]
++fn no_info_string_is_suggestion() {
++    let names = Info::ALL.map(Info::as_str);
++
++    assert_eq!(names, ["text", "rust", "toml", "json", "yaml", "sh"]);
++}
++
++#[test]
++fn repository_names_of_github_shape_parse() {
++    assert_eq!(
++        Repository::parse("Wet-Ink-Corporation/assay.rs_1"),
++        Some(Repository {
++            owner: "Wet-Ink-Corporation",
++            name: "assay.rs_1"
++        })
++    );
++}
++
++#[test]
++fn malformed_repository_names_are_refused() {
++    let long = format!("o/{}", "n".repeat(101));
++    let refused = [
++        "",
++        "owner",
++        "/repo",
++        "owner/",
++        "a/b/c",
++        "own er/r",
++        "o.x/r",
++        "o/..",
++        "o/.",
++        "o/r)",
++        long.as_str(),
++    ]
++    .map(Repository::parse);
++
++    assert_eq!(refused, [None; 11]);
++}
++
++fn head() -> CommitId {
++    "0123456789abcdef0123456789abcdef01234567"
++        .parse()
++        .expect("40 lowercase hex digits")
++}
++
++fn repository() -> Repository<'static> {
++    Repository::parse("owner/repo").expect("a valid repository")
++}
++
++const SEVEN: NonZeroU64 = NonZeroU64::new(7).expect("seven is not zero");
++
++#[test]
++fn a_permalink_points_at_the_line_at_the_head() {
++    assert_eq!(
++        permalink(repository(), &head(), "src/lib.rs", SEVEN),
++        "[src\\/lib\\.rs\\:7](https://github.com/owner/repo/blob/\
++         0123456789abcdef0123456789abcdef01234567/src/lib.rs#L7)"
++    );
++}
++
++#[test]
++fn a_permalink_encodes_every_byte_that_could_end_its_destination() {
++    let link = permalink(repository(), &head(), "a b/(x)<y>é.rs", SEVEN);
++
++    assert_eq!(
++        link,
++        "[a b\\/\\(x\\)\\<y\\>é\\.rs\\:7](https://github.com/owner/repo/blob/\
++         0123456789abcdef0123456789abcdef01234567/a%20b/%28x%29%3Cy%3E%C3%A9.rs#L7)"
++    );
++}
++
++#[test]
++fn a_path_that_could_leave_the_tree_gets_no_link() {
++    let texts = ["../../other/repo", "a/./b", "/etc/x", "a//b"]
++        .map(|path| permalink(repository(), &head(), path, SEVEN));
++
++    assert_eq!(
++        texts,
++        [
++            r"\.\.\/\.\.\/other\/repo\:7",
++            r"a\/\.\/b\:7",
++            r"\/etc\/x\:7",
++            r"a\/\/b\:7"
++        ]
++    );
++}
++
++#[test]
++fn a_path_of_the_cap_is_linked() {
++    let path = "a".repeat(MAX_PATH_BYTES);
++
++    let link = permalink(repository(), &head(), &path, SEVEN);
++
++    assert!(link.ends_with(&format!("/{path}#L7)")), "{link}");
++}
++
++#[test]
++fn a_path_past_the_cap_gets_no_link() {
++    let path = "a".repeat(MAX_PATH_BYTES + 1);
++
++    let text = permalink(repository(), &head(), &path, SEVEN);
++
++    assert!(!text.contains("https"), "{text}");
++}
+diff --git a/crates/assay-app/tests/it/main.rs b/crates/assay-app/tests/it/main.rs
+index d534564..a4225b0 100644
+--- a/crates/assay-app/tests/it/main.rs
++++ b/crates/assay-app/tests/it/main.rs
+@@ -22,6 +22,7 @@ mod prompt_bundle;
+ mod publish;
+ #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+ mod publish_fakes;
++mod publish_findings;
+ mod publish_persist;
+ #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+ mod publish_support;
+diff --git a/crates/assay-app/tests/it/publish_fakes.rs b/crates/assay-app/tests/it/publish_fakes.rs
+index 58a163f..59d0bfa 100644
+--- a/crates/assay-app/tests/it/publish_fakes.rs
++++ b/crates/assay-app/tests/it/publish_fakes.rs
+@@ -8,9 +8,10 @@ use std::error::Error;
+ use std::num::NonZeroU64;
+ 
+ use assay_app::{
+-    BundleStore, CheckName, CheckRun, CheckRunId, CheckStatus, CheckUpdate, CommentId, CommitId,
+-    EvidenceEntry, PublishLedger, SummaryComment, VerdictForge,
++    BundleStore, CheckName, CheckRun, CheckRunId, CheckStatus, CheckUpdate, CommentForge,
++    CommentId, CommitId, EvidenceEntry, InlineComment, PublishLedger, SummaryComment, VerdictForge,
+ };
++use assay_domain::Side;
+ 
+ use crate::plan_fakes::FakeError;
+ 
+@@ -46,11 +47,41 @@ pub(crate) struct FakeComment {
+     pub(crate) body: String,
+ }
+ 
++/// One review comment on a diff line.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct FakeReviewComment {
++    pub(crate) author: Author,
++    pub(crate) commit_id: String,
++    pub(crate) path: String,
++    pub(crate) line: NonZeroU64,
++    pub(crate) start_line: Option<NonZeroU64>,
++    pub(crate) side: Side,
++    pub(crate) body: String,
++}
++
++impl FakeReviewComment {
++    /// A comment on line 1 of `src/lib.rs` at `head` with `body`.
++    pub(crate) fn on_head(author: Author, head: &str, body: &str) -> Self {
++        Self {
++            author,
++            commit_id: head.to_owned(),
++            path: "src/lib.rs".to_owned(),
++            line: NonZeroU64::MIN,
++            start_line: None,
++            side: Side::Right,
++            body: body.to_owned(),
++        }
++    }
++}
++
+ /// A port call, in the order made.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum Call {
+     FindCheck,
+     UpdateCheck,
++    CreateCheck,
++    ReadReviewComments,
++    CreateReviewComment,
+     FindSummary,
+     CreateSummary,
+     UpdateSummary,
+@@ -63,7 +94,10 @@ pub(crate) enum Call {
+ impl Call {
+     /// Whether the call changes anything.
+     pub(crate) const fn writes(self) -> bool {
+-        !matches!(self, Self::FindCheck | Self::FindSummary)
++        !matches!(
++            self,
++            Self::FindCheck | Self::FindSummary | Self::ReadReviewComments
++        )
+     }
+ }
+ 
+@@ -83,6 +117,7 @@ pub(crate) type Interleave = Box<dyn FnOnce(&FakeWorld)>;
+ pub(crate) struct FakeWorld {
+     pub(crate) checks: RefCell<Vec<FakeCheck>>,
+     pub(crate) comments: RefCell<Vec<FakeComment>>,
++    pub(crate) review_comments: RefCell<Vec<FakeReviewComment>>,
+     /// The lock's current lease, if held.
+     pub(crate) lock: RefCell<Option<u64>>,
+     leases: RefCell<u64>,
+@@ -254,6 +289,64 @@ impl VerdictForge for FakeWorld {
+     }
+ }
+ 
++impl CommentForge for FakeWorld {
++    fn app_review_comments(&self, _number: NonZeroU64) -> Result<Vec<String>, FakeError> {
++        self.record(Call::ReadReviewComments)?;
++        Ok(self
++            .review_comments
++            .borrow()
++            .iter()
++            .filter(|comment| comment.author == Author::App)
++            .map(|comment| comment.body.clone())
++            .collect())
++    }
++
++    fn create_review_comment(
++        &self,
++        _number: NonZeroU64,
++        comment: &InlineComment<'_>,
++    ) -> Result<(), FakeError> {
++        self.record(Call::CreateReviewComment)?;
++        self.review_comments.borrow_mut().push(FakeReviewComment {
++            author: Author::App,
++            commit_id: comment.commit_id.as_str().to_owned(),
++            path: comment.path.to_owned(),
++            line: comment.line,
++            start_line: comment.start_line,
++            side: comment.side,
++            body: comment.body.clone(),
++        });
++        Ok(())
++    }
++
++    fn create_check(
++        &self,
++        head: &CommitId,
++        name: &CheckName,
++        update: &CheckUpdate,
++    ) -> Result<(), FakeError> {
++        self.record(Call::CreateCheck)?;
++        let mut checks = self.checks.borrow_mut();
++        let next = u64::try_from(checks.len())
++            .unwrap_or(u64::MAX)
++            .saturating_add(9001);
++        checks.push(FakeCheck {
++            id: CheckRunId(NonZeroU64::new(next).unwrap_or(NonZeroU64::MIN)),
++            head: head.as_str().to_owned(),
++            name: name.as_str().to_owned(),
++            author: Author::App,
++            external_id: update.external_id.clone(),
++            status: match update.state {
++                assay_app::CheckState::InProgress => CheckStatus::InProgress,
++                assay_app::CheckState::Completed(_) => CheckStatus::Completed,
++            },
++            output: Some(update.clone()),
++            annotations: 0,
++        });
++        Ok(())
++    }
++}
++
+ impl PublishLedger for FakeWorld {
+     type Error = FakeError;
+     type Lease = u64;
+diff --git a/crates/assay-app/tests/it/publish_findings.rs b/crates/assay-app/tests/it/publish_findings.rs
+new file mode 100644
+index 0000000..9b26cee
+--- /dev/null
++++ b/crates/assay-app/tests/it/publish_findings.rs
+@@ -0,0 +1,553 @@
++//! `publish_findings` over the stateful fake: inline comments posted once per fingerprint,
++//! per-gate checks, and the lock and stamp rules they are written under (04 §6, R3-09).
++
++use std::error::Error;
++use std::num::NonZeroU64;
++
++use assay_app::{
++    CheckConclusion, CheckState, CommentStep, FindingRef, FindingsError, FindingsPublication,
++    FindingsPublished, FindingsWritten, MAX_PRIOR_COMMENTS, Placement, PullRequestEvent, Target,
++    Unlock, ValidFinding, publish_findings,
++};
++use assay_domain::{
++    Class, Finding, FindingKind, Fingerprint, GateConclusion, GateFinding, GateOutcome, GateReport,
++    Severity, Side, StepAttribution,
++};
++
++use crate::plan_fakes::{BASE, FakeError, HEAD, run_uid};
++use crate::publish_fakes::{Author, Call, FakeReviewComment, FakeWorld};
++use crate::publish_support::{DEFAULT_BRANCH, KEY, NAME};
++
++type Outcome = Result<FindingsPublished<FakeError>, FindingsError<FakeError, FakeError>>;
++
++/// The gate check's name for the `temper` plugin.
++const GATE: &str = "assay / gate: temper";
++
++fn pull_request(repo: &str) -> Result<PullRequestEvent, Box<dyn Error>> {
++    Ok(PullRequestEvent {
++        repo: repo.to_owned(),
++        number: NonZeroU64::new(42).ok_or("not zero")?,
++        base_sha: BASE.parse()?,
++        head_sha: HEAD.parse()?,
++        base_ref: "main".to_owned(),
++        draft: false,
++    })
++}
++
++fn fp(value: u64) -> Result<Fingerprint, Box<dyn Error>> {
++    Ok(format!("{value:016x}").parse()?)
++}
++
++/// An inline major on `src/lib.rs` line `line` with fingerprint `value`.
++fn finding(value: u64, line: u64) -> Result<ValidFinding, Box<dyn Error>> {
++    Ok(ValidFinding {
++        at: FindingRef::Finding {
++            document: 0,
++            index: 0,
++        },
++        finding: Finding {
++            class: Class::Logic,
++            rule: None,
++            kind: FindingKind::Defect,
++            severity: Severity::Major,
++            introduced_by: None,
++            pre_existing: false,
++            file: "src/lib.rs".to_owned(),
++            line: NonZeroU64::new(line).ok_or("not zero")?,
++            end_line: None,
++            side: Some(Side::Right),
++            evidence: "record_event(id);".to_owned(),
++            expected_behavior: None,
++            trigger: Some("a retry after a timeout".to_owned()),
++            caller: None,
++            title: "Event recorded twice".to_owned(),
++            body: "See @owner and [this](https://evil.example).".to_owned(),
++            fix: None,
++            confidence: None,
++            group_hint: None,
++        },
++        file_at_head: "src/lib.rs".to_owned(),
++        enclosing_symbol: "f".to_owned(),
++        occurrence_index: 0,
++        fingerprint: fp(value)?,
++        placement: Placement::Inline,
++        previously_dismissed: None,
++    })
++}
++
++fn gate(name: &str, outcome: GateOutcome) -> Result<GateReport, Box<dyn Error>> {
++    Ok(GateReport {
++        name: name.to_owned(),
++        required: true,
++        outcome,
++        findings: vec![GateFinding {
++            fp: fp(0xfeed)?,
++            rule: Some("clippy::unwrap_used".to_owned()),
++            severity: Severity::Major,
++        }],
++    })
++}
++
++fn failed() -> GateOutcome {
++    GateOutcome::Ran {
++        conclusion: GateConclusion::Fail,
++        steps: StepAttribution::Unknown,
++    }
++}
++
++/// One run's inputs to `publish_findings`.
++struct Inputs {
++    pull_request: PullRequestEvent,
++    decision_key: String,
++    gates: Vec<GateReport>,
++    findings: Vec<ValidFinding>,
++}
++
++impl Inputs {
++    /// Two inline findings and one failed `temper` gate, decided under [`KEY`].
++    fn new() -> Result<Self, Box<dyn Error>> {
++        Ok(Self {
++            pull_request: pull_request("owner/repo")?,
++            decision_key: KEY.to_owned(),
++            gates: vec![gate("temper", failed())?],
++            findings: vec![finding(1, 3)?, finding(2, 5)?],
++        })
++    }
++
++    fn publish(&self, world: &FakeWorld) -> Result<Outcome, Box<dyn Error>> {
++        let publication = FindingsPublication {
++            target: Target {
++                run_uid: run_uid(1)?,
++                pull_request: &self.pull_request,
++                default_branch: DEFAULT_BRANCH,
++            },
++            decision_key: &self.decision_key,
++            gates: &self.gates,
++            findings: &self.findings,
++        };
++        Ok(publish_findings(&publication, world, world))
++    }
++}
++
++/// A world whose verdict check carries this run's decision, as `publish` leaves it.
++fn decided_world() -> Result<FakeWorld, Box<dyn Error>> {
++    FakeWorld::with_check(HEAD, NAME, KEY)
++}
++
++fn written(outcome: Outcome) -> Result<FindingsWritten<FakeError>, Box<dyn Error>> {
++    match outcome {
++        Ok(FindingsPublished::Written(written)) => Ok(written),
++        other => Err(format!("expected Written, got {other:?}").into()),
++    }
++}
++
++#[test]
++fn posts_one_inline_comment_per_selected_finding() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++
++    let written = written(Inputs::new()?.publish(&world)?)?;
++
++    assert_eq!(written.posted, [fp(1)?, fp(2)?]);
++    assert!(written.already_posted.is_empty());
++    assert!(matches!(written.unlock, Unlock::Released));
++    let comments = world.review_comments.borrow();
++    let anchors: Vec<_> = comments
++        .iter()
++        .map(|comment| {
++            (
++                comment.author,
++                comment.commit_id.as_str(),
++                comment.path.as_str(),
++                comment.line.get(),
++                comment.start_line,
++                comment.side,
++            )
++        })
++        .collect();
++    assert_eq!(
++        anchors,
++        [
++            (Author::App, HEAD, "src/lib.rs", 3, None, Side::Right),
++            (Author::App, HEAD, "src/lib.rs", 5, None, Side::Right)
++        ]
++    );
++    Ok(())
++}
++
++#[test]
++fn posted_text_is_inert_and_carries_the_marker() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++
++    written(Inputs::new()?.publish(&world)?)?;
++
++    let comments = world.review_comments.borrow();
++    let body = &comments.first().ok_or("a comment")?.body;
++    assert!(
++        body.starts_with("<!-- assay-finding 0000000000000001 -->\n"),
++        "{body}"
++    );
++    assert!(
++        body.contains(
++            "See \u{ff20}owner and \\[this\\]\\(https\\[\\:\\]\\/\\/evil\\.example\\)\\."
++        ),
++        "{body}"
++    );
++    Ok(())
++}
++
++#[test]
++fn a_multi_line_finding_spans_its_lines() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++    let mut inputs = Inputs::new()?;
++    let mut spanning = finding(1, 3)?;
++    spanning.finding.end_line = NonZeroU64::new(6);
++    inputs.findings = vec![spanning];
++
++    written(inputs.publish(&world)?)?;
++
++    let comments = world.review_comments.borrow();
++    let comment = comments.first().ok_or("a comment")?;
++    assert_eq!(
++        (comment.start_line, comment.line.get()),
++        (NonZeroU64::new(3), 6)
++    );
++    Ok(())
++}
++
++#[test]
++fn a_rerun_posts_no_duplicate() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++    let inputs = Inputs::new()?;
++    written(inputs.publish(&world)?)?;
++
++    let again = written(inputs.publish(&world)?)?;
++
++    assert!(again.posted.is_empty());
++    assert_eq!(again.already_posted, [fp(1)?, fp(2)?]);
++    assert_eq!(world.review_comments.borrow().len(), 2);
++    Ok(())
++}
++
++#[test]
++fn a_fingerprint_an_earlier_run_posted_is_skipped() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++    world
++        .review_comments
++        .borrow_mut()
++        .push(FakeReviewComment::on_head(
++            Author::App,
++            HEAD,
++            "<!-- assay-finding 0000000000000001 -->\nan older body",
++        ));
++
++    let written = written(Inputs::new()?.publish(&world)?)?;
++
++    assert_eq!(
++        (written.posted, written.already_posted),
++        (vec![fp(2)?], vec![fp(1)?])
++    );
++    Ok(())
++}
++
++#[test]
++fn yields_when_the_verdict_check_carries_another_decision() -> Result<(), Box<dyn Error>> {
++    let world = FakeWorld::with_check(HEAD, NAME, "pending:8:1")?;
++
++    let outcome = Inputs::new()?.publish(&world)?;
++
++    assert!(
++        matches!(
++            outcome,
++            Ok(FindingsPublished::Yielded {
++                unlock: Unlock::Released
++            })
++        ),
++        "{outcome:?}"
++    );
++    assert_eq!(world.writes(), [Call::Acquire, Call::Release]);
++    Ok(())
++}
++
++#[test]
++fn yields_when_there_is_no_verdict_check() -> Result<(), Box<dyn Error>> {
++    let world = FakeWorld::default();
++
++    let outcome = Inputs::new()?.publish(&world)?;
++
++    assert!(
++        matches!(outcome, Ok(FindingsPublished::Yielded { .. })),
++        "{outcome:?}"
++    );
++    assert_eq!(world.writes(), [Call::Acquire, Call::Release]);
++    Ok(())
++}
++
++#[test]
++fn a_held_lock_publishes_nothing() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++    *world.lock.borrow_mut() = Some(99);
++
++    let outcome = Inputs::new()?.publish(&world)?;
++
++    assert!(
++        matches!(outcome, Err(FindingsError::LockBusy)),
++        "{outcome:?}"
++    );
++    assert_eq!(world.writes(), [Call::Acquire]);
++    Ok(())
++}
++
++#[test]
++fn a_lock_error_publishes_nothing() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++    world.fail(Call::Acquire, 1);
++
++    let outcome = Inputs::new()?.publish(&world)?;
++
++    assert!(
++        matches!(outcome, Err(FindingsError::Lock(FakeError))),
++        "{outcome:?}"
++    );
++    assert!(world.review_comments.borrow().is_empty());
++    Ok(())
++}
++
++#[test]
++fn a_failed_post_names_its_step_and_releases_the_lock() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++    world.fail(Call::CreateReviewComment, 2);
++
++    let outcome = Inputs::new()?.publish(&world)?;
++
++    assert!(
++        matches!(
++            outcome,
++            Err(FindingsError::Locked {
++                step: CommentStep::PostComment,
++                source: FakeError,
++                unlock: Unlock::Released
++            })
++        ),
++        "{outcome:?}"
++    );
++    assert_eq!(world.lock.borrow().as_ref(), None);
++    Ok(())
++}
++
++#[test]
++fn a_failed_release_is_reported_beside_the_outcome() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++    world.fail(Call::Release, 1);
++
++    let written = written(Inputs::new()?.publish(&world)?)?;
++
++    assert!(matches!(written.unlock, Unlock::Failed(FakeError)));
++    assert_eq!(written.posted.len(), 2);
++    Ok(())
++}
++
++fn with_prior_comments(count: usize) -> Result<FakeWorld, Box<dyn Error>> {
++    let world = decided_world()?;
++    world
++        .review_comments
++        .borrow_mut()
++        .extend((0..count).map(|_| FakeReviewComment::on_head(Author::App, HEAD, "no marker")));
++    Ok(world)
++}
++
++#[test]
++fn prior_comments_up_to_the_cap_are_read() -> Result<(), Box<dyn Error>> {
++    let world = with_prior_comments(MAX_PRIOR_COMMENTS)?;
++
++    let written = written(Inputs::new()?.publish(&world)?)?;
++
++    assert_eq!(written.posted.len(), 2);
++    Ok(())
++}
++
++#[test]
++fn prior_comments_past_the_cap_refuse_before_any_write() -> Result<(), Box<dyn Error>> {
++    let world = with_prior_comments(MAX_PRIOR_COMMENTS + 1)?;
++
++    let outcome = Inputs::new()?.publish(&world)?;
++
++    assert!(
++        matches!(
++            outcome,
++            Err(FindingsError::TooManyComments {
++                count,
++                unlock: Unlock::Released
++            }) if count == MAX_PRIOR_COMMENTS + 1
++        ),
++        "{outcome:?}"
++    );
++    assert_eq!(world.writes(), [Call::Acquire, Call::Release]);
++    Ok(())
++}
++
++#[test]
++fn a_decision_key_that_is_not_a_digest_is_refused_before_any_call() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++    let mut inputs = Inputs::new()?;
++    inputs.decision_key = "pending:7:3".to_owned();
++
++    let outcome = inputs.publish(&world)?;
++
++    assert!(
++        matches!(outcome, Err(FindingsError::DecisionKey)),
++        "{outcome:?}"
++    );
++    assert!(world.calls.borrow().is_empty());
++    Ok(())
++}
++
++#[test]
++fn a_malformed_repository_is_refused_before_any_call() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++    let mut inputs = Inputs::new()?;
++    inputs.pull_request = pull_request("owner/repo)[x](https://evil")?;
++
++    let outcome = inputs.publish(&world)?;
++
++    assert!(
++        matches!(outcome, Err(FindingsError::Repository)),
++        "{outcome:?}"
++    );
++    assert!(world.calls.borrow().is_empty());
++    Ok(())
++}
++
++#[test]
++fn a_gate_name_that_is_not_a_plugin_name_is_refused_before_any_call() -> Result<(), Box<dyn Error>>
++{
++    let world = decided_world()?;
++    let mut inputs = Inputs::new()?;
++    inputs.gates = vec![gate("Temper\n", failed())?];
++
++    let outcome = inputs.publish(&world)?;
++
++    assert!(
++        matches!(&outcome, Err(FindingsError::GateName { name }) if name == "Temper\n"),
++        "{outcome:?}"
++    );
++    assert!(world.calls.borrow().is_empty());
++    Ok(())
++}
++
++#[test]
++fn each_gate_gets_its_own_completed_check() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++
++    written(Inputs::new()?.publish(&world)?)?;
++
++    let check = world.app_check(GATE)?;
++    let output = check.output.ok_or("the gate check was written")?;
++    assert_eq!(check.head, HEAD);
++    assert_eq!(
++        (
++            output.state,
++            output.external_id.as_str(),
++            output.title.as_str()
++        ),
++        (
++            CheckState::Completed(CheckConclusion::Failure),
++            KEY,
++            "assay gate temper: fail"
++        )
++    );
++    assert_eq!(
++        output.summary,
++        "Findings: 0 blocker · 1 major · 0 minor · 0 nit\n\
++         \n\
++         ```text\n\
++         major clippy::unwrap_used (000000000000feed)\n\
++         ```"
++    );
++    Ok(())
++}
++
++#[test]
++fn gate_outcomes_map_to_check_conclusions() -> Result<(), Box<dyn Error>> {
++    let outcomes = [
++        (GateConclusion::Pass, CheckConclusion::Success),
++        (GateConclusion::Fail, CheckConclusion::Failure),
++        (GateConclusion::Neutral, CheckConclusion::Neutral),
++    ];
++    let mut gates = Vec::new();
++    for (index, (conclusion, _)) in outcomes.iter().enumerate() {
++        gates.push(gate(
++            &format!("ran-{index}"),
++            GateOutcome::Ran {
++                conclusion: *conclusion,
++                steps: StepAttribution::Unknown,
++            },
++        )?);
++    }
++    gates.push(gate(
++        "errored",
++        GateOutcome::Error {
++            detail: "timeout".to_owned(),
++        },
++    )?);
++    gates.push(gate("skipped", GateOutcome::Skipped)?);
++    let world = decided_world()?;
++    let mut inputs = Inputs::new()?;
++    inputs.gates = gates;
++
++    written(inputs.publish(&world)?)?;
++
++    let conclusion = |name: &str| -> Result<CheckState, Box<dyn Error>> {
++        let check = world.app_check(&format!("assay / gate: {name}"))?;
++        Ok(check.output.ok_or("written")?.state)
++    };
++    for (index, (_, expected)) in outcomes.iter().enumerate() {
++        assert_eq!(
++            conclusion(&format!("ran-{index}"))?,
++            CheckState::Completed(*expected)
++        );
++    }
++    assert_eq!(
++        conclusion("errored")?,
++        CheckState::Completed(CheckConclusion::Failure)
++    );
++    assert_eq!(
++        conclusion("skipped")?,
++        CheckState::Completed(CheckConclusion::Failure)
++    );
++    Ok(())
++}
++
++#[test]
++fn an_existing_gate_check_is_updated_not_duplicated() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++    let mut inputs = Inputs::new()?;
++    inputs.decision_key = format!("sha256:{}", "e".repeat(64));
++    world.restamp(&inputs.decision_key);
++    written(inputs.publish(&world)?)?;
++    world.restamp(KEY);
++
++    written(Inputs::new()?.publish(&world)?)?;
++
++    let gate_checks = world
++        .checks
++        .borrow()
++        .iter()
++        .filter(|check| check.name == GATE)
++        .count();
++    assert_eq!(gate_checks, 1);
++    assert_eq!(world.app_check(GATE)?.external_id, KEY);
++    Ok(())
++}
++
++#[test]
++fn a_completed_gate_check_of_this_decision_is_left_alone() -> Result<(), Box<dyn Error>> {
++    let world = decided_world()?;
++    let inputs = Inputs::new()?;
++    written(inputs.publish(&world)?)?;
++    world.calls.borrow_mut().clear();
++
++    written(inputs.publish(&world)?)?;
++
++    assert_eq!(world.writes(), [Call::Acquire, Call::Release]);
++    Ok(())
++}
+diff --git a/crates/assay-app/tests/it/publish_persist.rs b/crates/assay-app/tests/it/publish_persist.rs
+index 6c71ed8..55a67f0 100644
+--- a/crates/assay-app/tests/it/publish_persist.rs
++++ b/crates/assay-app/tests/it/publish_persist.rs
+@@ -468,6 +468,34 @@ fn a_bundle_over_its_cap_is_not_persisted() -> Result<(), Box<dyn Error>> {
+     Ok(())
+ }
+ 
++#[test]
++fn a_trust_path_pr_whose_bundle_is_over_its_cap_fails_closed() -> Result<(), Box<dyn Error>> {
++    // As in `a_bundle_over_its_cap_is_not_persisted`: 144 MiB of JSON, past the 96 MiB cap.
++    let mut scenario = Scenario::of(trust_path_pr())?;
++    for name in ["a", "b", "c"] {
++        scenario.publish_review(
++            &format!("{name}.json"),
++            vec![1; assay_app::MAX_DOCUMENT_BYTES],
++        )?;
++    }
++    let run = overridden(&scenario)?;
++    let world = stamped()?;
++
++    let written = written(run.publish(&world))?;
++
++    assert_eq!(
++        written.state,
++        CheckState::Completed(CheckConclusion::Failure)
++    );
++    let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
++    assert!(
++        summary.contains("persist-error: bundle-too-large"),
++        "{summary}"
++    );
++    assert_eq!(*world.uploads.borrow(), []);
++    Ok(())
++}
++
+ #[test]
+ fn a_trust_path_pr_whose_bundle_is_not_utf8_fails_closed() -> Result<(), Box<dyn Error>> {
+     let mut scenario = Scenario::of(trust_path_pr())?;

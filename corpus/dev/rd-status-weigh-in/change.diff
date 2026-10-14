@@ -1,0 +1,2003 @@
+diff --git a/crates/assay-app/src/contract.rs b/crates/assay-app/src/contract.rs
+index 87e9808..1fa21ca 100644
+--- a/crates/assay-app/src/contract.rs
++++ b/crates/assay-app/src/contract.rs
+@@ -53,11 +53,19 @@ pub enum Contract {
+     Decision,
+     /// `assay.event/1`: one line of a job's event stream (03 §6).
+     Event,
++    /// `assay.status/1`: a PR's assay state as `assay status --json` renders it (03 §6b).
++    Status,
+ }
+ 
+ impl Contract {
+     /// Every contract.
+-    pub const ALL: [Self; 4] = [Self::Findings, Self::Run, Self::Decision, Self::Event];
++    pub const ALL: [Self; 5] = [
++        Self::Findings,
++        Self::Run,
++        Self::Decision,
++        Self::Event,
++        Self::Status,
++    ];
+ 
+     /// The contract's name without its version, as it appears before the `/` of the `schema`
+     /// field (`assay.findings`).
+@@ -68,6 +76,7 @@ impl Contract {
+             Self::Run => "assay.run",
+             Self::Decision => "assay.decision",
+             Self::Event => "assay.event",
++            Self::Status => "assay.status",
+         }
+     }
+ 
+@@ -78,6 +87,7 @@ impl Contract {
+             Self::Run => include_str!("../../../schemas/run-1.schema.json"),
+             Self::Decision => include_str!("../../../schemas/decision-1.schema.json"),
+             Self::Event => include_str!("../../../schemas/event-1.schema.json"),
++            Self::Status => include_str!("../../../schemas/status-1.schema.json"),
+         }
+     }
+ }
+@@ -96,6 +106,7 @@ pub struct ContractValidator {
+     run: Compiled,
+     decision: Compiled,
+     event: Compiled,
++    status: Compiled,
+ }
+ 
+ /// One contract's compiled schema and the property names it declares, the only object keys a
+@@ -119,6 +130,7 @@ impl ContractValidator {
+             run: compile(Contract::Run)?,
+             decision: compile(Contract::Decision)?,
+             event: compile(Contract::Event)?,
++            status: compile(Contract::Status)?,
+         })
+     }
+ 
+@@ -191,6 +203,7 @@ impl ContractValidator {
+             Contract::Run => &self.run,
+             Contract::Decision => &self.decision,
+             Contract::Event => &self.event,
++            Contract::Status => &self.status,
+         }
+     }
+ }
+@@ -246,7 +259,7 @@ pub enum ReadContractError {
+     },
+     /// The document is not JSON, or one of its objects repeats a key. The parser's message
+     /// never names the key.
+-    #[error("{contract} document is not JSON")]
++    #[error("{contract} document is not JSON, or an object in it repeats a key")]
+     Malformed {
+         /// The contract the caller expected.
+         contract: Contract,
+diff --git a/crates/assay-app/src/lib.rs b/crates/assay-app/src/lib.rs
+index a0acd31..635e424 100644
+--- a/crates/assay-app/src/lib.rs
++++ b/crates/assay-app/src/lib.rs
+@@ -20,6 +20,7 @@ mod prompt_bundle;
+ mod publish;
+ mod replay;
+ mod session_init;
++mod status;
+ mod tiering;
+ 
+ pub use calendar::{CalendarDate, CalendarDateError};
+@@ -88,6 +89,12 @@ pub use replay::{
+     BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
+     ReplayRequest, Replayed, RunField, StoredBundle, replay_decision,
+ };
++pub use status::{
++    AppId, BundleProblem, CheckView, Detail, Identities, MAX_CHECK_RUNS, MAX_FINDINGS, MAX_REASONS,
++    ObservedConclusion, PullSelector, PullView, ReviewCommentView, StatusError, StatusFailure,
++    StatusForge, StatusPorts, StatusReport, StatusRepository, StatusRequest, StatusStep,
++    StatusUnreadable, UserId, Viewer, status,
++};
+ pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
+ pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};
+ 
+diff --git a/crates/assay-app/src/publish.rs b/crates/assay-app/src/publish.rs
+index 9f66873..e93efa1 100644
+--- a/crates/assay-app/src/publish.rs
++++ b/crates/assay-app/src/publish.rs
+@@ -19,6 +19,7 @@ use assay_domain::{Aeu, Conclusion, ContentHash, DecisionInputs, Event, Reason,
+ use thiserror::Error;
+ 
+ pub use self::bundle::{BUNDLE_FILE, BundleError, MAX_BUNDLE_BYTES};
++pub(crate) use self::findings::read_published;
+ pub use self::findings::{
+     CommentStep, FindingsError, FindingsOutcome, FindingsPublication, FindingsPublished,
+     FindingsWritten, MAX_INLINE_COMMENTS, MAX_PRIOR_COMMENTS, publish_findings,
+@@ -29,7 +30,10 @@ pub use self::ports::{
+     InlineComment, LlmEvidence, PublishLedger, SummaryComment, VerdictForge,
+ };
+ pub use self::render::SUMMARY_MARKER;
++pub(crate) use self::render::read::read_text;
+ use self::render::{Projection, Summary};
++pub(crate) use self::render::{clean, is_hidden};
++pub(crate) use self::sanitise::Repository;
+ use self::write::Pending;
+ use crate::config::Sha256Digest;
+ use crate::decide::{AuthenticatedRun, Refusal};
+diff --git a/crates/assay-app/src/publish/findings.rs b/crates/assay-app/src/publish/findings.rs
+index 664944f..0db8947 100644
+--- a/crates/assay-app/src/publish/findings.rs
++++ b/crates/assay-app/src/publish/findings.rs
+@@ -19,6 +19,7 @@ use std::collections::BTreeSet;
+ use assay_domain::{Fingerprint, GateReport, Side};
+ use thiserror::Error;
+ 
++pub(crate) use self::comment::read::read_published;
+ use self::gates::GateCheck;
+ use super::ports::{
+     CheckName, CheckStatus, CommentForge, InlineComment, PublishLedger, VerdictForge,
+diff --git a/crates/assay-app/src/publish/findings/comment.rs b/crates/assay-app/src/publish/findings/comment.rs
+index ba173a4..734808c 100644
+--- a/crates/assay-app/src/publish/findings/comment.rs
++++ b/crates/assay-app/src/publish/findings/comment.rs
+@@ -2,6 +2,8 @@
+ //! by [`prose`], publisher-built permalinks and fences, the hidden fingerprint marker and the
+ //! feedback footer (04 §6).
+ 
++pub(crate) mod read;
++
+ use assay_domain::{Fingerprint, Severity};
+ 
+ use crate::config::CommitId;
+diff --git a/crates/assay-app/src/publish/findings/comment/read.rs b/crates/assay-app/src/publish/findings/comment/read.rs
+new file mode 100644
+index 0000000..430a8a3
+--- /dev/null
++++ b/crates/assay-app/src/publish/findings/comment/read.rs
+@@ -0,0 +1,154 @@
++//! Reads back an inline comment's fingerprint, class, title and the rest of its body exactly as
++//! [`super::body`] writes them, for `assay status`. The text is returned as published: escaped
++//! and defanged for GitHub, never unescaped back into model text (T8).
++//!
++//! Only the marker is required. A header or title that is not exactly the written shape gives
++//! `None` for that part rather than a guess (wi-b5affa): a title holding a blank line splits its
++//! paragraph and is not read, and neither is the rest after it.
++
++use assay_domain::{Class, Fingerprint};
++
++use super::posted_fingerprint;
++
++/// What an inline comment published about one finding.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct PublishedComment<'a> {
++    /// The fingerprint its marker names.
++    pub(crate) fp: Fingerprint,
++    /// The class its header names.
++    pub(crate) class: Option<Class>,
++    /// The title, as published (escaped).
++    pub(crate) title: Option<&'a str>,
++    /// Everything after the title: body, labelled fields, code, footer, as published.
++    pub(crate) rest: Option<&'a str>,
++}
++
++/// `body` read as [`super::body`] writes it; `None` when its first line is not a marker.
++pub(crate) fn read_published(body: &str) -> Option<PublishedComment<'_>> {
++    let fp = posted_fingerprint(body)?;
++    let after_marker = body.split_once('\n').map(|(_, after)| after);
++    // A marker alone has no header: an empty one names no class.
++    let (header, after_header) = match after_marker.and_then(|after| after.split_once('\n')) {
++        Some((header, after)) => (header, Some(after)),
++        None => (after_marker.unwrap_or(""), None),
++    };
++    let class = header
++        .split(" · ")
++        .nth(1)
++        .and_then(|word| Class::ALL.into_iter().find(|class| class.code() == word));
++    let titled = after_header.and_then(read_title);
++    Some(PublishedComment {
++        fp,
++        class,
++        title: titled.map(|(title, _)| title),
++        rest: titled.and_then(|(_, rest)| rest),
++    })
++}
++
++/// The `**<title>**` paragraph after the header's blank line, and what follows it. Every `*` of
++/// the escaped title is preceded by a backslash, so a paragraph ending in `**` ends there; a
++/// title holding a blank line leaves a first paragraph that does not.
++fn read_title(after_header: &str) -> Option<(&str, Option<&str>)> {
++    let opened = after_header.strip_prefix("\n**")?;
++    let (paragraph, rest) = match opened.split_once("\n\n") {
++        Some((paragraph, rest)) => (paragraph, Some(rest)),
++        None => (opened, None),
++    };
++    let title = paragraph.strip_suffix("**")?;
++    (!title.is_empty()).then_some((title, rest))
++}
++
++#[cfg(test)]
++mod tests {
++    use assay_domain::{Class, Confidence, Severity};
++
++    use super::{PublishedComment, read_published};
++    use crate::config::CommitId;
++    use crate::publish::findings::comment::body;
++    use crate::publish::findings::fixture::valid;
++    use crate::publish::sanitise::Repository;
++
++    fn head() -> CommitId {
++        "0123456789abcdef0123456789abcdef01234567"
++            .parse()
++            .expect("40 lowercase hex digits")
++    }
++
++    #[test]
++    fn reads_back_a_written_comment() {
++        let found = valid(0xab, Severity::Major, Some(Confidence::High)).expect("fixture");
++        let repository = Repository::parse("owner/repo").expect("a valid repository");
++        let written = body(&found, repository, &head());
++
++        let read = read_published(&written).expect("a marker");
++
++        assert_eq!(read.fp, found.fingerprint);
++        assert_eq!(read.class, Some(Class::Logic));
++        assert_eq!(read.title, Some("Event recorded twice"));
++        assert_eq!(
++            read.rest
++                .map(|rest| rest.starts_with("The retry path records the event again\\.")),
++            Some(true),
++            "the rest starts with the escaped body: {:?}",
++            read.rest
++        );
++    }
++
++    #[test]
++    fn a_title_with_markup_is_read_escaped() {
++        let mut found = valid(0x51, Severity::Blocker, None).expect("fixture");
++        found.finding.title = "[click](https://evil.example) **bold**".to_owned();
++        let repository = Repository::parse("owner/repo").expect("a valid repository");
++        let written = body(&found, repository, &head());
++
++        let read = read_published(&written).expect("a marker");
++
++        assert_eq!(
++            read.title,
++            Some("\\[click\\]\\(https\\[\\:\\]\\/\\/evil\\.example\\) \\*\\*bold\\*\\*")
++        );
++    }
++
++    #[test]
++    fn a_title_with_a_blank_line_is_not_read() {
++        let mut found = valid(0x52, Severity::Minor, None).expect("fixture");
++        found.finding.title = "first\n\nsecond".to_owned();
++        let repository = Repository::parse("owner/repo").expect("a valid repository");
++        let written = body(&found, repository, &head());
++
++        let read = read_published(&written).expect("a marker");
++
++        assert_eq!((read.title, read.rest), (None, None));
++        assert_eq!(read.class, Some(Class::Logic), "the header still reads");
++    }
++
++    #[test]
++    fn a_comment_without_a_marker_is_not_a_finding() {
++        assert_eq!(read_published("<!-- assay-summary -->\n\nanything"), None);
++    }
++
++    #[test]
++    fn a_marker_with_nothing_after_it_reads_only_the_fingerprint() {
++        let read = read_published("<!-- assay-finding 00000000000000ab -->");
++
++        assert_eq!(
++            read,
++            Some(PublishedComment {
++                fp: "00000000000000ab".parse().expect("a fingerprint"),
++                class: None,
++                title: None,
++                rest: None,
++            })
++        );
++    }
++
++    #[test]
++    fn an_unknown_class_is_not_read() {
++        let read = read_published(
++            "<!-- assay-finding 00000000000000ab -->\n🟡 **major** · nonsense · defect\n\n**T**",
++        )
++        .expect("a marker");
++
++        assert_eq!((read.class, read.title, read.rest), (None, Some("T"), None));
++    }
++}
+diff --git a/crates/assay-app/src/publish/render.rs b/crates/assay-app/src/publish/render.rs
+index 37c0247..caebef3 100644
+--- a/crates/assay-app/src/publish/render.rs
++++ b/crates/assay-app/src/publish/render.rs
+@@ -2,6 +2,8 @@
+ //! and digests `decide` computed, with every other string inside one fenced block per list, so
+ //! nothing a PR or a model wrote renders as Markdown.
+ 
++pub(crate) mod read;
++
+ use assay_domain::{Aeu, Conclusion, Counts, DegradedRole, PrClass, Reason, Tier};
+ 
+ use super::ports::EvidenceEntry;
+@@ -221,7 +223,7 @@ const FORMAT: [(char, char); 21] = [
+ ];
+ 
+ /// Whether `c` renders as something other than itself: a control or a format character.
+-pub(super) fn is_hidden(c: char) -> bool {
++pub(crate) fn is_hidden(c: char) -> bool {
+     c.is_control()
+         || FORMAT
+             .iter()
+@@ -230,7 +232,7 @@ pub(super) fn is_hidden(c: char) -> bool {
+ 
+ /// `item` on one line: control and format characters (line breaks and bidi controls included)
+ /// become U+FFFD, and past [`MAX_ITEM_CHARS`] characters it is cut and ends with `…`.
+-fn clean(item: &str) -> String {
++pub(crate) fn clean(item: &str) -> String {
+     let mut chars = item.chars();
+     let mut cleaned: String = chars
+         .by_ref()
+diff --git a/crates/assay-app/src/publish/render/read.rs b/crates/assay-app/src/publish/render/read.rs
+new file mode 100644
+index 0000000..f67bce5
+--- /dev/null
++++ b/crates/assay-app/src/publish/render/read.rs
+@@ -0,0 +1,160 @@
++//! Reads back the verdict check's `output.text` exactly as [`super::text`] writes it, for
++//! `assay status`. Any other text is refused (wi-b5affa): the reader never guesses at a format.
++
++use std::num::NonZeroU64;
++
++use crate::config::Sha256Digest;
++use crate::publish::ports::EvidencePointer;
++
++/// What a verdict check's `output.text` projects of the ledger state.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct ProjectedText<'a> {
++    /// The decision key the check was written under.
++    pub(crate) decision_key: &'a str,
++    /// The evidence pointer, `None` when the run persisted no bundle.
++    pub(crate) pointer: Option<EvidencePointer>,
++}
++
++/// `text` read as [`super::text`] writes it, or `None` when it is anything else.
++pub(crate) fn read_text(text: &str) -> Option<ProjectedText<'_>> {
++    let mut lines = text.split('\n');
++    if lines.next()? != "```text" {
++        return None;
++    }
++    let decision_key = lines.next()?.strip_prefix("decision_key: ")?;
++    let mut line = lines.next()?;
++    if let Some(digest) = line.strip_prefix("inputs_digest: ") {
++        digest.parse::<Sha256Digest>().ok()?;
++        line = lines.next()?;
++    }
++    let pointer = match line.strip_prefix("evidence pointer: ")? {
++        "none" => None,
++        pointer => {
++            let pointer = read_pointer(pointer)?;
++            lines.next()?.strip_prefix("evidence record: ")?;
++            Some(pointer)
++        }
++    };
++    let closed = lines.next()? == "```" && lines.next().is_none();
++    closed.then_some(ProjectedText {
++        decision_key,
++        pointer,
++    })
++}
++
++/// `run_id <n>, run_attempt <n>, sha256 <digest>`.
++fn read_pointer(text: &str) -> Option<EvidencePointer> {
++    let rest = text.strip_prefix("run_id ")?;
++    let (run_id, rest) = rest.split_once(", run_attempt ")?;
++    let (run_attempt, sha256) = rest.split_once(", sha256 ")?;
++    Some(EvidencePointer {
++        run_id: read_count(run_id)?,
++        run_attempt: read_count(run_attempt)?,
++        sha256: sha256.parse().ok()?,
++    })
++}
++
++/// A positive count written in ASCII digits only (`u64`'s parser also takes a leading `+`).
++fn read_count(text: &str) -> Option<NonZeroU64> {
++    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
++        return None;
++    }
++    text.parse().ok()
++}
++
++#[cfg(test)]
++mod tests {
++    use std::num::NonZeroU64;
++
++    use assay_domain::Tier;
++
++    use super::{ProjectedText, read_text};
++    use crate::publish::ports::{EvidenceEntry, EvidencePointer, EvidenceRecord, LlmEvidence};
++    use crate::publish::render::{Projection, text};
++
++    const KEY: &str = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
++    const DIGEST: &str = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
++
++    fn pointer() -> EvidencePointer {
++        EvidencePointer {
++            run_id: NonZeroU64::new(7).expect("not zero"),
++            run_attempt: NonZeroU64::MIN,
++            sha256: DIGEST.parse().expect("a sha256 digest"),
++        }
++    }
++
++    fn entry() -> EvidenceEntry {
++        EvidenceEntry {
++            repo_id: NonZeroU64::new(840_213_377).expect("not zero"),
++            pr: NonZeroU64::new(42).expect("not zero"),
++            pointer: pointer(),
++            record: EvidenceRecord {
++                evidence_key: "sha256:run".to_owned(),
++                bundle_sha256: DIGEST.parse().expect("a sha256 digest"),
++                llm: LlmEvidence::Complete,
++                tier: Tier::Micro,
++            },
++        }
++    }
++
++    #[test]
++    fn reads_back_a_written_pointer() {
++        let entry = entry();
++        let written = text(&Projection {
++            decision_key: KEY,
++            inputs_digest: Some(DIGEST),
++            evidence: Some(&entry),
++        });
++
++        assert_eq!(
++            read_text(&written),
++            Some(ProjectedText {
++                decision_key: KEY,
++                pointer: Some(pointer()),
++            })
++        );
++    }
++
++    #[test]
++    fn reads_back_a_run_that_persisted_nothing() {
++        let written = text(&Projection {
++            decision_key: KEY,
++            inputs_digest: None,
++            evidence: None,
++        });
++
++        assert_eq!(
++            read_text(&written),
++            Some(ProjectedText {
++                decision_key: KEY,
++                pointer: None,
++            })
++        );
++    }
++
++    #[test]
++    fn refuses_text_it_did_not_write() {
++        let cases = [
++            "",
++            "decision_key: k",
++            "```text\ndecision_key: k\nevidence pointer: none\n```\nmore",
++            "```text\ndecision_key: k\nevidence pointer: none\n```\n",
++            "```text\ndecision_key: k\ninputs_digest: x\nevidence pointer: none\n```",
++            "```text\ndecision_key: k\nevidence pointer: maybe\n```",
++            "```text\ndecision_key: k\nevidence pointer: run_id 7, run_attempt 1, sha256 \
++             sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n```",
++            "```text\ndecision_key: k\nevidence pointer: run_id +7, run_attempt 1, sha256 \
++             sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n\
++             evidence record: x\n```",
++            "```text\ndecision_key: k\nevidence pointer: run_id 0, run_attempt 1, sha256 \
++             sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n\
++             evidence record: x\n```",
++            "```text\ndecision_key: k\nevidence pointer: run_id 7, run_attempt 1, sha256 \
++             sha256:EEEE\nevidence record: x\n```",
++        ];
++
++        for case in cases {
++            assert_eq!(read_text(case), None, "{case:?} must be refused");
++        }
++    }
++}
+diff --git a/crates/assay-app/src/publish/sanitise.rs b/crates/assay-app/src/publish/sanitise.rs
+index de56388..b57fa98 100644
+--- a/crates/assay-app/src/publish/sanitise.rs
++++ b/crates/assay-app/src/publish/sanitise.rs
+@@ -211,14 +211,14 @@ pub(super) fn code_block(code: &str, info: Info) -> String {
+ /// A repository `owner/name` as GitHub spells them: ASCII letters, digits and `-` for the
+ /// owner, plus `.` and `_` for the name, which is never `.` or `..`.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-pub(super) struct Repository<'a> {
++pub(crate) struct Repository<'a> {
+     owner: &'a str,
+     name: &'a str,
+ }
+ 
+ impl<'a> Repository<'a> {
+     /// `full_name` when it has that shape.
+-    pub(super) fn parse(full_name: &'a str) -> Option<Self> {
++    pub(crate) fn parse(full_name: &'a str) -> Option<Self> {
+         let (owner, name) = full_name.split_once('/')?;
+         let owner_ok = valid_name(owner, |byte| byte.is_ascii_alphanumeric() || byte == b'-');
+         let name_ok = valid_name(name, |byte| {
+diff --git a/crates/assay-app/src/replay.rs b/crates/assay-app/src/replay.rs
+index f464716..05e6d35 100644
+--- a/crates/assay-app/src/replay.rs
++++ b/crates/assay-app/src/replay.rs
+@@ -241,18 +241,18 @@ pub enum ReplayError<E> {
+     Encode(#[source] serde_json::Error),
+ }
+ 
+-/// `assay.run-inputs/1` as replay reads it.
++/// `assay.run-inputs/1` as replay (and `assay status`) reads it.
+ #[derive(Deserialize)]
+ #[serde(deny_unknown_fields)]
+-struct Bundle {
++pub(crate) struct Bundle {
+     #[serde(rename = "schema")]
+     _schema: BundleSchema,
+     run_uid: RunUid,
+     evidence_key: String,
+     documents: Vec<BundleDocument>,
+-    inputs: DecisionInputs,
+-    rubric_version: String,
+-    decision: Value,
++    pub(crate) inputs: DecisionInputs,
++    pub(crate) rubric_version: String,
++    pub(crate) decision: Value,
+     /// Checked to be an array, not kept: replay does not read events.
+     #[serde(rename = "events")]
+     _events: Vec<IgnoredAny>,
+@@ -380,7 +380,7 @@ fn fetch<S: BundleSource>(source: &S, run: RunUid) -> Result<Vec<u8>, ReplayErro
+ }
+ 
+ /// Parses authenticated bytes as `assay.run-inputs/1`, refusing a repeated key.
+-fn read(bytes: &[u8]) -> Result<Bundle, BundleShape> {
++pub(crate) fn read(bytes: &[u8]) -> Result<Bundle, BundleShape> {
+     let value = parse_json_strict(bytes).map_err(|error| {
+         let (line, column) = (error.line(), error.column());
+         match error.classify() {
+@@ -393,7 +393,7 @@ fn read(bytes: &[u8]) -> Result<Bundle, BundleShape> {
+ }
+ 
+ /// Where the bundle disagrees with the pointer's `run` or with itself, if anywhere.
+-fn inconsistency(bundle: &Bundle, run: RunUid) -> Option<Mismatch> {
++pub(crate) fn inconsistency(bundle: &Bundle, run: RunUid) -> Option<Mismatch> {
+     let recorded = bundle.run_uid;
+     let field = if recorded.repo_id != run.repo_id {
+         Some(RunField::RepoId)
+diff --git a/crates/assay-app/src/status.rs b/crates/assay-app/src/status.rs
+new file mode 100644
+index 0000000..15a8de0
+--- /dev/null
++++ b/crates/assay-app/src/status.rs
+@@ -0,0 +1,439 @@
++//! `assay status` (#126, `docs/architecture/03-contracts.md` §6b): a PR's assay state as one
++//! versioned contract, `assay.status/1`, so the mod and scripts never parse check markdown, PR
++//! comments or `gh` output (ADR-23's mod rules, #125).
++//!
++//! It reads GitHub through one narrow port, [`StatusForge`], and the run's evidence bundle
++//! through [`BundleSource`]. Only the configured App's checks count: a same-named check from
++//! any other app is ignored. The decision is read only from the bundle the verdict check's
++//! `output.text` pointer names, once the bundle hashes to the pointer and carries the check's
++//! decision key. Text in the output is only what assay already published, sanitised (04 §6,
++//! T8): titles and bodies from the App's own inline comments, as escaped for GitHub, and
++//! reason details, rules and paths cleaned as the summary cleans them. Anything read that does
++//! not have exactly the shape assay or GitHub writes is refused (wi-b5affa).
++
++mod document;
++mod findings;
++mod ports;
++mod verdict;
++
++use std::collections::BTreeSet;
++use std::num::NonZeroU64;
++
++use assay_domain::Rubric;
++use thiserror::Error;
++
++pub use self::ports::{
++    AppId, CheckView, ObservedConclusion, PullView, ReviewCommentView, StatusForge, UserId, Viewer,
++};
++use crate::config::{CommitId, GateName};
++use crate::contract::{Contract, ContractValidator, ReadContractError};
++use crate::publish::{MAX_PRIOR_COMMENTS, is_hidden};
++use crate::replay::{BundleShape, BundleSource};
++
++/// The most check runs on a head `status` reads; more are refused (H-13). A PR's workflows can
++/// add check runs, so the count is not assay's to bound.
++pub const MAX_CHECK_RUNS: usize = 1000;
++
++/// The most findings one status lists, gate and reviewer findings together; more are refused
++/// (H-13).
++pub const MAX_FINDINGS: usize = 4096;
++
++/// The most reasons, and the most degraded roles, one status lists; more are refused (H-13).
++pub const MAX_REASONS: usize = 1024;
++
++/// The longest head branch name accepted, in bytes (the schema's cap).
++const MAX_BRANCH_BYTES: usize = 255;
++
++/// The repository a status is for, as the caller's configuration names it.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct StatusRepository {
++    /// Its numeric id, which keys the run's artifacts.
++    pub id: NonZeroU64,
++    /// `owner/name`.
++    pub name: String,
++    /// Its default branch, which names the verdict check (R3-03).
++    pub default_branch: String,
++}
++
++/// Which PR to report on.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum PullSelector<'a> {
++    /// `--pr <n>`.
++    Number(NonZeroU64),
++    /// The one open PR whose head is this branch (the current branch, without `--pr`).
++    Branch(&'a str),
++}
++
++/// How much of each finding to show.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum Detail {
++    /// Without bodies.
++    Summary,
++    /// `--full`: each published finding's body too.
++    Full,
++}
++
++/// The P10 identity lists of base config, by numeric GitHub user id (03 §1). `assay status`
++/// only reports them about the viewer (#137); decide-only re-checks every action.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub struct Identities {
++    /// `.assay/owners` `owners` and `approvers`: the privileged identities.
++    pub privileged: BTreeSet<UserId>,
++    /// `.assay/agents`.
++    pub agents: BTreeSet<UserId>,
++}
++
++/// What `status` is asked.
++#[derive(Debug, Clone, Copy)]
++pub struct StatusRequest<'a> {
++    /// The repository.
++    pub repository: &'a StatusRepository,
++    /// The `assay-verdict` App's id: only its checks and comments count.
++    pub app: AppId,
++    /// The PR.
++    pub pull: PullSelector<'a>,
++    /// The local checkout's HEAD, if any; a different head makes the status `stale`.
++    pub local_head: Option<&'a CommitId>,
++    /// How much of each finding to show.
++    pub detail: Detail,
++    /// The rubric the bundle was decided under: it says which findings are waivable.
++    pub rubric: &'a Rubric,
++    /// The base P10 identity lists.
++    pub identities: &'a Identities,
++    /// When the state was read, RFC 3339 (`2026-10-13T09:30:00Z`).
++    pub fetched_at: &'a str,
++}
++
++/// The ports `status` reads through, borrowed for one call.
++#[derive(Debug)]
++pub struct StatusPorts<'p, F, B> {
++    /// GitHub, as the viewer.
++    pub forge: &'p F,
++    /// The run's artifacts.
++    pub bundles: &'p B,
++}
++
++/// A PR's status: the `assay.status/1` document, validated against its schema, and the same
++/// facts as plain text.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct StatusReport {
++    json: Vec<u8>,
++    text: String,
++}
++
++impl StatusReport {
++    /// The `assay.status/1` document: pretty JSON and a final newline.
++    #[must_use]
++    pub fn json(&self) -> &[u8] {
++        &self.json
++    }
++
++    /// The same facts for a person: one fact per line, ending in a newline.
++    #[must_use]
++    pub fn text(&self) -> &str {
++        &self.text
++    }
++}
++
++/// The read that failed.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum StatusStep {
++    /// Reading the PR named by number.
++    Pull,
++    /// Listing the open PRs of a branch.
++    OpenPulls,
++    /// Listing the head's check runs.
++    CheckRuns,
++    /// Listing the App's review comments.
++    ReviewComments,
++    /// Reading the viewer.
++    Viewer,
++}
++
++impl StatusStep {
++    const fn describe(self) -> &'static str {
++        match self {
++            Self::Pull => "read the PR",
++            Self::OpenPulls => "list the branch's open PRs",
++            Self::CheckRuns => "list the head's check runs",
++            Self::ReviewComments => "list the App's review comments",
++            Self::Viewer => "read the viewer",
++        }
++    }
++}
++
++/// What GitHub returned that does not have the shape assay or GitHub writes.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum StatusUnreadable {
++    /// A head branch that is empty, over 255 bytes or holds a control or format character.
++    Branch,
++    /// A page URL that is not a `https://github.com/<repository>/` page.
++    Url,
++    /// A viewer login that is not a GitHub login.
++    Login,
++    /// An App check named `assay / gate: <name>` whose name is not a plugin name.
++    GateName,
++    /// An App check whose status and conclusion disagree (completed without one, or with one
++    /// before completing).
++    CheckState,
++    /// A verdict check whose `external_id` is neither a decision key nor `open`'s stamp.
++    ExternalId,
++    /// A decided verdict check whose `output.text` is not what `publish` writes, or names
++    /// another decision key.
++    CheckText,
++}
++
++impl StatusUnreadable {
++    const fn describe(self) -> &'static str {
++        match self {
++            Self::Branch => "head branch",
++            Self::Url => "page URL",
++            Self::Login => "viewer login",
++            Self::GateName => "gate check name",
++            Self::CheckState => "check status and conclusion",
++            Self::ExternalId => "verdict check external id",
++            Self::CheckText => "verdict check output text",
++        }
++    }
++}
++
++/// Why the decision's evidence bundle could not be read. Never a decision.
++#[derive(Debug, Error)]
++pub enum BundleProblem<B> {
++    /// The pointer names a re-run: bundles are persisted by attempt 1 only (R3-05).
++    #[error("the evidence pointer names a re-run")]
++    NotFirstAttempt,
++    /// The artifact store could not be read.
++    #[error("could not read the artifact store")]
++    Fetch(#[source] B),
++    /// The bundle is gone (F20).
++    #[error("the bundle is missing")]
++    Missing,
++    /// The bundle is past its retention.
++    #[error("the bundle has expired")]
++    Expired,
++    /// The bundle is over the cap.
++    #[error("the bundle is over its size cap")]
++    TooLarge,
++    /// The bundle does not hash to the pointer (F19).
++    #[error("the bundle does not hash to the evidence pointer")]
++    Digest,
++    /// The bundle is not `assay.run-inputs/1`.
++    #[error("the bundle is not assay.run-inputs/1: {0}")]
++    Shape(BundleShape),
++    /// The bundle disagrees with the pointer or with itself.
++    #[error("the bundle disagrees with its pointer or with itself")]
++    Inconsistent,
++    /// The bundle's decision is not the one the check carries.
++    #[error("the bundle's decision is not the verdict check's")]
++    Decision,
++    /// The bundle was decided under another rubric version than the one given.
++    #[error("the bundle was decided under another rubric version")]
++    RubricVersion,
++}
++
++/// Why `status` could not report. Nothing is printed.
++#[derive(Debug, Error)]
++pub enum StatusError<F, B> {
++    /// The repository's name is not `owner/name`.
++    #[error("the repository name is not `owner/name`")]
++    Repository,
++    /// A GitHub read failed.
++    #[error("could not {}", step.describe())]
++    Forge {
++        /// The read.
++        step: StatusStep,
++        /// The forge's error.
++        #[source]
++        source: F,
++    },
++    /// The PR named by number does not exist.
++    #[error("PR #{number} does not exist")]
++    NoSuchPull {
++        /// The number asked for.
++        number: NonZeroU64,
++    },
++    /// No open PR has the branch as its head.
++    #[error("no open PR has the branch as its head; name one with --pr")]
++    NoOpenPull,
++    /// Several open PRs have the branch as their head.
++    #[error("{count} open PRs have the branch as their head; name one with --pr")]
++    AmbiguousBranch {
++        /// How many.
++        count: usize,
++    },
++    /// GitHub returned something that does not read.
++    #[error("GitHub returned a {} that does not read", .0.describe())]
++    Unreadable(StatusUnreadable),
++    /// More check runs on the head than [`MAX_CHECK_RUNS`].
++    #[error("{count} check runs on the head, over the {MAX_CHECK_RUNS} cap")]
++    TooManyChecks {
++        /// How many.
++        count: usize,
++    },
++    /// More App review comments than [`MAX_PRIOR_COMMENTS`].
++    #[error("{count} App review comments, over the {MAX_PRIOR_COMMENTS} cap")]
++    TooManyComments {
++        /// How many.
++        count: usize,
++    },
++    /// More findings than [`MAX_FINDINGS`].
++    #[error("{count} findings, over the {MAX_FINDINGS} cap")]
++    TooManyFindings {
++        /// How many.
++        count: usize,
++    },
++    /// More reasons or degraded roles than [`MAX_REASONS`].
++    #[error("{count} reasons or degraded roles, over the {MAX_REASONS} cap")]
++    TooManyReasons {
++        /// How many.
++        count: usize,
++    },
++    /// Several App checks carry the verdict check's name on the head (A-27).
++    #[error("{count} App verdict checks on the head")]
++    DuplicateVerdict {
++        /// How many.
++        count: usize,
++    },
++    /// Several App checks carry one gate's name on the head.
++    #[error("several App checks for gate {plugin}")]
++    DuplicateGate {
++        /// The plugin.
++        plugin: GateName,
++    },
++    /// The decision's evidence bundle could not be read.
++    #[error("could not read the decision: {0}")]
++    Bundle(BundleProblem<B>),
++    /// The document could not be encoded: a defect in this crate.
++    #[error("could not encode the status")]
++    Encode(#[source] serde_json::Error),
++    /// The document does not satisfy `status-1.schema.json`: a defect in this crate, or a
++    /// `fetched_at` that is not RFC 3339.
++    #[error("the status does not satisfy its schema")]
++    Invalid(#[source] ReadContractError),
++}
++
++/// The [`StatusError`] of [`status`] over `ports`' error types.
++pub type StatusFailure<F, B> = StatusError<<F as StatusForge>::Error, <B as BundleSource>::Error>;
++
++/// Reports on `request`'s PR, reading GitHub and the artifact store through `ports`, and
++/// validates the document against `assay.status/1` before returning it.
++///
++/// # Examples
++///
++/// ```
++/// use std::io::{self, Write};
++///
++/// use assay_app::{
++///     BundleSource, ContractValidator, StatusForge, StatusPorts, StatusRequest, status,
++/// };
++///
++/// /// Writes the status document of `request`'s PR to `out`, or why there is none.
++/// fn write_status<F: StatusForge, B: BundleSource>(
++///     request: &StatusRequest<'_>,
++///     ports: &StatusPorts<'_, F, B>,
++///     validator: &ContractValidator,
++///     mut out: impl Write,
++/// ) -> io::Result<()> {
++///     match status(request, ports, validator) {
++///         Ok(report) => out.write_all(report.json()),
++///         Err(error) => writeln!(out, "no status: {error}"),
++///     }
++/// }
++/// ```
++///
++/// # Errors
++///
++/// [`StatusError`] when a read fails, the PR cannot be found or chosen, something read does not
++/// have its expected shape, a count is over its cap, or the decision's bundle cannot be read.
++pub fn status<F: StatusForge, B: BundleSource>(
++    request: &StatusRequest<'_>,
++    ports: &StatusPorts<'_, F, B>,
++    validator: &ContractValidator,
++) -> Result<StatusReport, StatusFailure<F, B>> {
++    let repository = &request.repository.name;
++    if crate::publish::Repository::parse(repository).is_none() {
++        return Err(StatusError::Repository);
++    }
++    let pull = pull(request, ports.forge)?;
++    let observed = verdict::observe(request, ports, &pull)?;
++    let findings = match &observed.decided {
++        Some(decided) => findings::findings(request, ports.forge, &pull, decided)?,
++        None => Vec::new(),
++    };
++    let viewer = ports.forge.viewer().map_err(|source| StatusError::Forge {
++        step: StatusStep::Viewer,
++        source,
++    })?;
++    let facts = document::Facts {
++        pull: &pull,
++        observed,
++        findings,
++        viewer: &viewer,
++    };
++    let document = document::Document::new(request, facts)?;
++    let mut json = serde_json::to_vec_pretty(&document).map_err(StatusError::Encode)?;
++    json.push(b'\n');
++    validator
++        .read(Contract::Status, &json)
++        .map_err(StatusError::Invalid)?;
++    Ok(StatusReport {
++        text: document.text(),
++        json,
++    })
++}
++
++/// The PR `request` names: by number, or the one open PR of the branch. Its head branch must
++/// read as one.
++fn pull<F: StatusForge, B>(
++    request: &StatusRequest<'_>,
++    forge: &F,
++) -> Result<PullView, StatusError<F::Error, B>> {
++    let pull = match request.pull {
++        PullSelector::Number(number) => forge
++            .pull(number)
++            .map_err(|source| StatusError::Forge {
++                step: StatusStep::Pull,
++                source,
++            })?
++            .ok_or(StatusError::NoSuchPull { number })?,
++        PullSelector::Branch(branch) => {
++            let mut open = forge
++                .open_pulls(branch)
++                .map_err(|source| StatusError::Forge {
++                    step: StatusStep::OpenPulls,
++                    source,
++                })?;
++            match open.len() {
++                0 => return Err(StatusError::NoOpenPull),
++                1 => open.pop().ok_or(StatusError::NoOpenPull)?,
++                count => return Err(StatusError::AmbiguousBranch { count }),
++            }
++        }
++    };
++    let branch = &pull.head_ref;
++    let readable =
++        !branch.is_empty() && branch.len() <= MAX_BRANCH_BYTES && !branch.chars().any(is_hidden);
++    if readable {
++        Ok(pull)
++    } else {
++        Err(StatusError::Unreadable(StatusUnreadable::Branch))
++    }
++}
++
++/// `url` when it is a page of `repository` on github.com, in the characters the schema allows.
++fn page(url: &str, repository: &str) -> Result<String, StatusUnreadable> {
++    /// The longest page URL accepted.
++    const MAX_URL_BYTES: usize = 2048;
++    let on_site = url
++        .strip_prefix("https://github.com/")
++        .and_then(|rest| rest.strip_prefix(repository))
++        .is_some_and(|rest| rest.starts_with('/'));
++    let allowed = |byte: u8| matches!(byte, b'!' | b'#'..=b';' | b'=' | b'?'..=b'[' | b']' | b'_' | b'a'..=b'z' | b'~');
++    if on_site && url.len() <= MAX_URL_BYTES && url.bytes().all(allowed) {
++        // The document owns its copy of the page.
++        Ok(url.to_owned())
++    } else {
++        Err(StatusUnreadable::Url)
++    }
++}
+diff --git a/crates/assay-app/src/status/document.rs b/crates/assay-app/src/status/document.rs
+new file mode 100644
+index 0000000..86cdf55
+--- /dev/null
++++ b/crates/assay-app/src/status/document.rs
+@@ -0,0 +1,405 @@
++//! The `assay.status/1` document and its plain-text rendering.
++
++use std::num::NonZeroU64;
++
++use assay_domain::{Class, Decision, Disposition, WeighIn};
++use serde::Serialize;
++
++use super::findings::Finding;
++use super::ports::{ObservedConclusion, PullView, Viewer};
++use super::verdict::{Check, Observed};
++use super::{MAX_REASONS, StatusError, StatusRequest, StatusUnreadable};
++use crate::CommitId;
++use crate::publish::{CheckStatus, clean};
++
++/// The longest GitHub login, before a `[bot]` suffix.
++const MAX_LOGIN_BYTES: usize = 39;
++
++/// `assay.status/1`, in its schema's field order.
++#[derive(Debug, Serialize)]
++pub(super) struct Document<'a> {
++    schema: &'static str,
++    source: &'static str,
++    repo: &'a str,
++    pr: NonZeroU64,
++    branch: &'a str,
++    head_sha: &'a str,
++    local_head_sha: Option<&'a str>,
++    stale: bool,
++    check: Option<CheckEntry>,
++    decision: Option<DecisionEntry>,
++    tier: Option<&'static str>,
++    gates: Vec<GateEntry>,
++    findings: Vec<FindingEntry>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    weigh_in: Option<WeighInEntry>,
++    viewer: ViewerEntry<'a>,
++    fetched_at: &'a str,
++}
++
++#[derive(Debug, Serialize)]
++struct CheckEntry {
++    conclusion: Option<&'static str>,
++    status: &'static str,
++    url: String,
++}
++
++#[derive(Debug, Serialize)]
++struct DecisionEntry {
++    conclusion: &'static str,
++    reasons: Vec<ReasonEntry>,
++    reasons_digest: String,
++    counts: assay_domain::Counts,
++    degraded: Vec<DegradedEntry>,
++    advisory_blockers: Vec<String>,
++}
++
++#[derive(Debug, Serialize)]
++struct ReasonEntry {
++    code: &'static str,
++    detail: String,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    fp: Option<String>,
++}
++
++#[derive(Debug, Serialize)]
++struct DegradedEntry {
++    role: String,
++    reason: String,
++}
++
++#[derive(Debug, Serialize)]
++struct GateEntry {
++    plugin: String,
++    conclusion: Option<&'static str>,
++    url: String,
++}
++
++#[derive(Debug, Serialize)]
++struct FindingEntry {
++    fp: String,
++    finding_id: String,
++    severity: &'static str,
++    class: Option<&'static str>,
++    title: Option<String>,
++    file: Option<String>,
++    line: Option<NonZeroU64>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    url: Option<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    disposition: Option<&'static str>,
++    waivable: bool,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    body: Option<String>,
++}
++
++#[derive(Debug, Serialize)]
++struct WeighInEntry {
++    blocking: bool,
++    pending_triage: bool,
++}
++
++#[derive(Debug, Serialize)]
++struct ViewerEntry<'a> {
++    login: &'a str,
++    is_owner: bool,
++    is_agent: bool,
++}
++
++/// What was read for one PR, the document's facts besides the request.
++pub(super) struct Facts<'a> {
++    /// The PR.
++    pub(super) pull: &'a PullView,
++    /// Its checks, and the decision the verdict check names.
++    pub(super) observed: Observed,
++    /// The decision's findings.
++    pub(super) findings: Vec<Finding>,
++    /// Who is asking.
++    pub(super) viewer: &'a Viewer,
++}
++
++impl<'a> Document<'a> {
++    /// The document for `facts.pull`, from what was observed and read.
++    pub(super) fn new<E, B>(
++        request: &StatusRequest<'a>,
++        facts: Facts<'a>,
++    ) -> Result<Self, StatusError<E, B>> {
++        let Facts {
++            pull,
++            observed,
++            findings,
++            viewer,
++        } = facts;
++        let head_sha = pull.head_sha.as_str();
++        let local_head_sha = request.local_head.map(CommitId::as_str);
++        let (decision, tier, weigh_in) = match &observed.decided {
++            Some(decided) => (
++                Some(decision(&decided.decision)?),
++                Some(decided.inputs.pr.tier.code()),
++                weigh_in(decided.inputs.weigh_in),
++            ),
++            None => (None, None, None),
++        };
++        Ok(Self {
++            schema: "assay.status/1",
++            source: "ci",
++            repo: &request.repository.name,
++            pr: pull.number,
++            branch: &pull.head_ref,
++            head_sha,
++            local_head_sha,
++            stale: local_head_sha.is_some_and(|local| local != head_sha),
++            check: observed.check.map(check_entry),
++            decision,
++            tier,
++            gates: observed
++                .gates
++                .into_iter()
++                .map(|(plugin, check)| GateEntry {
++                    plugin: plugin.as_str().to_owned(),
++                    conclusion: check.conclusion.map(ObservedConclusion::code),
++                    url: check.url,
++                })
++                .collect(),
++            findings: findings.into_iter().map(finding_entry).collect(),
++            weigh_in,
++            viewer: viewer_entry(request, viewer).map_err(StatusError::Unreadable)?,
++            fetched_at: request.fetched_at,
++        })
++    }
++
++    /// The same facts for a person, one per line, ending in a newline.
++    pub(super) fn text(&self) -> String {
++        let local = match self.local_head_sha {
++            None => "unknown",
++            Some(_) if self.stale => "differs: this status is for another commit",
++            Some(_) => "matches",
++        };
++        let mut lines = vec![
++            format!("assay status: {} #{} ({})", self.repo, self.pr, self.branch),
++            format!("Head: {} (local HEAD {local})", self.head_sha),
++            match &self.check {
++                None => "Check: none yet".to_owned(),
++                Some(check) => format!(
++                    "Check: {} {} {}",
++                    check.status,
++                    check.conclusion.unwrap_or("-"),
++                    check.url
++                ),
++            },
++        ];
++        self.decision_lines(&mut lines);
++        lines.push(heading("Gates", self.gates.is_empty()));
++        lines.extend(self.gates.iter().map(|gate| {
++            format!(
++                "  {} {} {}",
++                gate.plugin,
++                gate.conclusion.unwrap_or("-"),
++                gate.url
++            )
++        }));
++        lines.push(heading("Findings", self.findings.is_empty()));
++        lines.extend(self.findings.iter().map(finding_line));
++        if let Some(weigh_in) = &self.weigh_in {
++            lines.push(format!(
++                "Weigh-In: blocking {}, pending triage {}",
++                yes_no(weigh_in.blocking),
++                yes_no(weigh_in.pending_triage)
++            ));
++        }
++        let role = match (self.viewer.is_owner, self.viewer.is_agent) {
++            (true, _) => "owner",
++            (false, true) => "agent",
++            (false, false) => "other",
++        };
++        lines.push(format!("Viewer: {} ({role})", self.viewer.login));
++        lines.push(format!("Fetched: {}", self.fetched_at));
++        let mut text = lines.join("\n");
++        text.push('\n');
++        text
++    }
++
++    fn decision_lines(&self, lines: &mut Vec<String>) {
++        let Some(decision) = &self.decision else {
++            lines.push("Decision: none".to_owned());
++            return;
++        };
++        lines.push(format!(
++            "Decision: {} (tier {})",
++            decision.conclusion,
++            self.tier.unwrap_or("-")
++        ));
++        lines.extend(decision.reasons.iter().map(|reason| match &reason.fp {
++            Some(fp) => format!("  reason {}: {} ({fp})", reason.code, reason.detail),
++            None => format!("  reason {}: {}", reason.code, reason.detail),
++        }));
++        let counts = decision.counts;
++        lines.push(format!(
++            "  counts: {} blocker, {} major, {} minor, {} nit",
++            counts.blocker, counts.major, counts.minor, counts.nit
++        ));
++        lines.extend(
++            decision
++                .degraded
++                .iter()
++                .map(|degraded| format!("  degraded {}: {}", degraded.role, degraded.reason)),
++        );
++        lines.extend(
++            decision
++                .advisory_blockers
++                .iter()
++                .map(|fp| format!("  advisory blocker {fp}")),
++        );
++        lines.push(format!("  reasons digest: {}", decision.reasons_digest));
++    }
++}
++
++/// `Name:`, or `Name: none` for an empty list.
++fn heading(name: &str, empty: bool) -> String {
++    if empty {
++        format!("{name}: none")
++    } else {
++        format!("{name}:")
++    }
++}
++
++/// One finding on one line: fingerprint, severity, whether it is waivable, then what was
++/// published (class, place, title) where it was. The title is cleaned onto one line.
++fn finding_line(finding: &FindingEntry) -> String {
++    let mut parts = vec![
++        "  ".to_owned() + finding.fp.as_str(),
++        finding.severity.to_owned(),
++    ];
++    if finding.waivable {
++        parts.push("waivable".to_owned());
++    }
++    if let Some(class) = finding.class {
++        parts.push(class.to_owned());
++    }
++    if let (Some(file), Some(line)) = (&finding.file, finding.line) {
++        parts.push(format!("{file}:{line}"));
++    }
++    if let Some(title) = &finding.title {
++        parts.push(clean(title));
++    }
++    parts.join(" ")
++}
++
++fn yes_no(flag: bool) -> &'static str {
++    if flag { "yes" } else { "no" }
++}
++
++fn check_entry(check: Check) -> CheckEntry {
++    CheckEntry {
++        conclusion: check.conclusion.map(ObservedConclusion::code),
++        status: match check.status {
++            CheckStatus::Queued => "queued",
++            CheckStatus::InProgress => "in_progress",
++            CheckStatus::Completed => "completed",
++        },
++        url: check.url,
++    }
++}
++
++/// The decision as published: reason details and degraded roles cleaned as the summary cleans
++/// them; refused past [`MAX_REASONS`].
++fn decision<E, B>(decision: &Decision) -> Result<DecisionEntry, StatusError<E, B>> {
++    let count = decision.reasons.len().max(decision.degraded.len());
++    if count > MAX_REASONS {
++        return Err(StatusError::TooManyReasons { count });
++    }
++    Ok(DecisionEntry {
++        conclusion: decision.conclusion.code(),
++        reasons: decision
++            .reasons
++            .iter()
++            .map(|reason| ReasonEntry {
++                code: reason.code.code(),
++                detail: clean(&reason.detail),
++                fp: reason.fp.map(|fp| fp.to_string()),
++            })
++            .collect(),
++        reasons_digest: decision.reasons_digest(),
++        counts: decision.counts,
++        degraded: decision
++            .degraded
++            .iter()
++            .map(|degraded| DegradedEntry {
++                role: clean(&degraded.role),
++                reason: clean(&degraded.reason),
++            })
++            .collect(),
++        advisory_blockers: decision
++            .advisory_blockers
++            .iter()
++            .map(ToString::to_string)
++            .collect(),
++    })
++}
++
++fn weigh_in(weigh_in: WeighIn) -> Option<WeighInEntry> {
++    match weigh_in {
++        WeighIn::NotRequired => None,
++        WeighIn::Clear | WeighIn::OpenBlocking | WeighIn::PendingTriage | WeighIn::NoEvidence => {
++            Some(WeighInEntry {
++                blocking: weigh_in == WeighIn::OpenBlocking,
++                pending_triage: weigh_in == WeighIn::PendingTriage,
++            })
++        }
++    }
++}
++
++fn finding_entry(finding: Finding) -> FindingEntry {
++    let fp = finding.fp.to_string();
++    let (class, title, file, line, url, body) = match finding.published {
++        Some(published) => (
++            published.class.map(Class::code),
++            published.title,
++            Some(published.file),
++            published.line,
++            Some(published.url),
++            published.body,
++        ),
++        None => (None, None, None, None, None, None),
++    };
++    FindingEntry {
++        // The id `/assay waive` takes is the fingerprint: the document carries both fields.
++        finding_id: fp.clone(),
++        fp,
++        severity: finding.severity.code(),
++        class,
++        title: title.or(finding.gate_title),
++        file,
++        line,
++        url,
++        disposition: finding.disposition.map(Disposition::code),
++        waivable: finding.waivable,
++        body,
++    }
++}
++
++/// The viewer, when their login reads as a GitHub login (`[bot]` allowed), with whether their
++/// id is in the privileged set and in `.assay/agents`.
++fn viewer_entry<'a>(
++    request: &StatusRequest<'_>,
++    viewer: &'a Viewer,
++) -> Result<ViewerEntry<'a>, StatusUnreadable> {
++    let login = viewer.login.as_str();
++    let name = login.strip_suffix("[bot]").unwrap_or(login);
++    let readable = name.len() <= MAX_LOGIN_BYTES
++        && name
++            .bytes()
++            .next()
++            .is_some_and(|first| first.is_ascii_alphanumeric())
++        && name
++            .bytes()
++            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
++    if !readable {
++        return Err(StatusUnreadable::Login);
++    }
++    Ok(ViewerEntry {
++        login,
++        is_owner: request.identities.privileged.contains(&viewer.id),
++        is_agent: request.identities.agents.contains(&viewer.id),
++    })
++}
+diff --git a/crates/assay-app/src/status/findings.rs b/crates/assay-app/src/status/findings.rs
+new file mode 100644
+index 0000000..fd7087d
+--- /dev/null
++++ b/crates/assay-app/src/status/findings.rs
+@@ -0,0 +1,178 @@
++//! The decision's findings, one per fingerprint, with what the App's inline comments published
++//! about each and whether `/assay waive` may clear it.
++
++use std::collections::BTreeMap;
++use std::collections::btree_map::Entry;
++use std::num::NonZeroU64;
++
++use assay_domain::{
++    Class, DecisionInputs, Disposition, Fingerprint, Severity, waivable_fingerprints,
++};
++
++use super::ports::{PullView, StatusForge};
++use super::verdict::Decided;
++use super::{Detail, MAX_FINDINGS, StatusError, StatusRequest, StatusStep, page};
++use crate::publish::{MAX_PRIOR_COMMENTS, clean, read_published};
++
++/// The longest published body `--full` shows, in characters (the schema's cap); a longer one is
++/// left out rather than cut.
++const MAX_BODY_CHARS: usize = 16_384;
++
++/// One finding as the status lists it.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(super) struct Finding {
++    pub(super) fp: Fingerprint,
++    pub(super) severity: Severity,
++    pub(super) published: Option<Published>,
++    /// What the per-gate check published for the first gate finding carrying the fingerprint:
++    /// `<plugin>: <rule>`, cleaned as the check's summary cleans it.
++    pub(super) gate_title: Option<String>,
++    pub(super) disposition: Option<Disposition>,
++    pub(super) waivable: bool,
++}
++
++/// What the App's inline comment published about a finding.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(super) struct Published {
++    pub(super) class: Option<Class>,
++    pub(super) title: Option<String>,
++    pub(super) file: String,
++    pub(super) line: Option<NonZeroU64>,
++    pub(super) url: String,
++    pub(super) body: Option<String>,
++}
++
++/// The decision's gate findings, then its reviewer findings, one entry per fingerprint at the
++/// highest severity carrying it; refused past [`MAX_FINDINGS`] before any comment is read.
++pub(super) fn findings<F: StatusForge, B>(
++    request: &StatusRequest<'_>,
++    forge: &F,
++    pull: &PullView,
++    decided: &Decided,
++) -> Result<Vec<Finding>, StatusError<F::Error, B>> {
++    let inputs = &decided.inputs;
++    let count = inputs
++        .gates
++        .iter()
++        .map(|gate| gate.findings.len())
++        .fold(inputs.findings.len(), usize::saturating_add);
++    if count > MAX_FINDINGS {
++        return Err(StatusError::TooManyFindings { count });
++    }
++    let entries = carried(inputs, count);
++    let mut published = comments(request, forge, pull)?;
++    let waivable = waivable_fingerprints(request.rubric, &inputs.gates);
++    let last_disposition: BTreeMap<Fingerprint, Disposition> = decided
++        .decision
++        .dispositions
++        .iter()
++        .map(|disposition| (disposition.fp, disposition.code))
++        .collect();
++    Ok(entries
++        .into_iter()
++        .map(|carrier| Finding {
++            fp: carrier.fp,
++            severity: carrier.severity,
++            published: published.remove(&carrier.fp),
++            gate_title: carrier.gate.map(|(gate, rule)| match rule {
++                Some(rule) => clean(&[gate, ": ", rule].concat()),
++                None => clean(gate),
++            }),
++            disposition: last_disposition.get(&carrier.fp).copied(),
++            waivable: waivable.contains(&carrier.fp),
++        })
++        .collect())
++}
++
++/// One finding the decision carries: its fingerprint, severity and, for a gate finding, its
++/// gate and rule.
++struct Carried<'a> {
++    fp: Fingerprint,
++    severity: Severity,
++    gate: Option<(&'a str, Option<&'a str>)>,
++}
++
++/// The `count` findings `inputs` carries, gate findings first, merged to one per fingerprint in
++/// first-seen order at the highest severity, keeping the first gate and rule seen.
++fn carried(inputs: &DecisionInputs, count: usize) -> Vec<Carried<'_>> {
++    let all = inputs
++        .gates
++        .iter()
++        .flat_map(|gate| {
++            gate.findings.iter().map(|finding| Carried {
++                fp: finding.fp,
++                severity: finding.severity,
++                gate: Some((gate.name.as_str(), finding.rule.as_deref())),
++            })
++        })
++        .chain(inputs.findings.iter().map(|finding| Carried {
++            fp: finding.fp,
++            severity: finding.severity,
++            gate: None,
++        }));
++    let mut entries: Vec<Carried<'_>> = Vec::with_capacity(count);
++    let mut index: BTreeMap<Fingerprint, usize> = BTreeMap::new();
++    for carrier in all {
++        match index.entry(carrier.fp) {
++            Entry::Vacant(vacant) => {
++                vacant.insert(entries.len());
++                entries.push(carrier);
++            }
++            Entry::Occupied(occupied) => {
++                if let Some(kept) = entries.get_mut(*occupied.get()) {
++                    kept.severity = kept.severity.max(carrier.severity);
++                    kept.gate = kept.gate.or(carrier.gate);
++                }
++            }
++        }
++    }
++    entries
++}
++
++/// The App's inline finding comments by fingerprint, the first for each; refused past
++/// [`MAX_PRIOR_COMMENTS`].
++fn comments<F: StatusForge, B>(
++    request: &StatusRequest<'_>,
++    forge: &F,
++    pull: &PullView,
++) -> Result<BTreeMap<Fingerprint, Published>, StatusError<F::Error, B>> {
++    let views = forge
++        .review_comments(pull.number, request.app)
++        .map_err(|source| StatusError::Forge {
++            step: StatusStep::ReviewComments,
++            source,
++        })?;
++    if views.len() > MAX_PRIOR_COMMENTS {
++        return Err(StatusError::TooManyComments { count: views.len() });
++    }
++    let repository = request.repository.name.as_str();
++    let mut published = BTreeMap::new();
++    for view in views.iter().filter(|view| view.app == Some(request.app)) {
++        let Some(comment) = read_published(&view.body) else {
++            continue;
++        };
++        if published.contains_key(&comment.fp) {
++            continue;
++        }
++        let url = page(&view.url, repository).map_err(StatusError::Unreadable)?;
++        let body = match request.detail {
++            Detail::Summary => None,
++            Detail::Full => comment
++                .rest
++                .filter(|rest| rest.chars().count() <= MAX_BODY_CHARS)
++                .map(str::to_owned),
++        };
++        published.insert(
++            comment.fp,
++            Published {
++                class: comment.class,
++                title: comment.title.map(str::to_owned),
++                file: clean(&view.path),
++                line: view.line,
++                url,
++                body,
++            },
++        );
++    }
++    Ok(published)
++}
+diff --git a/crates/assay-app/src/status/ports.rs b/crates/assay-app/src/status/ports.rs
+new file mode 100644
+index 0000000..7ee466a
+--- /dev/null
++++ b/crates/assay-app/src/status/ports.rs
+@@ -0,0 +1,158 @@
++//! The one narrow read port `status` reads GitHub through, and what it returns. The run's
++//! artifacts are read through [`BundleSource`](crate::BundleSource), as replay reads them.
++
++use std::num::NonZeroU64;
++
++use crate::config::CommitId;
++use crate::publish::CheckStatus;
++
++/// What `assay status` reads from GitHub with the viewer's own `gh` token. Implemented by the
++/// forge adapter (#53). Every text it returns is untrusted: `status` validates it.
++pub trait StatusForge {
++    /// Why GitHub could not be read.
++    type Error: std::error::Error;
++
++    /// PR `number`, open or not; `None` when the repository has no such PR.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the PR cannot be read.
++    fn pull(&self, number: NonZeroU64) -> Result<Option<PullView>, Self::Error>;
++
++    /// The open PRs of the repository whose head is `branch` of the repository itself.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the PRs cannot be listed.
++    fn open_pulls(&self, branch: &str) -> Result<Vec<PullView>, Self::Error>;
++
++    /// Every check run on `head`, of any app, across all pages, each with the id of the app
++    /// that created it. `status` keeps only the configured App's.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the check runs cannot be listed.
++    fn check_runs(&self, head: &CommitId) -> Result<Vec<CheckView>, Self::Error>;
++
++    /// The review comments on PR `number` authored by App `app`, across all pages. A comment by
++    /// anyone else is never returned; `status` checks each one's [`ReviewCommentView::app`]
++    /// again.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the review comments cannot be listed.
++    fn review_comments(
++        &self,
++        number: NonZeroU64,
++        app: AppId,
++    ) -> Result<Vec<ReviewCommentView>, Self::Error>;
++
++    /// The authenticated `gh` user running the command.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the user cannot be read.
++    fn viewer(&self) -> Result<Viewer, Self::Error>;
++}
++
++/// A GitHub App's numeric id (`check_run.app.id`, the ruleset's `integration_id`).
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
++pub struct AppId(pub NonZeroU64);
++
++/// A GitHub user's numeric id, the authoritative identity of 03 §1.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
++pub struct UserId(pub NonZeroU64);
++
++/// A PR as GitHub shows it.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct PullView {
++    /// Its number.
++    pub number: NonZeroU64,
++    /// Its head commit.
++    pub head_sha: CommitId,
++    /// Its head branch.
++    pub head_ref: String,
++    /// Its base branch, which names the verdict check (R3-03).
++    pub base_ref: String,
++}
++
++/// One check run on a commit, of any app.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct CheckView {
++    /// The app that created it.
++    pub app: AppId,
++    /// Its name.
++    pub name: String,
++    /// Its status.
++    pub status: CheckStatus,
++    /// Its conclusion, once completed.
++    pub conclusion: Option<ObservedConclusion>,
++    /// Its `external_id`, if set.
++    pub external_id: Option<String>,
++    /// Its `output.text`, if set.
++    pub output_text: Option<String>,
++    /// Its page (`html_url`).
++    pub url: String,
++}
++
++/// A check run's conclusion, as GitHub can report it for any app.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum ObservedConclusion {
++    /// `success`.
++    Success,
++    /// `failure`.
++    Failure,
++    /// `neutral`.
++    Neutral,
++    /// `cancelled`.
++    Cancelled,
++    /// `skipped`.
++    Skipped,
++    /// `timed_out`.
++    TimedOut,
++    /// `action_required`.
++    ActionRequired,
++    /// `stale`: GitHub closed a check left incomplete for 14 days.
++    Stale,
++}
++
++impl ObservedConclusion {
++    /// The conclusion's wire word.
++    #[must_use]
++    pub const fn code(self) -> &'static str {
++        match self {
++            Self::Success => "success",
++            Self::Failure => "failure",
++            Self::Neutral => "neutral",
++            Self::Cancelled => "cancelled",
++            Self::Skipped => "skipped",
++            Self::TimedOut => "timed_out",
++            Self::ActionRequired => "action_required",
++            Self::Stale => "stale",
++        }
++    }
++}
++
++/// One review comment on a PR's diff.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ReviewCommentView {
++    /// The app that authored it; `None` for a user.
++    pub app: Option<AppId>,
++    /// Its body as GitHub returns it.
++    pub body: String,
++    /// The file it is on.
++    pub path: String,
++    /// Its line (GitHub's `line`); `None` once the line is outdated.
++    pub line: Option<NonZeroU64>,
++    /// Its page (`html_url`).
++    pub url: String,
++}
++
++/// The user `gh` is authenticated as.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Viewer {
++    /// Their numeric id.
++    pub id: UserId,
++    /// Their login, for display.
++    pub login: String,
++}
+diff --git a/crates/assay-app/src/status/verdict.rs b/crates/assay-app/src/status/verdict.rs
+new file mode 100644
+index 0000000..bdf3d2e
+--- /dev/null
++++ b/crates/assay-app/src/status/verdict.rs
+@@ -0,0 +1,222 @@
++//! The App's checks on the head: the verdict check, the decision its evidence pointer names,
++//! and the per-gate checks.
++
++use std::collections::BTreeMap;
++
++use assay_domain::{Decision, DecisionInputs, RunUid};
++
++use super::ports::{AppId, CheckView, ObservedConclusion, PullView, StatusForge};
++use super::{
++    BundleProblem, MAX_CHECK_RUNS, StatusError, StatusPorts, StatusRequest, StatusStep,
++    StatusUnreadable, page,
++};
++use crate::config::{GateName, Sha256Digest};
++use crate::publish::read_text;
++use crate::publish::{BUNDLE_FILE, CheckName, CheckStatus, EvidencePointer, MAX_BUNDLE_BYTES};
++use crate::replay::{self, BundleSource, StoredBundle};
++
++/// What a gate check's name starts with (`assay / gate: <plugin>`, 04 §6).
++const GATE_PREFIX: &str = "assay / gate: ";
++
++/// What the App's checks on the head say.
++pub(super) struct Observed {
++    /// The verdict check, if the App has one.
++    pub(super) check: Option<Check>,
++    /// The decision the check carries, if it names a persisted one.
++    pub(super) decided: Option<Decided>,
++    /// The per-gate checks, by plugin.
++    pub(super) gates: BTreeMap<GateName, Check>,
++}
++
++/// One App check as the status shows it.
++pub(super) struct Check {
++    pub(super) status: CheckStatus,
++    pub(super) conclusion: Option<ObservedConclusion>,
++    pub(super) url: String,
++}
++
++/// A decision read from its authenticated bundle.
++pub(super) struct Decided {
++    pub(super) decision: Decision,
++    pub(super) inputs: DecisionInputs,
++}
++
++/// What the verdict check's `external_id` says.
++enum Stamp<'a> {
++    /// `open`'s `pending:<run_id>:<seq>`: a run is in progress and nothing is decided yet.
++    Open,
++    /// A decision key: `decide` wrote the check.
++    Decided(&'a str),
++}
++
++/// Reads the head's check runs and, when the verdict check names a persisted decision, its
++/// bundle.
++pub(super) fn observe<F: StatusForge, B: BundleSource>(
++    request: &StatusRequest<'_>,
++    ports: &StatusPorts<'_, F, B>,
++    pull: &PullView,
++) -> Result<Observed, StatusError<F::Error, B::Error>> {
++    let runs = ports
++        .forge
++        .check_runs(&pull.head_sha)
++        .map_err(|source| StatusError::Forge {
++            step: StatusStep::CheckRuns,
++            source,
++        })?;
++    if runs.len() > MAX_CHECK_RUNS {
++        return Err(StatusError::TooManyChecks { count: runs.len() });
++    }
++    let repository = request.repository.name.as_str();
++    let name = CheckName::for_base(&pull.base_ref, &request.repository.default_branch);
++    let verdicts: Vec<&CheckView> = app_checks(&runs, request.app)
++        .filter(|run| run.name == name.as_str())
++        .collect();
++    let (check, decided) = match verdicts.as_slice() {
++        [] => (None, None),
++        [verdict] => {
++            let check = check(verdict, repository).map_err(StatusError::Unreadable)?;
++            let decided = match stamp(verdict).map_err(StatusError::Unreadable)? {
++                Stamp::Open => None,
++                Stamp::Decided(key) => decision(request, ports.bundles, verdict, key)?,
++            };
++            (Some(check), decided)
++        }
++        many => return Err(StatusError::DuplicateVerdict { count: many.len() }),
++    };
++    Ok(Observed {
++        check,
++        decided,
++        gates: gates(&runs, request.app, repository)?,
++    })
++}
++
++/// The check runs `app` created.
++fn app_checks(runs: &[CheckView], app: AppId) -> impl Iterator<Item = &CheckView> {
++    runs.iter().filter(move |run| run.app == app)
++}
++
++/// `run` as the status shows it, when its status and conclusion agree and its page reads.
++fn check(run: &CheckView, repository: &str) -> Result<Check, StatusUnreadable> {
++    let completed = run.status == CheckStatus::Completed;
++    if completed != run.conclusion.is_some() {
++        return Err(StatusUnreadable::CheckState);
++    }
++    Ok(Check {
++        status: run.status,
++        conclusion: run.conclusion,
++        url: page(&run.url, repository)?,
++    })
++}
++
++/// The App's `assay / gate: <plugin>` checks, by plugin, each plugin once.
++fn gates<E, B>(
++    runs: &[CheckView],
++    app: AppId,
++    repository: &str,
++) -> Result<BTreeMap<GateName, Check>, StatusError<E, B>> {
++    let mut gates = BTreeMap::new();
++    for run in app_checks(runs, app) {
++        let Some(plugin) = run.name.strip_prefix(GATE_PREFIX) else {
++            continue;
++        };
++        // The validated name owns its copy of the plugin name.
++        let plugin = GateName::new(plugin.to_owned())
++            .map_err(|_not_a_plugin| StatusError::Unreadable(StatusUnreadable::GateName))?;
++        let check = check(run, repository).map_err(StatusError::Unreadable)?;
++        if gates.contains_key(&plugin) {
++            return Err(StatusError::DuplicateGate { plugin });
++        }
++        gates.insert(plugin, check);
++    }
++    Ok(gates)
++}
++
++/// What the verdict check's `external_id` says, or that it says neither thing assay writes.
++fn stamp(run: &CheckView) -> Result<Stamp<'_>, StatusUnreadable> {
++    let id = run
++        .external_id
++        .as_deref()
++        .ok_or(StatusUnreadable::ExternalId)?;
++    if let Some(stamp) = id.strip_prefix("pending:") {
++        let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
++        return match stamp.split_once(':') {
++            Some((run_id, seq)) if digits(run_id) && digits(seq) => Ok(Stamp::Open),
++            _ => Err(StatusUnreadable::ExternalId),
++        };
++    }
++    match id.parse::<Sha256Digest>() {
++        Ok(_) => Ok(Stamp::Decided(id)),
++        Err(_) => Err(StatusUnreadable::ExternalId),
++    }
++}
++
++/// The decision a decided verdict check names: none when its run persisted no bundle, else the
++/// bundle's, once authenticated against the pointer and the check's key.
++fn decision<E, B: BundleSource>(
++    request: &StatusRequest<'_>,
++    bundles: &B,
++    run: &CheckView,
++    key: &str,
++) -> Result<Option<Decided>, StatusError<E, B::Error>> {
++    let text = run
++        .output_text
++        .as_deref()
++        .and_then(read_text)
++        .filter(|text| text.decision_key == key)
++        .ok_or(StatusError::Unreadable(StatusUnreadable::CheckText))?;
++    let Some(pointer) = text.pointer else {
++        return Ok(None);
++    };
++    let decided = authenticated(request, bundles, &pointer, key).map_err(StatusError::Bundle)?;
++    Ok(Some(decided))
++}
++
++/// The bundle `pointer` names, read under its cap, hashing to the pointer, consistent with it
++/// and itself, decided under `request.rubric` and carrying the decision keyed `key`.
++fn authenticated<B: BundleSource>(
++    request: &StatusRequest<'_>,
++    bundles: &B,
++    pointer: &EvidencePointer,
++    key: &str,
++) -> Result<Decided, BundleProblem<B::Error>> {
++    if pointer.run_attempt.get() != 1 {
++        return Err(BundleProblem::NotFirstAttempt);
++    }
++    let run = RunUid {
++        repo_id: request.repository.id,
++        run_id: pointer.run_id,
++        run_attempt: pointer.run_attempt,
++    };
++    let bytes = match bundles
++        .fetch(run, BUNDLE_FILE, MAX_BUNDLE_BYTES)
++        .map_err(BundleProblem::Fetch)?
++    {
++        StoredBundle::Found(bytes) if bytes.len() > MAX_BUNDLE_BYTES => {
++            return Err(BundleProblem::TooLarge);
++        }
++        StoredBundle::Found(bytes) => bytes,
++        StoredBundle::Missing => return Err(BundleProblem::Missing),
++        StoredBundle::Expired => return Err(BundleProblem::Expired),
++        StoredBundle::TooLarge => return Err(BundleProblem::TooLarge),
++    };
++    if Sha256Digest::of(&bytes) != pointer.sha256 {
++        return Err(BundleProblem::Digest);
++    }
++    let bundle = replay::read(&bytes).map_err(BundleProblem::Shape)?;
++    drop(bytes);
++    if replay::inconsistency(&bundle, run).is_some() {
++        return Err(BundleProblem::Inconsistent);
++    }
++    if bundle.rubric_version != request.rubric.version() {
++        return Err(BundleProblem::RubricVersion);
++    }
++    let decision: Decision = serde_json::from_value(bundle.decision)
++        .map_err(|_not_a_decision| BundleProblem::Decision)?;
++    if decision.key != key {
++        return Err(BundleProblem::Decision);
++    }
++    Ok(Decided {
++        decision,
++        inputs: bundle.inputs,
++    })
++}

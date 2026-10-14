@@ -1,0 +1,1919 @@
+diff --git a/crates/assay-app/src/calendar.rs b/crates/assay-app/src/calendar.rs
+index 47c13e8..d0d65d2 100644
+--- a/crates/assay-app/src/calendar.rs
++++ b/crates/assay-app/src/calendar.rs
+@@ -75,6 +75,12 @@ impl CalendarDate {
+     pub const fn days_since_epoch(self) -> u32 {
+         self.days
+     }
++
++    /// The year and the month (1 to 12) the day falls in.
++    pub(crate) const fn year_month(self) -> (u32, u32) {
++        let (year, month, _day) = civil_from_days(self.days);
++        (year, month)
++    }
+ }
+ 
+ /// Whether `year` has a 29 February.
+diff --git a/crates/assay-app/src/check/review.rs b/crates/assay-app/src/check/review.rs
+index b1e5fb8..fed6eae 100644
+--- a/crates/assay-app/src/check/review.rs
++++ b/crates/assay-app/src/check/review.rs
+@@ -17,7 +17,7 @@ use crate::model_runner::{
+ };
+ use crate::plan::EvidenceKey;
+ use crate::prompt_bundle::Role;
+-use crate::session_init::{CLEAN_TOOLS, InitReadError, SessionInit};
++use crate::session_init::{InitReadError, SessionInit};
+ use crate::validation::{
+     Change, EgressScan, FindingRef, Inputs, SuppressRules, ValidFinding, validate,
+ };
+@@ -248,9 +248,7 @@ fn confined(init: &Result<SessionInit, InitReadError>) -> Result<(), String> {
+     let init = init
+         .as_ref()
+         .map_err(|error| format!("the session's init could not be read: {error}"))?;
+-    let mut tools: Vec<&str> = init.tools().iter().map(String::as_str).collect();
+-    tools.sort_unstable();
+-    if tools != CLEAN_TOOLS || !init.mcp_servers().is_empty() {
++    if !init.is_confined() {
+         return Err("the session was not confined to Read, Grep and Glob".to_owned());
+     }
+     Ok(())
+diff --git a/crates/assay-app/src/eval.rs b/crates/assay-app/src/eval.rs
+new file mode 100644
+index 0000000..115e533
+--- /dev/null
++++ b/crates/assay-app/src/eval.rs
+@@ -0,0 +1,336 @@
++//! The corpus eval harness (`docs/architecture/04-pipeline.md` §8, `06-operations.md` F11).
++//!
++//! [`read_eval_corpus`] reads one split of `corpus/{dev,test,inject}` as the caller listed it;
++//! [`run_eval`] runs each case [`EVAL_RUNS`] times through a [`ModelRunner`], scores every run
++//! deterministically and charges the separate eval ledger; [`compare`] applies the accept rule
++//! to a candidate report against a baseline. Nothing here reads files or the production cap.
++
++mod case;
++mod corpus;
++mod ledger;
++mod report;
++mod score;
++
++use std::path::Path;
++use std::time::Duration;
++
++use assay_domain::Aeu;
++use thiserror::Error;
++
++use crate::calendar::CalendarDate;
++use crate::contract::Contract;
++use crate::model_runner::{
++    InvalidPrompt, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt, RetryError,
++    run_with_retry,
++};
++use crate::prompt_bundle::{PromptBundle, Role};
++use crate::session_init::SessionInit;
++
++pub use case::{
++    AuthoringModel, CASE_SCHEMA, CaseProblem, CaseSource, Label, MAX_AUTHORING_MODEL_BYTES,
++    MAX_LABEL_PATH_BYTES, MAX_LABELS,
++};
++pub use corpus::{
++    CorpusError, EvalCase, EvalCorpus, MAX_CASE_BYTES, MAX_CASE_ID_BYTES, MAX_EVAL_CASES,
++    MAX_EVAL_ENTRIES, Split, read_eval_corpus,
++};
++pub use ledger::{EVAL_MONTHLY_CAP, EvalLedger, EvalMonth};
++pub use report::{
++    Acceptance, CaseKind, CaseOutcome, CompareError, EvalReport, NoiseCheck, Proportion, RunScore,
++    Unscorable, WILSON_Z, compare,
++};
++pub use score::{ClassMap, LINE_WINDOW, MAX_RUN_FINDINGS, OutputProblem};
++
++/// Runs per case (04 §8: k = 3).
++pub const EVAL_RUNS: usize = 3;
++
++/// The role every eval call reviews as: the `combined` reviewer.
++pub const EVAL_ROLE: Role = Role::Combined;
++
++/// What one evaluation runs.
++#[derive(Debug, Clone, Copy)]
++pub struct EvalRequest<'a> {
++    /// The split's cases.
++    pub corpus: &'a EvalCorpus,
++    /// The split's directory (absolute); a case's model reads only `<corpus_dir>/<id>/tree`.
++    pub corpus_dir: &'a Path,
++    /// The prompt bundle under evaluation.
++    pub bundle: &'a PromptBundle,
++    /// The bundle's system prompt file (absolute).
++    pub system_prompt_file: &'a Path,
++    /// Which finding classes count for which label class.
++    pub class_map: &'a ClassMap,
++    /// The wall-clock limit of each call.
++    pub timeout: Duration,
++    /// Today (UTC), which picks the eval ledger's month.
++    pub today: CalendarDate,
++}
++
++/// A path of an [`EvalRequest`] that must be absolute.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum PathField {
++    /// [`EvalRequest::corpus_dir`].
++    CorpusDir,
++    /// [`EvalRequest::system_prompt_file`].
++    SystemPromptFile,
++}
++
++/// Why an evaluation did not complete. Whatever was spent before it stopped is charged.
++#[derive(Debug, Error)]
++pub enum EvalError<R, L> {
++    /// The split holds no case.
++    #[error("the split holds no case")]
++    NoCases,
++    /// A request path is relative; no call was made.
++    #[error("the request's {field:?} is not an absolute path")]
++    RelativePath {
++        /// The path at fault.
++        field: PathField,
++    },
++    /// A case's diff does not make a valid prompt; no call was made.
++    #[error("case {case:?} does not make a valid prompt")]
++    Prompt {
++        /// The case id.
++        case: String,
++        /// Why the prompt was refused.
++        #[source]
++        source: InvalidPrompt,
++    },
++    /// The runner could not make or supervise a call of `case`. The call was charged its cap
++    /// per attempt, and no further call was made: a broken runner would fail every call.
++    #[error("the model runner failed on case {case:?}")]
++    Runner {
++        /// The case id.
++        case: String,
++        /// The runner's error.
++        #[source]
++        source: R,
++    },
++    /// The subscription's usage limit refused a call of `case`. The call was charged, and no
++    /// further call was made: every later call would meet the same limit.
++    #[error("the usage limit refused a call on case {case:?}")]
++    QuotaExhausted {
++        /// The case id.
++        case: String,
++    },
++    /// The eval ledger cannot fit the next call: `spent` plus the call's worst case would pass
++    /// `cap` in `month`. Nothing is drawn from the production cap instead.
++    #[error("the eval ledger is exhausted for {month}: {spent} of {cap} AEU spent")]
++    Exhausted {
++        /// The ledger month.
++        month: EvalMonth,
++        /// What evaluations had spent in it, this one included.
++        spent: Aeu,
++        /// The monthly cap.
++        cap: Aeu,
++    },
++    /// The eval ledger could not be read or charged.
++    #[error("the eval ledger for {month} could not be read or charged")]
++    Ledger {
++        /// The ledger month.
++        month: EvalMonth,
++        /// The port's error.
++        #[source]
++        source: L,
++    },
++}
++
++/// How one call ended, for the evaluation loop.
++enum Called<E> {
++    /// It ran and was scored.
++    Scored(RunScore),
++    /// The runner failed; the evaluation stops.
++    Failed(E),
++    /// The usage limit refused it; the evaluation stops.
++    Quota,
++}
++
++/// The most one call can cost: the first attempt and its one retry, each at the role's cap.
++fn worst_call() -> Aeu {
++    EVAL_ROLE.cap().saturating_add(EVAL_ROLE.cap())
++}
++
++/// Runs every case of the request's split [`EVAL_RUNS`] times through `runner` and scores
++/// each run, charging every call's cost to `ledger` before the next call.
++///
++/// No call starts unless the month's eval spend plus the call's worst case (two attempts at
++/// the `combined` cap) stays within [`EVAL_MONTHLY_CAP`]; the evaluation then stops with
++/// [`EvalError::Exhausted`]. A run that cannot be scored counts against the change; a runner
++/// failure or the usage limit stops the evaluation once the call is charged.
++///
++/// # Errors
++/// [`EvalError`] when the split is empty, a request path is relative or a prompt is invalid
++/// (all before any call), or when the runner fails, the usage limit is reached, or the eval
++/// ledger is exhausted or fails.
++pub fn run_eval<R: ModelRunner, L: EvalLedger>(
++    runner: &R,
++    ledger: &mut L,
++    request: &EvalRequest<'_>,
++) -> Result<EvalReport, EvalError<R::Error, L::Error>> {
++    let prompts = prepare(request)?;
++    let month = EvalMonth::of(request.today);
++    let mut spent = ledger
++        .spent(month)
++        .map_err(|source| EvalError::Ledger { month, source })?;
++    let mut charged = Aeu::ZERO;
++    let cases = request.corpus.cases();
++    let mut outcomes = Vec::with_capacity(cases.len());
++    for (case, prompt) in cases.iter().zip(prompts) {
++        let call = case_call(request, case, prompt);
++        let mut runs = [RunScore::Missed; EVAL_RUNS];
++        for run in &mut runs {
++            if spent.saturating_add(worst_call()) > EVAL_MONTHLY_CAP {
++                let cap = EVAL_MONTHLY_CAP;
++                return Err(EvalError::Exhausted { month, spent, cap });
++            }
++            let (called, cost) = make_call(runner, &call, case, request.class_map);
++            ledger
++                .charge(month, cost)
++                .map_err(|source| EvalError::Ledger { month, source })?;
++            spent = spent.saturating_add(cost);
++            charged = charged.saturating_add(cost);
++            *run = match called {
++                Called::Scored(score) => score,
++                Called::Failed(source) => {
++                    let case = case.id().to_owned();
++                    return Err(EvalError::Runner { case, source });
++                }
++                Called::Quota => {
++                    let case = case.id().to_owned();
++                    return Err(EvalError::QuotaExhausted { case });
++                }
++            };
++        }
++        outcomes.push(outcome(case, runs));
++    }
++    Ok(EvalReport {
++        split: request.corpus.split(),
++        bundle: request.bundle.hash(),
++        month,
++        spent: charged,
++        cases: outcomes,
++    })
++}
++
++/// Everything checked before the first call: a case to run, absolute paths, and each case's
++/// prompt, in case order.
++fn prepare<R, L>(request: &EvalRequest<'_>) -> Result<Vec<Prompt>, EvalError<R, L>> {
++    let cases = request.corpus.cases();
++    if cases.is_empty() {
++        return Err(EvalError::NoCases);
++    }
++    for (path, field) in [
++        (request.corpus_dir, PathField::CorpusDir),
++        (request.system_prompt_file, PathField::SystemPromptFile),
++    ] {
++        if !path.is_absolute() {
++            return Err(EvalError::RelativePath { field });
++        }
++    }
++    cases
++        .iter()
++        .map(|case| {
++            let pack = format!("Diff:\n{}", case.diff());
++            request
++                .bundle
++                .user_prompt(EVAL_ROLE, &pack)
++                .map_err(|source| EvalError::Prompt {
++                    case: case.id().to_owned(),
++                    source,
++                })
++        })
++        .collect()
++}
++
++/// The call that reviews `case`: its diff as the pack, its tree as the only readable directory.
++fn case_call(request: &EvalRequest<'_>, case: &EvalCase, prompt: Prompt) -> ModelCall {
++    ModelCall {
++        system_prompt_file: request.system_prompt_file.to_path_buf(),
++        user_prompt: prompt,
++        json_schema: Contract::Findings.schema_text().to_owned(),
++        add_dir: request.corpus_dir.join(case.id()).join("tree"),
++        max_turns: EVAL_ROLE.max_turns(),
++        budget: EVAL_ROLE.cap(),
++        timeout: request.timeout,
++    }
++}
++
++/// One run of `call` and what it cost. A runner failure is charged the role's cap for each
++/// attempt that may have started, as the review stages do.
++fn make_call<R: ModelRunner>(
++    runner: &R,
++    call: &ModelCall,
++    case: &EvalCase,
++    map: &ClassMap,
++) -> (Called<R::Error>, Aeu) {
++    match run_with_retry(runner, call) {
++        Ok(attempts) => {
++            let called =
++                score_result(attempts.last(), case, map).map_or(Called::Quota, Called::Scored);
++            (called, attempts.cost())
++        }
++        Err(RetryError::First(source)) => (Called::Failed(source), call.budget),
++        Err(RetryError::Retry { first, source }) => (
++            Called::Failed(source),
++            first.cost.saturating_add(call.budget),
++        ),
++    }
++}
++
++/// Scores one call's final result against `case`'s labels; `None` when the usage limit
++/// refused it, which is not a score but the end of the evaluation.
++fn score_result(result: &ModelResult, case: &EvalCase, map: &ClassMap) -> Option<RunScore> {
++    let unscorable = |reason| Some(RunScore::Unscorable(reason));
++    if result.outcome == ModelOutcome::QuotaExhausted {
++        return None;
++    }
++    if !result.init.as_ref().is_ok_and(SessionInit::is_confined) {
++        return unscorable(Unscorable::Unconfined);
++    }
++    let structured = match &result.outcome {
++        ModelOutcome::Ok(structured) => structured,
++        ModelOutcome::Malformed => return unscorable(Unscorable::Malformed),
++        ModelOutcome::BudgetExhausted => return unscorable(Unscorable::BudgetExhausted),
++        ModelOutcome::TurnsExhausted => return unscorable(Unscorable::TurnsExhausted),
++        ModelOutcome::Timeout => return unscorable(Unscorable::Timeout),
++        ModelOutcome::QuotaExhausted => return None,
++    };
++    let findings = match score::read_findings(structured.as_value()) {
++        Ok(findings) => findings,
++        Err(problem) => return unscorable(Unscorable::Output(problem)),
++    };
++    if case.labels().is_empty() {
++        return Some(match findings.len() {
++            0 => RunScore::Quiet,
++            count => RunScore::Noisy { findings: count },
++        });
++    }
++    let detected = case.labels().iter().any(|label| {
++        findings
++            .iter()
++            .any(|finding| score::matches(label, finding, map))
++    });
++    Some(if detected {
++        RunScore::Detected
++    } else {
++        RunScore::Missed
++    })
++}
++
++/// `case`'s outcome over its runs.
++fn outcome(case: &EvalCase, runs: [RunScore; EVAL_RUNS]) -> CaseOutcome {
++    let kind = if case.labels().is_empty() {
++        CaseKind::TrueNegative
++    } else {
++        CaseKind::Defect
++    };
++    CaseOutcome {
++        id: case.id().to_owned(),
++        // The report outlives the corpus it was run from, so it keeps its own copy.
++        authoring_model: case.authoring_model().clone(),
++        source: case.source(),
++        content: case.content(),
++        kind,
++        runs,
++    }
++}
+diff --git a/crates/assay-app/src/eval/case.rs b/crates/assay-app/src/eval/case.rs
+new file mode 100644
+index 0000000..3671105
+--- /dev/null
++++ b/crates/assay-app/src/eval/case.rs
+@@ -0,0 +1,265 @@
++//! One eval case: its `case.json` (format `assay.eval-case/1`, read strictly) and its diff.
++
++use std::fmt;
++use std::num::NonZeroU64;
++
++use assay_domain::Class;
++use serde::Deserialize;
++use thiserror::Error;
++
++use crate::contract::parse_json_strict;
++
++/// The `schema` every `case.json` carries.
++pub const CASE_SCHEMA: &str = "assay.eval-case/1";
++
++/// The most labels (fixing hunks) one case may hold.
++pub const MAX_LABELS: usize = 64;
++
++/// The longest authoring model id, in bytes.
++pub const MAX_AUTHORING_MODEL_BYTES: usize = 64;
++
++/// The longest labelled file path, in bytes.
++pub const MAX_LABEL_PATH_BYTES: usize = 1024;
++
++/// The authoring model's id for a human-written change.
++const HUMAN: &str = "human";
++
++/// Who wrote the change under review (04 §8), so self-review recall is reported apart from
++/// human-authored recall.
++#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
++pub enum AuthoringModel {
++    /// A person (`"human"`).
++    Human,
++    /// A model, by id: 1 to 64 bytes of `a-z`, `0-9`, `.`, `_` and `-` (`claude-opus-5-5`).
++    Model(String),
++}
++
++impl AuthoringModel {
++    /// Reads `"human"` or a model id; `None` for anything else.
++    fn parse(text: String) -> Option<Self> {
++        if text == HUMAN {
++            return Some(Self::Human);
++        }
++        let allowed = |byte: &u8| {
++            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
++        };
++        let shaped = !text.is_empty()
++            && text.len() <= MAX_AUTHORING_MODEL_BYTES
++            && text.as_bytes().iter().all(allowed);
++        shaped.then_some(Self::Model(text))
++    }
++}
++
++impl fmt::Display for AuthoringModel {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Human => f.write_str(HUMAN),
++            Self::Model(id) => f.write_str(id),
++        }
++    }
++}
++
++/// Where a case came from (04 §8's sources).
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
++#[serde(rename_all = "kebab-case")]
++pub enum CaseSource {
++    /// A real PR whose merged code later needed a fix; the labels are the fix's hunks.
++    RealDefect,
++    /// A mutation-seeded defect (smoke only).
++    Mutation,
++    /// A PR with nothing to find, for noise. Holds no label.
++    TrueNegative,
++    /// Hostile text the pipeline must survive; labelled or not.
++    Injection,
++    /// A rebase or force-push fixture.
++    Rebase,
++    /// A cross-file "consumer not updated" fixture.
++    CrossFile,
++}
++
++/// One fixing hunk: a file, its lines at the reviewed head (inclusive) and the defect's class.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Label {
++    file: String,
++    first: NonZeroU64,
++    last: NonZeroU64,
++    class: Class,
++}
++
++impl Label {
++    /// A label; refused when `last` is before `first` or the path is not a plain relative
++    /// path (empty, absolute, over [`MAX_LABEL_PATH_BYTES`], holding NUL, or with an empty,
++    /// `.` or `..` segment).
++    pub(crate) fn new(
++        file: impl Into<String>,
++        first: NonZeroU64,
++        last: NonZeroU64,
++        class: Class,
++    ) -> Result<Self, LabelProblem> {
++        let file = file.into();
++        if first > last {
++            return Err(LabelProblem::Span);
++        }
++        let plain = file.len() <= MAX_LABEL_PATH_BYTES
++            && !file.contains('\0')
++            && file
++                .split('/')
++                .all(|segment| !matches!(segment, "" | "." | ".."));
++        if !plain {
++            return Err(LabelProblem::Path);
++        }
++        Ok(Self {
++            file,
++            first,
++            last,
++            class,
++        })
++    }
++
++    /// The file, relative to the repository root.
++    #[must_use]
++    pub fn file(&self) -> &str {
++        &self.file
++    }
++
++    /// The hunk's first line.
++    #[must_use]
++    pub const fn first(&self) -> NonZeroU64 {
++        self.first
++    }
++
++    /// The hunk's last line.
++    #[must_use]
++    pub const fn last(&self) -> NonZeroU64 {
++        self.last
++    }
++
++    /// The defect's class.
++    #[must_use]
++    pub const fn class(&self) -> Class {
++        self.class
++    }
++}
++
++/// Why a label was refused.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum LabelProblem {
++    /// It ends before it starts.
++    Span,
++    /// Its path is not a plain relative path.
++    Path,
++}
++
++/// Why a `case.json` was refused.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
++pub enum CaseProblem {
++    /// Not one JSON object of exactly the case fields (an unknown or repeated key, a wrong
++    /// type, an unknown source or class), at this 1-based line.
++    #[error("case.json is not an {CASE_SCHEMA} document (line {line})")]
++    Syntax {
++        /// The line the parser stopped at.
++        line: usize,
++    },
++    /// The `schema` is not [`CASE_SCHEMA`].
++    #[error("case.json is not {CASE_SCHEMA}")]
++    Schema,
++    /// The `authoring_model` is neither `human` nor a model id.
++    #[error("the authoring model is neither \"human\" nor a model id")]
++    AuthoringModel,
++    /// A `true-negative` case holds a label.
++    #[error("a true-negative case holds a label")]
++    LabelsOnTrueNegative,
++    /// A defect case (any source but `true-negative` and `injection`) holds no label.
++    #[error("a defect case holds no label")]
++    NoLabels,
++    /// More than [`MAX_LABELS`] labels.
++    #[error("more than {MAX_LABELS} labels")]
++    TooManyLabels,
++    /// The label at `index` ends before it starts.
++    #[error("label {index} ends before it starts")]
++    LabelSpan {
++        /// The label's 0-based position.
++        index: usize,
++    },
++    /// The label at `index` names no plain relative path.
++    #[error("label {index} names no plain relative path")]
++    LabelPath {
++        /// The label's 0-based position.
++        index: usize,
++    },
++}
++
++/// A `case.json`, as written.
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct CaseDocument {
++    schema: String,
++    authoring_model: String,
++    source: CaseSource,
++    labels: Vec<LabelDocument>,
++}
++
++/// One label, as written.
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct LabelDocument {
++    file: String,
++    start_line: NonZeroU64,
++    end_line: NonZeroU64,
++    class: Class,
++}
++
++/// What a `case.json` holds once read.
++#[derive(Debug)]
++pub(crate) struct CaseFile {
++    pub(crate) authoring_model: AuthoringModel,
++    pub(crate) source: CaseSource,
++    pub(crate) labels: Vec<Label>,
++}
++
++/// Reads a `case.json` strictly. The caller bounds its size.
++pub(crate) fn read_case(json: &[u8]) -> Result<CaseFile, CaseProblem> {
++    let syntax = |error: serde_json::Error| CaseProblem::Syntax { line: error.line() };
++    let value = parse_json_strict(json).map_err(syntax)?;
++    let document = CaseDocument::deserialize(value).map_err(syntax)?;
++    if document.schema != CASE_SCHEMA {
++        return Err(CaseProblem::Schema);
++    }
++    let authoring_model =
++        AuthoringModel::parse(document.authoring_model).ok_or(CaseProblem::AuthoringModel)?;
++    if document.labels.len() > MAX_LABELS {
++        return Err(CaseProblem::TooManyLabels);
++    }
++    match document.source {
++        CaseSource::TrueNegative if !document.labels.is_empty() => {
++            return Err(CaseProblem::LabelsOnTrueNegative);
++        }
++        CaseSource::TrueNegative | CaseSource::Injection => {}
++        CaseSource::RealDefect
++        | CaseSource::Mutation
++        | CaseSource::Rebase
++        | CaseSource::CrossFile => {
++            if document.labels.is_empty() {
++                return Err(CaseProblem::NoLabels);
++            }
++        }
++    }
++    let labels = document
++        .labels
++        .into_iter()
++        .enumerate()
++        .map(|(index, label)| {
++            Label::new(label.file, label.start_line, label.end_line, label.class).map_err(
++                |problem| match problem {
++                    LabelProblem::Span => CaseProblem::LabelSpan { index },
++                    LabelProblem::Path => CaseProblem::LabelPath { index },
++                },
++            )
++        })
++        .collect::<Result<_, _>>()?;
++    Ok(CaseFile {
++        authoring_model,
++        source: document.source,
++        labels,
++    })
++}
+diff --git a/crates/assay-app/src/eval/corpus.rs b/crates/assay-app/src/eval/corpus.rs
+new file mode 100644
+index 0000000..e2505ba
+--- /dev/null
++++ b/crates/assay-app/src/eval/corpus.rs
+@@ -0,0 +1,343 @@
++//! One split of the eval corpus (`corpus/{dev,test,inject}`, 04 §8), as the caller listed it.
++//!
++//! A split holds an optional `README.md` and one directory per case, named by its id. A case
++//! directory holds exactly `case.json`, `change.diff` and `tree/` (the reviewed head, which the
++//! model reads; the labels stay outside it). Everything past a cap, anything else and anything
++//! that is neither a directory nor a regular file is refused (wi-b5affa).
++
++use std::collections::BTreeMap;
++use std::{fmt, mem};
++
++use assay_domain::ContentHash;
++use thiserror::Error;
++
++use super::case::{AuthoringModel, CaseProblem, CaseSource, Label, read_case};
++use crate::check::MAX_DIFF_BYTES;
++use crate::golden::{CorpusEntry, CorpusEntryKind};
++
++/// The most entries a split may list, directories and tree files included.
++pub const MAX_EVAL_ENTRIES: usize = 65_536;
++
++/// The most cases a split may hold.
++pub const MAX_EVAL_CASES: usize = 512;
++
++/// The largest `case.json`, in bytes: 64 KiB.
++pub const MAX_CASE_BYTES: usize = 64 << 10;
++
++/// The longest case id, in bytes.
++pub const MAX_CASE_ID_BYTES: usize = 64;
++
++/// The case metadata and labels.
++const CASE_FILE: &str = "case.json";
++/// The change under review, as a unified diff.
++const DIFF_FILE: &str = "change.diff";
++/// The reviewed head the model may read.
++const TREE_DIR: &str = "tree";
++/// The one file allowed beside the cases.
++const README: &str = "README.md";
++
++/// A corpus split (04 §8).
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum Split {
++    /// Prompt work runs against it.
++    Dev,
++    /// Held out: never read during prompt iteration.
++    Test,
++    /// Hostile-text fixtures.
++    Inject,
++}
++
++impl Split {
++    /// The split's directory under `corpus/`.
++    #[must_use]
++    pub const fn dir(self) -> &'static str {
++        match self {
++            Self::Dev => "dev",
++            Self::Test => "test",
++            Self::Inject => "inject",
++        }
++    }
++}
++
++impl fmt::Display for Split {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str(self.dir())
++    }
++}
++
++/// One case, read and checked.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct EvalCase {
++    id: String,
++    authoring_model: AuthoringModel,
++    source: CaseSource,
++    labels: Vec<Label>,
++    diff: String,
++    content: ContentHash,
++}
++
++impl EvalCase {
++    /// The case's id: its directory name.
++    #[must_use]
++    pub fn id(&self) -> &str {
++        &self.id
++    }
++
++    /// Who wrote the change.
++    #[must_use]
++    pub const fn authoring_model(&self) -> &AuthoringModel {
++        &self.authoring_model
++    }
++
++    /// Where the case came from.
++    #[must_use]
++    pub const fn source(&self) -> CaseSource {
++        self.source
++    }
++
++    /// The fixing hunks; empty for a case with nothing to find.
++    #[must_use]
++    pub fn labels(&self) -> &[Label] {
++        &self.labels
++    }
++
++    /// The change under review, as a unified diff.
++    #[must_use]
++    pub fn diff(&self) -> &str {
++        &self.diff
++    }
++
++    /// The digest of the case's `case.json` and `change.diff`, as read.
++    #[must_use]
++    pub const fn content(&self) -> ContentHash {
++        self.content
++    }
++}
++
++/// A split's cases, in id order.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct EvalCorpus {
++    split: Split,
++    cases: Vec<EvalCase>,
++}
++
++impl EvalCorpus {
++    /// The split.
++    #[must_use]
++    pub const fn split(&self) -> Split {
++        self.split
++    }
++
++    /// The cases, in id order.
++    #[must_use]
++    pub fn cases(&self) -> &[EvalCase] {
++        &self.cases
++    }
++}
++
++/// Why a split was refused. Paths are relative to the split directory and shown escaped.
++#[derive(Debug, Clone, PartialEq, Eq, Error)]
++pub enum CorpusError {
++    /// More than [`MAX_EVAL_ENTRIES`] entries were listed; none was looked at.
++    #[error("the split lists more than {limit} entries")]
++    TooManyEntries {
++        /// The cap.
++        limit: usize,
++    },
++    /// More than [`MAX_EVAL_CASES`] cases.
++    #[error("the split holds more than {limit} cases")]
++    TooManyCases {
++        /// The cap.
++        limit: usize,
++    },
++    /// An entry that does not belong (the first in path order): not a directory or regular
++    /// file, a directory not named as a case id, or a file other than the case files.
++    #[error("unexpected entry {path:?} in the eval corpus")]
++    UnexpectedEntry {
++        /// The entry.
++        path: String,
++    },
++    /// A case lacks one of `case.json`, `change.diff` and `tree/`.
++    #[error("case {case:?} has no {missing}")]
++    Incomplete {
++        /// The case id.
++        case: String,
++        /// The missing entry's name.
++        missing: &'static str,
++    },
++    /// A case file is over its cap ([`MAX_CASE_BYTES`] for `case.json`, `MAX_DIFF_BYTES` for
++    /// `change.diff`); it was not read.
++    #[error("{path:?} is over {limit} bytes")]
++    TooLarge {
++        /// The file.
++        path: String,
++        /// The cap.
++        limit: usize,
++    },
++    /// A case's `change.diff` is not UTF-8 text without NUL.
++    #[error("the change.diff of case {case:?} is not text")]
++    DiffNotText {
++        /// The case id.
++        case: String,
++    },
++    /// A case's `case.json` was refused.
++    #[error("the case.json of case {case:?} was refused")]
++    Case {
++        /// The case id.
++        case: String,
++        /// Why.
++        #[source]
++        problem: CaseProblem,
++    },
++}
++
++/// The entries of one case directory.
++#[derive(Debug, Default)]
++struct CaseEntries<'a> {
++    json: Option<&'a [u8]>,
++    diff: Option<&'a [u8]>,
++    tree: bool,
++}
++
++/// Reads one split from every entry under its directory (at any depth; tree files' bytes are
++/// not read). Linear in the entries after the [`MAX_EVAL_ENTRIES`] check, plus a sort of the
++/// case ids.
++///
++/// # Examples
++///
++/// ```
++/// use assay_app::{CorpusEntry, CorpusEntryKind, CorpusError, Split, read_eval_corpus};
++///
++/// let entries = [CorpusEntry {
++///     path: "README.md".to_owned(),
++///     kind: CorpusEntryKind::File(b"# dev\n".to_vec()),
++/// }];
++///
++/// let corpus = read_eval_corpus(Split::Dev, &entries)?;
++///
++/// // A split with no case reads, but `run_eval` refuses to run it.
++/// assert!(corpus.cases().is_empty());
++/// # Ok::<(), CorpusError>(())
++/// ```
++///
++/// # Errors
++/// [`CorpusError`] for the first problem found: the entry cap, then unexpected entries (the
++/// first in path order) and the case cap, then each case in id order.
++pub fn read_eval_corpus(split: Split, entries: &[CorpusEntry]) -> Result<EvalCorpus, CorpusError> {
++    if entries.len() > MAX_EVAL_ENTRIES {
++        return Err(CorpusError::TooManyEntries {
++            limit: MAX_EVAL_ENTRIES,
++        });
++    }
++    let mut cases: BTreeMap<&str, CaseEntries<'_>> = BTreeMap::new();
++    let mut unexpected: Option<&str> = None;
++    for entry in entries {
++        if !sort_entry(entry, &mut cases) {
++            let path = entry.path.as_str();
++            unexpected = Some(unexpected.map_or(path, |first| first.min(path)));
++        }
++    }
++    if let Some(path) = unexpected {
++        return Err(CorpusError::UnexpectedEntry {
++            path: path.to_owned(),
++        });
++    }
++    if cases.len() > MAX_EVAL_CASES {
++        return Err(CorpusError::TooManyCases {
++            limit: MAX_EVAL_CASES,
++        });
++    }
++    let cases = cases
++        .into_iter()
++        .map(|(id, entries)| read_one(id, &entries))
++        .collect::<Result<_, _>>()?;
++    Ok(EvalCorpus { split, cases })
++}
++
++/// Files `entry` under its case; `false` when it does not belong in a split or repeats a case
++/// file. Linear in the path's length.
++fn sort_entry<'a>(entry: &'a CorpusEntry, cases: &mut BTreeMap<&'a str, CaseEntries<'a>>) -> bool {
++    let (id, rest) = match entry.path.split_once('/') {
++        Some((id, rest)) => (id, Some(rest)),
++        None => (entry.path.as_str(), None),
++    };
++    let plain = |path: &str| {
++        path.split('/')
++            .all(|segment| !matches!(segment, "" | "." | ".."))
++    };
++    if !rest.is_none_or(plain) {
++        return false;
++    }
++    let file = match &entry.kind {
++        CorpusEntryKind::File(bytes) => Some(bytes.as_slice()),
++        CorpusEntryKind::Directory => None,
++        CorpusEntryKind::Other => return false,
++    };
++    if id == README && rest.is_none() {
++        return file.is_some();
++    }
++    if !is_case_id(id) {
++        return false;
++    }
++    let case = cases.entry(id).or_default();
++    // A repeated case file or tree is refused, never kept in place of the first.
++    match (rest, file) {
++        (None, None) => true,
++        (Some(TREE_DIR), None) => !mem::replace(&mut case.tree, true),
++        (Some(path), _) if path.starts_with("tree/") => true,
++        (Some(CASE_FILE), Some(bytes)) => case.json.replace(bytes).is_none(),
++        (Some(DIFF_FILE), Some(bytes)) => case.diff.replace(bytes).is_none(),
++        _ => false,
++    }
++}
++
++/// Whether `id` names a case: 1 to [`MAX_CASE_ID_BYTES`] bytes of `a-z`, `0-9` and `-`.
++fn is_case_id(id: &str) -> bool {
++    !id.is_empty()
++        && id.len() <= MAX_CASE_ID_BYTES
++        && id
++            .bytes()
++            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
++}
++
++/// Checks and reads one case's files.
++fn read_one(id: &str, entries: &CaseEntries<'_>) -> Result<EvalCase, CorpusError> {
++    let incomplete = |missing| CorpusError::Incomplete {
++        case: id.to_owned(),
++        missing,
++    };
++    let json = entries.json.ok_or_else(|| incomplete(CASE_FILE))?;
++    let diff = entries.diff.ok_or_else(|| incomplete(DIFF_FILE))?;
++    if !entries.tree {
++        return Err(incomplete(TREE_DIR));
++    }
++    let too_large = |file: &str, limit| CorpusError::TooLarge {
++        path: format!("{id}/{file}"),
++        limit,
++    };
++    if json.len() > MAX_CASE_BYTES {
++        return Err(too_large(CASE_FILE, MAX_CASE_BYTES));
++    }
++    if diff.len() > MAX_DIFF_BYTES {
++        return Err(too_large(DIFF_FILE, MAX_DIFF_BYTES));
++    }
++    let diff = str::from_utf8(diff)
++        .ok()
++        .filter(|text| !text.contains('\0'))
++        .ok_or_else(|| CorpusError::DiffNotText {
++            case: id.to_owned(),
++        })?;
++    let content = ContentHash::of_files([(CASE_FILE, json), (DIFF_FILE, diff.as_bytes())]);
++    let case = read_case(json).map_err(|problem| CorpusError::Case {
++        case: id.to_owned(),
++        problem,
++    })?;
++    Ok(EvalCase {
++        id: id.to_owned(),
++        authoring_model: case.authoring_model,
++        source: case.source,
++        labels: case.labels,
++        diff: diff.to_owned(),
++        content,
++    })
++}
+diff --git a/crates/assay-app/src/eval/ledger.rs b/crates/assay-app/src/eval/ledger.rs
+new file mode 100644
+index 0000000..02e6a5f
+--- /dev/null
++++ b/crates/assay-app/src/eval/ledger.rs
+@@ -0,0 +1,53 @@
++//! The eval ledger (04 §8): eval spend is drawn from its own monthly cap, never from the
++//! production daily cap, so an evaluation cannot starve PR review.
++
++use std::fmt;
++
++use assay_domain::Aeu;
++
++use crate::calendar::CalendarDate;
++
++/// The eval ledger's monthly cap: 150 AEU.
++pub const EVAL_MONTHLY_CAP: Aeu = Aeu::from_micros(150_000_000);
++
++/// A calendar month (UTC), the eval ledger's period.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
++pub struct EvalMonth {
++    year: u32,
++    month: u32,
++}
++
++impl EvalMonth {
++    /// The month `day` falls in.
++    #[must_use]
++    pub const fn of(day: CalendarDate) -> Self {
++        let (year, month) = day.year_month();
++        Self { year, month }
++    }
++}
++
++impl fmt::Display for EvalMonth {
++    /// `YYYY-MM`.
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "{:04}-{:02}", self.year, self.month)
++    }
++}
++
++/// The eval ledger port: what evaluations have spent per month. Implemented by an adapter
++/// apart from the production ledger; no production cap is ever read or charged through it.
++pub trait EvalLedger {
++    /// Why the ledger could not be read or written.
++    type Error: std::error::Error;
++
++    /// What evaluations have spent in `month`.
++    ///
++    /// # Errors
++    /// Returns [`Self::Error`] when the ledger cannot be read.
++    fn spent(&self, month: EvalMonth) -> Result<Aeu, Self::Error>;
++
++    /// Records `cost` as spent in `month`.
++    ///
++    /// # Errors
++    /// Returns [`Self::Error`] when the charge could not be recorded.
++    fn charge(&mut self, month: EvalMonth, cost: Aeu) -> Result<(), Self::Error>;
++}
+diff --git a/crates/assay-app/src/eval/report.rs b/crates/assay-app/src/eval/report.rs
+new file mode 100644
+index 0000000..f7d759f
+--- /dev/null
++++ b/crates/assay-app/src/eval/report.rs
+@@ -0,0 +1,431 @@
++//! What an evaluation found, per case and run, and 04 §8's accept rule over two of them.
++
++use std::collections::BTreeMap;
++
++use assay_domain::{Aeu, ContentHash};
++use thiserror::Error;
++
++use super::EVAL_RUNS;
++use super::case::{AuthoringModel, CaseSource};
++use super::corpus::Split;
++use super::ledger::EvalMonth;
++use super::score::OutputProblem;
++
++/// The normal quantile of the Wilson score interval: 1.96, for 95% two-sided.
++pub const WILSON_Z: f64 = 1.96;
++
++/// How one model run of one case scored.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum RunScore {
++    /// A defect case: some finding matched some label.
++    Detected,
++    /// A defect case: no finding matched any label.
++    Missed,
++    /// A true-negative case: no finding.
++    Quiet,
++    /// A true-negative case: this many findings, all noise.
++    Noisy {
++        /// How many findings the run reported.
++        findings: usize,
++    },
++    /// The run could not be scored. It counts against the change: a miss on a defect case and
++    /// noise on a true-negative case.
++    Unscorable(Unscorable),
++}
++
++/// Why a run could not be scored.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum Unscorable {
++    /// The session was not confined to `Read`, `Grep` and `Glob`, or its init was unreadable.
++    Unconfined,
++    /// The output was malformed, also on the retry.
++    Malformed,
++    /// The call stopped at its budget.
++    BudgetExhausted,
++    /// The call stopped at its turn limit.
++    TurnsExhausted,
++    /// The call timed out.
++    Timeout,
++    /// The structured output could not be read.
++    Output(OutputProblem),
++}
++
++/// Whether a case has something to find.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum CaseKind {
++    /// It holds at least one label.
++    Defect,
++    /// It holds none: every finding is noise.
++    TrueNegative,
++}
++
++/// One case's [`EVAL_RUNS`] runs.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct CaseOutcome {
++    pub(crate) id: String,
++    pub(crate) authoring_model: AuthoringModel,
++    pub(crate) source: CaseSource,
++    pub(crate) content: ContentHash,
++    pub(crate) kind: CaseKind,
++    pub(crate) runs: [RunScore; EVAL_RUNS],
++}
++
++impl CaseOutcome {
++    /// The case's id (its directory name).
++    #[must_use]
++    pub fn id(&self) -> &str {
++        &self.id
++    }
++
++    /// Who wrote the change.
++    #[must_use]
++    pub const fn authoring_model(&self) -> &AuthoringModel {
++        &self.authoring_model
++    }
++
++    /// Where the case came from.
++    #[must_use]
++    pub const fn source(&self) -> CaseSource {
++        self.source
++    }
++
++    /// The digest of the case's `case.json` and `change.diff`, so two reports of the same id
++    /// can be told apart when the case changed between them.
++    #[must_use]
++    pub const fn content(&self) -> ContentHash {
++        self.content
++    }
++
++    /// Whether the case has something to find.
++    #[must_use]
++    pub const fn kind(&self) -> CaseKind {
++        self.kind
++    }
++
++    /// Each run's score, in run order.
++    #[must_use]
++    pub const fn runs(&self) -> &[RunScore; EVAL_RUNS] {
++        &self.runs
++    }
++
++    /// How many runs detected the defect (0 for a true-negative case).
++    #[must_use]
++    pub fn detected(&self) -> u32 {
++        self.count(|run| matches!(run, RunScore::Detected))
++    }
++
++    /// How many runs were noise on a true-negative case (unscorable runs included); 0 for a
++    /// defect case.
++    #[must_use]
++    pub fn noisy(&self) -> u32 {
++        if self.kind == CaseKind::Defect {
++            return 0;
++        }
++        self.count(|run| matches!(run, RunScore::Noisy { .. } | RunScore::Unscorable(_)))
++    }
++
++    /// How many runs the case had: [`EVAL_RUNS`].
++    fn run_count(&self) -> u32 {
++        self.count(|_run| true)
++    }
++
++    fn count(&self, counted: impl Fn(&RunScore) -> bool) -> u32 {
++        self.runs
++            .iter()
++            .filter(|run| counted(run))
++            .fold(0, |count, _run| count.saturating_add(1))
++    }
++}
++
++/// `hits` out of `n`, reported with `n` (04 §8).
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub struct Proportion {
++    hits: u32,
++    n: u32,
++}
++
++impl Proportion {
++    /// How many counted.
++    #[must_use]
++    pub const fn hits(self) -> u32 {
++        self.hits
++    }
++
++    /// Out of how many.
++    #[must_use]
++    pub const fn n(self) -> u32 {
++        self.n
++    }
++
++    /// `hits / n`; `None` when `n` is 0.
++    #[must_use]
++    pub fn rate(self) -> Option<f64> {
++        (self.n > 0).then(|| f64::from(self.hits) / f64::from(self.n))
++    }
++
++    /// The upper end of the 95% Wilson score interval ([`WILSON_Z`]); `None` when `n` is 0.
++    #[must_use]
++    pub fn wilson_upper(self) -> Option<f64> {
++        let rate = self.rate()?;
++        let n = f64::from(self.n);
++        let z2 = WILSON_Z * WILSON_Z;
++        let centre = rate + z2 / (2.0 * n);
++        let spread = WILSON_Z * (rate * (1.0 - rate) / n + z2 / (4.0 * n * n)).sqrt();
++        Some(((centre + spread) / (1.0 + z2 / n)).min(1.0))
++    }
++
++    fn add(self, hits: u32, n: u32) -> Self {
++        Self {
++            hits: self.hits.saturating_add(hits),
++            n: self.n.saturating_add(n),
++        }
++    }
++}
++
++/// One evaluation of one split under one prompt bundle.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct EvalReport {
++    pub(crate) split: Split,
++    pub(crate) bundle: ContentHash,
++    pub(crate) month: EvalMonth,
++    pub(crate) spent: Aeu,
++    pub(crate) cases: Vec<CaseOutcome>,
++}
++
++impl EvalReport {
++    /// The split evaluated.
++    #[must_use]
++    pub const fn split(&self) -> Split {
++        self.split
++    }
++
++    /// The hash of the prompt bundle evaluated.
++    #[must_use]
++    pub const fn bundle(&self) -> ContentHash {
++        self.bundle
++    }
++
++    /// The eval ledger month charged.
++    #[must_use]
++    pub const fn month(&self) -> EvalMonth {
++        self.month
++    }
++
++    /// What this evaluation charged to the eval ledger.
++    #[must_use]
++    pub const fn spent(&self) -> Aeu {
++        self.spent
++    }
++
++    /// Every case, in id order.
++    #[must_use]
++    pub fn cases(&self) -> &[CaseOutcome] {
++        &self.cases
++    }
++
++    /// Detected runs out of defect-case runs, per authoring model, so self-review recall is
++    /// reported apart from human-authored recall (04 §8).
++    #[must_use]
++    pub fn recall_by_author(&self) -> BTreeMap<&AuthoringModel, Proportion> {
++        let mut recall: BTreeMap<&AuthoringModel, Proportion> = BTreeMap::new();
++        for case in self.defects() {
++            let entry = recall.entry(&case.authoring_model).or_default();
++            *entry = entry.add(case.detected(), case.run_count());
++        }
++        recall
++    }
++
++    /// Noisy runs out of true-negative-case runs.
++    #[must_use]
++    pub fn noise(&self) -> Proportion {
++        self.cases
++            .iter()
++            .filter(|case| case.kind == CaseKind::TrueNegative)
++            .fold(Proportion::default(), |noise, case| {
++                noise.add(case.noisy(), case.run_count())
++            })
++    }
++
++    fn defects(&self) -> impl Iterator<Item = &CaseOutcome> {
++        self.cases
++            .iter()
++            .filter(|case| case.kind == CaseKind::Defect)
++    }
++}
++
++/// How the true-negative noise rate moved.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub enum NoiseCheck {
++    /// The candidate's rate is at most `bound`, the baseline's Wilson upper bound.
++    Within {
++        /// The baseline's Wilson upper bound.
++        bound: f64,
++    },
++    /// The candidate's rate is above `bound`.
++    Rose {
++        /// The baseline's Wilson upper bound.
++        bound: f64,
++    },
++    /// The split has no true-negative case, so noise cannot be judged and the change is not
++    /// accepted.
++    NoTrueNegatives,
++}
++
++/// The accept rule's result for a candidate against a baseline (04 §8).
++#[derive(Debug, Clone, PartialEq)]
++pub struct Acceptance {
++    flips: Vec<String>,
++    baseline_noise: Proportion,
++    candidate_noise: Proportion,
++    noise: NoiseCheck,
++}
++
++impl Acceptance {
++    /// Whether the change is accepted: no case flipped and noise stayed within its margin.
++    #[must_use]
++    pub fn accepted(&self) -> bool {
++        self.flips.is_empty() && matches!(self.noise, NoiseCheck::Within { .. })
++    }
++
++    /// The defect cases detected in at least 2 of 3 baseline runs and at most 1 of 3
++    /// candidate runs, in id order.
++    #[must_use]
++    pub fn flips(&self) -> &[String] {
++        &self.flips
++    }
++
++    /// The baseline's noise, with `n`.
++    #[must_use]
++    pub const fn baseline_noise(&self) -> Proportion {
++        self.baseline_noise
++    }
++
++    /// The candidate's noise, with `n`.
++    #[must_use]
++    pub const fn candidate_noise(&self) -> Proportion {
++        self.candidate_noise
++    }
++
++    /// How noise moved.
++    #[must_use]
++    pub const fn noise(&self) -> NoiseCheck {
++        self.noise
++    }
++}
++
++/// Why two reports cannot be compared.
++#[derive(Debug, Clone, PartialEq, Eq, Error)]
++pub enum CompareError {
++    /// They evaluated different splits.
++    #[error("the reports evaluated different splits")]
++    SplitDiffers,
++    /// They evaluated different cases; `case` is the first id (in order) only one holds.
++    #[error("the reports evaluated different cases (first difference: {case:?})")]
++    CaseSetDiffers {
++        /// The first id only one report holds.
++        case: String,
++    },
++    /// The case `case` has other `case.json` or `change.diff` content in each report.
++    #[error("case {case:?} changed between the reports")]
++    CaseChanged {
++        /// The case id.
++        case: String,
++    },
++    /// A baseline run of `case` (the first in id order) could not be scored, so the baseline
++    /// cannot anchor a flip or a noise margin; re-run it (fail closed, wi-b5affa).
++    #[error("the baseline holds an unscorable run on case {case:?}")]
++    BaselineUnscorable {
++        /// The case id.
++        case: String,
++    },
++}
++
++/// Detections a baseline case needs to count as detected: at least 2 of 3.
++const DETECTED_AT_LEAST: u32 = 2;
++
++/// Detections at or below which a candidate case counts as missed: at most 1 of 3.
++const MISSED_AT_MOST: u32 = 1;
++
++/// Applies 04 §8's accept rule to `candidate` against `baseline`.
++///
++/// The reports must cover the same split and the same cases with the same content, and the
++/// baseline must hold no unscorable run: an unscorable baseline run would loosen both the
++/// flip rule and the noise margin. The change is accepted when no defect case flips from at least 2 of 3 detected (baseline)
++/// to at most 1 of 3 (candidate), and the candidate's true-negative noise rate is at most the
++/// baseline's 95% Wilson upper bound.
++///
++/// # Errors
++/// [`CompareError`] when the reports evaluated different splits, cases or case content, or
++/// the baseline holds an unscorable run.
++pub fn compare(baseline: &EvalReport, candidate: &EvalReport) -> Result<Acceptance, CompareError> {
++    if baseline.split != candidate.split {
++        return Err(CompareError::SplitDiffers);
++    }
++    let mut pairs = baseline.cases.iter().zip(&candidate.cases);
++    if let Some((before, after)) = pairs.find(|(before, after)| before.id != after.id) {
++        let case = before.id.as_str().min(after.id.as_str());
++        return Err(CompareError::CaseSetDiffers {
++            case: case.to_owned(),
++        });
++    }
++    if let Some(extra) = extra_case(baseline, candidate) {
++        return Err(CompareError::CaseSetDiffers {
++            case: extra.to_owned(),
++        });
++    }
++    for (before, after) in baseline.cases.iter().zip(&candidate.cases) {
++        if before.content != after.content {
++            return Err(CompareError::CaseChanged {
++                case: before.id.clone(),
++            });
++        }
++    }
++    let unscorable = baseline.cases.iter().find(|case| {
++        case.runs
++            .iter()
++            .any(|run| matches!(run, RunScore::Unscorable(_)))
++    });
++    if let Some(case) = unscorable {
++        return Err(CompareError::BaselineUnscorable {
++            case: case.id.clone(),
++        });
++    }
++    let flips = baseline
++        .cases
++        .iter()
++        .zip(&candidate.cases)
++        .filter(|(before, after)| {
++            before.kind == CaseKind::Defect
++                && before.detected() >= DETECTED_AT_LEAST
++                && after.detected() <= MISSED_AT_MOST
++        })
++        // The acceptance is returned apart from both reports, so it owns the flipped ids.
++        .map(|(_, after)| after.id.clone())
++        .collect();
++    let baseline_noise = baseline.noise();
++    let candidate_noise = candidate.noise();
++    let noise = match (baseline_noise.wilson_upper(), candidate_noise.rate()) {
++        (Some(bound), Some(rate)) if rate <= bound => NoiseCheck::Within { bound },
++        (Some(bound), Some(_)) => NoiseCheck::Rose { bound },
++        _ => NoiseCheck::NoTrueNegatives,
++    };
++    Ok(Acceptance {
++        flips,
++        baseline_noise,
++        candidate_noise,
++        noise,
++    })
++}
++
++/// The first case one report holds past the other's last, when their lengths differ.
++fn extra_case<'a>(baseline: &'a EvalReport, candidate: &'a EvalReport) -> Option<&'a str> {
++    let shorter = baseline.cases.len().min(candidate.cases.len());
++    baseline
++        .cases
++        .get(shorter)
++        .or_else(|| candidate.cases.get(shorter))
++        .map(|case| case.id.as_str())
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/assay-app/src/eval/report/tests.rs b/crates/assay-app/src/eval/report/tests.rs
+new file mode 100644
+index 0000000..2ec7db4
+--- /dev/null
++++ b/crates/assay-app/src/eval/report/tests.rs
+@@ -0,0 +1,30 @@
++use super::Proportion;
++
++fn upper(hits: u32, n: u32) -> f64 {
++    Proportion { hits, n }
++        .wilson_upper()
++        .expect("n is positive")
++}
++
++/// Published 95% Wilson upper bounds (z = 1.96), to four decimals.
++#[test]
++fn the_wilson_upper_bound_of_none_in_thirty_is_0_1135() {
++    assert!((upper(0, 30) - 0.1135).abs() < 5e-5, "{}", upper(0, 30));
++}
++
++#[test]
++fn the_wilson_upper_bound_of_three_in_thirty_is_0_2562() {
++    assert!((upper(3, 30) - 0.2562).abs() < 5e-5, "{}", upper(3, 30));
++}
++
++#[test]
++fn the_wilson_upper_bound_of_all_is_one() {
++    assert!((upper(30, 30) - 1.0).abs() < 1e-12, "{}", upper(30, 30));
++}
++
++#[test]
++fn a_proportion_of_nothing_has_no_rate_and_no_bound() {
++    let empty = Proportion { hits: 0, n: 0 };
++
++    assert_eq!((empty.rate(), empty.wilson_upper()), (None, None));
++}
+diff --git a/crates/assay-app/src/eval/score.rs b/crates/assay-app/src/eval/score.rs
+new file mode 100644
+index 0000000..ecbd034
+--- /dev/null
++++ b/crates/assay-app/src/eval/score.rs
+@@ -0,0 +1,127 @@
++//! The deterministic scorer (04 §8): a reviewer finding matches a label when it is in the same
++//! file, within [`LINE_WINDOW`] lines of the fixing hunk, and its class maps to the label's.
++//! No LLM judge.
++
++use std::num::NonZeroU64;
++
++use assay_domain::Class;
++use serde::Deserialize;
++use serde_json::Value;
++
++use super::case::Label;
++
++/// How many lines before and after a fixing hunk a finding may start or end and still match.
++pub const LINE_WINDOW: u64 = 10;
++
++/// The most findings one model run may report; past it the run cannot be scored.
++pub const MAX_RUN_FINDINGS: usize = 128;
++
++/// Which finding classes count for which label class.
++///
++/// Every class counts for itself; [`ClassMap::with_alias`] lets one more finding class count
++/// for a label class.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub struct ClassMap {
++    /// `(label class, finding class)` pairs that match beyond identity.
++    aliases: Vec<(Class, Class)>,
++}
++
++impl ClassMap {
++    /// Each class matches only itself.
++    #[must_use]
++    pub const fn identity() -> Self {
++        Self {
++            aliases: Vec::new(),
++        }
++    }
++
++    /// This map, where a finding of class `finding` also matches a label of class `label`
++    /// (one way only).
++    #[must_use]
++    pub fn with_alias(mut self, label: Class, finding: Class) -> Self {
++        self.aliases.push((label, finding));
++        self
++    }
++
++    /// Whether a finding of class `finding` counts for a label of class `label`.
++    #[must_use]
++    pub fn maps(&self, finding: Class, label: Class) -> bool {
++        finding == label || self.aliases.contains(&(label, finding))
++    }
++}
++
++/// The parts of a reviewer finding the scorer reads.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct ReportedFinding {
++    pub(crate) file: String,
++    pub(crate) first: NonZeroU64,
++    pub(crate) last: NonZeroU64,
++    pub(crate) class: Class,
++}
++
++/// Why a model run's output could not be scored.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum OutputProblem {
++    /// The output is not an object with a `findings` array.
++    NotADocument,
++    /// More than [`MAX_RUN_FINDINGS`] findings.
++    TooManyFindings,
++    /// The finding at `index` has no string `file`, positive `line`, `end_line` (when present)
++    /// at or after `line`, or known `class`.
++    Finding {
++        /// The finding's 0-based position.
++        index: usize,
++    },
++}
++
++/// The scored fields of one finding, as the model wrote them; every other field is ignored.
++#[derive(Deserialize)]
++struct FindingFields {
++    file: String,
++    line: NonZeroU64,
++    #[serde(default)]
++    end_line: Option<NonZeroU64>,
++    class: Class,
++}
++
++/// The findings of a model run's structured output, refused past [`MAX_RUN_FINDINGS`].
++pub(crate) fn read_findings(output: &Value) -> Result<Vec<ReportedFinding>, OutputProblem> {
++    let list = output
++        .get("findings")
++        .and_then(Value::as_array)
++        .ok_or(OutputProblem::NotADocument)?;
++    if list.len() > MAX_RUN_FINDINGS {
++        return Err(OutputProblem::TooManyFindings);
++    }
++    list.iter()
++        .enumerate()
++        .map(|(index, value)| {
++            let refused = OutputProblem::Finding { index };
++            let fields = FindingFields::deserialize(value).map_err(|_shape| refused)?;
++            let end = fields.end_line.unwrap_or(fields.line);
++            if end < fields.line {
++                return Err(refused);
++            }
++            Ok(ReportedFinding {
++                file: fields.file,
++                first: fields.line,
++                last: end,
++                class: fields.class,
++            })
++        })
++        .collect()
++}
++
++/// Whether `finding` matches `label` under `map`: same file, class mapped, and its lines
++/// overlap the hunk widened by [`LINE_WINDOW`] on each side (stopping at line 1).
++pub(crate) fn matches(label: &Label, finding: &ReportedFinding, map: &ClassMap) -> bool {
++    let from = label.first().get().saturating_sub(LINE_WINDOW);
++    let to = label.last().get().saturating_add(LINE_WINDOW);
++    finding.file == label.file()
++        && map.maps(finding.class, label.class())
++        && finding.first.get() <= to
++        && finding.last.get() >= from
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/assay-app/src/eval/score/tests.rs b/crates/assay-app/src/eval/score/tests.rs
+new file mode 100644
+index 0000000..0fadeee
+--- /dev/null
++++ b/crates/assay-app/src/eval/score/tests.rs
+@@ -0,0 +1,199 @@
++use std::num::NonZeroU64;
++
++use assay_domain::Class;
++use serde_json::{Value, json};
++
++use super::{ClassMap, MAX_RUN_FINDINGS, OutputProblem, ReportedFinding, matches, read_findings};
++use crate::eval::case::Label;
++
++fn line(n: u64) -> NonZeroU64 {
++    NonZeroU64::new(n).expect("test lines are positive")
++}
++
++/// The fixing hunk every scorer test aims at: lines 40 to 44 of `src/lib.rs`, a logic defect.
++fn hunk() -> Label {
++    Label::new("src/lib.rs", line(40), line(44), Class::Logic).expect("a valid label")
++}
++
++fn finding(file: &str, first: u64, last: u64, class: Class) -> ReportedFinding {
++    ReportedFinding {
++        file: file.to_owned(),
++        first: line(first),
++        last: line(last),
++        class,
++    }
++}
++
++#[test]
++fn a_finding_inside_the_hunk_in_the_same_file_and_class_matches() {
++    let found = finding("src/lib.rs", 42, 42, Class::Logic);
++
++    assert!(matches(&hunk(), &found, &ClassMap::identity()));
++}
++
++#[test]
++fn a_finding_ten_lines_before_the_hunk_matches() {
++    let found = finding("src/lib.rs", 30, 30, Class::Logic);
++
++    assert!(matches(&hunk(), &found, &ClassMap::identity()));
++}
++
++#[test]
++fn a_finding_eleven_lines_before_the_hunk_misses() {
++    let found = finding("src/lib.rs", 29, 29, Class::Logic);
++
++    assert!(!matches(&hunk(), &found, &ClassMap::identity()));
++}
++
++#[test]
++fn a_finding_ten_lines_after_the_hunk_matches() {
++    let found = finding("src/lib.rs", 54, 54, Class::Logic);
++
++    assert!(matches(&hunk(), &found, &ClassMap::identity()));
++}
++
++#[test]
++fn a_finding_eleven_lines_after_the_hunk_misses() {
++    let found = finding("src/lib.rs", 55, 55, Class::Logic);
++
++    assert!(!matches(&hunk(), &found, &ClassMap::identity()));
++}
++
++#[test]
++fn a_finding_spanning_into_the_window_from_outside_it_matches() {
++    let found = finding("src/lib.rs", 1, 30, Class::Logic);
++
++    assert!(matches(&hunk(), &found, &ClassMap::identity()));
++}
++
++#[test]
++fn the_window_stops_at_line_one_near_the_top_of_a_file() {
++    let top = Label::new("src/lib.rs", line(3), line(3), Class::Logic).expect("a valid label");
++    let found = finding("src/lib.rs", 1, 1, Class::Logic);
++
++    assert!(matches(&top, &found, &ClassMap::identity()));
++}
++
++#[test]
++fn a_finding_in_another_file_misses() {
++    let found = finding("src/main.rs", 42, 42, Class::Logic);
++
++    assert!(!matches(&hunk(), &found, &ClassMap::identity()));
++}
++
++#[test]
++fn a_finding_of_another_class_misses_under_the_identity_map() {
++    let found = finding("src/lib.rs", 42, 42, Class::ErrorHandling);
++
++    assert!(!matches(&hunk(), &found, &ClassMap::identity()));
++}
++
++#[test]
++fn a_finding_of_an_aliased_class_matches() {
++    let map = ClassMap::identity().with_alias(Class::Logic, Class::ErrorHandling);
++    let found = finding("src/lib.rs", 42, 42, Class::ErrorHandling);
++
++    assert!(matches(&hunk(), &found, &map));
++}
++
++#[test]
++fn an_alias_maps_one_way_only() {
++    let map = ClassMap::identity().with_alias(Class::ErrorHandling, Class::Logic);
++    let found = finding("src/lib.rs", 42, 42, Class::ErrorHandling);
++
++    assert!(!matches(&hunk(), &found, &map));
++}
++
++fn output(findings: &[Value]) -> Value {
++    json!({ "findings": findings })
++}
++
++fn reported(index: u64) -> Value {
++    json!({
++        "file": "src/lib.rs",
++        "line": index + 1,
++        "class": "logic",
++        "title": "ignored by the scorer",
++        "severity": "major",
++    })
++}
++
++#[test]
++fn reads_file_lines_and_class_of_each_finding() {
++    let value = output(&[
++        json!({"file": "a.rs", "line": 3, "class": "logic"}),
++        json!({"file": "b.rs", "line": 5, "end_line": 9, "class": "security", "body": "x"}),
++    ]);
++
++    let findings = read_findings(&value);
++
++    assert_eq!(
++        findings,
++        Ok(vec![
++            finding("a.rs", 3, 3, Class::Logic),
++            finding("b.rs", 5, 9, Class::Security),
++        ])
++    );
++}
++
++#[test]
++fn refuses_output_that_is_not_an_object_with_a_findings_list() {
++    for value in [json!([]), json!({}), json!({"findings": {}}), json!("text")] {
++        assert_eq!(
++            read_findings(&value),
++            Err(OutputProblem::NotADocument),
++            "{value}"
++        );
++    }
++}
++
++#[test]
++fn refuses_a_finding_without_a_positive_line() {
++    let value = output(&[
++        reported(0),
++        json!({"file": "a.rs", "line": 0, "class": "logic"}),
++    ]);
++
++    assert_eq!(
++        read_findings(&value),
++        Err(OutputProblem::Finding { index: 1 })
++    );
++}
++
++#[test]
++fn refuses_a_finding_that_ends_before_it_starts() {
++    let value = output(&[json!({"file": "a.rs", "line": 9, "end_line": 8, "class": "logic"})]);
++
++    assert_eq!(
++        read_findings(&value),
++        Err(OutputProblem::Finding { index: 0 })
++    );
++}
++
++#[test]
++fn refuses_a_finding_of_an_unknown_class() {
++    let value = output(&[json!({"file": "a.rs", "line": 9, "class": "style"})]);
++
++    assert_eq!(
++        read_findings(&value),
++        Err(OutputProblem::Finding { index: 0 })
++    );
++}
++
++#[test]
++fn reads_as_many_findings_as_the_cap() {
++    let cap = u64::try_from(MAX_RUN_FINDINGS).expect("the cap fits u64");
++    let value = output(&(0..cap).map(reported).collect::<Vec<_>>());
++
++    let findings = read_findings(&value).expect("the cap is allowed");
++
++    assert_eq!(findings.len(), MAX_RUN_FINDINGS);
++}
++
++#[test]
++fn refuses_one_finding_past_the_cap() {
++    let over = u64::try_from(MAX_RUN_FINDINGS).expect("the cap fits u64") + 1;
++    let value = output(&(0..over).map(reported).collect::<Vec<_>>());
++
++    assert_eq!(read_findings(&value), Err(OutputProblem::TooManyFindings));
++}
+diff --git a/crates/assay-app/src/lib.rs b/crates/assay-app/src/lib.rs
+index 76eca2e..ff35996 100644
+--- a/crates/assay-app/src/lib.rs
++++ b/crates/assay-app/src/lib.rs
+@@ -13,6 +13,7 @@ mod contract;
+ mod coordinate;
+ mod decide;
+ mod doctor;
++mod eval;
+ mod gate;
+ mod golden;
+ mod model_runner;
+@@ -72,6 +73,14 @@ pub use decide::{
+     PullRequestState, Refusal, Reported, ReportedGate, ReviewJob, RunArtifacts, Snapshot,
+     StateStep, TierDegrade, Unreadable, UpstreamJob, authenticate,
+ };
++pub use eval::{
++    Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,
++    ClassMap, CompareError, CorpusError, EVAL_MONTHLY_CAP, EVAL_ROLE, EVAL_RUNS, EvalCase,
++    EvalCorpus, EvalError, EvalLedger, EvalMonth, EvalReport, EvalRequest, LINE_WINDOW, Label,
++    MAX_AUTHORING_MODEL_BYTES, MAX_CASE_BYTES, MAX_CASE_ID_BYTES, MAX_EVAL_CASES, MAX_EVAL_ENTRIES,
++    MAX_LABEL_PATH_BYTES, MAX_LABELS, MAX_RUN_FINDINGS, NoiseCheck, OutputProblem, PathField,
++    Proportion, RunScore, Split, Unscorable, WILSON_Z, compare, read_eval_corpus, run_eval,
++};
+ pub use gate::{
+     BuildJob, Conclusion, GateDocument, GateError, GateJob, GateOutcome, GateReport, GateRun,
+     GateRunner, Termination, account_for_required, run_gates,
+diff --git a/crates/assay-app/src/session_init.rs b/crates/assay-app/src/session_init.rs
+index 5d17675..ebbf1d8 100644
+--- a/crates/assay-app/src/session_init.rs
++++ b/crates/assay-app/src/session_init.rs
+@@ -163,6 +163,14 @@ impl SessionInit {
+         &self.parts.mcp_servers
+     }
+ 
++    /// Whether the session was confined to `Read`, `Grep` and `Glob` with no MCP server: the
++    /// least a call's output needs before it is used.
++    pub(crate) fn is_confined(&self) -> bool {
++        let mut tools: Vec<&str> = self.tools().iter().map(String::as_str).collect();
++        tools.sort_unstable();
++        tools == CLEAN_TOOLS && self.mcp_servers().is_empty()
++    }
++
+     /// `plugins`, as listed.
+     #[must_use]
+     pub fn plugins(&self) -> &[InitPlugin] {

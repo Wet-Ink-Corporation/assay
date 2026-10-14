@@ -1,0 +1,98 @@
+diff --git a/crates/assay-domain/src/decide.rs b/crates/assay-domain/src/decide.rs
+index 98bd052..a9c9fcb 100644
+--- a/crates/assay-domain/src/decide.rs
++++ b/crates/assay-domain/src/decide.rs
+@@ -32,8 +32,9 @@ use waive::Waivers;
+ /// `degraded` and fire rule 8b or 8c.
+ ///
+ /// Pure and total: the same rubric and inputs give the same decision, whose `inputs_digest`
+-/// identifies both. The decision is a new document: the keys, fingerprints, dispositions and
+-/// degraded roles it repeats from the borrowed inputs are copied into it.
++/// identifies both. The decision is a new document that owns its data: the keys, fingerprints
++/// and dispositions it repeats from the borrowed inputs are copied into it, and its degraded
++/// roles are derived from them.
+ #[must_use]
+ pub fn decide(rubric: &Rubric, inputs: &DecisionInputs) -> Decision {
+     let waivers = Waivers::resolve(rubric, inputs);
+diff --git a/crates/assay-domain/src/decide/inputs.rs b/crates/assay-domain/src/decide/inputs.rs
+index 04960c6..36a939a 100644
+--- a/crates/assay-domain/src/decide/inputs.rs
++++ b/crates/assay-domain/src/decide/inputs.rs
+@@ -292,7 +292,7 @@ impl LlmStage {
+ ///
+ /// A `Failed` call always degrades the stage (rules 8b, 8c): on a PR of a blocking class or
+ /// policy it is `required-role-degraded`, which waiting cannot heal, never a deferral.
+-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+ #[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+ pub enum SupportOutcome {
+     /// No call was due: no candidate for the verifier, no coordinator on `lite` or `micro`.
+diff --git a/crates/assay-domain/src/decide/roles.rs b/crates/assay-domain/src/decide/roles.rs
+index c27fd8b..fb5fa71 100644
+--- a/crates/assay-domain/src/decide/roles.rs
++++ b/crates/assay-domain/src/decide/roles.rs
+@@ -51,7 +51,8 @@ pub(super) fn degraded_roles(inputs: &DecisionInputs) -> Vec<DegradedRole> {
+         .collect()
+ }
+ 
+-/// The calls a completed stage owed but that never reported (04 §3):
++/// The calls a completed stage owed but that never reported (04 §3). A call reported in
++/// `degraded` did report, so it is never also `missing`:
+ /// - each role the PR's tier and classes require that neither completed nor reported degraded;
+ /// - on `full`, a coordinator that did not run although there are reviewer findings (wi-98c82b);
+ /// - on `full` or `lite`, a verifier that did not run although a blocker or major, a candidate
+@@ -66,7 +67,8 @@ fn missing(inputs: &DecisionInputs) -> Vec<&'static str> {
+         .collect();
+     let ungrouped = pr.tier == Tier::Full
+         && inputs.coordinator == SupportOutcome::NotNeeded
+-        && !inputs.findings.is_empty();
++        && !inputs.findings.is_empty()
++        && !reported("coordinator");
+     if ungrouped {
+         missing.push("coordinator");
+     }
+@@ -75,7 +77,8 @@ fn missing(inputs: &DecisionInputs) -> Vec<&'static str> {
+         && inputs
+             .findings
+             .iter()
+-            .any(|f| f.severity >= Severity::Major);
++            .any(|f| f.severity >= Severity::Major)
++        && !reported("verifier");
+     if unverified {
+         missing.push("verifier");
+     }
+diff --git a/crates/assay-domain/tests/it/decide_degradation.rs b/crates/assay-domain/tests/it/decide_degradation.rs
+index ab5a222..4fc8638 100644
+--- a/crates/assay-domain/tests/it/decide_degradation.rs
++++ b/crates/assay-domain/tests/it/decide_degradation.rs
+@@ -92,6 +92,30 @@ fn a_required_role_reported_degraded_is_not_also_missing() -> Result<(), Box<dyn
+     Ok(())
+ }
+ 
++#[test]
++fn a_support_call_reported_degraded_is_not_also_missing() -> Result<(), Box<dyn Error>> {
++    let mut inputs = clean_inputs();
++    inputs.pr.tier = Tier::Full;
++    inputs.coordinator = SupportOutcome::NotNeeded;
++    inputs.verifier = SupportOutcome::NotNeeded;
++    inputs.findings = vec![confirmed("00000000000000b1", Severity::Blocker)];
++    inputs.degraded = vec![
++        degraded("coordinator", "cap"),
++        degraded("verifier", "turns"),
++    ];
++
++    let decision = decided(&inputs)?;
++
++    assert_eq!(
++        decision.degraded,
++        [
++            degraded("coordinator", "cap"),
++            degraded("verifier", "turns")
++        ]
++    );
++    Ok(())
++}
++
+ #[test]
+ fn a_failed_coordinator_fails_an_exec_surface_pr() -> Result<(), Box<dyn Error>> {
+     let mut inputs = full_trust_path();

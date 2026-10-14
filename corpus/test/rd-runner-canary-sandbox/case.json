@@ -1,0 +1,19 @@
+{
+  "schema": "assay.eval-case/1",
+  "authoring_model": "claude-opus-5-5",
+  "source": "real-defect",
+  "labels": [
+    {
+      "file": "crates/assay-runner/src/headless/canary.rs",
+      "start_line": 151,
+      "end_line": 178,
+      "class": "resource"
+    },
+    {
+      "file": "crates/assay-runner/src/stream/init.rs",
+      "start_line": 25,
+      "end_line": 31,
+      "class": "logic"
+    }
+  ]
+}

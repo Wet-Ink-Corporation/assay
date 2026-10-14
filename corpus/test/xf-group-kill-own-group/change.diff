@@ -1,0 +1,834 @@
+diff --git a/crates/assay-forge/AGENTS.md b/crates/assay-forge/AGENTS.md
+index e8c5fa7..4d4b484 100644
+--- a/crates/assay-forge/AGENTS.md
++++ b/crates/assay-forge/AGENTS.md
+@@ -13,13 +13,15 @@ adapter. Implements application ports; wire DTOs for GitHub live here and are co
+ 
+ ## Public surface
+ Workspace-internal, not published (`publish = false`).
+-- `git`: the hardened git layer for PR objects (`docs/architecture/03-contracts.md` §9, §2.1). `ObjectRepo` (bare, object-only repository: `init` into an absent or empty directory, `fetch` by `CommitSha` from an `HttpsRemote`, `numstat` under a wall-clock cap returning `DiffOutcome::{Measured, NeedsSplit}`, `police_attributes` over every changed path with an `AttributeAllowlist`, returning an `AttributeReport` whose `opaque` entries downstream gates must treat as fully changed), `GitEnvironment` (the inherited variables and the `GroupKiller`, captured once at the edge), `GroupKiller`, `GitLimits`, `PolicedAttribute`, `is_protected_path`, and the errors `GitError`, `AttributeError`, `GlobError`, `KillerError` (with its `ProcFault` cause), `ProcessError`, `ParseShaError`, `ParseRemoteError`. Parsing the allowlist out of base `.assay/plugins.toml` belongs to the config story (#62); this crate takes the globs as a parameter.
++- `git`: the hardened git layer for PR objects (`docs/architecture/03-contracts.md` §9, §2.1). `ObjectRepo` (bare, object-only repository: `init` into an absent or empty directory, `fetch` by `CommitSha` from an `HttpsRemote`, `numstat` under a wall-clock cap returning `DiffOutcome::{Measured, NeedsSplit}`, `police_attributes` over every changed path with an `AttributeAllowlist`, returning an `AttributeReport` whose `opaque` entries downstream gates must treat as fully changed), `GitEnvironment` (the inherited variables and the `GroupKiller`, captured once at the edge), `GitLimits`, `PolicedAttribute`, `is_protected_path`, and the errors `GitError`, `AttributeError`, `GlobError`, `ParseShaError`, `ParseRemoteError`. Parsing the allowlist out of base `.assay/plugins.toml` belongs to the config story (#62); this crate takes the globs as a parameter.
++- `process`: the bounded process-group supervisor under the git layer, public so that `assay-cli` can lend it to the gate and model-runner adapters, which may not depend on this crate (wi-603c63). `run` (one child under `Limits`, returning `Captured`), `GroupKiller` (`system`, `at`, and `kill_group`, which kills another supervisor's group), and the errors `ProcessError`, `KillerError` (with its `ProcFault` cause). Each item has this one path; `git` no longer re-exports them.
+ 
+ ## Invariants
+ - Every external call has a timeout and a bounded response size (H-13).
+ - Every git process is built by `git::command::git`, the only `Command::new("git")` in production code; the only other process is the validated `GroupKiller` program that signals a timed-out process group (`tests/it/single_constructor.rs` enforces both). The constructor clears the environment to what `GitEnvironment` holds, sets `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_ATTR_NOSYSTEM=1`, and passes the §9 `-c` flags including `attr.tree=<empty tree>`; every diff carries `--no-ext-diff --no-textconv`.
+ - PR objects are fetched only by full SHA over https into a bare repository; refs such as `refs/pull/N/merge` cannot be expressed.
+ - Every child leads its own process group, has its stdio spooled to anonymous temporary files (no pipes, so no reader can block), and is waited on. A run completes only when the child has exited and its group has no live member; past the deadline, or past the output cap, the whole group is killed and must be verifiably gone (`/proc`), else `ProcessError::Kill`. A group whose leader is reaped is signalled only when `/proc` shows a live member: with none it is left alone, and when `/proc` cannot be read it is `ProcessError::Kill`, never a signal (pgid reuse). A diff past its cap is `needs-split`, never a hang.
++- `GroupKiller::kill_group` signals a group only when `/proc` shows a live member, refuses groups 0 and 1 (`kill` reads `-0` as this process's group and `-1` as every process), and returns `Ok` only once no live member is left. Its caller passes the pid of a child that leads its own group; the same pgid-reuse window as above applies once that child is reaped.
+ - A `/proc` scan skips a process only when it is shown to be gone: its stat read fails with `NotFound` or `ESRCH`, or an unparseable stat line (an exiting process can yield an empty or truncated one; a line without the kernel's trailing newline counts as truncated) is followed by a re-read that does. A process whose stat stays unparseable is an error, never an empty group. Stat files are read as bytes: `comm` is raw and may be any bytes (`prctl(PR_SET_NAME)`, the executable's file name), so only the fields after its last `) ` must be text.
+ - Every changed path (both sides of renames) is policed; Rust sources, manifests and trust files can never be allowlisted, and allowlisted paths come back as `opaque`, never silently trusted.
+ 
+@@ -33,7 +35,7 @@ Workspace-internal, not published (`publish = false`).
+ A `thiserror` enum per operation, separating GitHub rejections from transport failures (ERR-10). git: `GitError` (process failure, non-zero exit, unreadable output, missing commit) and `AttributeError` (`Forbidden`, displayed as `gate-error:gitattributes`, or a `GitError`); both fail closed. `ProcessError::Kill` (inside `GitError::Process`) means a process group may still be running, unbounded: callers must abort the job (`gate-error`), not retry or run more git in the same job.
+ 
+ ## Test strategy
+-Integration tests in `tests/it/` against recorded `gh` responses; no live network in tests (TST-10). The git layer is tested against fixture repositories built with plain git in a temporary directory (`tests/it/support.rs`); fetch is covered by its argument list, not by a network fetch. The per-process `/proc` decision is tested with scripted reads, so the exit-mid-scan race is covered deterministically. Run: `cargo test -p assay-forge`.
++Integration tests in `tests/it/` against recorded `gh` responses; no live network in tests (TST-10). The git layer is tested against fixture repositories built with plain git in a temporary directory (`tests/it/support.rs`); fetch is covered by its argument list, not by a network fetch. The per-process `/proc` decision is tested with scripted reads, so the exit-mid-scan race is covered deterministically. `GroupKiller::kill_group` is tested against a real group with a grandchild, and against a spy kill program for the cases that must signal nothing. Its use by the gate and model-runner adapters is tested in `assay-cli` (`tests/it/supervisor.rs`). Run: `cargo test -p assay-forge`.
+ 
+ ## Do not
+ - Do not decide verdicts or severities here; that is the domain's job.
+@@ -52,3 +54,4 @@ Integration tests in `tests/it/` against recorded `gh` responses; no live networ
+ | 2026-10-11 | A `/proc` that does not describe this process is refused up front (`KillerError::ProcUnavailable`) rather than read as empty groups, and a `ProcessError::Kill` aborts the job (`gate-error`), never a retry. | H-13, ERR-10 | #133 (PR #134) |
+ | 2026-10-11 | `GroupKiller::at` runs the `/proc` preflight too, so no killer skips it; `ProcUnavailable` carries a `Copy + Eq` `ProcFault` (the `check_proc` test expectations name the fault). A `/proc` scan treats an unparseable stat as an exited process only once a re-read shows it gone, which fixes a flaky `init_accepts_an_empty_directory` without failing open. | OWN-12, ERR-03, H-13 | #135, owner |
+ | 2026-10-11 | `/proc/<pid>/stat` is read as bytes, so a host process with a non-UTF-8 name no longer fails every run; the `/proc` preflight also requires the stat shape the scan parses (`ProcFault::Malformed`), and the `check_proc` fixtures gained the kernel's trailing newline. | H-10, ERR-03 | #141 |
++| 2026-10-12 | `process` is public (`run`, `Limits`, `Captured`, `GroupKiller::kill_group`) so that `assay-cli` lends it to the gate and model-runner adapters; the process items move from `git::` to `process::`, one path each. | ADR-07, API-14, H-13, H-16 | owner, Weigh-In wi-603c63 (decided A), #150 |
+diff --git a/crates/assay-forge/src/git.rs b/crates/assay-forge/src/git.rs
+index 8a2618f..4441204 100644
+--- a/crates/assay-forge/src/git.rs
++++ b/crates/assay-forge/src/git.rs
+@@ -49,7 +49,7 @@ mod numstat;
+ mod repository;
+ mod sha;
+ 
+-pub use crate::process::{GroupKiller, KillerError, ProcFault, ProcessError};
++use crate::process::ProcessError;
+ pub use attributes::{
+     AttributeAllowlist, AttributeError, AttributeReport, PolicedAttribute, is_protected_path,
+ };
+diff --git a/crates/assay-forge/src/lib.rs b/crates/assay-forge/src/lib.rs
+index e91aa6f..15017d8 100644
+--- a/crates/assay-forge/src/lib.rs
++++ b/crates/assay-forge/src/lib.rs
+@@ -3,7 +3,9 @@
+ //!
+ //! Implements the `Forge` and `Ledger` ports of `assay-app`
+ //! (`docs/architecture/02-architecture.md` §2). [`git`] is the hardened git layer that fetches
+-//! and measures PR objects as data (`docs/architecture/03-contracts.md` §9).
++//! and measures PR objects as data (`docs/architecture/03-contracts.md` §9). [`process`] is the
++//! bounded process-group supervisor under it, which `assay-cli` also lends to the gate and
++//! model-runner adapters (wi-603c63).
+ 
+ pub mod git;
+-mod process;
++pub mod process;
+diff --git a/crates/assay-forge/src/process.rs b/crates/assay-forge/src/process.rs
+index 138b17f..d879a41 100644
+--- a/crates/assay-forge/src/process.rs
++++ b/crates/assay-forge/src/process.rs
+@@ -1,6 +1,10 @@
+ //! Bounded child processes: a wall-clock deadline, capped output, a process group that is
+ //! killed rather than left behind, and a child that is always waited on (H-13).
+ //!
++//! [`run`] supervises one child under [`Limits`]; [`GroupKiller::kill_group`] kills a process
++//! group that another supervisor started. The git layer uses both, and `assay-cli` lends them
++//! to the gate and model-runner adapters, which may not depend on this crate (wi-603c63).
++//!
+ //! stdin, stdout and stderr are anonymous temporary files, not pipes, so this process never
+ //! blocks on a descendant: there is no reader that a grandchild holding a pipe open could
+ //! keep waiting, and so no join that could outlast the deadline. The calling thread polls the
+@@ -53,20 +57,23 @@ const SELF_STAT: &str = "/proc/self/stat";
+ const ESRCH: i32 = 3;
+ 
+ /// Bounds for one child process.
+-#[derive(Debug, Clone, Copy)]
+-pub(crate) struct Limits {
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct Limits {
+     /// Wall-clock time from spawn until the child's group is killed.
+-    pub(crate) timeout: Duration,
++    pub timeout: Duration,
+     /// Most bytes accepted on stdout, and separately on stderr.
+-    pub(crate) max_output_bytes: usize,
++    pub max_output_bytes: usize,
+ }
+ 
+ /// What a finished child produced.
+ #[derive(Debug)]
+-pub(crate) struct Captured {
+-    pub(crate) status: ExitStatus,
+-    pub(crate) stdout: Vec<u8>,
+-    pub(crate) stderr: Vec<u8>,
++pub struct Captured {
++    /// How the child exited.
++    pub status: ExitStatus,
++    /// What it wrote on stdout, at most [`Limits::max_output_bytes`].
++    pub stdout: Vec<u8>,
++    /// What it wrote on stderr, at most [`Limits::max_output_bytes`].
++    pub stderr: Vec<u8>,
+ }
+ 
+ /// Why a child process produced no usable output.
+@@ -203,9 +210,38 @@ impl GroupKiller {
+         }
+     }
+ 
++    /// Kills every live member of process group `group` and returns once `/proc` shows none
++    /// left, within the grace.
++    ///
++    /// `group` must be the id of a group that a child of this process leads (a child started
++    /// with `process_group(0)` leads the group named by its pid). Nothing is signalled when
++    /// `/proc` shows no live member: once the group is empty and its leader reaped, the id may
++    /// belong to an unrelated process. The window left is a member exiting between that scan
++    /// and the signal, after which an unrelated process would have to take the id as its own
++    /// group id before the signal lands.
++    ///
++    /// # Errors
++    /// [`io::ErrorKind::InvalidInput`] for group 0 or 1, which `kill` reads as this process's
++    /// own group and as every process. Otherwise an error when `/proc` cannot be read (nothing
++    /// is signalled), when the kill program cannot be run, or when a live member is still left
++    /// at the end of the grace: then the group may still be running.
++    pub fn kill_group(&self, group: u32) -> io::Result<()> {
++        if group <= 1 {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "process groups 0 and 1 name this process's group and every process",
++            ));
++        }
++        if group_alive(group)? {
++            self.signal_group(group)
++        } else {
++            Ok(())
++        }
++    }
++
+     /// Sends SIGKILL to process group `group` and waits, within the grace, until no live
+     /// member is left. The program's exit status is not believed either way.
+-    fn kill_group(&self, group: u32) -> io::Result<()> {
++    fn signal_group(&self, group: u32) -> io::Result<()> {
+         let deadline = Instant::now()
+             .checked_add(self.grace)
+             .ok_or_else(|| io::Error::other("the kill grace overflows the clock"))?;
+@@ -235,9 +271,20 @@ impl GroupKiller {
+ 
+ /// Runs `command` with `input` on stdin, within `limits`, and returns its output.
+ ///
+-/// The child leads a new process group. On a timeout or an over-cap output the group is
+-/// killed with `killer`; the child is always waited on.
+-pub(crate) fn run(
++/// The child leads a new process group, and its stdin, stdout and stderr are anonymous
++/// temporary files; its program, arguments, environment and working directory are the
++/// caller's. The run completes only when the child has exited and no live process is left in
++/// its group. On a timeout or an over-cap output the group is killed with `killer`; the child is
++/// always waited on.
++///
++/// # Errors
++/// [`ProcessError::TimedOut`] when the child or a process in its group was still running at
++/// the deadline, and [`ProcessError::OutputTooLarge`] when it wrote more than the cap: in both
++/// cases the group was killed and shown gone. [`ProcessError::Kill`] when the group could not
++/// be shown gone, so it may still be running: abort the job rather than retry.
++/// [`ProcessError::TimeoutTooLong`], [`ProcessError::Spool`] and [`ProcessError::Spawn`] when
++/// the child could not be started, and [`ProcessError::Io`] when it could not be observed.
++pub fn run(
+     mut command: Command,
+     input: &[u8],
+     limits: Limits,
+@@ -365,7 +412,7 @@ fn terminate(
+             }
+         }
+     }
+-    let group_killed = killer.kill_group(group);
++    let group_killed = killer.signal_group(group);
+     // Already-exited children report `Ok` here.
+     let leader_killed = child.kill();
+     match group_killed.and(leader_killed) {
+@@ -531,6 +578,9 @@ fn poll_until<T>(
+ 
+ #[cfg(test)]
+ mod tests {
++    use std::io::BufRead;
++    use std::os::unix::process::ExitStatusExt;
++
+     use super::*;
+ 
+     const GENEROUS: Limits = Limits {
+@@ -739,6 +789,90 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
++    fn kill_group_kills_every_live_member_of_the_group() {
++        let mut shell = Command::new("sh");
++        shell
++            .args(["-c", "sleep 600 & echo $!; wait"])
++            .stdout(Stdio::piped())
++            .process_group(0);
++        let mut child = shell.spawn().expect("sh starts");
++        let mut grandchild = String::new();
++        // Reading the pid is the readiness signal: the grandchild exists before the kill.
++        io::BufReader::new(child.stdout.take().expect("stdout is piped"))
++            .read_line(&mut grandchild)
++            .expect("the shell prints the grandchild's pid");
++
++        let killed = system_killer().kill_group(child.id());
++
++        let status = child.wait().expect("the shell is reaped");
++        assert_eq!(
++            (killed.map_err(|error| error.kind()), status.signal()),
++            (Ok(()), Some(9)),
++            "the group leader dies of SIGKILL"
++        );
++        assert!(
++            is_dead(grandchild.trim()),
++            "the grandchild dies with its group"
++        );
++    }
++
++    #[test]
++    #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
++    fn kill_group_signals_nothing_when_no_member_is_alive() {
++        let scratch = tempfile::tempdir().expect("a scratch directory");
++        let marker = scratch.path().join("killed");
++        let spy = script(
++            scratch.path(),
++            "kill",
++            &format!("touch '{}'", marker.display()),
++        );
++        let killer = GroupKiller::at(&spy, Duration::from_millis(100)).expect("executable");
++        let mut child = Command::new("true")
++            .process_group(0)
++            .spawn()
++            .expect("true starts");
++        child.wait().expect("true is reaped");
++
++        let outcome = killer.kill_group(child.id());
++
++        assert_eq!(
++            outcome.map_err(|error| error.kind()),
++            Ok(()),
++            "an empty group is already gone"
++        );
++        assert!(
++            !marker.exists(),
++            "a group with no live member must not be signalled (pgid reuse)"
++        );
++    }
++
++    #[test]
++    #[cfg_attr(miri, ignore = "reads /proc; Miri isolates the file system")]
++    fn kill_group_refuses_the_ids_kill_reads_as_this_group_or_every_process() {
++        let scratch = tempfile::tempdir().expect("a scratch directory");
++        let marker = scratch.path().join("killed");
++        let spy = script(
++            scratch.path(),
++            "kill",
++            &format!("touch '{}'", marker.display()),
++        );
++        let killer = GroupKiller::at(&spy, Duration::from_millis(100)).expect("executable");
++
++        let refused = [0, 1].map(|group| killer.kill_group(group).map_err(|error| error.kind()));
++
++        assert_eq!(
++            refused,
++            [
++                Err(io::ErrorKind::InvalidInput),
++                Err(io::ErrorKind::InvalidInput)
++            ],
++            "`kill -- -0` is this process's group and `-1` every process"
++        );
++        assert!(!marker.exists(), "nothing was signalled");
++    }
++
+     #[test]
+     fn this_hosts_proc_describes_this_process() {
+         assert_eq!(
+diff --git a/crates/assay-runner/AGENTS.md b/crates/assay-runner/AGENTS.md
+index b244c49..69b3822 100644
+--- a/crates/assay-runner/AGENTS.md
++++ b/crates/assay-runner/AGENTS.md
+@@ -13,12 +13,14 @@ adapter. Implements application ports; stream-json DTOs live here and are conver
+ 
+ ## Public surface
+ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`:
+-- `ClaudeHeadless` (`new`, `with_max_output_bytes`): the `ModelRunner` that runs `claude -p` with the 03 §8 profile, built from the CLI's path, a `Workdir` (absolute, empty, checked again before every call) and a `HeadlessEnv` (the OAuth token plus explicitly passed variables).
++- `ClaudeHeadless<K>` (`new`, `with_max_output_bytes`): the `ModelRunner` that runs `claude -p` with the 03 §8 profile, built from the CLI's path, a `Workdir` (absolute, empty, checked again before every call), a `HeadlessEnv` (the OAuth token plus explicitly passed variables) and a `K: GroupKill`.
++- `GroupKill` (implemented for `&K` too): the process-group kill the composition root lends; `assay-cli` implements it with `assay-forge`'s `GroupKiller` (wi-603c63).
+ - `Replay`, `Recording` (`Completed`, `TimedOut`): the `ModelRunner` over recorded transcripts, classified exactly as live ones.
+ - Errors: `HeadlessError`, `WorkdirError`, `EnvVarError`, `ReplayError`.
+ 
+ ## Invariants
+ - Every spawned process has an owner that waits on or kills it, and a timeout (H-13).
++- The CLI leads its own process group, which the `GroupKill` kills whole: at the timeout or the cap before the CLI is reaped (so its pid, the group id, cannot have been reused), and after the CLI exits on its own, so no process it started outlives the call. A call returns only once the group is shown gone, or with `HeadlessError::Kill`.
+ - Output read from a process is size-capped (H-13): stdout is spooled to an anonymous temporary file and the call is killed past the cap (32 MiB by default); stderr is discarded.
+ - The prompt reaches the CLI on stdin, from an anonymous temporary file written before the CLI starts, never as an argument (wi-9fe37e).
+ - The argv is exactly 03 §8's, in its order (`tests/it/headless.rs` pins it flag for flag): `-p --output-format stream-json --verbose --json-schema --append-system-prompt-file --exclude-dynamic-system-prompt-sections --restricted --safe-mode --settings <03 §8 JSON> --tools Read,Grep,Glob --add-dir --permission-mode dontAsk --max-turns --max-budget-usd <cap>`. Never `--bare`. The tool set is a constant, not a call field.
+@@ -27,14 +29,15 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
+ - The CLI is killed only at the timeout or the output cap, never on assay's own mid-run accounting (03 §8).
+ 
+ ## Runtime prerequisites
+-- Unix (`process_group`). Only the CLI process itself is killed at a limit: the process-group killer lives in `assay-forge`, which this crate may not depend on (see Decisions).
++- Unix (`process_group`), and whatever the lent `GroupKill` needs: in production `assay-forge`'s, a Linux `/proc` describing this process and a procps or util-linux `kill` (`docs/architecture/06-operations.md` §5 F22).
++- Known gap: the CLI is stopped by assay, so it outlives an assay that is itself killed by a signal (`SIGKILL`, or a default-action `SIGTERM` or `SIGINT`): its own group does not receive signals sent to assay's group, and nothing in this process runs to kill it. It then runs until its own `--max-turns` or `--max-budget-usd` stop, or until the runner VM is torn down. Closing this needs a parent-death signal (`PR_SET_PDEATHSIG`: `unsafe` or a new dependency, or a `setpriv --pdeathsig` wrapper as a new runtime prerequisite), an H-16 decision.
+ 
+ ## Errors
+-- `HeadlessError`: `may_have_run()` says whether to charge. Before the CLI starts (`RelativePath`, `Workdir`, `TimeoutTooLong`, `SpoolCreate`, `Spawn`) it is `false` and nothing is charged; after it (`Supervise`, `Kill`, `ReadBack`) it is `true`, the cost is unknown and the caller charges the call's budget. `Kill` means the CLI may still be running: abort the job, do not retry.
++- `HeadlessError`: `may_have_run()` says whether to charge. Before the CLI starts (`RelativePath`, `Workdir`, `TimeoutTooLong`, `SpoolCreate`, `Spawn`) it is `false` and nothing is charged; after it (`Supervise`, `Kill`, `ReadBack`) it is `true`, the cost is unknown and the caller charges the call's budget. `Kill` means the CLI or a process in its group may still be running, even after a CLI that exited cleanly: abort the job, do not retry.
+ - Model-side endings (budget, turns, timeout, quota, malformed output) are `ModelOutcome`s, not errors (ERR-10).
+ 
+ ## Test strategy
+-Integration tests in `tests/it/` parse recorded stream-json transcripts (`tests/fixtures/stream/`, one per outcome) through `Replay`, and drive `ClaudeHeadless` against a stand-in script (`tests/fixtures/fake-claude`) that records its argv, stdin, cwd and environment; no test starts the real `claude` (TST-10). The timeout test runs a real 300 ms limit but asserts only the outcome and the charge, not how much the stand-in wrote before the kill. Run: `cargo test -p assay-runner`.
++Integration tests in `tests/it/` parse recorded stream-json transcripts (`tests/fixtures/stream/`, one per outcome) through `Replay`, and drive `ClaudeHeadless` against a stand-in script (`tests/fixtures/fake-claude`) that records its pid, argv, stdin, cwd and environment; no test starts the real `claude` (TST-10). A recording `GroupKill` (`tests/it/support.rs`) pins which group is killed and whether the CLI was still unreaped then; that the group really dies, helpers included, is tested with the forge killer in `assay-cli` (`tests/it/supervisor.rs`). The timeout test runs a real 300 ms limit but asserts only the outcome and the charge, not how much the stand-in wrote before the kill. Run: `cargo test -p assay-runner`.
+ 
+ ## Do not
+ - Do not trust model output as authoritative; it is validated mechanically downstream (ADR-08).
+@@ -44,5 +47,6 @@ Integration tests in `tests/it/` parse recorded stream-json transcripts (`tests/
+ |---|---|---|---|
+ | 2026-10-11 | Crate created empty (Story #46); edges are added when first used. | ARC-12, CRF-05 | Story #46 |
+ | 2026-10-11 | `ModelRunner` adapters added (#82), with edges to `assay-app`, `assay-domain`, `serde_json` (stream parsing by `Value`, no serde derive), `tempfile` (stdout spool) and `thiserror`, all pre-approved. | ARC-12, H-16 | #82 |
+-| 2026-10-11 | Known gap: at a limit the CLI process is killed alone, not its process group, so a helper it started can outlive it briefly (no process-spawning tool is available, so only the CLI's own helpers can be left). And because the CLI leads its own group (`process_group(0)`), signals sent to assay's group do not reach it: if assay dies, the CLI outlives it. `assay-forge`'s `GroupKiller` cannot be reused across the adapter boundary (ADR-07). Planned fix (option B), which covers both: make `GroupKiller` public in `assay-forge` and have `assay-cli` inject a group kill into `ClaudeHeadless`. | H-13, H-16 | Weigh-In default wi-469213 (two-way), owner may reopen |
++| 2026-10-11 | Known gap (closed 2026-10-12 by #150, see below): at a limit the CLI process is killed alone, not its process group, so a helper it started can outlive it briefly (no process-spawning tool is available, so only the CLI's own helpers can be left). And because the CLI leads its own group (`process_group(0)`), signals sent to assay's group do not reach it: if assay dies, the CLI outlives it. `assay-forge`'s `GroupKiller` cannot be reused across the adapter boundary (ADR-07). Planned fix (option B), which covers both: make `GroupKiller` public in `assay-forge` and have `assay-cli` inject a group kill into `ClaudeHeadless`. | H-13, H-16 | Weigh-In default wi-469213 (two-way), owner may reopen |
+ | 2026-10-11 | The prompt goes to `claude -p` on stdin from a temporary file, not as an argument: one argument is capped at 128 KiB, which a context pack can exceed. 03 §8 updated; `assay doctor` (#84) must verify the pinned CLI reads it. | H-13, H-16 | owner, Weigh-In wi-9fe37e (decided A) |
++| 2026-10-12 | wi-469213 closed: `ClaudeHeadless<K>` takes a `GroupKill` (a trait here, so this crate stays off `assay-forge`), which `assay-cli` implements with forge's `GroupKiller`. The CLI's whole group is killed at the timeout and the cap, and swept after the CLI exits, so nothing it started outlives a call. Not closed: an assay killed by a signal (Runtime prerequisites, known gap). `ClaudeHeadless::new` gained the killer argument (API change inside the workspace). | ADR-07, H-13, H-16 | owner, Weigh-In wi-603c63 (decided A), #150 |
+diff --git a/crates/assay-runner/src/headless.rs b/crates/assay-runner/src/headless.rs
+index 26d1176..8c4d3f0 100644
+--- a/crates/assay-runner/src/headless.rs
++++ b/crates/assay-runner/src/headless.rs
+@@ -1,6 +1,7 @@
+ //! The `ClaudeHeadless` adapter: `claude -p` under the hardened headless profile (03 §8).
+ 
+ mod env;
++mod group;
+ mod supervise;
+ mod workdir;
+ 
+@@ -12,6 +13,7 @@ use std::time::Duration;
+ use assay_app::{ModelCall, ModelResult, ModelRunner};
+ 
+ pub use env::{EnvVarError, HeadlessEnv};
++pub use group::GroupKill;
+ pub use workdir::{Workdir, WorkdirError};
+ 
+ use crate::stream;
+@@ -34,11 +36,17 @@ const SETTINGS: &str = r#"{"disableAllHooks":true,"permissions":{"deny":["Read(/
+ /// `Replay` recording: a timeout is charged at the call's budget, as is a transcript cut off at
+ /// the cap (reported [`Malformed`](assay_app::ModelOutcome::Malformed)). The exit status is not
+ /// consulted: the transcript's `result` message decides. The CLI's stderr is discarded.
++///
++/// The CLI leads its own process group, and `killer` kills that whole group: at the timeout or
++/// the cap before the CLI is reaped, and after it exits, so no process it started outlives the
++/// call. A call returns only once the group has been shown gone, or with
++/// [`HeadlessError::Kill`].
+ #[derive(Debug)]
+-pub struct ClaudeHeadless {
++pub struct ClaudeHeadless<K> {
+     program: PathBuf,
+     workdir: Workdir,
+     env: HeadlessEnv,
++    killer: K,
+     max_output_bytes: u64,
+ }
+ 
+@@ -75,8 +83,9 @@ pub enum HeadlessError {
+     /// The running CLI could not be polled or reaped.
+     #[error("the claude CLI could not be supervised")]
+     Supervise(#[source] io::Error),
+-    /// The CLI could not be killed and may still be running: abort the job rather than retry.
+-    #[error("the claude CLI could not be killed")]
++    /// The CLI, or a process in its group, could not be killed and may still be running: abort
++    /// the job rather than retry.
++    #[error("the claude CLI or its process group could not be killed")]
+     Kill(#[source] io::Error),
+     /// The transcript could not be read back after the CLI stopped.
+     #[error("the transcript could not be read back")]
+@@ -99,15 +108,17 @@ impl HeadlessError {
+     }
+ }
+ 
+-impl ClaudeHeadless {
+-    /// A runner that starts `program` (the pinned `claude` binary) in `workdir` with `env`, and
+-    /// caps each transcript at 32 MiB.
++impl<K> ClaudeHeadless<K> {
++    /// A runner that starts `program` (the pinned `claude` binary) in `workdir` with `env`,
++    /// kills the CLI's process group with `killer`, and caps each transcript at 32 MiB. Pass
++    /// `&killer` to keep it.
+     #[must_use]
+-    pub fn new(program: impl Into<PathBuf>, workdir: Workdir, env: HeadlessEnv) -> Self {
++    pub fn new(program: impl Into<PathBuf>, workdir: Workdir, env: HeadlessEnv, killer: K) -> Self {
+         Self {
+             program: program.into(),
+             workdir,
+             env,
++            killer,
+             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+         }
+     }
+@@ -147,14 +158,14 @@ impl ClaudeHeadless {
+     }
+ }
+ 
+-impl ModelRunner for ClaudeHeadless {
++impl<K: GroupKill> ModelRunner for ClaudeHeadless<K> {
+     type Error = HeadlessError;
+ 
+     /// Runs `call` once under the headless profile.
+     ///
+     /// # Errors
+     /// Returns [`HeadlessError`] when a path in `call` is relative, the working directory is not
+-    /// empty, or the CLI could not be started, supervised or killed.
++    /// empty, or the CLI could not be started, supervised or killed (its group included).
+     fn run(&self, call: &ModelCall) -> Result<ModelResult, HeadlessError> {
+         for path in [&call.system_prompt_file, &call.add_dir] {
+             if !path.is_absolute() {
+@@ -165,8 +176,11 @@ impl ModelRunner for ClaudeHeadless {
+         let captured = supervise::run(
+             self.command(call),
+             call.user_prompt.as_str().as_bytes(),
+-            call.timeout,
+-            self.max_output_bytes,
++            supervise::Bounds {
++                timeout: call.timeout,
++                cap: self.max_output_bytes,
++            },
++            &self.killer,
+         )?;
+         Ok(stream::classify(
+             &captured.transcript,
+diff --git a/crates/assay-runner/src/headless/group.rs b/crates/assay-runner/src/headless/group.rs
+new file mode 100644
+index 0000000..520e0a7
+--- /dev/null
++++ b/crates/assay-runner/src/headless/group.rs
+@@ -0,0 +1,28 @@
++//! The process-group kill that the composition root lends to `ClaudeHeadless` (wi-603c63).
++
++use std::io;
++
++/// Kills a process group: how [`ClaudeHeadless`](super::ClaudeHeadless) stops the CLI together
++/// with every process the CLI started (H-13).
++///
++/// The production implementation is `assay-forge`'s group killer, which this crate may not
++/// depend on (ADR-07), so `assay-cli` lends it here (wi-603c63).
++pub trait GroupKill {
++    /// Kills every live member of process group `group` and returns once none is left.
++    ///
++    /// `group` is the pid of a child that leads its own process group. An implementation
++    /// signals nothing when no member is alive, because once the group is empty and its leader
++    /// reaped the id may name an unrelated process.
++    ///
++    /// # Errors
++    ///
++    /// When the group could not be observed or signalled, or still has a live member when the
++    /// implementation stops waiting: the group may then still be running.
++    fn kill_group(&self, group: u32) -> io::Result<()>;
++}
++
++impl<K: GroupKill + ?Sized> GroupKill for &K {
++    fn kill_group(&self, group: u32) -> io::Result<()> {
++        (**self).kill_group(group)
++    }
++}
+diff --git a/crates/assay-runner/src/headless/supervise.rs b/crates/assay-runner/src/headless/supervise.rs
+index 27cf0eb..cda22aa 100644
+--- a/crates/assay-runner/src/headless/supervise.rs
++++ b/crates/assay-runner/src/headless/supervise.rs
+@@ -4,12 +4,13 @@
+ //! stdin and stdout are anonymous temporary files, not pipes: the child reads its input from a
+ //! file written in full before it starts, and writes its transcript to another, so no writer or
+ //! reader can block on it. stderr is closed. The calling thread polls the child and the size of
+-//! its output against one deadline. Past the deadline or the cap, the child is killed and reaped.
++//! its output against one deadline.
+ //!
+-//! The child leads its own process group, but only the child itself is killed: the group killer
+-//! that also stops descendants lives in `assay-forge`, which this crate may not depend on
+-//! (ADR-07). With no process-spawning tool (`--tools Read,Grep,Glob`, `--restricted`) the CLI's
+-//! only descendants are its own helpers, which exit once the CLI is gone.
++//! The child leads its own process group, which the lent [`GroupKill`] kills whole. Past the
++//! deadline or the cap the group is killed while the child is still unreaped (so its pid, the
++//! group id, cannot have been reused), then the child itself is killed and reaped. A child that
++//! exits on its own is reaped, and then whatever is still alive in its group is killed, so no
++//! helper the CLI started outlives the call.
+ 
+ use std::fs::File;
+ use std::io::{self, Read, Seek, SeekFrom, Write};
+@@ -18,7 +19,7 @@ use std::process::{Child, Command, Stdio};
+ use std::thread;
+ use std::time::{Duration, Instant};
+ 
+-use super::HeadlessError;
++use super::{GroupKill, HeadlessError};
+ use crate::stream::Ending;
+ 
+ /// How often the child and its output are checked.
+@@ -40,13 +41,22 @@ enum Watched {
+     Stop(Ending),
+ }
+ 
+-/// Runs `command` with `input` on its stdin until it exits, `timeout` passes or its stdout
+-/// passes `cap` bytes.
++/// The limits of one call.
++#[derive(Debug, Clone, Copy)]
++pub(super) struct Bounds {
++    /// Wall-clock time from the start until the CLI's group is killed.
++    pub(super) timeout: Duration,
++    /// Most transcript bytes kept; past it the CLI's group is killed.
++    pub(super) cap: u64,
++}
++
++/// Runs `command` with `input` on its stdin until it exits, its timeout passes or its stdout
++/// passes the cap, and kills its process group with `killer`.
+ pub(super) fn run(
+     mut command: Command,
+     input: &[u8],
+-    timeout: Duration,
+-    cap: u64,
++    Bounds { timeout, cap }: Bounds,
++    killer: &impl GroupKill,
+ ) -> Result<Captured, HeadlessError> {
+     let deadline = Instant::now()
+         .checked_add(timeout)
+@@ -65,6 +75,8 @@ pub(super) fn run(
+ 
+     let ending = match watch(&mut child, &stdout, cap, deadline) {
+         Ok(Watched::Exited) => {
++            // The CLI is reaped; a process it started may still be running in its group.
++            killer.kill_group(child.id()).map_err(HeadlessError::Kill)?;
+             if size(&stdout).map_err(HeadlessError::Supervise)? > cap {
+                 Ending::OutputCapped
+             } else {
+@@ -72,12 +84,12 @@ pub(super) fn run(
+             }
+         }
+         Ok(Watched::Stop(ending)) => {
+-            stop(&mut child)?;
++            stop(&mut child, killer)?;
+             ending
+         }
+         Err(source) => {
+             // A failed kill outranks the polling failure: the CLI may still be running.
+-            stop(&mut child)?;
++            stop(&mut child, killer)?;
+             return Err(HeadlessError::Supervise(source));
+         }
+     };
+@@ -110,12 +122,18 @@ fn watch(child: &mut Child, stdout: &File, cap: u64, deadline: Instant) -> io::R
+     }
+ }
+ 
+-/// Kills the child and reaps it. When the kill fails the child is not waited on, since the wait
+-/// could be unbounded; the error says it may still be running.
+-fn stop(child: &mut Child) -> Result<(), HeadlessError> {
++/// Kills the child's process group, then the child itself, and reaps it. The child is not yet
++/// reaped (watching stops before reaping it), so its pid still names its group.
++///
++/// The child is killed and reaped even when the group kill fails, whose error is then
++/// reported. When the child's own kill fails it is not waited on, since the wait could be
++/// unbounded; either error says it may still be running.
++fn stop(child: &mut Child, killer: &impl GroupKill) -> Result<(), HeadlessError> {
++    let group = killer.kill_group(child.id());
++    // Already-exited children report `Ok` here.
+     child.kill().map_err(HeadlessError::Kill)?;
+     child.wait().map_err(HeadlessError::Supervise)?;
+-    Ok(())
++    group.map_err(HeadlessError::Kill)
+ }
+ 
+ fn size(file: &File) -> io::Result<u64> {
+diff --git a/crates/assay-runner/src/lib.rs b/crates/assay-runner/src/lib.rs
+index 900df05..b5cb134 100644
+--- a/crates/assay-runner/src/lib.rs
++++ b/crates/assay-runner/src/lib.rs
+@@ -11,6 +11,6 @@ mod replay;
+ mod stream;
+ 
+ pub use headless::{
+-    ClaudeHeadless, EnvVarError, HeadlessEnv, HeadlessError, Workdir, WorkdirError,
++    ClaudeHeadless, EnvVarError, GroupKill, HeadlessEnv, HeadlessError, Workdir, WorkdirError,
+ };
+ pub use replay::{Recording, Replay, ReplayError};
+diff --git a/crates/assay-runner/tests/fixtures/fake-claude b/crates/assay-runner/tests/fixtures/fake-claude
+index bbd7195..6cc38bf 100755
+--- a/crates/assay-runner/tests/fixtures/fake-claude
++++ b/crates/assay-runner/tests/fixtures/fake-claude
+@@ -2,9 +2,10 @@
+ # A stand-in for `claude` in the ClaudeHeadless tests: it records how it was started, prints a
+ # recorded stream and, when asked, hangs. Its inputs arrive as environment variables passed
+ # through HeadlessEnv, since the runner clears the rest:
+-#   FAKE_RECORD  directory to write argv (NUL-separated), stdin, cwd and env into
++#   FAKE_RECORD  directory to write its pid, argv (NUL-separated), stdin, cwd and env into
+ #   FAKE_STREAM  stream-json file to print on stdout
+-#   FAKE_HANG    when 1, wait after printing until killed
++#   FAKE_HANG    when 1, wait after printing until killed (keeping its pid)
++echo $$ > "$FAKE_RECORD/pid"
+ for arg in "$@"; do printf '%s\0' "$arg"; done > "$FAKE_RECORD/argv"
+ /bin/cat > "$FAKE_RECORD/stdin"
+ pwd -P > "$FAKE_RECORD/cwd"
+diff --git a/crates/assay-runner/tests/it/headless.rs b/crates/assay-runner/tests/it/headless.rs
+index c78d3a6..0735ee9 100644
+--- a/crates/assay-runner/tests/it/headless.rs
++++ b/crates/assay-runner/tests/it/headless.rs
+@@ -9,7 +9,7 @@ use std::io;
+ use std::path::{Path, PathBuf};
+ use std::time::Duration;
+ 
+-use assay_app::{ModelOutcome, ModelRunner};
++use assay_app::{ModelOutcome, ModelRunner, Prompt};
+ use assay_domain::Aeu;
+ use assay_runner::{
+     ClaudeHeadless, EnvVarError, HeadlessEnv, HeadlessError, Workdir, WorkdirError,
+@@ -17,21 +17,27 @@ use assay_runner::{
+ use serde_json::Value;
+ use tempfile::TempDir;
+ 
+-use crate::support::{BUDGET, call, fixtures_dir, stream_path};
++use crate::support::{BUDGET, RecordingKill, call, fixtures_dir, stream_path};
+ 
+ const TOKEN: &str = "sk-ant-oat01-test-token";
+ 
+-/// A scratch directory with an empty working directory and a directory for the fake's records.
++/// A scratch directory with an empty working directory and a directory for the fake's records,
++/// and the group killer its runners use.
+ struct Scene {
+     root: TempDir,
++    killer: RecordingKill,
+ }
+ 
+ impl Scene {
+     fn new() -> Result<Self, Box<dyn Error>> {
++        Self::with_killer(RecordingKill::default())
++    }
++
++    fn with_killer(killer: RecordingKill) -> Result<Self, Box<dyn Error>> {
+         let root = tempfile::tempdir()?;
+         fs::create_dir(root.path().join("empty"))?;
+         fs::create_dir(root.path().join("record"))?;
+-        Ok(Self { root })
++        Ok(Self { root, killer })
+     }
+ 
+     fn workdir(&self) -> PathBuf {
+@@ -43,7 +49,11 @@ impl Scene {
+     }
+ 
+     /// A runner whose fake `claude` prints the stream `name`, then hangs when `hang`.
+-    fn runner(&self, name: &str, hang: bool) -> Result<ClaudeHeadless, Box<dyn Error>> {
++    fn runner(
++        &self,
++        name: &str,
++        hang: bool,
++    ) -> Result<ClaudeHeadless<&RecordingKill>, Box<dyn Error>> {
+         let mut env = HeadlessEnv::new(TOKEN);
+         env.pass("FAKE_RECORD", self.root.path().join("record"))?;
+         env.pass("FAKE_STREAM", stream_path(name))?;
+@@ -54,9 +64,15 @@ impl Scene {
+             fixtures_dir().join("fake-claude"),
+             Workdir::new(self.workdir())?,
+             env,
++            &self.killer,
+         ))
+     }
+ 
++    /// The pid of the fake as it recorded it, which is also its process group's id.
++    fn pid(&self) -> Result<u32, Box<dyn Error>> {
++        Ok(fs::read_to_string(self.record("pid"))?.trim().parse()?)
++    }
++
+     /// The arguments the fake was started with.
+     fn argv(&self) -> Result<Vec<String>, Box<dyn Error>> {
+         let raw = String::from_utf8(fs::read(self.record("argv"))?)?;
+@@ -270,6 +286,88 @@ fn output_past_the_cap_is_malformed_and_charged_the_cap() -> Result<(), Box<dyn
+     Ok(())
+ }
+ 
++#[test]
++#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
++fn a_timeout_kills_the_clis_whole_group_before_the_cli_is_reaped() -> Result<(), Box<dyn Error>> {
++    let scene = Scene::new()?;
++    let mut call = call()?;
++    call.timeout = Duration::from_millis(300);
++
++    scene.runner("partial", true)?.run(&call)?;
++
++    // The CLI leads its own group, so the group id is its pid, which cannot be reused while
++    // the CLI is unreaped.
++    assert_eq!(scene.killer.take_asked(), [(scene.pid()?, true)]);
++    Ok(())
++}
++
++#[test]
++#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
++fn a_transcript_past_the_cap_kills_the_clis_whole_group() -> Result<(), Box<dyn Error>> {
++    let scene = Scene::new()?;
++    // The stand-in keeps running after it prints, so only the cap can stop it.
++    let runner = scene.runner("ok", true)?.with_max_output_bytes(64);
++
++    let result = runner.run(&call()?)?;
++
++    assert_eq!(
++        (result.outcome, scene.killer.take_asked()),
++        (ModelOutcome::Malformed, vec![(scene.pid()?, true)])
++    );
++    Ok(())
++}
++
++#[test]
++#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
++fn a_cli_that_exits_has_whatever_it_left_in_its_group_killed() -> Result<(), Box<dyn Error>> {
++    let scene = Scene::new()?;
++
++    let result = scene.runner("ok", false)?.run(&call()?)?;
++
++    let asked: Vec<u32> = scene
++        .killer
++        .take_asked()
++        .into_iter()
++        .map(|(group, _)| group)
++        .collect();
++    assert_matches!(result.outcome, ModelOutcome::Ok(_));
++    assert_eq!(asked, [scene.pid()?]);
++    Ok(())
++}
++
++#[test]
++#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
++fn a_group_that_cannot_be_killed_is_a_kill_error_that_may_have_run() -> Result<(), Box<dyn Error>> {
++    let scene = Scene::with_killer(RecordingKill::failing())?;
++
++    let failed = scene.runner("ok", false)?.run(&call()?);
++
++    assert_matches!(&failed, Err(error @ HeadlessError::Kill(_)) if error.may_have_run());
++    Ok(())
++}
++
++#[test]
++#[cfg_attr(miri, ignore = "spawns the stand-in claude; Miri cannot run processes")]
++fn a_prompt_larger_than_one_argument_reaches_claude_whole() -> Result<(), Box<dyn Error>> {
++    // Linux caps one argument at 128 KiB (MAX_ARG_STRLEN), the reason for wi-9fe37e.
++    let scene = Scene::new()?;
++    let mut call = call()?;
++    let text: String = "Context pack line.\n"
++        .chars()
++        .cycle()
++        .take(256 * 1024)
++        .collect();
++    call.user_prompt = Prompt::new(text)?;
++
++    scene.runner("ok", false)?.run(&call)?;
++
++    assert!(
++        fs::read(scene.record("stdin"))? == call.user_prompt.as_str().as_bytes(),
++        "the 256 KiB prompt must reach stdin byte for byte"
++    );
++    Ok(())
++}
++
+ #[test]
+ fn a_working_directory_that_is_no_longer_empty_stops_the_call() -> Result<(), Box<dyn Error>> {
+     let scene = Scene::new()?;
+@@ -323,6 +421,7 @@ fn a_program_that_cannot_start_is_a_spawn_error_that_never_ran() -> Result<(), B
+         scene.root.path().join("absent-claude"),
+         Workdir::new(scene.workdir())?,
+         HeadlessEnv::new(TOKEN),
++        &scene.killer,
+     );
+ 
+     let failed = runner.run(&call()?);
+diff --git a/crates/assay-runner/tests/it/support.rs b/crates/assay-runner/tests/it/support.rs
+index 522859f..2999475 100644
+--- a/crates/assay-runner/tests/it/support.rs
++++ b/crates/assay-runner/tests/it/support.rs
+@@ -1,13 +1,53 @@
+ //! Fixtures and a model call to run them under.
+ 
++use std::cell::RefCell;
+ use std::error::Error;
+ use std::fs;
++use std::io;
+ use std::num::NonZeroU8;
+-use std::path::PathBuf;
++use std::path::{Path, PathBuf};
+ use std::time::Duration;
+ 
+ use assay_app::{ModelCall, Prompt};
+ use assay_domain::Aeu;
++use assay_runner::GroupKill;
++
++/// A [`GroupKill`] that signals nothing: it records each group it is asked to kill, with
++/// whether the group's leader still held its pid (was not yet reaped) at that moment, and
++/// fails when told to.
++#[derive(Debug, Default)]
++pub(crate) struct RecordingKill {
++    fail: bool,
++    // Interior mutability: `GroupKill::kill_group` takes `&self`, as `ModelRunner::run` does.
++    asked: RefCell<Vec<(u32, bool)>>,
++}
++
++impl RecordingKill {
++    /// A killer whose every kill fails, as when the group outlives its grace.
++    pub(crate) fn failing() -> Self {
++        Self {
++            fail: true,
++            asked: RefCell::default(),
++        }
++    }
++
++    /// Each group asked for since the last call, with whether its leader was still unreaped.
++    pub(crate) fn take_asked(&self) -> Vec<(u32, bool)> {
++        self.asked.take()
++    }
++}
++
++impl GroupKill for RecordingKill {
++    fn kill_group(&self, group: u32) -> io::Result<()> {
++        let leader_unreaped = Path::new(&format!("/proc/{group}")).exists();
++        self.asked.borrow_mut().push((group, leader_unreaped));
++        if self.fail {
++            Err(io::Error::other("scripted: the group is still alive"))
++        } else {
++            Ok(())
++        }
++    }
++}
+ 
+ /// The cap every test call runs under: 0.74 AEU, the lite tier's.
+ pub(crate) const BUDGET: Aeu = Aeu::from_micros(740_000);

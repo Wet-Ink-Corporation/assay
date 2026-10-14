@@ -1,0 +1,2321 @@
+diff --git a/crates/assay-app/AGENTS.md b/crates/assay-app/AGENTS.md
+index 61bd881..a9460ab 100644
+--- a/crates/assay-app/AGENTS.md
++++ b/crates/assay-app/AGENTS.md
+@@ -14,10 +14,11 @@ application. Orchestrates domain decisions and effects through ports. No concret
+ ## Public surface
+ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`:
+ - `Contract`, `ContractValidator` (`new`, `read`), `SchemaViolation` (`instance_path`, `keyword`, `message`), `MAX_DOCUMENT_BYTES`: validate-on-read for the versioned contracts, against the schemas in `schemas/` embedded with `include_str!` (`src/contract.rs`). `read` refuses a document over `MAX_DOCUMENT_BYTES` unparsed and any object that repeats a key (`src/contract/strict.rs`); its callers still read untrusted input through a byte limit and act only on the returned `Value`.
+-- `PluginsConfig` (`FromStr`; `assay`, `binary_globs`, `plugins`), `AssaySettings` and its enums, `Plugin`, `Adapter` (`Temper`, `WeighIn`, `Exec`), `Step`, `Argv`, `GateName`, `Pin`, `CommitId`, `Sha256Digest`, `ExactVersion`, `DEFAULT_TIMEOUT_SECS`, `MAX_TIMEOUT_SECS`: base `.assay/plugins.toml`, parsed in-process (`src/config.rs`).
++- `PluginsConfig` (`FromStr`; `assay`, `binary_globs`, `plugins`), `AssaySettings` and its enums, `Plugin`, `Adapter` (`Temper`, `WeighIn`, `Exec`), `Step`, `Argv`, `GateName`, `Pin`, `CommitId` (`FromStr`, `ParseCommitIdError`), `Sha256Digest`, `ExactVersion`, `DEFAULT_TIMEOUT_SECS`, `MAX_TIMEOUT_SECS`: base `.assay/plugins.toml`, parsed in-process (`src/config.rs`).
+ - `parse_globs` and `GlobsConfigError`: base `.assay/globs.toml` (lists `risk`, `trust`, `exclude`, `docs`, nothing else) into the domain's `RepoGlobs` (`src/config/globs.rs`).
+ - Tiering inputs that need parsing (`src/tiering.rs`, 04 §2.2): `manifest_trust_keys(base, head)`, the `ManifestKey`s whose values differ between two `Cargo.toml` texts (`Unparseable` if either side fails to parse; a missing side is an empty manifest), `exec_roots(manifest_path, text)`, the domain `ExecRoot`s a manifest declares (`[package]` or legacy `[project]`): `BuildSources` for a default `build.rs`, `build = true` or `build = "build.rs"`, a custom build script's directory, the crate's directory for any other non-`false` `build` value, and a proc-macro crate's directory plus its `[lib] path` and that file's directory (proc-macro by `proc-macro`, `proc_macro` or `crate-type`); its whole directory if it does not parse, and `Everything` for a path outside the repository or a root manifest's directory; `manifest_exec_roots(manifest_path, base, head)`, the roots of both sides plus the manifest itself when they differ, and `baseline_change(base, head)`, whether `.claude/temper-baseline.json` only lowered counts with every other top-level key but `updated` unchanged.
+ - Exec surface from the package sets (`src/tiering/packages.rs`, 04 §2.2, #65): `PackageSet` (`from_metadata(json, root, symlinks)`, reading `cargo metadata --format-version 1` output produced in the copy at `root`, with that tree's `Symlink`s (`path`, resolved `target`) as the manifest copy reports them, required so they cannot be left out; `Default` is a tree with no manifest at all) and `exec_surface(base, head, declared) -> ExecSurface { packages, exec_roots }`, the domain's `PackageDiff` and every `ExecRoot` (`declared`, the manifests' roots, then the build-time path crates), `None` for a side whose metadata could not be computed.
++- The `plan` use case (S1, 04 §2, 03 §4, `src/plan.rs`): `plan(&PlanRequest, &impl PullRequestObjects, &mut impl NonceSource, &ContractValidator) -> Result<PlannedRun, PlanError>`. `PlanRequest` (`PullRequestEvent` with the pinned `base_sha`/`head_sha` as `CommitId`s, `RunUid`, `RestFiles` of `RestFile`s, `Option<PackageSet>` per side, `IncludeTargets` (`Scanned`, `NotScanned`), the prompt bundle's `ContentHash`); `PlannedRun` (`json`, the document exactly as validated; `run_key`, an `EvidenceKey`; `tiering`; `artifact_names` by `ArtifactJob`). Ports: `PullRequestObjects` (`changed_files(base, head) -> ChangedFiles` (`Listed`, `TooSlow`), `list(commit, path) -> Vec<TreeEntry>` with `EntryKind`, `read(&[&TreeEntry])`) and `NonceSource` (`nonce() -> ArtifactNonce`, 32 lowercase hex, `ParseNonceError`). `REST_FILE_CAP` (3,000). No ledger port.
+ - The `GateRunner` port (`run(&mut self, &Plugin, GateJob) -> Result<GateRun, Self::Error>`), `GateRun`, `Termination`, `GateDocument`, `GateJob`, `BuildJob`, and the use-case functions `run_gates` and `account_for_required`, which produce `GateReport`s with a `GateOutcome` (`Concluded(Conclusion)` or `Error(GateError)`) (`src/gate.rs`).
+ - The `ModelRunner` port (03 §7, `src/model_runner.rs`): `run(&self, &ModelCall) -> Result<ModelResult, Self::Error>`, with `ModelCall`, `Prompt` (`InvalidPrompt`, `PromptError`), `ModelResult` (outcome, cost in `Aeu`, rate limits), `ModelOutcome` (`Ok(Structured)`, `BudgetExhausted`, `TurnsExhausted`, `Timeout`, `QuotaExhausted`, `Malformed`), `RateLimitObserved` (whose status is the domain's `RateLimitStatus`); and the retry policy `run_with_retry` (`ModelAttempts`, `RetryError`).
+ - The reviewer prompt bundle (04 §3, `src/prompt_bundle.rs`): `PromptBundle` (`new`, `hash`, `system_prompt`, `instruction`, `user_prompt`) over `BundleFiles` read by the caller from the paths `BundleFile::path` names under `plugin/prompts/`, refused with `InvalidBundle` (`BundleFileError::{Empty, Nul}`); `Role` (`Combined`, `CombinedMicro`) with the roster's `max_turns`, `cap` and `severity_ceiling`.
+@@ -33,6 +34,7 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
+ - A model call is retried only when its first attempt is `Malformed`, and only once; every attempt's cost is reported, including a malformed first attempt whose retry failed (`RetryError::Retry`).
+ - Every role gets the same system prompt (one file, so the prompt cache is shared), and its user prompt is the context pack, a blank line, then its instruction. The bundle hash is the domain's `ContentHash` over every bundle file under its versioned path, so it changes when any byte, name or version does.
+ - Exec surface fails closed: a side without a package set gives `PackageDiff::Unavailable` and `[ExecRoot::Everything]`; a side without a resolve graph, or a build-time path crate at the copy's root or outside it, gives `Everything`. A new or bumped package (path packages included, by version) with a `custom-build` or `proc-macro` target, or an unchanged one gaining either, is exec surface; so is a package whose name is in base only from another source, a new package from neither crates.io nor a path (git, any other registry), a change to a package's `[build-dependencies]` declarations against its base counterpart (the same package, else the first of the same name and source, so two unchanged versions are each compared with themselves) and a new `path` declaration of any kind. Only a new or bumped crates.io package (`registry+https://github.com/rust-lang/crates.io-index` or `sparse+https://index.crates.io/`) with none of these is `Registry`; any other change is `Lockfile`, including a removed package, matched by name, version and source (a dropped version of a name with several), unless a new package of its name already reports it. Build-time path crates are those reached from a build edge or a proc-macro crate (itself included), transitively over normal and build edges (never development edges; a resolve edge with no named kind counts as normal and build), at base or at head; each contributes its directory and, for a library or proc-macro target whose `src_path` lies outside it (`[lib] path`), that file and its directory, with `Everything` when either is outside the copy or at its root (real cargo reports an out-of-crate `src_path` unnormalised, `<crate>/../shared/lib.rs`, which therefore reads as outside: `Everything`). Any root, declared or build-time, that holds a symlink of either side whose resolved target it does not hold makes the roots `Everything` (wi-b5affa option b: refused, not modelled; targets are not followed further); cargo's resolve graph has already resolved `workspace = true`, renames, `[patch]` and target tables, and anything it cannot resolve fails the whole side.
++- `plan` reads base `.assay/` only at the request's `base_sha` and the trees only at its two pinned SHAs. It refuses rather than models (wi-b5affa): a diff past its cap, a REST list over 3,000, below the cap shorter or longer than `changed_files`, naming a path twice, or naming different paths than git (both sides of every rename, compared as sets; a truncated list only needs to be a subset), a base `.assay/` without `plugins.toml` or with a symlink or submodule, a `plugins.toml` or `globs.toml` that is not UTF-8 or does not parse, a port that returns the wrong number of blobs, a repeated nonce, and a document that fails `run-1.schema.json`. A manifest that is a symlink, submodule or not UTF-8 reads as unparseable; `IncludeTargets::NotScanned` makes every changed path an include target (no `trivial`); a missing package set is exec surface. A draft gets no roles and no shards but keeps its required roles. `run_key` (the evidence key, 02 §3: repo, pr, head and base SHA, `config_hash` over every `.assay/` file, assay digest, Claude CLI version, prompt bundle hash, built-in pins) never includes `run_uid`.
+ - Validation errors never quote the rejected value (it is untrusted text), nor an object key the schema does not name: such keys are reported as `*`, and unexpected properties are counted, not listed (`src/contract/violation.rs`).
+ 
+ ## Errors
+@@ -41,6 +43,7 @@ Workspace-internal, not published (`publish = false`). Re-exported from `lib.rs`
+ - `ConfigError` (`Syntax` with the opaque `TomlError`, `Digest`, `Version`, `Pin` with `ParsePinError::{Tag, UnknownScheme}`, `Name`, `DuplicateName`, `UnknownAdapter`, `MissingKey`, `UnexpectedKey`, `Job`, `Command`, `Timeout`): plugins.toml was refused. The file is from the protected base, so messages may quote it.
+ - `GlobsConfigError` (`Syntax` with the opaque `TomlError`, `Glob` naming the list and pattern): globs.toml was refused. `manifest_trust_keys`, `exec_roots`, `manifest_exec_roots` and `baseline_change` cannot fail: what does not parse reads as changed.
+ - `MetadataError` (`Syntax` with line and column, `Version`, `UnknownPackage`): `cargo metadata` output was refused; the caller passes `None` for that side to `exec_surface`, which fails closed. `exec_surface` cannot fail.
++- `PlanError<O, N>` (`Objects`, `ShortRead`, `DiffTooSlow`, `FileList` with `FileListError::{OverCap, Incomplete, Repeated, Mismatch}`, `BaseConfig` with `BaseConfigError::{Missing, NotARegularFile, NotUtf8, Plugins, Globs}`, `Nonce`, `RepeatedNonce`, `Encode`, `Invalid`): no run description; every variant fails the run. `O` and `N` are the ports' error types. A mismatch reports counts and the first differing path, `{:?}`-escaped.
+ - `GateError` is an outcome, not a failure of the use case: a `GateRunner` error becomes `GateError::NotRun`, with the runner's message kept in `GateReport::cause`.
+ - Use cases to come: one `thiserror` enum each; port failures surface through each port's associated error type.
+ 
+@@ -70,4 +73,5 @@ Integration tests in `tests/it/` drive use cases against in-memory fakes of the
+ | 2026-10-12 | Validation review round 7 (#86): the link checks lowercase ASCII only (full lowercasing turned U+212A into `k`, past the non-ASCII URL check). Fences GitHub renders live (`mermaid`, `math`, `geojson`, `topojson`, `stl`) still close as blocks but their lines stay prose; `\href` and `\url` anywhere are `Url` (wi-b5affa). | H-16 | #86 review round 7 |
+ | 2026-10-12 | Validation review round 8 (#86): the round-7 denylist of live fences is inverted into an allowlist (wi-b5affa), closing the class: a closed fence is removed as code only if its info string is empty or one allowlisted inert language; every other fence, and an unclosed one, is kept raw as prose (no code span stripped). An info string with `&` or `\` counts as a suggestion fence. | H-16 | #86 review round 8 |
+ | 2026-10-12 | Exec surface (#65): `cargo metadata` JSON is read here (a DTO in `src/tiering/packages/metadata.rs`, `serde_json`, already a dependency) because the diff and the build-time closure are tiering rules, pure and testable with fixtures; the gate adapter only runs cargo. The closure reads cargo's resolve graph rather than the manifests, so `workspace = true`, renames, `[patch]` and target tables resolve as cargo resolves them, and an unresolvable one fails its whole side (`Unavailable`, `Everything`). No port yet: no use case consumes it until the `plan`/`gates-static` command. Spec readings for Weigh-In, each the fail-closed one: a path package's version is part of its identity, so a member with a build script bumping its version is exec surface; a new git package is `SourceChanged`; a new `path` declaration of any kind (development included) is `PathDependency`; a new path package without build targets (a new member) is `Lockfile`. The #50 pin `path_build_dependency_edited_in_place_awaits_issue_65` moved here as `path_build_dependency_edited_in_place_is_exec_surface` (issue #65's comment). | ARC-02, ARC-03, OUT-01, H-16 | #65; Weigh-In defaults, owner may reopen |
++| 2026-10-12 | `plan` (#55) is a use case over two ports (`PullRequestObjects`, `NonceSource`); the REST list, package sets, include targets and prompt bundle hash are request values, because their producers (#53's gh adapter, #65's pinned cargo, #64's scan) belong to other jobs or stories. The binary subcommand is left to the stories that provide those inputs (#53, #60). Fail-closed spec readings, open to the owner: rename drift is absorbed by comparing path sets; a truncated REST list must be a subset of git's; a diff past its cap fails `plan` (there is no list to assert); a draft keeps its required roles; `config_hash` covers every `.assay/` file; artifact names are `assay-<job>-<128-bit nonce>` for seven jobs. Contract change (issue DoD): `run-1.schema.json` gains `needs-split` and a plugin's `pin` xor `job`. | ARC-03, H-16, wi-b5affa | #55; Weigh-In defaults, owner may reopen |
+ | 2026-10-11 | `ContractValidator` is a value built once by the composition root, not a lazily initialised static: no hidden global state, and the fallible compile step surfaces as a typed error. | OWN-11, ERR-01 | Story #47 |
+diff --git a/crates/assay-app/src/config.rs b/crates/assay-app/src/config.rs
+index 0d6eb55..689b4c4 100644
+--- a/crates/assay-app/src/config.rs
++++ b/crates/assay-app/src/config.rs
+@@ -23,7 +23,9 @@ use self::dto::{AssayDto, FileDto, PluginDto, StepDto};
+ pub use self::error::{ConfigError, TomlError};
+ pub use self::globs::{GlobsConfigError, parse_globs};
+ pub use self::name::GateName;
+-pub use self::pin::{CommitId, ParseDigestError, ParsePinError, Pin, Sha256Digest};
++pub use self::pin::{
++    CommitId, ParseCommitIdError, ParseDigestError, ParsePinError, Pin, Sha256Digest,
++};
+ use crate::gate::BuildJob;
+ 
+ /// A gate's timeout when `timeout_s` is omitted, in seconds.
+diff --git a/crates/assay-app/src/config/pin.rs b/crates/assay-app/src/config/pin.rs
+index a69f505..2ba49bf 100644
+--- a/crates/assay-app/src/config/pin.rs
++++ b/crates/assay-app/src/config/pin.rs
+@@ -58,6 +58,19 @@ impl CommitId {
+     }
+ }
+ 
++impl FromStr for CommitId {
++    type Err = ParseCommitIdError;
++
++    /// Parses a full commit id; an abbreviated, uppercase or prefixed one never parses.
++    fn from_str(text: &str) -> Result<Self, Self::Err> {
++        if is_lower_hex(text, COMMIT_HEX_LEN) {
++            Ok(Self(text.to_owned()))
++        } else {
++            Err(ParseCommitIdError)
++        }
++    }
++}
++
+ impl fmt::Display for CommitId {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         f.write_str(&self.0)
+@@ -116,6 +129,11 @@ pub enum ParsePinError {
+     UnknownScheme,
+ }
+ 
++/// A commit id that is not 40 lowercase hexadecimal digits, such as a branch name.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
++#[error("a commit id must be 40 lowercase hexadecimal digits")]
++pub struct ParseCommitIdError;
++
+ /// A digest that is not `sha256:<64 lowercase hex>`, such as a tag.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+ #[error("a digest must be `sha256:` and 64 lowercase hexadecimal digits, never a tag")]
+diff --git a/crates/assay-app/src/lib.rs b/crates/assay-app/src/lib.rs
+index af823aa..153f910 100644
+--- a/crates/assay-app/src/lib.rs
++++ b/crates/assay-app/src/lib.rs
+@@ -10,14 +10,15 @@ mod config;
+ mod contract;
+ mod gate;
+ mod model_runner;
++mod plan;
+ mod prompt_bundle;
+ mod tiering;
+ 
+ pub use config::{
+     Adapter, Argv, AssaySettings, CommitId, ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion,
+-    GateName, GlobsConfigError, InfraFailurePolicy, MAX_TIMEOUT_SECS, ParseDigestError,
+-    ParsePinError, Pin, Plugin, PluginsConfig, PrClass, Promotion, RunnerKind, Sha256Digest, Step,
+-    TomlError, parse_globs,
++    GateName, GlobsConfigError, InfraFailurePolicy, MAX_TIMEOUT_SECS, ParseCommitIdError,
++    ParseDigestError, ParsePinError, Pin, Plugin, PluginsConfig, PrClass, Promotion, RunnerKind,
++    Sha256Digest, Step, TomlError, parse_globs,
+ };
+ pub use contract::{
+     Contract, ContractSchemaError, ContractValidator, MAX_DOCUMENT_BYTES, ReadContractError,
+@@ -31,6 +32,12 @@ pub use model_runner::{
+     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
+     PromptError, RateLimitObserved, RetryError, Structured, run_with_retry,
+ };
++pub use plan::{
++    ArtifactJob, ArtifactNonce, BaseConfigError, ChangedFiles, EntryKind, EvidenceKey,
++    FileListError, IncludeTargets, NonceSource, ParseNonceError, PlanError, PlanRequest,
++    PlannedRun, PullRequestEvent, PullRequestObjects, REST_FILE_CAP, RestFile, RestFiles,
++    TreeEntry, plan,
++};
+ pub use prompt_bundle::{
+     BundleFile, BundleFileError, BundleFiles, InvalidBundle, PromptBundle, Role,
+ };
+diff --git a/crates/assay-app/src/plan.rs b/crates/assay-app/src/plan.rs
+new file mode 100644
+index 0000000..31fa890
+--- /dev/null
++++ b/crates/assay-app/src/plan.rs
+@@ -0,0 +1,259 @@
++//! The `plan` use case (S1, `docs/architecture/04-pipeline.md` §2): the run description
++//! `assay.run/1` (`docs/architecture/03-contracts.md` §4) of one PR head.
++//!
++//! It reads base `.assay/` at the pinned `base_sha`, never at head; lists the changed files
++//! with git over `base_sha...head_sha` and asserts them against GitHub's REST list; tiers the
++//! change; names each job's artifact with its own nonce; and validates the document before
++//! returning it. It has no ledger port: `admit` owns the ledger. Anything it cannot read or
++//! reconcile is refused, loudly, rather than modelled (wi-b5affa).
++
++mod base_config;
++mod changes;
++mod document;
++mod nonce;
++mod objects;
++mod rest;
++
++use std::collections::{BTreeMap, BTreeSet};
++use std::num::NonZeroU64;
++
++use assay_domain::{ContentHash, RunUid, Tiering, tier};
++use thiserror::Error;
++
++pub use self::base_config::BaseConfigError;
++pub use self::document::{ArtifactJob, EvidenceKey};
++pub use self::nonce::{ArtifactNonce, NonceSource, ParseNonceError};
++pub use self::objects::{ChangedFiles, EntryKind, PullRequestObjects, TreeEntry};
++pub use self::rest::{FileListError, REST_FILE_CAP, RestFile, RestFiles};
++use crate::config::CommitId;
++use crate::contract::{Contract, ContractValidator, ReadContractError};
++use crate::tiering::PackageSet;
++
++/// The PR as the triggering event names it.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct PullRequestEvent {
++    /// The repository, `owner/name`.
++    pub repo: String,
++    /// The PR number.
++    pub number: NonZeroU64,
++    /// The base commit the run is pinned to; base config is read here.
++    pub base_sha: CommitId,
++    /// The head commit the run is pinned to.
++    pub head_sha: CommitId,
++    /// The base branch, which `decide` re-fetches (R3-03).
++    pub base_ref: String,
++    /// Whether the PR is a draft: gates only (04 §2.4).
++    pub draft: bool,
++}
++
++/// Which files `.rs` sources read at compile time (#64's `syn` scan).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum IncludeTargets {
++    /// The scan ran: these canonical repo-relative paths, at base or head.
++    Scanned(Vec<String>),
++    /// No scan ran: every changed path may be a target, so no change is `trivial`.
++    NotScanned,
++}
++
++/// Everything `plan` is given besides the PR's objects.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct PlanRequest {
++    /// The PR and its pinned commits.
++    pub pull_request: PullRequestEvent,
++    /// This workflow run; it keys leases and ledger records, never evidence reuse.
++    pub run_uid: RunUid,
++    /// GitHub's list of the PR's files, which git's must match.
++    pub rest_files: RestFiles,
++    /// The base commit's package set (#65); `None` when it could not be computed, which is
++    /// exec surface.
++    pub base_packages: Option<PackageSet>,
++    /// The head commit's package set; `None` as for the base.
++    pub head_packages: Option<PackageSet>,
++    /// The compile-time include targets.
++    pub include_targets: IncludeTargets,
++    /// The reviewer prompt bundle's hash (04 §3), part of the evidence key.
++    pub prompt_bundle: ContentHash,
++}
++
++/// A validated `assay.run/1` document and what it was computed from.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct PlannedRun {
++    json: Vec<u8>,
++    run_key: EvidenceKey,
++    tiering: Tiering,
++    artifact_names: BTreeMap<ArtifactJob, String>,
++}
++
++impl PlannedRun {
++    /// The document, exactly as validated against `run-1.schema.json`.
++    #[must_use]
++    pub fn json(&self) -> &[u8] {
++        &self.json
++    }
++
++    /// The evidence key the document carries as `run_key`: for evidence reuse only.
++    #[must_use]
++    pub const fn run_key(&self) -> EvidenceKey {
++        self.run_key
++    }
++
++    /// The tiering the document records.
++    #[must_use]
++    pub const fn tiering(&self) -> &Tiering {
++        &self.tiering
++    }
++
++    /// Each job's artifact name.
++    #[must_use]
++    pub const fn artifact_names(&self) -> &BTreeMap<ArtifactJob, String> {
++        &self.artifact_names
++    }
++}
++
++/// Why no run description was written. Every variant fails the run.
++#[derive(Debug, Error)]
++pub enum PlanError<O, N> {
++    /// The PR's objects could not be read.
++    #[error("could not read the pull request's objects")]
++    Objects(#[source] O),
++    /// The objects port returned a different number of blobs than entries asked for.
++    #[error("asked for {asked} blobs, read {returned}")]
++    ShortRead {
++        /// Entries asked for.
++        asked: usize,
++        /// Blobs returned.
++        returned: usize,
++    },
++    /// git did not list the changed files within its cap: there is no file list to plan, and
++    /// the PR needs a split.
++    #[error("git did not list the changed files within its cap; the PR needs a split")]
++    DiffTooSlow,
++    /// The git and REST file lists disagree, or the REST list is not usable.
++    #[error("the PR's file list could not be confirmed")]
++    FileList(#[source] FileListError),
++    /// Base `.assay/` was refused.
++    #[error("the base configuration was refused")]
++    BaseConfig(#[source] BaseConfigError),
++    /// No nonce could be drawn.
++    #[error("could not draw an artifact nonce")]
++    Nonce(#[source] N),
++    /// The nonce source repeated itself, so artifact names would not be unpredictable.
++    #[error("the nonce source repeated a nonce, for the {} artifact", job.name())]
++    RepeatedNonce {
++        /// The job whose nonce was a repeat.
++        job: ArtifactJob,
++    },
++    /// The document could not be encoded.
++    #[error("could not encode the run description")]
++    Encode(#[source] serde_json::Error),
++    /// The document failed its own schema: a defect in `plan`, never written out.
++    #[error("the run description failed its schema")]
++    Invalid(#[source] ReadContractError),
++}
++
++/// Plans one PR head: `request`'s PR read through `objects`, artifact nonces from `nonces`,
++/// and the document checked by `validator` before it is returned.
++///
++/// # Examples
++///
++/// ```
++/// use assay_app::{
++///     ContractValidator, NonceSource, PlanError, PlanRequest, PullRequestObjects, plan,
++/// };
++///
++/// # fn demo<O: PullRequestObjects, N: NonceSource>(
++/// #     request: &PlanRequest,
++/// #     objects: &O,
++/// #     nonces: &mut N,
++/// #     validator: &ContractValidator,
++/// # ) -> Result<(), PlanError<O::Error, N::Error>> {
++/// let run = plan(request, objects, nonces, validator)?;
++/// // The bytes to upload as the `plan` artifact; its digest goes in the job's outputs.
++/// let document: &[u8] = run.json();
++/// # Ok(())
++/// # }
++/// ```
++///
++/// # Errors
++///
++/// [`PlanError`]: the objects could not be read ([`PlanError::Objects`],
++/// [`PlanError::ShortRead`]), git ran past its cap ([`PlanError::DiffTooSlow`]), the file lists
++/// disagree ([`PlanError::FileList`]), base `.assay/` was refused ([`PlanError::BaseConfig`]),
++/// no fresh nonce could be drawn ([`PlanError::Nonce`], [`PlanError::RepeatedNonce`]), or the
++/// document could not be written valid ([`PlanError::Encode`], [`PlanError::Invalid`]).
++pub fn plan<O: PullRequestObjects, N: NonceSource>(
++    request: &PlanRequest,
++    objects: &O,
++    nonces: &mut N,
++    validator: &ContractValidator,
++) -> Result<PlannedRun, PlanError<O::Error, N::Error>> {
++    let pull_request = &request.pull_request;
++    let files = match objects
++        .changed_files(&pull_request.base_sha, &pull_request.head_sha)
++        .map_err(PlanError::Objects)?
++    {
++        ChangedFiles::Listed(files) => files,
++        ChangedFiles::TooSlow => return Err(PlanError::DiffTooSlow),
++    };
++    rest::check(&request.rest_files, &files).map_err(PlanError::FileList)?;
++    let config = base_config::read(objects, &pull_request.base_sha)?;
++    let change_set = changes::change_set(objects, request, files)?;
++    let tiering = tier(&config.globs, &change_set);
++    let artifact_names = artifact_names(nonces)?;
++    let run_key = EvidenceKey::new(pull_request, &config, request.prompt_bundle);
++    let json = document::to_json(&document::Inputs {
++        pull_request,
++        run_uid: request.run_uid,
++        run_key,
++        config: &config,
++        tiering: &tiering,
++        files: &change_set.files,
++        artifact_names: &artifact_names,
++    })
++    .map_err(PlanError::Encode)?;
++    validator
++        .read(Contract::Run, &json)
++        .map_err(PlanError::Invalid)?;
++    Ok(PlannedRun {
++        json,
++        run_key,
++        tiering,
++        artifact_names,
++    })
++}
++
++/// One fresh nonce per job, named `assay-<job>-<nonce>`.
++fn artifact_names<N: NonceSource, O>(
++    nonces: &mut N,
++) -> Result<BTreeMap<ArtifactJob, String>, PlanError<O, N::Error>> {
++    let mut seen = BTreeSet::new();
++    let mut names = BTreeMap::new();
++    for job in ArtifactJob::ALL {
++        let nonce = nonces.nonce().map_err(PlanError::Nonce)?;
++        let name = format!("assay-{}-{nonce}", job.name());
++        if !seen.insert(nonce) {
++            return Err(PlanError::RepeatedNonce { job });
++        }
++        names.insert(job, name);
++    }
++    Ok(names)
++}
++
++/// Reads `entries` through `objects`, refusing a reply that is not one blob per entry.
++fn read_entries<O: PullRequestObjects, N>(
++    objects: &O,
++    entries: &[&TreeEntry],
++) -> Result<Vec<Vec<u8>>, PlanError<O::Error, N>> {
++    if entries.is_empty() {
++        return Ok(Vec::new());
++    }
++    let blobs = objects.read(entries).map_err(PlanError::Objects)?;
++    if blobs.len() == entries.len() {
++        Ok(blobs)
++    } else {
++        Err(PlanError::ShortRead {
++            asked: entries.len(),
++            returned: blobs.len(),
++        })
++    }
++}
+diff --git a/crates/assay-app/src/plan/base_config.rs b/crates/assay-app/src/plan/base_config.rs
+new file mode 100644
+index 0000000..9643682
+--- /dev/null
++++ b/crates/assay-app/src/plan/base_config.rs
+@@ -0,0 +1,109 @@
++//! Base `.assay/`, read at the pinned `base_sha` and never at head
++//! (`docs/architecture/03-contracts.md` §1): what a PR changes in it applies from the next PR.
++
++use assay_domain::{ContentHash, RepoGlobs};
++use thiserror::Error;
++
++use super::objects::{EntryKind, PullRequestObjects};
++use super::{PlanError, read_entries};
++use crate::config::{CommitId, ConfigError, GlobsConfigError, PluginsConfig, parse_globs};
++
++/// The base configuration directory.
++const CONFIG_DIR: &str = ".assay";
++/// The gates and repository settings; required.
++const PLUGINS: &str = ".assay/plugins.toml";
++/// The repository's glob additions; optional, and absent adds nothing.
++const GLOBS: &str = ".assay/globs.toml";
++
++/// Why the base configuration was refused. It comes from the protected base, so messages may
++/// name its paths.
++#[derive(Debug, Error)]
++pub enum BaseConfigError {
++    /// The base has no `.assay/plugins.toml`: no gate is known, so nothing can be planned.
++    #[error("the base has no {PLUGINS}")]
++    Missing,
++    /// An entry under `.assay/` is a symlink or submodule, which is refused rather than
++    /// followed (wi-b5affa).
++    #[error("{path} in the base is a {kind:?}, not a regular file")]
++    NotARegularFile {
++        /// The entry's path.
++        path: String,
++        /// What it is.
++        kind: EntryKind,
++    },
++    /// A file `plan` parses is not UTF-8.
++    #[error("{path} in the base is not UTF-8")]
++    NotUtf8 {
++        /// The file's path.
++        path: String,
++    },
++    /// `.assay/plugins.toml` was refused.
++    #[error("{PLUGINS} in the base was refused")]
++    Plugins(#[source] ConfigError),
++    /// `.assay/globs.toml` was refused.
++    #[error("{GLOBS} in the base was refused")]
++    Globs(#[source] GlobsConfigError),
++}
++
++/// What `plan` takes from base `.assay/`.
++#[derive(Debug)]
++pub(super) struct BaseConfig {
++    pub(super) plugins: PluginsConfig,
++    pub(super) globs: RepoGlobs,
++    /// Every file under `.assay/`, path and bytes in path order: the evidence key's
++    /// `config_hash` (02 §3), so any base config change makes evidence stale.
++    pub(super) hash: ContentHash,
++}
++
++/// Reads every file under `.assay/` at `base`, refusing any entry that is not a regular file,
++/// and parses `plugins.toml` and `globs.toml`.
++pub(super) fn read<O: PullRequestObjects, N>(
++    objects: &O,
++    base: &CommitId,
++) -> Result<BaseConfig, PlanError<O::Error, N>> {
++    let entries = objects
++        .list(base, Some(CONFIG_DIR))
++        .map_err(PlanError::Objects)?;
++    if let Some(entry) = entries.iter().find(|entry| entry.kind != EntryKind::File) {
++        return Err(PlanError::BaseConfig(BaseConfigError::NotARegularFile {
++            // The error owns the path it names.
++            path: entry.path.clone(),
++            kind: entry.kind,
++        }));
++    }
++    let borrowed: Vec<_> = entries.iter().collect();
++    let blobs = read_entries(objects, &borrowed)?;
++    let files: Vec<(&str, &[u8])> = entries
++        .iter()
++        .map(|entry| entry.path.as_str())
++        .zip(blobs.iter().map(Vec::as_slice))
++        .collect();
++    let text = |wanted: &str| -> Result<Option<&str>, BaseConfigError> {
++        files
++            .iter()
++            .find(|(path, _)| *path == wanted)
++            .map(|(path, bytes)| {
++                str::from_utf8(bytes).map_err(|_not_utf8| BaseConfigError::NotUtf8 {
++                    path: (*path).to_owned(),
++                })
++            })
++            .transpose()
++    };
++    let plugins = text(PLUGINS)
++        .map_err(PlanError::BaseConfig)?
++        .ok_or(PlanError::BaseConfig(BaseConfigError::Missing))?
++        .parse()
++        .map_err(|source| PlanError::BaseConfig(BaseConfigError::Plugins(source)))?;
++    let globs = text(GLOBS)
++        .map_err(PlanError::BaseConfig)?
++        .map(parse_globs)
++        .transpose()
++        .map_err(|source| PlanError::BaseConfig(BaseConfigError::Globs(source)))?
++        // No `globs.toml` adds nothing to the shipped lists (03 §1).
++        .unwrap_or_default();
++    Ok(BaseConfig {
++        plugins,
++        globs,
++        hash: ContentHash::of_files(files.iter().copied()),
++    })
++}
+diff --git a/crates/assay-app/src/plan/changes.rs b/crates/assay-app/src/plan/changes.rs
+new file mode 100644
+index 0000000..a398dcb
+--- /dev/null
++++ b/crates/assay-app/src/plan/changes.rs
+@@ -0,0 +1,153 @@
++//! The tiering inputs of one PR (`docs/architecture/04-pipeline.md` §2.2): manifests and the
++//! temper baseline read at both SHAs, and the exec surface from the package sets.
++
++use std::collections::{BTreeMap, BTreeSet};
++
++use assay_domain::{BaselineChange, ChangeSet, FileChange, ManifestTrustChange};
++
++use super::objects::{EntryKind, PullRequestObjects};
++use super::{IncludeTargets, PlanError, PlanRequest, read_entries};
++use crate::config::CommitId;
++use crate::tiering::{baseline_change, exec_surface, manifest_exec_roots, manifest_trust_keys};
++
++/// TOML that never parses: what a manifest reads as when it is a symlink, a submodule or not
++/// UTF-8, so it gets exactly the fail-closed treatment of an unparseable one (cargo would
++/// follow the symlink or refuse the file; `plan` does neither).
++const UNREADABLE_MANIFEST: &str = "[";
++
++/// The temper ratchet file (04 §2.2).
++const TEMPER_BASELINE: &str = ".claude/temper-baseline.json";
++
++/// Manifest texts by path at one commit.
++type Manifests = BTreeMap<String, String>;
++
++/// The tiering input for `files`: trust keys of every changed manifest, the exec roots of
++/// every manifest at either commit with the package-set diff, the include targets and the
++/// temper baseline's change.
++pub(super) fn change_set<O: PullRequestObjects, N>(
++    objects: &O,
++    request: &PlanRequest,
++    files: Vec<FileChange>,
++) -> Result<ChangeSet, PlanError<O::Error, N>> {
++    let pull_request = &request.pull_request;
++    let base = manifests(objects, &pull_request.base_sha)?;
++    let head = manifests(objects, &pull_request.head_sha)?;
++    let paths: BTreeSet<&str> = base.keys().chain(head.keys()).map(String::as_str).collect();
++    let declared: Vec<_> = paths
++        .iter()
++        .flat_map(|path| manifest_exec_roots(path, text(&base, path), text(&head, path)))
++        .collect();
++    let surface = exec_surface(
++        request.base_packages.as_ref(),
++        request.head_packages.as_ref(),
++        &declared,
++    );
++
++    let changed: BTreeSet<&str> = files.iter().flat_map(FileChange::sides).collect();
++    let manifest_changes = changed
++        .iter()
++        .filter(|path| is_manifest(path))
++        .flat_map(|path| {
++            manifest_trust_keys(text(&base, path), text(&head, path))
++                .into_iter()
++                .map(|key| ManifestTrustChange {
++                    path: (*path).to_owned(),
++                    key,
++                })
++        })
++        .collect();
++    let include_targets = match &request.include_targets {
++        // The change set owns its targets; the request keeps its own.
++        IncludeTargets::Scanned(targets) => targets.clone(),
++        IncludeTargets::NotScanned => changed.iter().map(|path| (*path).to_owned()).collect(),
++    };
++    let temper_baseline = if changed.contains(TEMPER_BASELINE) {
++        baseline(objects, request)?
++    } else {
++        BaselineChange::Other
++    };
++    Ok(ChangeSet {
++        files,
++        manifests: manifest_changes,
++        include_targets,
++        exec_roots: surface.exec_roots,
++        packages: surface.packages,
++        temper_baseline,
++    })
++}
++
++/// The text of the manifest at `path` on one side; `None` where there is none.
++fn text<'a>(side: &'a Manifests, path: &str) -> Option<&'a str> {
++    side.get(path).map(String::as_str)
++}
++
++/// Whether `path` names a cargo manifest, ignoring ASCII case (fail closed: a `cargo.toml`
++/// is read as one too).
++fn is_manifest(path: &str) -> bool {
++    path.rsplit('/')
++        .next()
++        .is_some_and(|name| name.eq_ignore_ascii_case("Cargo.toml"))
++}
++
++/// Every manifest in `commit`'s tree, by path.
++fn manifests<O: PullRequestObjects, N>(
++    objects: &O,
++    commit: &CommitId,
++) -> Result<Manifests, PlanError<O::Error, N>> {
++    let mut found = objects.list(commit, None).map_err(PlanError::Objects)?;
++    found.retain(|entry| is_manifest(&entry.path));
++    let readable: Vec<_> = found
++        .iter()
++        .filter(|entry| entry.kind == EntryKind::File)
++        .collect();
++    let mut blobs = read_entries(objects, &readable)?.into_iter();
++    Ok(found
++        .into_iter()
++        .map(|entry| {
++            let text = if entry.kind == EntryKind::File {
++                blobs.next().and_then(utf8)
++            } else {
++                None
++            };
++            let text = text.unwrap_or_else(|| UNREADABLE_MANIFEST.to_owned());
++            (entry.path, text)
++        })
++        .collect())
++}
++
++/// `bytes` as text, or `None` when they are not UTF-8: the caller reads that as unreadable,
++/// never as an absent file.
++fn utf8(bytes: Vec<u8>) -> Option<String> {
++    String::from_utf8(bytes).ok()
++}
++
++/// How the temper baseline changed between the base and head commits.
++fn baseline<O: PullRequestObjects, N>(
++    objects: &O,
++    request: &PlanRequest,
++) -> Result<BaselineChange, PlanError<O::Error, N>> {
++    let pull_request = &request.pull_request;
++    let base = file_text(objects, &pull_request.base_sha, TEMPER_BASELINE)?;
++    let head = file_text(objects, &pull_request.head_sha, TEMPER_BASELINE)?;
++    Ok(baseline_change(base.as_deref(), head.as_deref()))
++}
++
++/// The text of the regular file at exactly `path` in `commit`; `None` when there is none, or
++/// it is not a regular UTF-8 file (which `baseline_change` reads as any other change).
++fn file_text<O: PullRequestObjects, N>(
++    objects: &O,
++    commit: &CommitId,
++    path: &str,
++) -> Result<Option<String>, PlanError<O::Error, N>> {
++    let entries = objects
++        .list(commit, Some(path))
++        .map_err(PlanError::Objects)?;
++    let Some(entry) = entries
++        .iter()
++        .find(|entry| entry.path == path && entry.kind == EntryKind::File)
++    else {
++        return Ok(None);
++    };
++    let blob = read_entries(objects, &[entry])?.into_iter().next();
++    Ok(blob.and_then(utf8))
++}
+diff --git a/crates/assay-app/src/plan/document.rs b/crates/assay-app/src/plan/document.rs
+new file mode 100644
+index 0000000..a9b2607
+--- /dev/null
++++ b/crates/assay-app/src/plan/document.rs
+@@ -0,0 +1,291 @@
++//! The `assay.run/1` document `plan` writes (`docs/architecture/03-contracts.md` §4), the
++//! evidence key it carries as `run_key`, and the per-job artifact names.
++
++use std::collections::{BTreeMap, BTreeSet};
++use std::fmt;
++
++use assay_domain::{
++    ContentHash, FileChange, PrClass, RequiredRole, RunUid, Tier, TierReason, Tiering,
++};
++use serde::Serialize;
++
++use super::PullRequestEvent;
++use super::base_config::BaseConfig;
++use crate::config::{Adapter, Plugin};
++
++/// The contract and version `plan` writes.
++const SCHEMA: &str = "assay.run/1";
++
++/// The evidence key (`docs/architecture/02-architecture.md` §3), for evidence reuse only.
++///
++/// It identifies a run's expensive evidence, gates and model output. A requeue, a retry and
++/// a same-head run share it, so it never keys a lease, a ledger record or the pending stamp;
++/// `run_uid` does (R3-16).
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub struct EvidenceKey(ContentHash);
++
++impl fmt::Display for EvidenceKey {
++    /// `sha256:` and 64 lowercase hex digits.
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        self.0.fmt(f)
++    }
++}
++
++impl EvidenceKey {
++    /// SHA-256 over the 02 §3 fields in order, each a length-prefixed name and value:
++    /// `repo`, `pr`, `head_sha`, `base_sha`, `config_hash`, `assay_digest`,
++    /// `claude_cli_version` (empty when unpinned), `prompt_bundle_hash` and `tool_pins` (one
++    /// `<plugin>=<pin>` line per built-in gate, in file order).
++    pub(super) fn new(
++        pull_request: &PullRequestEvent,
++        config: &BaseConfig,
++        prompt_bundle: ContentHash,
++    ) -> Self {
++        let assay = config.plugins.assay();
++        let pins: String = config
++            .plugins
++            .plugins()
++            .iter()
++            .filter_map(|plugin| pin(plugin).map(|pin| format!("{}={pin}\n", plugin.name())))
++            .collect();
++        let pr = pull_request.number.to_string();
++        let config_hash = config.hash.to_string();
++        let prompt_bundle = prompt_bundle.to_string();
++        let fields: [(&str, &str); 9] = [
++            ("repo", &pull_request.repo),
++            ("pr", &pr),
++            ("head_sha", pull_request.head_sha.as_str()),
++            ("base_sha", pull_request.base_sha.as_str()),
++            ("config_hash", &config_hash),
++            ("assay_digest", assay.digest.as_str()),
++            (
++                "claude_cli_version",
++                assay
++                    .claude_cli
++                    .as_ref()
++                    .map_or("", |version| version.as_str()),
++            ),
++            ("prompt_bundle_hash", &prompt_bundle),
++            ("tool_pins", &pins),
++        ];
++        Self(ContentHash::of_files(
++            fields
++                .into_iter()
++                .map(|(name, value)| (name, value.as_bytes())),
++        ))
++    }
++}
++
++/// A job whose artifact another job of the run consumes, each named with its own nonce
++/// (`docs/architecture/02-architecture.md` §1).
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
++pub enum ArtifactJob {
++    /// `plan`: this run description.
++    Plan,
++    /// `gates-static`: the Z2s gate documents.
++    GatesStatic,
++    /// `gates-lint`: the Z2b lint gate documents.
++    GatesLint,
++    /// `gates-test`: the Z2b test gate documents.
++    GatesTest,
++    /// `admit`: the context pack.
++    Admit,
++    /// `review`: the reviewers' findings.
++    Review,
++    /// `decide`: the persisted input bundle.
++    Decide,
++}
++
++impl ArtifactJob {
++    /// Every job, in pipeline order.
++    pub const ALL: [Self; 7] = [
++        Self::Plan,
++        Self::GatesStatic,
++        Self::GatesLint,
++        Self::GatesTest,
++        Self::Admit,
++        Self::Review,
++        Self::Decide,
++    ];
++
++    /// The job's name in the workflow, and its key in `artifact_names`.
++    #[must_use]
++    pub const fn name(self) -> &'static str {
++        match self {
++            Self::Plan => "plan",
++            Self::GatesStatic => "gates-static",
++            Self::GatesLint => "gates-lint",
++            Self::GatesTest => "gates-test",
++            Self::Admit => "admit",
++            Self::Review => "review",
++            Self::Decide => "decide",
++        }
++    }
++}
++
++/// The pin of a built-in gate; `None` for `exec`, which runs PR-controlled code and has none.
++fn pin(plugin: &Plugin) -> Option<String> {
++    match plugin.adapter() {
++        Adapter::Temper { pin, .. } | Adapter::WeighIn { pin } => Some(pin.to_string()),
++        Adapter::Exec { .. } => None,
++    }
++}
++
++/// Everything the document is written from.
++pub(super) struct Inputs<'a> {
++    pub(super) pull_request: &'a PullRequestEvent,
++    pub(super) run_uid: RunUid,
++    pub(super) run_key: EvidenceKey,
++    pub(super) config: &'a BaseConfig,
++    pub(super) tiering: &'a Tiering,
++    /// The changed files tiered.
++    pub(super) files: &'a [FileChange],
++    pub(super) artifact_names: &'a BTreeMap<ArtifactJob, String>,
++}
++
++/// `assay.run/1` as `plan` writes it: no `budget`, which `admit` adds.
++#[derive(Debug, Serialize)]
++struct RunDocument<'a> {
++    schema: &'static str,
++    run_key: String,
++    run_uid: RunUid,
++    repo: &'a str,
++    pr: u64,
++    base_sha: &'a str,
++    head_sha: &'a str,
++    base_ref: &'a str,
++    tier: Tier,
++    tier_reasons: &'a [TierReason],
++    classes: &'a [PrClass],
++    roles: &'a [RequiredRole],
++    required_roles: &'a [RequiredRole],
++    shards: Vec<Shard<'a>>,
++    plugins: Vec<PluginEntry<'a>>,
++    trust_paths_changed: &'a [String],
++    exec_surface_changed: &'a [String],
++    filtered_stats: FilteredStats<'a>,
++    artifact_names: BTreeMap<&'static str, &'a str>,
++    draft: bool,
++}
++
++#[derive(Debug, Serialize)]
++struct Shard<'a> {
++    files: Vec<&'a str>,
++}
++
++#[derive(Debug, Serialize)]
++struct PluginEntry<'a> {
++    name: &'a str,
++    required: bool,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pin: Option<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    job: Option<String>,
++    steps: Vec<StepEntry<'a>>,
++}
++
++#[derive(Debug, Serialize)]
++struct StepEntry<'a> {
++    name: &'a str,
++    job: String,
++    timeout_s: u64,
++}
++
++#[derive(Debug, Serialize)]
++struct FilteredStats<'a> {
++    files: usize,
++    lines: u64,
++    excluded: &'a [String],
++}
++
++/// The document as JSON. A draft schedules no reviewer and no shard (04 §2.4: gates only), but
++/// keeps the roles its tier requires, so `decide` knows what review it lacks; otherwise every
++/// file left after filtering is one shard (sharding is #98's).
++pub(super) fn to_json(inputs: &Inputs<'_>) -> Result<Vec<u8>, serde_json::Error> {
++    let Inputs {
++        pull_request,
++        run_uid,
++        run_key,
++        config,
++        tiering,
++        files,
++        artifact_names,
++    } = inputs;
++    let roles: &[RequiredRole] = if pull_request.draft {
++        &[]
++    } else {
++        &tiering.required_roles
++    };
++    let reviewed = reviewed_files(files, &tiering.filtered.excluded);
++    let shards = if roles.is_empty() || reviewed.is_empty() {
++        Vec::new()
++    } else {
++        vec![Shard { files: reviewed }]
++    };
++    let document = RunDocument {
++        schema: SCHEMA,
++        run_key: run_key.to_string(),
++        run_uid: *run_uid,
++        repo: &pull_request.repo,
++        pr: pull_request.number.get(),
++        base_sha: pull_request.base_sha.as_str(),
++        head_sha: pull_request.head_sha.as_str(),
++        base_ref: &pull_request.base_ref,
++        tier: tiering.tier,
++        tier_reasons: &tiering.tier_reasons,
++        classes: &tiering.classes,
++        roles,
++        required_roles: &tiering.required_roles,
++        shards,
++        plugins: config.plugins.plugins().iter().map(plugin_entry).collect(),
++        trust_paths_changed: &tiering.trust_paths_changed,
++        exec_surface_changed: &tiering.exec_surface_changed,
++        filtered_stats: FilteredStats {
++            files: tiering.filtered.files,
++            lines: tiering.filtered.lines,
++            excluded: &tiering.filtered.excluded,
++        },
++        artifact_names: artifact_names
++            .iter()
++            .map(|(job, name)| (job.name(), name.as_str()))
++            .collect(),
++        draft: pull_request.draft,
++    };
++    serde_json::to_vec_pretty(&document)
++}
++
++/// The files the reviewers read: every changed file filtering did not exclude, in change
++/// order.
++fn reviewed_files<'a>(files: &'a [FileChange], excluded: &[String]) -> Vec<&'a str> {
++    let excluded: BTreeSet<&str> = excluded.iter().map(String::as_str).collect();
++    files
++        .iter()
++        .map(|file| file.path.as_str())
++        .filter(|path| !excluded.contains(path))
++        .collect()
++}
++
++fn plugin_entry(plugin: &Plugin) -> PluginEntry<'_> {
++    let (job, steps) = match plugin.adapter() {
++        Adapter::Temper { steps, .. } => (
++            None,
++            steps
++                .iter()
++                .map(|step| StepEntry {
++                    name: step.name().as_str(),
++                    job: step.job().to_string(),
++                    timeout_s: step.timeout().as_secs(),
++                })
++                .collect(),
++        ),
++        Adapter::WeighIn { .. } => (None, Vec::new()),
++        Adapter::Exec { job, .. } => (Some(job.to_string()), Vec::new()),
++    };
++    PluginEntry {
++        name: plugin.name().as_str(),
++        required: plugin.required(),
++        pin: pin(plugin),
++        job,
++        steps,
++    }
++}
+diff --git a/crates/assay-app/src/plan/nonce.rs b/crates/assay-app/src/plan/nonce.rs
+new file mode 100644
+index 0000000..9593246
+--- /dev/null
++++ b/crates/assay-app/src/plan/nonce.rs
+@@ -0,0 +1,89 @@
++//! Per-job nonce artifact names (`docs/architecture/02-architecture.md` §1, `05` T11).
++
++use std::fmt;
++use std::str::FromStr;
++
++use thiserror::Error;
++
++/// Hex digits in a nonce: 128 bits.
++const NONCE_HEX_LEN: usize = 32;
++
++/// Where fresh nonces come from: an unpredictable source in production, so no other workflow
++/// can know a run's artifact names before it starts.
++pub trait NonceSource {
++    /// Why no nonce could be drawn.
++    type Error: std::error::Error;
++
++    /// A fresh nonce.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the source cannot produce one.
++    fn nonce(&mut self) -> Result<ArtifactNonce, Self::Error>;
++}
++
++/// A nonce for one job's artifact name: 32 lowercase hexadecimal digits (128 bits).
++#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
++pub struct ArtifactNonce(String);
++
++impl FromStr for ArtifactNonce {
++    type Err = ParseNonceError;
++
++    fn from_str(text: &str) -> Result<Self, Self::Err> {
++        let hex = text.len() == NONCE_HEX_LEN
++            && text
++                .bytes()
++                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'));
++        if hex {
++            Ok(Self(text.to_owned()))
++        } else {
++            Err(ParseNonceError)
++        }
++    }
++}
++
++impl fmt::Display for ArtifactNonce {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str(&self.0)
++    }
++}
++
++/// A nonce that is not 32 lowercase hexadecimal digits.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
++#[error("a nonce must be 32 lowercase hexadecimal digits")]
++pub struct ParseNonceError;
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    const NONCE: &str = "0123456789abcdef0123456789abcdef";
++
++    #[test]
++    fn a_nonce_round_trips_through_display() {
++        assert_eq!(
++            NONCE
++                .parse::<ArtifactNonce>()
++                .map(|nonce| nonce.to_string()),
++            Ok(NONCE.to_owned())
++        );
++    }
++
++    #[test]
++    fn a_nonce_is_exactly_32_lowercase_hex_digits() {
++        let short = NONCE.get(1..).unwrap_or_default().to_owned();
++        for text in [
++            short,
++            format!("{NONCE}0"),
++            NONCE.to_uppercase(),
++            format!("g{}", NONCE.get(1..).unwrap_or_default()),
++            String::new(),
++        ] {
++            assert_eq!(
++                text.parse::<ArtifactNonce>(),
++                Err(ParseNonceError),
++                "{text:?} is not a nonce"
++            );
++        }
++    }
++}
+diff --git a/crates/assay-app/src/plan/objects.rs b/crates/assay-app/src/plan/objects.rs
+new file mode 100644
+index 0000000..bf2d899
+--- /dev/null
++++ b/crates/assay-app/src/plan/objects.rs
+@@ -0,0 +1,73 @@
++//! The port `plan` reads the PR through: its git objects, fetched as data.
++
++use assay_domain::FileChange;
++
++use crate::config::CommitId;
++
++/// The PR's commits as data: the file list between them, and their trees and blobs. Nothing
++/// is checked out and nothing in the trees runs (`docs/architecture/03-contracts.md` §9).
++pub trait PullRequestObjects {
++    /// Why the objects could not be read.
++    type Error: std::error::Error;
++
++    /// The files changed from the merge base of `base` and `head` to `head` (`git diff
++    /// base...head`, as GitHub lists them), with both sides of each rename, what git records
++    /// at each path and the line counts of `--numstat --text`.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the list could not be produced; running past the diff's cap is
++    /// [`ChangedFiles::TooSlow`] instead.
++    fn changed_files(&self, base: &CommitId, head: &CommitId) -> Result<ChangedFiles, Self::Error>;
++
++    /// The entries at or under `path` (whole path components, no wildcard) in `commit`'s tree,
++    /// or all of them for `None`, in path order. Nothing is read.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when the tree cannot be listed or holds more entries than the adapter
++    /// reads.
++    fn list(&self, commit: &CommitId, path: Option<&str>) -> Result<Vec<TreeEntry>, Self::Error>;
++
++    /// The blobs of `entries`, in order; never asked for a submodule.
++    ///
++    /// # Errors
++    ///
++    /// [`Self::Error`] when a blob cannot be read, or the entries hold more bytes than the
++    /// adapter reads.
++    fn read(&self, entries: &[&TreeEntry]) -> Result<Vec<Vec<u8>>, Self::Error>;
++}
++
++/// The PR's changed files, or none when git could not list them in time.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum ChangedFiles {
++    /// Every changed file, in git's order.
++    Listed(Vec<FileChange>),
++    /// The diff ran past its cap (rename detection is quadratic): there is no list, and the
++    /// PR needs a split.
++    TooSlow,
++}
++
++/// What a tree entry is.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum EntryKind {
++    /// A regular or executable file.
++    File,
++    /// A symbolic link; its blob is the target's text, never followed.
++    Symlink,
++    /// A submodule: a commit of another repository, with no blob.
++    Submodule,
++}
++
++/// One entry of a commit's tree.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct TreeEntry {
++    /// Its path from the root of the tree, `/`-separated.
++    pub path: String,
++    /// What it is.
++    pub kind: EntryKind,
++    /// The adapter's name for its object, handed back to [`PullRequestObjects::read`].
++    pub object: String,
++    /// Its blob's size in bytes; `None` for a submodule.
++    pub size: Option<u64>,
++}
+diff --git a/crates/assay-app/src/plan/rest.rs b/crates/assay-app/src/plan/rest.rs
+new file mode 100644
+index 0000000..bbc5984
+--- /dev/null
++++ b/crates/assay-app/src/plan/rest.rs
+@@ -0,0 +1,111 @@
++//! The git file list asserted against GitHub's REST list (`docs/architecture/04-pipeline.md`
++//! §2): the plan never trusts the REST list alone, and refuses when the two disagree.
++
++use std::collections::BTreeSet;
++
++use assay_domain::FileChange;
++use thiserror::Error;
++
++/// The most files `GET /repos/{owner}/{repo}/pulls/{number}/files` lists; past it the list is
++/// truncated.
++pub const REST_FILE_CAP: usize = 3_000;
++
++/// GitHub's list of a PR's files, as the REST API reports them.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct RestFiles {
++    /// Every file listed, across all pages.
++    pub files: Vec<RestFile>,
++    /// The PR's `changed_files` count, which the list matches unless it is truncated.
++    pub changed_files: u64,
++}
++
++/// One file of the REST list.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct RestFile {
++    /// `filename`.
++    pub path: String,
++    /// `previous_filename`, for a file GitHub reports as renamed.
++    pub previous_path: Option<String>,
++}
++
++/// Why the git and REST file lists could not be reconciled. Every variant fails the plan.
++#[derive(Debug, Clone, PartialEq, Eq, Error)]
++pub enum FileListError {
++    /// The REST list holds more files than the API ever returns.
++    #[error("the REST list holds {listed} files, over the API's cap of {REST_FILE_CAP}")]
++    OverCap {
++        /// Files listed.
++        listed: usize,
++    },
++    /// Below the cap, the REST list does not hold the PR's `changed_files`: a page is missing
++    /// or the PR moved while it was read.
++    #[error("the REST list holds {listed} files, but the PR changed {changed_files}")]
++    Incomplete {
++        /// Files listed.
++        listed: usize,
++        /// The PR's `changed_files`.
++        changed_files: u64,
++    },
++    /// The REST list names one file twice.
++    #[error("the REST list names a file twice")]
++    Repeated,
++    /// The lists name different files.
++    #[error(
++        "git and REST list different files: {only_in_git} only in git, {only_in_rest} only in \
++         REST, first {first:?}"
++    )]
++    Mismatch {
++        /// Paths only git lists (not counted for a truncated REST list).
++        only_in_git: usize,
++        /// Paths only the REST list names.
++        only_in_rest: usize,
++        /// The first differing path, in path order.
++        first: String,
++    },
++}
++
++/// Checks `rest` against the git list `git`, comparing every path either names on either side
++/// of a rename (so a rename one side detected and the other read as a deletion and an
++/// addition still matches). A complete REST list must name exactly git's paths; a truncated
++/// one (`REST_FILE_CAP` listed, more changed) only paths git lists.
++pub(super) fn check(rest: &RestFiles, git: &[FileChange]) -> Result<(), FileListError> {
++    let listed = rest.files.len();
++    if listed > REST_FILE_CAP {
++        return Err(FileListError::OverCap { listed });
++    }
++    let named: BTreeSet<&str> = rest.files.iter().map(|file| file.path.as_str()).collect();
++    if named.len() != listed {
++        return Err(FileListError::Repeated);
++    }
++    // Both are at most `REST_FILE_CAP` here, so neither conversion can fail.
++    let listed_count = u64::try_from(listed).unwrap_or(u64::MAX);
++    let cap = u64::try_from(REST_FILE_CAP).unwrap_or(u64::MAX);
++    let truncated = listed == REST_FILE_CAP && rest.changed_files > cap;
++    if !truncated && rest.changed_files != listed_count {
++        return Err(FileListError::Incomplete {
++            listed,
++            changed_files: rest.changed_files,
++        });
++    }
++    let rest_paths: BTreeSet<&str> = rest
++        .files
++        .iter()
++        .flat_map(|file| std::iter::once(file.path.as_str()).chain(file.previous_path.as_deref()))
++        .collect();
++    let git_paths: BTreeSet<&str> = git.iter().flat_map(FileChange::sides).collect();
++    let only_in_rest: Vec<&str> = rest_paths.difference(&git_paths).copied().collect();
++    let only_in_git: Vec<&str> = if truncated {
++        Vec::new()
++    } else {
++        git_paths.difference(&rest_paths).copied().collect()
++    };
++    let first = only_in_git.iter().chain(&only_in_rest).min();
++    match first {
++        None => Ok(()),
++        Some(first) => Err(FileListError::Mismatch {
++            only_in_git: only_in_git.len(),
++            only_in_rest: only_in_rest.len(),
++            first: (*first).to_owned(),
++        }),
++    }
++}
+diff --git a/crates/assay-app/tests/it/config.rs b/crates/assay-app/tests/it/config.rs
+index f0ed04f..53e47a9 100644
+--- a/crates/assay-app/tests/it/config.rs
++++ b/crates/assay-app/tests/it/config.rs
+@@ -4,8 +4,8 @@ use std::error::Error;
+ use std::time::Duration;
+ 
+ use assay_app::{
+-    Adapter, BuildJob, ConfigError, ExactVersion, InfraFailurePolicy, ParseDigestError,
+-    ParsePinError, Pin, Plugin, PluginsConfig, PrClass, Promotion, RunnerKind,
++    Adapter, BuildJob, CommitId, ConfigError, ExactVersion, InfraFailurePolicy, ParseCommitIdError,
++    ParseDigestError, ParsePinError, Pin, Plugin, PluginsConfig, PrClass, Promotion, RunnerKind,
+ };
+ 
+ const GIT: &str = "0123456789abcdef0123456789abcdef01234567";
+@@ -507,3 +507,30 @@ fn rejects_an_uppercase_commit_pin() {
+ 
+     assert_eq!(parsed, Err(ParsePinError::Tag));
+ }
++
++#[test]
++fn a_commit_id_round_trips_through_display() -> Result<(), Box<dyn Error>> {
++    let commit: CommitId = GIT.parse()?;
++
++    assert_eq!(commit.as_str(), GIT);
++    Ok(())
++}
++
++#[test]
++fn a_commit_id_is_exactly_forty_lowercase_hex_digits() {
++    let short = GIT.get(..39).unwrap_or_default().to_owned();
++    for text in [
++        short,
++        format!("{GIT}0"),
++        GIT.to_uppercase(),
++        format!("g{}", GIT.get(1..).unwrap_or_default()),
++        format!("git:{GIT}"),
++        String::new(),
++    ] {
++        assert_eq!(
++            text.parse::<CommitId>(),
++            Err(ParseCommitIdError),
++            "{text:?} is not a full commit id"
++        );
++    }
++}
+diff --git a/crates/assay-app/tests/it/contract.rs b/crates/assay-app/tests/it/contract.rs
+index b962ad0..616ad0b 100644
+--- a/crates/assay-app/tests/it/contract.rs
++++ b/crates/assay-app/tests/it/contract.rs
+@@ -20,7 +20,7 @@ enum Rejection<'a> {
+     Violation(&'a str, &'a str),
+ }
+ 
+-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 37] = [
++const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 38] = [
+     (
+         Contract::Findings,
+         "reviewer-without-role",
+@@ -67,6 +67,12 @@ const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 37] = [
+         "reused-evidence-unknown-llm",
+         Rejection::Violation("/budget/reused_evidence/llm", "enum"),
+     ),
++    // A built-in gate has a pin and an `exec` gate a job, never both (03 §4).
++    (
++        Contract::Run,
++        "plugin-with-pin-and-job",
++        Rejection::Violation("/plugins/0", "oneOf"),
++    ),
+     // The key under the open `artifact_names` map is producer-chosen: the path masks it.
+     (
+         Contract::Run,
+diff --git a/crates/assay-app/tests/it/main.rs b/crates/assay-app/tests/it/main.rs
+index 4fd93de..a6c655b 100644
+--- a/crates/assay-app/tests/it/main.rs
++++ b/crates/assay-app/tests/it/main.rs
+@@ -7,6 +7,9 @@ mod exec_roots;
+ mod gate;
+ mod model_runner;
+ mod package_set;
++mod plan;
++#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
++mod plan_fakes;
+ mod prompt_bundle;
+ mod read_limits;
+ mod redaction;
+diff --git a/crates/assay-app/tests/it/plan.rs b/crates/assay-app/tests/it/plan.rs
+new file mode 100644
+index 0000000..ca1df8e
+--- /dev/null
++++ b/crates/assay-app/tests/it/plan.rs
+@@ -0,0 +1,686 @@
++//! The `plan` use case (S1, `docs/architecture/04-pipeline.md` §2, 03 §4): `run.json` from
++//! base config at the pinned `base_sha` and the PR's objects, against fakes of its ports.
++
++use std::assert_matches;
++use std::error::Error;
++
++use assay_app::{
++    ArtifactJob, BaseConfigError, ChangedFiles, Contract, ContractValidator, EntryKind,
++    FileListError, IncludeTargets, PlanError, PlannedRun, RestFile, plan,
++};
++use assay_domain::{FileChange, Lines, PrClass, Tier};
++use serde_json::{Value, json};
++
++use crate::plan_fakes::{
++    BASE, CountingNonces, FakeError, FakePr, HEAD, PIN, plugins_toml, request, run_uid,
++};
++
++type Planned = Result<PlannedRun, PlanError<FakeError, FakeError>>;
++
++fn plan_for(pr: &FakePr) -> Result<Planned, Box<dyn Error>> {
++    let request = request(pr)?;
++    Ok(plan(
++        &request,
++        pr,
++        &mut CountingNonces::default(),
++        &ContractValidator::new()?,
++    ))
++}
++
++fn document(run: &PlannedRun) -> Result<Value, Box<dyn Error>> {
++    Ok(serde_json::from_slice(run.json())?)
++}
++
++fn changes(files: Vec<FileChange>) -> ChangedFiles {
++    ChangedFiles::Listed(files)
++}
++
++fn counted(path: &str, lines: u64) -> FileChange {
++    FileChange::new(
++        path,
++        Lines::Counted {
++            added: lines,
++            removed: 0,
++        },
++    )
++}
++
++#[test]
++fn a_small_change_plans_a_schema_valid_run() -> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++
++    let run = plan_for(&pr)??;
++
++    let validator = ContractValidator::new()?;
++    assert_eq!(
++        validator.read(Contract::Run, run.json())?,
++        document(&run)?,
++        "the document is valid assay.run/1 as written"
++    );
++    Ok(())
++}
++
++#[test]
++fn the_run_pins_both_shas_and_carries_run_uid_and_base_ref() -> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++
++    let run = plan_for(&pr)??;
++
++    let doc = document(&run)?;
++    assert_eq!(
++        (
++            &doc["base_sha"],
++            &doc["head_sha"],
++            &doc["base_ref"],
++            &doc["repo"],
++            &doc["pr"],
++            &doc["run_uid"],
++        ),
++        (
++            &json!(BASE),
++            &json!(HEAD),
++            &json!("main"),
++            &json!("Wet-Ink-Corporation/assay"),
++            &json!(42),
++            &json!({"repo_id": 840_213_377, "run_id": 7, "run_attempt": 1}),
++        )
++    );
++    Ok(())
++}
++
++#[test]
++fn a_one_line_change_is_micro_with_its_reviewer_and_one_shard() -> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++
++    let run = plan_for(&pr)??;
++
++    let doc = document(&run)?;
++    assert_eq!(
++        (
++            &doc["tier"],
++            &doc["tier_reasons"],
++            &doc["roles"],
++            &doc["required_roles"],
++            &doc["shards"],
++            &doc["filtered_stats"],
++            &doc["draft"],
++        ),
++        (
++            &json!("micro"),
++            &json!(["micro-size"]),
++            &json!(["combined-micro"]),
++            &json!(["combined-micro"]),
++            &json!([{"files": ["src/lib.rs"]}]),
++            &json!({"files": 1, "lines": 2, "excluded": []}),
++            &json!(false),
++        )
++    );
++    Ok(())
++}
++
++#[test]
++fn plugins_come_from_the_base_config_not_the_head() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    // The PR rewrites the config to drop the required gate; plan must not believe it.
++    let head_config = plugins_toml().replace("required = true", "required = false");
++    pr.write(HEAD, ".assay/plugins.toml", head_config.as_bytes());
++
++    let run = plan_for(&pr)??;
++
++    assert_eq!(
++        document(&run)?["plugins"],
++        json!([
++            {
++                "name": "temper",
++                "required": true,
++                "pin": format!("git:{PIN}"),
++                "steps": [{"name": "fmt", "job": "gates-lint", "timeout_s": 300}],
++            },
++            {"name": "custom-lint", "required": false, "job": "gates-test", "steps": []},
++        ])
++    );
++    Ok(())
++}
++
++#[test]
++fn a_base_without_plugins_config_is_refused() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    pr.remove(BASE, ".assay/plugins.toml");
++
++    let planned = plan_for(&pr)?;
++
++    assert_matches!(
++        planned,
++        Err(PlanError::BaseConfig(BaseConfigError::Missing))
++    );
++    Ok(())
++}
++
++#[test]
++fn a_symlink_in_the_base_config_is_refused() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    pr.symlink(BASE, ".assay/owners", b"../owners");
++
++    let planned = plan_for(&pr)?;
++
++    assert_matches!(
++        planned,
++        Err(PlanError::BaseConfig(BaseConfigError::NotARegularFile {
++            ref path,
++            kind: EntryKind::Symlink,
++        })) if path == ".assay/owners"
++    );
++    Ok(())
++}
++
++#[test]
++fn a_base_plugins_config_that_is_not_utf8_is_refused() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    pr.write(BASE, ".assay/plugins.toml", b"[assay]\ndigest = \"\xff\"\n");
++
++    let planned = plan_for(&pr)?;
++
++    assert_matches!(
++        planned,
++        Err(PlanError::BaseConfig(BaseConfigError::NotUtf8 { ref path }))
++            if path == ".assay/plugins.toml"
++    );
++    Ok(())
++}
++
++#[test]
++fn an_invalid_base_plugins_config_is_refused() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    pr.write(
++        BASE,
++        ".assay/plugins.toml",
++        b"[assay]\ndigest = \"latest\"\n",
++    );
++
++    let planned = plan_for(&pr)?;
++
++    assert_matches!(
++        planned,
++        Err(PlanError::BaseConfig(BaseConfigError::Plugins(_)))
++    );
++    Ok(())
++}
++
++#[test]
++fn an_invalid_base_globs_config_is_refused() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    pr.write(BASE, ".assay/globs.toml", b"lower = [\"**\"]\n");
++
++    let planned = plan_for(&pr)?;
++
++    assert_matches!(
++        planned,
++        Err(PlanError::BaseConfig(BaseConfigError::Globs(_)))
++    );
++    Ok(())
++}
++
++#[test]
++fn a_rest_list_that_disagrees_with_git_fails_loudly() -> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++    let mut request = request(&pr)?;
++    request.rest_files.files = vec![RestFile {
++        path: "src/other.rs".to_owned(),
++        previous_path: None,
++    }];
++
++    let planned = plan(
++        &request,
++        &pr,
++        &mut CountingNonces::default(),
++        &ContractValidator::new()?,
++    );
++
++    assert_matches!(
++        planned,
++        Err(PlanError::FileList(FileListError::Mismatch {
++            only_in_git: 1,
++            only_in_rest: 1,
++            ..
++        }))
++    );
++    Ok(())
++}
++
++#[test]
++fn a_rest_list_shorter_than_the_prs_file_count_is_refused() -> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++    let mut request = request(&pr)?;
++    request.rest_files.changed_files = 2;
++
++    let planned = plan(
++        &request,
++        &pr,
++        &mut CountingNonces::default(),
++        &ContractValidator::new()?,
++    );
++
++    assert_matches!(
++        planned,
++        Err(PlanError::FileList(FileListError::Incomplete {
++            listed: 1,
++            changed_files: 2,
++        }))
++    );
++    Ok(())
++}
++
++#[test]
++fn a_rest_list_over_its_cap_is_refused() -> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++    let mut request = request(&pr)?;
++    request.rest_files.files = (0..3_001)
++        .map(|index| RestFile {
++            path: format!("f{index}"),
++            previous_path: None,
++        })
++        .collect();
++    request.rest_files.changed_files = 3_001;
++
++    let planned = plan(
++        &request,
++        &pr,
++        &mut CountingNonces::default(),
++        &ContractValidator::new()?,
++    );
++
++    assert_matches!(
++        planned,
++        Err(PlanError::FileList(FileListError::OverCap {
++            listed: 3_001
++        }))
++    );
++    Ok(())
++}
++
++#[test]
++fn a_rest_list_naming_a_file_twice_is_refused() -> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++    let mut request = request(&pr)?;
++    let twice = RestFile {
++        path: "src/lib.rs".to_owned(),
++        previous_path: None,
++    };
++    request.rest_files.files = vec![twice.clone(), twice];
++    request.rest_files.changed_files = 2;
++
++    let planned = plan(
++        &request,
++        &pr,
++        &mut CountingNonces::default(),
++        &ContractValidator::new()?,
++    );
++
++    assert_matches!(planned, Err(PlanError::FileList(FileListError::Repeated)));
++    Ok(())
++}
++
++/// 3,000 files listed, more changed: the REST list is truncated (04 §2).
++fn truncated_rest(pr: &mut FakePr, rest_extra: Option<&str>) -> Vec<RestFile> {
++    let files: Vec<FileChange> = (0..3_100)
++        .map(|index| counted(&format!("docs/f{index}.md"), 1))
++        .collect();
++    let mut rest: Vec<RestFile> = files
++        .iter()
++        .take(3_000)
++        .map(|file| RestFile {
++            path: file.path.clone(),
++            previous_path: None,
++        })
++        .collect();
++    if let (Some(extra), Some(last)) = (rest_extra, rest.last_mut()) {
++        extra.clone_into(&mut last.path);
++    }
++    pr.changes = changes(files);
++    rest
++}
++
++#[test]
++fn a_truncated_rest_list_is_accepted_when_git_lists_every_file_in_it() -> Result<(), Box<dyn Error>>
++{
++    let mut pr = FakePr::new();
++    let rest = truncated_rest(&mut pr, None);
++    let mut request = request(&pr)?;
++    request.rest_files.files = rest;
++    request.rest_files.changed_files = 3_100;
++
++    let planned = plan(
++        &request,
++        &pr,
++        &mut CountingNonces::default(),
++        &ContractValidator::new()?,
++    );
++
++    assert_eq!(
++        planned.map(|run| run.tiering().filtered.files)?,
++        3_100,
++        "every git file is planned, not only the 3,000 REST lists"
++    );
++    Ok(())
++}
++
++#[test]
++fn a_truncated_rest_list_naming_a_file_git_did_not_list_is_refused() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    let rest = truncated_rest(&mut pr, Some("src/secret.rs"));
++    let mut request = request(&pr)?;
++    request.rest_files.files = rest;
++    request.rest_files.changed_files = 3_100;
++
++    let planned = plan(
++        &request,
++        &pr,
++        &mut CountingNonces::default(),
++        &ContractValidator::new()?,
++    );
++
++    assert_matches!(
++        planned,
++        Err(PlanError::FileList(FileListError::Mismatch {
++            only_in_git: 0,
++            only_in_rest: 1,
++            ..
++        }))
++    );
++    Ok(())
++}
++
++#[test]
++fn a_rename_only_one_side_detected_still_matches() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    pr.changes = changes(vec![counted("src/new.rs", 0).renamed_from("src/old.rs")]);
++    let mut request = request(&pr)?;
++    // GitHub saw a deletion and an addition where git saw a rename.
++    request.rest_files.files = ["src/old.rs", "src/new.rs"]
++        .map(|path| RestFile {
++            path: path.to_owned(),
++            previous_path: None,
++        })
++        .into();
++    request.rest_files.changed_files = 2;
++
++    let planned = plan(
++        &request,
++        &pr,
++        &mut CountingNonces::default(),
++        &ContractValidator::new()?,
++    );
++
++    assert_eq!(
++        planned.map(|run| run.tiering().filtered.files)?,
++        1,
++        "the same paths on both sides are the same change"
++    );
++    Ok(())
++}
++
++#[test]
++fn a_diff_past_its_cap_is_refused_as_needing_a_split() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    pr.changes = ChangedFiles::TooSlow;
++
++    let planned = plan_for(&pr)?;
++
++    assert_matches!(planned, Err(PlanError::DiffTooSlow));
++    Ok(())
++}
++
++#[test]
++fn a_read_that_returns_fewer_blobs_than_asked_is_refused() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    pr.short_reads = true;
++
++    let planned = plan_for(&pr)?;
++
++    assert_matches!(planned, Err(PlanError::ShortRead { .. }));
++    Ok(())
++}
++
++#[test]
++fn a_draft_schedules_no_reviewer_but_keeps_its_required_roles() -> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++    let mut request = request(&pr)?;
++    request.pull_request.draft = true;
++
++    let run = plan(
++        &request,
++        &pr,
++        &mut CountingNonces::default(),
++        &ContractValidator::new()?,
++    )?;
++
++    let doc = document(&run)?;
++    assert_eq!(
++        (
++            &doc["draft"],
++            &doc["roles"],
++            &doc["required_roles"],
++            &doc["shards"]
++        ),
++        (
++            &json!(true),
++            &json!([]),
++            &json!(["combined-micro"]),
++            &json!([])
++        ),
++        "a draft runs gates only (04 §2.4); decide still knows what review it lacks"
++    );
++    Ok(())
++}
++
++#[test]
++fn each_job_gets_its_own_nonce_artifact_name() -> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++
++    let run = plan_for(&pr)??;
++
++    let names = document(&run)?["artifact_names"].clone();
++    let expected: serde_json::Map<String, Value> = ArtifactJob::ALL
++        .into_iter()
++        .zip(0_u32..)
++        .map(|(job, index)| {
++            (
++                job.name().to_owned(),
++                json!(format!("assay-{}-{index:032x}", job.name())),
++            )
++        })
++        .collect();
++    assert_eq!(names, Value::Object(expected));
++    Ok(())
++}
++
++#[test]
++fn a_nonce_source_that_repeats_itself_is_refused() -> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++    let mut stuck = CountingNonces {
++        stuck: true,
++        ..CountingNonces::default()
++    };
++
++    let planned = plan(&request(&pr)?, &pr, &mut stuck, &ContractValidator::new()?);
++
++    assert_matches!(planned, Err(PlanError::RepeatedNonce { .. }));
++    Ok(())
++}
++
++#[test]
++fn attempts_of_the_same_evidence_share_the_run_key_but_not_the_run_uid()
++-> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++    let first = request(&pr)?;
++    let mut second = request(&pr)?;
++    second.run_uid = run_uid(2)?;
++    let validator = ContractValidator::new()?;
++
++    let one = plan(&first, &pr, &mut CountingNonces::default(), &validator)?;
++    let two = plan(&second, &pr, &mut CountingNonces::default(), &validator)?;
++
++    assert_eq!(
++        (
++            one.run_key() == two.run_key(),
++            document(&one)?["run_uid"] == document(&two)?["run_uid"]
++        ),
++        (true, false),
++        "run_key is for reuse only; run_uid keys leases and ledger records (R3-16)"
++    );
++    Ok(())
++}
++
++#[test]
++fn the_run_key_changes_with_base_config_prompt_bundle_and_head() -> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++    let validator = ContractValidator::new()?;
++    let key = |pr: &FakePr, request: &assay_app::PlanRequest| {
++        plan(request, pr, &mut CountingNonces::default(), &validator).map(|run| run.run_key())
++    };
++    let original = key(&pr, &request(&pr)?)?;
++
++    let mut owners = pr.clone();
++    owners.write(BASE, ".assay/owners", b"owners = []\n");
++    let mut bundle = request(&pr)?;
++    bundle.prompt_bundle = assay_domain::ContentHash::of_files([("prompt.md", b"v2".as_slice())]);
++    let mut head = request(&pr)?;
++    head.pull_request.head_sha = "cccccccccccccccccccccccccccccccccccccccc".parse()?;
++
++    let keys = [
++        key(&owners, &request(&owners)?)?,
++        key(&pr, &bundle)?,
++        key_for_head(&pr, &head, &validator)?,
++    ];
++
++    assert!(
++        keys.iter().all(|changed| *changed != original),
++        "{original} must change with any evidence input, got {keys:?}"
++    );
++    Ok(())
++}
++
++/// The run key of `request`, whose head is another commit holding the fake's head tree.
++fn key_for_head(
++    pr: &FakePr,
++    request: &assay_app::PlanRequest,
++    validator: &ContractValidator,
++) -> Result<assay_app::EvidenceKey, Box<dyn Error>> {
++    let moved = pr.at_head(request.pull_request.head_sha.as_str());
++    Ok(plan(request, &moved, &mut CountingNonces::default(), validator)?.run_key())
++}
++
++#[test]
++fn more_than_five_thousand_lines_plan_a_needs_split_run() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    pr.changes = changes(vec![counted("src/lib.rs", 5_001)]);
++
++    let run = plan_for(&pr)??;
++
++    assert_eq!(
++        (&document(&run)?["tier"], &document(&run)?["roles"]),
++        (&json!("needs-split"), &json!([])),
++        "the schema accepts every tier the domain computes"
++    );
++    Ok(())
++}
++
++#[test]
++fn a_manifest_trust_key_change_is_a_trust_path() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    pr.write(
++        HEAD,
++        "Cargo.toml",
++        b"[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
++    );
++    pr.changes = changes(vec![counted("Cargo.toml", 1)]);
++    let request = request(&pr)?;
++
++    let run = plan(
++        &request,
++        &pr,
++        &mut CountingNonces::default(),
++        &ContractValidator::new()?,
++    )?;
++
++    assert_eq!(
++        (
++            run.tiering().tier,
++            run.tiering().classes.clone(),
++            document(&run)?["trust_paths_changed"].clone(),
++        ),
++        (
++            Tier::Full,
++            vec![PrClass::TrustPath],
++            json!(["Cargo.toml (edition)"]),
++        )
++    );
++    Ok(())
++}
++
++#[test]
++fn a_manifest_that_is_a_symlink_reads_as_unparseable() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    // A symlink's blob is its target's text, which here happens to be valid TOML.
++    pr.symlink(HEAD, "Cargo.toml", b"a = 1");
++    pr.changes = changes(vec![
++        counted("Cargo.toml", 1).with_kind(assay_domain::FileKind::Symlink),
++    ]);
++    let request = request(&pr)?;
++
++    let run = plan(
++        &request,
++        &pr,
++        &mut CountingNonces::default(),
++        &ContractValidator::new()?,
++    )?;
++
++    assert!(
++        run.tiering()
++            .trust_paths_changed
++            .contains(&"Cargo.toml (unparseable)".to_owned()),
++        "a symlinked manifest is never read as TOML, got {:?}",
++        run.tiering().trust_paths_changed
++    );
++    Ok(())
++}
++
++#[test]
++fn a_docs_only_change_is_not_trivial_until_includes_are_scanned() -> Result<(), Box<dyn Error>> {
++    let mut pr = FakePr::new();
++    pr.write(HEAD, "README.md", b"# x, documented\n");
++    pr.changes = changes(vec![counted("README.md", 1)]);
++    let mut request = request(&pr)?;
++    let validator = ContractValidator::new()?;
++    let scanned = plan(&request, &pr, &mut CountingNonces::default(), &validator)?;
++    request.include_targets = IncludeTargets::NotScanned;
++
++    let unscanned = plan(&request, &pr, &mut CountingNonces::default(), &validator)?;
++
++    assert_eq!(
++        (scanned.tiering().tier, unscanned.tiering().tier),
++        (Tier::Trivial, Tier::Micro),
++        "without the include scan any file may be an include target (fail closed)"
++    );
++    Ok(())
++}
++
++#[test]
++fn a_side_without_a_package_set_is_exec_surface() -> Result<(), Box<dyn Error>> {
++    let pr = FakePr::new();
++    let mut request = request(&pr)?;
++    request.head_packages = None;
++
++    let run = plan(
++        &request,
++        &pr,
++        &mut CountingNonces::default(),
++        &ContractValidator::new()?,
++    )?;
++
++    assert_eq!(
++        (run.tiering().tier, run.tiering().classes.clone()),
++        (Tier::Full, vec![PrClass::ExecSurface])
++    );
++    Ok(())
++}
+diff --git a/crates/assay-app/tests/it/plan_fakes.rs b/crates/assay-app/tests/it/plan_fakes.rs
+new file mode 100644
+index 0000000..97b50f9
+--- /dev/null
++++ b/crates/assay-app/tests/it/plan_fakes.rs
+@@ -0,0 +1,284 @@
++//! In-memory fakes of the `plan` ports (TST-09): a PR's base and head trees with its diff, and
++//! a deterministic nonce source.
++
++use std::collections::BTreeMap;
++use std::error::Error;
++use std::fmt;
++use std::num::NonZeroU64;
++
++use assay_app::{
++    ArtifactNonce, ChangedFiles, CommitId, EntryKind, IncludeTargets, NonceSource, PackageSet,
++    PlanRequest, PullRequestEvent, PullRequestObjects, RestFile, RestFiles, TreeEntry,
++};
++use assay_domain::{ContentHash, FileChange, Lines, RunUid};
++
++pub(crate) const BASE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
++pub(crate) const HEAD: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
++pub(crate) const PIN: &str = "0123456789abcdef0123456789abcdef01234567";
++pub(crate) const DIGEST: &str =
++    "sha256:dc7c1d8e3ccab68cfdb828ce40a446c3913f7172f899ffe3f439839cfd917a8b";
++
++/// A base `.assay/plugins.toml` with a required temper gate (one lint step) and an optional
++/// `exec` gate in the test job.
++pub(crate) fn plugins_toml() -> String {
++    format!(
++        r#"
++[assay]
++digest = "{DIGEST}"
++claude_cli = "2.1.296"
++
++[[plugin]]
++name = "temper"
++adapter = "builtin:temper"
++pin = "git:{PIN}"
++required = true
++
++[[plugin.step]]
++name = "fmt"
++job = "lint"
++cmd = ["cargo", "fmt", "--check"]
++timeout_s = 300
++
++[[plugin]]
++name = "custom-lint"
++adapter = "exec"
++exec = ["./scripts/lint.sh"]
++job = "test"
++required = false
++"#
++    )
++}
++
++/// What the fake's port reports when asked something it was told to fail.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) struct FakeError;
++
++impl fmt::Display for FakeError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str("the fake was told to fail")
++    }
++}
++
++impl Error for FakeError {}
++
++/// One file of a fake tree.
++#[derive(Debug, Clone)]
++pub(crate) struct File {
++    kind: EntryKind,
++    bytes: Vec<u8>,
++}
++
++/// A PR as data: two trees, keyed by commit, and the diff between them.
++#[derive(Debug, Clone)]
++pub(crate) struct FakePr {
++    trees: BTreeMap<String, BTreeMap<String, File>>,
++    /// The head commit `changed_files` answers for.
++    head: String,
++    pub(crate) changes: ChangedFiles,
++    /// Reads return one blob fewer than asked for.
++    pub(crate) short_reads: bool,
++}
++
++impl FakePr {
++    /// Base and head both hold `plugins.toml` and a crate; the head changes `src/lib.rs`.
++    pub(crate) fn new() -> Self {
++        let tree: BTreeMap<String, File> = [
++            (".assay/plugins.toml", plugins_toml()),
++            (
++                "Cargo.toml",
++                "[package]\nname = \"x\"\nversion = \"0.1.0\"\n".to_owned(),
++            ),
++            ("README.md", "# x\n".to_owned()),
++            ("src/lib.rs", "pub fn one() {}\n".to_owned()),
++        ]
++        .into_iter()
++        .map(|(path, text)| (path.to_owned(), regular(text.as_bytes())))
++        .collect();
++        let mut pr = Self {
++            trees: [(BASE.to_owned(), tree.clone()), (HEAD.to_owned(), tree)].into(),
++            head: HEAD.to_owned(),
++            changes: ChangedFiles::Listed(Vec::new()),
++            short_reads: false,
++        };
++        pr.write(HEAD, "src/lib.rs", b"pub fn two() {}\n");
++        pr.changes = ChangedFiles::Listed(vec![FileChange::new(
++            "src/lib.rs",
++            Lines::Counted {
++                added: 1,
++                removed: 1,
++            },
++        )]);
++        pr
++    }
++
++    /// The same PR with its head tree and diff under the commit id `head`.
++    pub(crate) fn at_head(&self, head: &str) -> Self {
++        let mut moved = self.clone();
++        if let Some(tree) = moved.trees.remove(&self.head) {
++            moved.trees.insert(head.to_owned(), tree);
++        }
++        head.clone_into(&mut moved.head);
++        moved
++    }
++
++    /// Writes a regular file at `path` in `commit`'s tree.
++    pub(crate) fn write(&mut self, commit: &str, path: &str, bytes: &[u8]) {
++        self.put(commit, path, regular(bytes));
++    }
++
++    /// Puts a symlink to `target` at `path` in `commit`'s tree.
++    pub(crate) fn symlink(&mut self, commit: &str, path: &str, target: &[u8]) {
++        self.put(
++            commit,
++            path,
++            File {
++                kind: EntryKind::Symlink,
++                bytes: target.to_vec(),
++            },
++        );
++    }
++
++    /// Removes `path` from `commit`'s tree.
++    pub(crate) fn remove(&mut self, commit: &str, path: &str) {
++        if let Some(tree) = self.trees.get_mut(commit) {
++            tree.remove(path);
++        }
++    }
++
++    fn put(&mut self, commit: &str, path: &str, file: File) {
++        self.trees
++            .entry(commit.to_owned())
++            .or_default()
++            .insert(path.to_owned(), file);
++    }
++
++    /// The listed files, with the REST list GitHub would report for them.
++    pub(crate) fn rest_files(&self) -> RestFiles {
++        let files: Vec<RestFile> = match &self.changes {
++            ChangedFiles::Listed(files) => files
++                .iter()
++                .map(|file| RestFile {
++                    path: file.path.clone(),
++                    previous_path: file.renamed_from.clone(),
++                })
++                .collect(),
++            ChangedFiles::TooSlow => Vec::new(),
++        };
++        RestFiles {
++            changed_files: u64::try_from(files.len()).unwrap_or(u64::MAX),
++            files,
++        }
++    }
++}
++
++fn regular(bytes: &[u8]) -> File {
++    File {
++        kind: EntryKind::File,
++        bytes: bytes.to_vec(),
++    }
++}
++
++impl PullRequestObjects for FakePr {
++    type Error = FakeError;
++
++    fn changed_files(&self, base: &CommitId, head: &CommitId) -> Result<ChangedFiles, FakeError> {
++        if (base.as_str(), head.as_str()) == (BASE, self.head.as_str()) {
++            Ok(self.changes.clone())
++        } else {
++            Err(FakeError)
++        }
++    }
++
++    fn list(&self, commit: &CommitId, path: Option<&str>) -> Result<Vec<TreeEntry>, FakeError> {
++        let tree = self.trees.get(commit.as_str()).ok_or(FakeError)?;
++        Ok(tree
++            .iter()
++            .filter(|(entry, _)| {
++                path.is_none_or(|path| {
++                    *entry == path
++                        || entry
++                            .strip_prefix(path)
++                            .is_some_and(|rest| rest.starts_with('/'))
++                })
++            })
++            .map(|(entry, file)| TreeEntry {
++                path: entry.clone(),
++                kind: file.kind,
++                object: format!("{}:{entry}", commit.as_str()),
++                size: (file.kind != EntryKind::Submodule)
++                    .then(|| u64::try_from(file.bytes.len()).unwrap_or(u64::MAX)),
++            })
++            .collect())
++    }
++
++    fn read(&self, entries: &[&TreeEntry]) -> Result<Vec<Vec<u8>>, FakeError> {
++        let mut blobs = entries
++            .iter()
++            .map(|entry| {
++                let (commit, path) = entry.object.split_once(':').ok_or(FakeError)?;
++                let file = self
++                    .trees
++                    .get(commit)
++                    .and_then(|tree| tree.get(path))
++                    .filter(|file| file.kind != EntryKind::Submodule)
++                    .ok_or(FakeError)?;
++                Ok(file.bytes.clone())
++            })
++            .collect::<Result<Vec<_>, FakeError>>()?;
++        if self.short_reads {
++            blobs.pop();
++        }
++        Ok(blobs)
++    }
++}
++
++/// Nonces `0..`, as 32 hex digits; or always the same one.
++#[derive(Debug, Clone, Copy, Default)]
++pub(crate) struct CountingNonces {
++    pub(crate) next: u128,
++    pub(crate) stuck: bool,
++}
++
++impl NonceSource for CountingNonces {
++    type Error = FakeError;
++
++    fn nonce(&mut self) -> Result<ArtifactNonce, FakeError> {
++        let nonce = format!("{:032x}", self.next)
++            .parse()
++            .map_err(|_unparsed| FakeError)?;
++        if !self.stuck {
++            self.next = self.next.saturating_add(1);
++        }
++        Ok(nonce)
++    }
++}
++
++/// A request for the fake PR: PR 42 into `main`, not a draft, its REST list matching git, an
++/// empty package set on both sides and no compile-time include.
++pub(crate) fn request(pr: &FakePr) -> Result<PlanRequest, Box<dyn Error>> {
++    Ok(PlanRequest {
++        pull_request: PullRequestEvent {
++            repo: "Wet-Ink-Corporation/assay".to_owned(),
++            number: NonZeroU64::new(42).ok_or("42 is not zero")?,
++            base_sha: BASE.parse()?,
++            head_sha: HEAD.parse()?,
++            base_ref: "main".to_owned(),
++            draft: false,
++        },
++        run_uid: run_uid(1)?,
++        rest_files: pr.rest_files(),
++        base_packages: Some(PackageSet::default()),
++        head_packages: Some(PackageSet::default()),
++        include_targets: IncludeTargets::Scanned(Vec::new()),
++        prompt_bundle: ContentHash::of_files([("prompt.md", b"review".as_slice())]),
++    })
++}
++
++/// Run 7 of repository 840213377, at `attempt`.
++pub(crate) fn run_uid(attempt: u64) -> Result<RunUid, Box<dyn Error>> {
++    Ok(RunUid {
++        repo_id: NonZeroU64::new(840_213_377).ok_or("not zero")?,
++        run_id: NonZeroU64::new(7).ok_or("not zero")?,
++        run_attempt: NonZeroU64::new(attempt).ok_or("attempts count from 1")?,
++    })
++}
