@@ -189,6 +189,16 @@ fn runs_tests_then_doctests_each_under_its_own_timeout_from_the_head_tree()
         ],
         "the test steps in file order; no lint step and no temper baseline --check"
     );
+    let caps: Vec<usize> = steps
+        .seen
+        .iter()
+        .map(|seen| seen.max_output_bytes)
+        .collect();
+    assert_eq!(
+        caps,
+        [16 << 20, 16 << 20],
+        "each test step's output is capped at 16 MiB"
+    );
     Ok(())
 }
 

@@ -440,6 +440,55 @@ fn rejects_a_step_that_lets_zero_tests_pass() {
 }
 
 #[test]
+fn rejects_a_nextest_test_step_without_no_tests_fail() {
+    let missing = [
+        "[\"cargo\", \"nextest\", \"run\", \"--workspace\"]",
+        "[\"/opt/cargo/bin/cargo\", \"nextest\", \"run\"]",
+        "[\"cargo-nextest\", \"run\", \"--workspace\"]",
+        "[\"/opt/cargo/bin/cargo-nextest\", \"run\"]",
+        // After `--` the flag goes to the test binaries, not to nextest.
+        "[\"cargo\", \"nextest\", \"run\", \"--\", \"--no-tests=fail\"]",
+    ];
+    for cmd in missing {
+        let parsed = parse(&temper_step("test", cmd));
+
+        assert!(
+            matches!(&parsed, Err(ConfigError::NoTestsFailMissing { gate }) if gate == "temper.tests"),
+            "{cmd}: {parsed:?}"
+        );
+    }
+}
+
+#[test]
+fn only_a_nextest_test_step_needs_no_tests_fail() -> Result<(), Box<dyn Error>> {
+    let accepted = [
+        ("test", "[\"cargo\", \"test\", \"--doc\"]"),
+        ("lint", "[\"cargo\", \"nextest\", \"run\"]"),
+        ("test", "[\"cargo\", \"test\", \"--\", \"nextest\"]"),
+        (
+            "test",
+            "[\"cargo\", \"nextest\", \"run\", \"--no-tests=fail\", \"--\", \"filter\"]",
+        ),
+    ];
+    for (job, cmd) in accepted {
+        let config = parse(&temper_step(job, cmd))?;
+
+        assert_eq!(config.plugins().len(), 1, "{job} {cmd}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_step_with_a_bad_job_and_a_bad_command_reports_the_job() {
+    let parsed = parse(&temper_step("static", "[]"));
+
+    assert!(
+        matches!(&parsed, Err(ConfigError::Job { gate, job }) if gate == "temper.tests" && job == "static"),
+        "{parsed:?}"
+    );
+}
+
+#[test]
 fn accepts_a_step_whose_zero_tests_fail() -> Result<(), Box<dyn Error>> {
     let cmd = "[\"cargo\", \"nextest\", \"run\", \"--workspace\", \"--no-tests=fail\"]";
 
