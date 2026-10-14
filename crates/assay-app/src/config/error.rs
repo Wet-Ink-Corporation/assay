@@ -62,7 +62,7 @@ pub enum ConfigError {
     },
     /// A plugin takes the name of a built-in adapter (`temper`, `weigh-in`) without being that
     /// built-in. Rubric rules are keyed by gate name, so another adapter under the name could
-    /// make its findings waivable (#153).
+    /// make its findings waivable.
     #[error("plugin name `{gate}` is reserved for `{reserved_for}`, not `{adapter}`")]
     ReservedName {
         /// The plugin.

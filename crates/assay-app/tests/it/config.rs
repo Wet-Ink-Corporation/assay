@@ -664,6 +664,23 @@ fn rejects_a_name_that_is_not_a_plain_identifier() {
     );
 }
 
+/// A spelling that differs from a reserved name only by case, padding or a lookalike letter is
+/// not a plain identifier, so it is refused as a name rather than slipping past the reservation.
+#[test]
+fn rejects_near_spellings_of_a_reserved_name_as_names() {
+    // "t\u{0435}mper" holds a Cyrillic small ie in place of the Latin 'e'.
+    for name in ["Temper", "temper ", "TEMPER", "t\u{0435}mper"] {
+        let text = with_plugin(&format!("name = \"{name}\"\n{EXEC_BODY}"));
+
+        let parsed = parse(&text);
+
+        assert!(
+            matches!(parsed, Err(ConfigError::Name { .. })),
+            "{name:?}: {parsed:?}"
+        );
+    }
+}
+
 #[test]
 fn rejects_a_zero_timeout() {
     let text = with_plugin(
