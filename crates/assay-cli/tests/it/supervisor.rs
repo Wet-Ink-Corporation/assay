@@ -6,7 +6,6 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
 use std::num::NonZeroU8;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -17,6 +16,8 @@ use assay_forge::process::{GroupKiller, ProcessError};
 use assay_gates::{CaptureSupervisor, CapturedRun, ProcessSpec, Supervisor};
 use assay_runner::{ClaudeHeadless, HeadlessEnv, Workdir};
 use tempfile::TempDir;
+
+use crate::support::write_executable;
 
 fn supervisor() -> Result<ForgeSupervisor, Box<dyn Error>> {
     Ok(ForgeSupervisor::new(GroupKiller::system()?))
@@ -273,13 +274,12 @@ impl FakeClaude {
     fn new(then: &str) -> Result<Self, Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         let script = root.path().join("claude");
-        fs::write(
+        write_executable(
             &script,
-            format!(
+            &format!(
                 "#!/bin/sh\n/bin/sleep 600 &\necho $! > \"$HELPER_PID\"\n/bin/cat > /dev/null\n{then}\n"
             ),
         )?;
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
         fs::create_dir(root.path().join("empty"))?;
         Ok(Self { root })
     }

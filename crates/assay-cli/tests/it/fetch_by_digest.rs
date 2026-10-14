@@ -10,6 +10,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use tempfile::TempDir;
+
+use crate::support::write_executable;
+
 const REPOSITORY: &str = "ghcr.io/wet-ink-corporation/assay";
 /// The single layer of the fixture artifact, and its sha256.
 const LAYER: &[u8] = b"#!/bin/sh\necho assay-fixture\n";
@@ -121,23 +125,24 @@ fn script() -> PathBuf {
 /// A per-test directory: `store/` (the fake registry), `bin/oras`, `out/` and `oras.log`.
 struct Sandbox {
     root: PathBuf,
+    /// Owns `root`, unique to this sandbox, so concurrent runs never share it (#166); removed
+    /// on drop.
+    _dir: TempDir,
 }
 
 impl Sandbox {
     fn new(test: &str) -> io::Result<Self> {
-        let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join("fetch-by-digest")
-            .join(test);
-        match fs::remove_dir_all(&root) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
+        let scratch = tempfile::Builder::new()
+            .prefix(&format!("fetch-by-digest-{test}-"))
+            .tempdir_in(env!("CARGO_TARGET_TMPDIR"))?;
+        let root = scratch.path().to_path_buf();
         fs::create_dir_all(root.join("store"))?;
         fs::create_dir_all(root.join("bin"))?;
-        let oras = root.join("bin/oras");
-        fs::write(&oras, FAKE_ORAS)?;
-        fs::set_permissions(&oras, fs::Permissions::from_mode(0o755))?;
-        Ok(Self { root })
+        write_executable(&root.join("bin/oras"), FAKE_ORAS)?;
+        Ok(Self {
+            root,
+            _dir: scratch,
+        })
     }
 
     /// Makes the fake registry answer a request for `sha256:<hex>` with `bytes`.

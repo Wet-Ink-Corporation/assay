@@ -23,6 +23,8 @@ mod self_gate;
 mod status;
 #[cfg(unix)] // process groups and Unix file modes
 mod supervisor;
+#[cfg(all(test, unix))] // shared helpers (TST-14); writes Unix executables
+mod support;
 #[cfg(unix)] // process groups, Unix file modes and a `/bin/sh` stand-in for node
 mod temper;
 #[cfg(unix)] // drives a bash script and Unix symlinks

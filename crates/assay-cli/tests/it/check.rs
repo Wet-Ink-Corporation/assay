@@ -6,12 +6,13 @@ use std::env;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
+
+use crate::support::write_executable;
 
 const DIGEST: &str = "sha256:dc7c1d8e3ccab68cfdb828ce40a446c3913f7172f899ffe3f439839cfd917a8b";
 
@@ -43,8 +44,7 @@ impl Scene {
         plain_git(root.path(), &["init", "--quiet", "-b", "main", "work"])?;
         write(&work, ".assay/plugins.toml", &plugins_toml())?;
         write(&work, ".gitignore", ".env\n")?;
-        write(&work, "gate.sh", GATE)?;
-        fs::set_permissions(work.join("gate.sh"), fs::Permissions::from_mode(0o755))?;
+        write_executable(&work.join("gate.sh"), GATE)?;
         write(&work, "src/lib.rs", "pub fn one() -> u32 {\n    1\n}\n")?;
         plain_git(&work, &["add", "--all"])?;
         plain_git(&work, &["commit", "--quiet", "-m", "base"])?;
@@ -85,8 +85,7 @@ impl Scene {
             stream = stream.display(),
         );
         let program = self.path("claude");
-        fs::write(&program, script)?;
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o755))?;
+        write_executable(&program, &script)?;
         Ok(())
     }
 
