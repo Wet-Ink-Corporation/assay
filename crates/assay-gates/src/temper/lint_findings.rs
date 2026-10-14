@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
+use assay_app::plain_name;
 use assay_domain::{Class, Finding, Severity};
 
 use super::baseline::{self, Raise};
@@ -17,7 +18,7 @@ use super::evidence::Lines;
 use super::exceptions::Allowlist;
 use super::findings;
 use super::ratchet::{self, BuildError, Checked, Increase, Level, Tool};
-use super::report::{Rule, Spot, finding, plain};
+use super::report::{Rule, Spot, finding};
 use super::scan::Request;
 
 /// Most findings in one `gates-lint` document, so it stays far below the 8 MiB contract cap.
@@ -160,7 +161,7 @@ pub(super) fn display(shown: Shown<'_>, lines: &Lines<'_>) -> Finding {
 
 /// A finding on a line this PR changed.
 fn changed_line(code: &ratchet::Finding, lines: &Lines<'_>) -> Finding {
-    let lint = plain(&code.lint);
+    let lint = plain_name(&code.lint);
     let level = level_name(code.severity);
     let spot = lines.spot(&code.file, code.line, &lint);
     let (tool, class) = match code.tool {
@@ -181,7 +182,7 @@ fn changed_line(code: &ratchet::Finding, lines: &Lines<'_>) -> Finding {
 
 /// A (crate, lint) count above the baseline, at the baseline.
 fn increased(increase: &Increase, level: Level) -> Finding {
-    let (lint, krate) = (plain(&increase.lint), plain(&increase.krate));
+    let (lint, krate) = (plain_name(&increase.lint), plain_name(&increase.krate));
     let (was, now) = (increase.baseline, increase.current);
     let spot = Spot::synthesised(baseline::PATH, &format!("{krate} {lint}: {was} -> {now}"));
     let body = format!(
@@ -211,7 +212,7 @@ const fn rule(class: Class, severity: Severity) -> Rule {
 
 /// `shown` under the rule `lint`, made safe and never one `decide` can waive.
 fn under(mut shown: Finding, lint: &str) -> Finding {
-    let id = plain(lint);
+    let id = plain_name(lint);
     shown.rule = Some(if WAIVABLE.contains(&id.as_str()) {
         format!("lint:{id}")
     } else {

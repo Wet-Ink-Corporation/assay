@@ -3,12 +3,13 @@
 //! weakened lints table, a member that does not inherit the workspace lints and a manifest
 //! that does not parse are not. PR-controlled text goes through [`plain`] into code spans.
 
+use assay_app::plain_name;
 use assay_domain::{Class, Finding, Severity, Side};
 
 use super::exceptions::Allowlist;
 use super::inventory::{ReferenceKind, Unplaced};
 use super::manifests::{ManifestChecks, SwitchChange};
-use super::report::{Rule, Spot, finding, plain};
+use super::report::{Rule, Spot, finding};
 use super::statics::{InventoryChange, Loss};
 
 /// Step 4a: tests lost, an ignore added, or a test or module put under a new condition.
@@ -26,7 +27,7 @@ pub(super) fn inventory(changes: &[InventoryChange<'_>], allowlist: &Allowlist) 
         .filter(|change| !allowlist.admits_inventory(change.path, change.base, change.head))
         .map(|change| {
             let losses: Vec<String> = change.losses.iter().map(describe).collect();
-            let path = plain(change.path);
+            let path = plain_name(change.path);
             let side = if change.head.is_some() {
                 Side::Right
             } else {
@@ -52,19 +53,19 @@ pub(super) fn inventory(changes: &[InventoryChange<'_>], allowlist: &Allowlist) 
 fn describe(loss: &Loss) -> String {
     match loss {
         Loss::Tests { from, to } => format!("tests {from} -> {to}"),
-        Loss::Conditional(text) => format!("a test under `{}` is gone", plain(text)),
+        Loss::Conditional(text) => format!("a test under `{}` is gone", plain_name(text)),
         Loss::Ignores { from, to } => format!("ignores {from} -> {to}"),
-        Loss::Gate(text) => format!("new condition `{}`", plain(text)),
-        Loss::Module(name) => format!("module `{}` no longer declared", plain(name)),
+        Loss::Gate(text) => format!("new condition `{}`", plain_name(text)),
+        Loss::Module(name) => format!("module `{}` no longer declared", plain_name(name)),
         Loss::Unplaced(Unplaced::Path { name, path }) => format!(
             "module `{}` (`#[path = \"{}\"]`) no longer declared",
-            plain(name),
-            plain(path)
+            plain_name(name),
+            plain_name(path)
         ),
         Loss::Unplaced(Unplaced::Uncertain(name)) => format!(
             "module `{}` no longer declared, in a file whose module paths this check cannot \
              place",
-            plain(name)
+            plain_name(name)
         ),
         Loss::Unplaced(Unplaced::Reference(kind)) => {
             let kind = match kind {
@@ -116,9 +117,9 @@ pub(super) fn manifests(checks: &ManifestChecks<'_>, allowlist: &Allowlist) -> V
         let body = format!(
             "`{}` is not UTF-8 TOML, so its switches, lints and inheritance cannot be \
              compared. Cargo refuses it too.",
-            plain(path)
+            plain_name(path)
         );
-        let title = format!("manifest that does not parse: `{}`", plain(path));
+        let title = format!("manifest that does not parse: `{}`", plain_name(path));
         finding(MANIFEST_UNREADABLE, spot, &title, &body)
     });
     let switches = checks
@@ -132,13 +133,13 @@ pub(super) fn manifests(checks: &ManifestChecks<'_>, allowlist: &Allowlist) -> V
             "`{}`: {}. A lint table may only get stricter in a PR: lowering a level, removing \
              a lint, changing a priority or adding a lint below `deny` is a human decision made \
              outside this gate (H-05, H-12).",
-            plain(path),
+            plain_name(path),
             what.iter()
-                .map(|text| plain(text))
+                .map(|text| plain_name(text))
                 .collect::<Vec<_>>()
                 .join("; "),
         );
-        let title = format!("lints table weakened: `{}`", plain(path));
+        let title = format!("lints table weakened: `{}`", plain_name(path));
         finding(LINTS_TABLE, spot, &title, &body)
     });
     let uninherited = checks.uninherited.iter().map(|path| {
@@ -147,11 +148,11 @@ pub(super) fn manifests(checks: &ManifestChecks<'_>, allowlist: &Allowlist) -> V
             "`{}` declares a package without `[lints] workspace = true`, so the workspace \
              lints do not apply to it. Every package outside a directory the workspace \
              excludes must inherit them.",
-            plain(path)
+            plain_name(path)
         );
         let title = format!(
             "package does not inherit the workspace lints: `{}`",
-            plain(path)
+            plain_name(path)
         );
         finding(LINT_INHERITANCE, spot, &title, &body)
     });
@@ -164,7 +165,7 @@ pub(super) fn manifests(checks: &ManifestChecks<'_>, allowlist: &Allowlist) -> V
 
 /// One `manifest-switch` finding.
 fn switch(change: &SwitchChange<'_>) -> Finding {
-    let path = plain(change.path);
+    let path = plain_name(change.path);
     let names = change.switches.join(", ");
     let side = if change.head.is_some() {
         Side::Right
@@ -186,7 +187,7 @@ fn switch(change: &SwitchChange<'_>) -> Finding {
 
 /// A blob id as the body shows it: the id is git's hex, or `absent`.
 fn blob(id: Option<&str>) -> String {
-    id.map_or_else(|| "absent".to_owned(), |id| format!("`{}`", plain(id)))
+    id.map_or_else(|| "absent".to_owned(), |id| format!("`{}`", plain_name(id)))
 }
 
 #[cfg(test)]

@@ -6,13 +6,14 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
+use assay_app::plain_name;
 use assay_domain::{Class, Finding, Severity, Side};
 
 use super::baseline::{self, Raise};
 use super::exceptions::Allowlist;
 use super::gate_config;
 use super::head::{Analysis, Blind, ExpectAt, Why};
-use super::report::{Rule, Spot, finding, plain};
+use super::report::{Rule, Spot, finding};
 use super::scan::Request;
 use super::vendored::{self, Drift};
 
@@ -71,7 +72,7 @@ pub(super) fn raised(raises: &[Raise<'_>], head: Option<&str>) -> Vec<Finding> {
                 || format!("is a new baseline entry at {to}"),
                 |from| format!("rises from {from} to {to}"),
             );
-            let (lint, krate) = (plain(lint), plain(krate));
+            let (lint, krate) = (plain_name(lint), plain_name(krate));
             let body = format!(
                 "`{lint}` in `{krate}` {change}. The temper baseline may only go down: \
                  accepting new lint debt is a human decision (H-12), made outside this PR."
@@ -90,7 +91,7 @@ pub(super) fn moved_crates(names: &[&str], head: Option<&str>) -> Vec<Finding> {
         .map(|name| {
             let spot = locate(head, &[key("crates"), key(name)])
                 .unwrap_or_else(|| Spot::synthesised(baseline::PATH, name));
-            let name = plain(name);
+            let name = plain_name(name);
             let body = format!(
                 "The head baseline adds `{name}` to `crates` or maps it to another directory. \
                  `crates` decides which sources a crate's counts cover, so this can move \
@@ -174,7 +175,7 @@ pub(super) fn unadmitted(request: Request) -> Finding {
     let lint = request
         .lint
         .as_deref()
-        .map_or_else(|| "?".to_owned(), plain);
+        .map_or_else(|| "?".to_owned(), plain_name);
     let fallback = format!("#[expect({lint})]");
     let body = format!(
         "temper reports an exception request for `{lint}` here. A lint exception is accepted \
@@ -209,7 +210,7 @@ pub(super) fn blind(spots: &[&Blind<'_>]) -> Vec<Finding> {
     spots
         .iter()
         .map(|spot| {
-            let path = plain(spot.path);
+            let path = plain_name(spot.path);
             let (title, body) = wording(spot.why);
             let fallback = format!("{path}: {title}");
             let located = Spot::at(
@@ -315,7 +316,7 @@ pub(super) fn gate_config(keys: &[&str], base: Option<&str>, head: Option<&str>)
 /// One `vendored-drift` finding naming the first drifted path, or none.
 pub(super) fn drift(drifted: &BTreeMap<Cow<'_, str>, Drift>, pin: &str) -> Option<Finding> {
     let (path, first) = drifted.first_key_value()?;
-    let shown = plain(path);
+    let shown = plain_name(path);
     let spot = Spot::synthesised(path, &format!("{shown} {}", first.describe()));
     let body = format!(
         "{count} path(s) under `{dir}/` differ from the pinned temper `{pin}`; the first, \

@@ -15,6 +15,7 @@ mod decide;
 mod doctor;
 mod eval;
 mod events;
+mod finding_text;
 mod gate;
 mod golden;
 mod model_runner;
@@ -83,6 +84,7 @@ pub use eval::{
     Proportion, RunScore, Split, Unscorable, WILSON_Z, compare, read_eval_corpus, run_eval,
 };
 pub use events::{EventSink, NoEvents};
+pub use finding_text::{clip_chars, plain_name};
 pub use gate::{
     BuildJob, Conclusion, GateDocument, GateError, GateJob, GateOutcome, GateReport, GateRun,
     GateRunner, Termination, account_for_required, run_gates,

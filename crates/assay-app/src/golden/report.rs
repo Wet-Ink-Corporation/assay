@@ -5,6 +5,8 @@ use std::num::NonZeroU64;
 
 use assay_domain::{Class, Finding, FindingKind, Severity, Side};
 
+use crate::finding_text::{clip_chars, plain_name};
+
 /// Most characters of `evidence` (03 §3).
 const EVIDENCE_CHARS: usize = 400;
 /// Most characters of `title`.
@@ -53,7 +55,7 @@ impl Problem {
         };
         let evidence = quoted
             .and_then(|bytes| line_text(bytes, line))
-            .unwrap_or_else(|| clip(&plain(file), EVIDENCE_CHARS));
+            .unwrap_or_else(|| clip_chars(&plain_name(file), EVIDENCE_CHARS));
         Finding {
             class,
             rule: Some(rule.to_owned()),
@@ -69,7 +71,7 @@ impl Problem {
             expected_behavior: None,
             trigger: None,
             caller: None,
-            title: clip(&format!("{title}: `{}`", plain(file)), TITLE_CHARS),
+            title: clip_chars(&format!("{title}: `{}`", plain_name(file)), TITLE_CHARS),
             body: body.to_owned(),
             fix: None,
             confidence: None,
@@ -157,7 +159,7 @@ fn line_text(bytes: &[u8], line: usize) -> Option<String> {
     let text = lines(bytes).nth(line.checked_sub(1)?)?;
     let text = String::from_utf8_lossy(text);
     let trimmed = text.trim();
-    (!trimmed.is_empty()).then(|| clip(trimmed, EVIDENCE_CHARS))
+    (!trimmed.is_empty()).then(|| clip_chars(trimmed, EVIDENCE_CHARS))
 }
 
 /// `line` as a finding's line; line 1 for 0 (serde's "no line").
@@ -166,27 +168,6 @@ fn one_based(line: usize) -> NonZeroU64 {
         .ok()
         .and_then(NonZeroU64::new)
         .unwrap_or(NonZeroU64::MIN)
-}
-
-/// A PR-controlled path made safe for a title's code span: anything but ASCII letters, digits
-/// and `_:-./` becomes `?`, and `://` becomes `?`, so no backtick, newline, markup or link
-/// gets through.
-fn plain(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "_:-./".contains(c) {
-                c
-            } else {
-                '?'
-            }
-        })
-        .collect::<String>()
-        .replace("://", "?")
-}
-
-/// `text` cut to its first `max` characters.
-fn clip(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
 }
 
 #[cfg(test)]
@@ -231,7 +212,7 @@ mod tests {
     #[test]
     fn a_path_cannot_break_out_of_a_code_span() {
         assert_eq!(
-            plain("corpus/golden/x`\n[link](https://e)"),
+            plain_name("corpus/golden/x`\n[link](https://e)"),
             "corpus/golden/x???link??https?e?",
             "backticks, newlines, markup and `://` are replaced"
         );
