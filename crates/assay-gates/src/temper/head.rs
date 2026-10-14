@@ -5,7 +5,7 @@
 //! modelled exactly, the check refuses rather than models (Weigh-In default wi-b5affa).
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 use std::path::Path;
 
@@ -90,7 +90,8 @@ pub(super) struct Analysis<'h> {
     /// The blind spots, by path and line.
     pub(super) blind: Vec<Blind<'h>>,
     pub(super) expects: Vec<ExpectAt<'h>>,
-    /// Every plain `allow` attribute, as the blind spot it is unless the scan reported it.
+    /// The lines holding a plain `allow` attribute, one spot per line however many it holds,
+    /// as the blind spot each is unless the scan reported it.
     pub(super) allows: Vec<Blind<'h>>,
 }
 
@@ -269,10 +270,7 @@ fn read_source<'h>(
     analysis: &mut Analysis<'h>,
 ) {
     let LexedFile {
-        path,
-        text,
-        lexed,
-        references,
+        path, text, lexed, ..
     } = file;
     let path = *path;
     let lexed = match lexed {
@@ -287,12 +285,52 @@ fn read_source<'h>(
             return;
         }
     };
+    let lines = blind_lines(file, lexed, index, declared);
+    // One spot per line, as `blind_with` keeps: a line of many `allow`s is quoted once.
+    let mut allows = attributes::allows(lexed);
+    allows.sort_unstable();
+    allows.dedup();
+    // One walk over the text for every quote, so a quote costs its own line, not every line
+    // before it (#184).
+    let quotes = quotes(
+        text,
+        lines
+            .iter()
+            .map(|&(line, _)| line)
+            .chain(allows.iter().copied()),
+    );
     let spot = |(line, why)| Blind {
         path,
         line,
         why,
-        quote: line_text(text, line),
+        quote: quotes.get(&line).map(|&quote| quote.to_owned()),
     };
+    analysis.blind.extend(lines.into_iter().map(spot));
+    analysis
+        .allows
+        .extend(allows.into_iter().map(|line| spot((line, Why::Unreported))));
+    analysis.expects.extend(
+        attributes::expects(lexed)
+            .into_iter()
+            .map(|(line, lints)| ExpectAt {
+                file: path,
+                line,
+                lints,
+            }),
+    );
+}
+
+/// The blind lines of `file`, whose tokens are `lexed`, each once, in order: its unread
+/// attributes and the file references the tree does not back.
+fn blind_lines(
+    file: &LexedFile<'_, '_>,
+    lexed: &[Lexed<'_>],
+    index: &Index<'_>,
+    declared: &Declared,
+) -> Vec<(NonZeroU64, Why)> {
+    let LexedFile {
+        path, references, ..
+    } = file;
     let mut lines: Vec<(NonZeroU64, Why)> = attributes::unread(lexed)
         .into_iter()
         .map(|line| (line, Why::Attribute))
@@ -308,32 +346,117 @@ fn read_source<'h>(
         .collect();
     lines.sort_by_key(|(line, _)| *line);
     lines.dedup_by_key(|(line, _)| *line);
-    analysis.blind.extend(lines.into_iter().map(spot));
-    analysis.allows.extend(
-        attributes::allows(lexed)
-            .into_iter()
-            .map(|line| spot((line, Why::Unreported))),
-    );
-    analysis.expects.extend(
-        attributes::expects(lexed)
-            .into_iter()
-            .map(|(line, lints)| ExpectAt {
-                file: path,
-                line,
-                lints,
-            }),
-    );
+    lines
 }
 
-/// Line `line` of `text`, when it has one.
-fn line_text(text: &str, line: NonZeroU64) -> Option<String> {
-    let index = usize::try_from(line.get()).ok()?.checked_sub(1)?;
-    text.lines().nth(index).map(str::to_owned)
+/// The text of each of the `wanted` lines that `text` has, as [`str::lines`] reads them, in one
+/// walk over `text`.
+fn quotes(text: &str, wanted: impl IntoIterator<Item = NonZeroU64>) -> BTreeMap<NonZeroU64, &str> {
+    let wanted: BTreeSet<NonZeroU64> = wanted.into_iter().collect();
+    // Ascending, distinct indices: a line past `usize` is past any text, so it has no quote.
+    let mut wanted = wanted
+        .into_iter()
+        .filter_map(|line| Some((usize::try_from(line.get()).ok()?.checked_sub(1)?, line)))
+        .peekable();
+    let mut found = BTreeMap::new();
+    for (index, quote) in text.lines().enumerate() {
+        let Some(&(next, line)) = wanted.peek() else {
+            break;
+        };
+        if index == next {
+            found.insert(line, quote);
+            wanted.next();
+        }
+    }
+    found
 }
 
 #[cfg(test)]
 mod tests {
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+
     use super::*;
+
+    /// A tree of one Rust file, `src/lib.rs`, holding `text`.
+    fn one_file(text: &str) -> HeadTree {
+        let entry = TreeEntry {
+            path: "src/lib.rs".to_owned(),
+            kind: EntryKind::File,
+            object: "0".repeat(40),
+            size: None,
+        };
+        HeadTree::new(vec![entry], vec![text.as_bytes().to_vec()]).expect("one blob for one file")
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "20,000-line worst case; Miri is ~1000x slower")]
+    fn twenty_thousand_blind_spots_are_quoted_quickly() {
+        let text = "#[allow(a)]\n".repeat(20_000);
+        let tree = one_file(&text);
+
+        let analysis = tree.analyse();
+        let blind = analysis.blind_with(&BTreeSet::new());
+
+        assert_eq!(
+            (
+                blind.len(),
+                blind.last().and_then(|spot| spot.quote.as_deref())
+            ),
+            (20_000, Some("#[allow(a)]")),
+            "every line is an unreported allow, quoted"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "20,000-allow worst case; Miri is ~1000x slower")]
+    fn twenty_thousand_allows_on_one_line_are_quoted_quickly() {
+        let line = "#[allow(a)]".repeat(20_000);
+        let tree = one_file(&line);
+
+        let analysis = tree.analyse();
+        let blind = analysis.blind_with(&BTreeSet::new());
+
+        assert_eq!(
+            blind
+                .iter()
+                .map(|spot| (spot.line.get(), spot.quote.as_deref()))
+                .collect::<Vec<_>>(),
+            [(1, Some(line.as_str()))],
+            "one blind line, quoted whole"
+        );
+    }
+
+    fn line() -> impl Strategy<Value = &'static str> {
+        prop::sample::select(vec![
+            "#[allow(a)]",
+            "#[allow(a)] #[allow(b)]",
+            "fn f() {}",
+            "",
+        ])
+    }
+
+    proptest! {
+        #[test]
+        fn every_quote_is_its_line_as_lines_reads_it(
+            lines in vec((line(), prop::sample::select(vec!["\n", "\r\n"])), 0..24),
+            last in line(),
+        ) {
+            let mut text: String = lines
+                .iter()
+                .flat_map(|&(line, end)| [line, end])
+                .collect();
+            text.push_str(last);
+            let tree = one_file(&text);
+
+            let analysis = tree.analyse();
+
+            for spot in analysis.blind_with(&BTreeSet::new()) {
+                let index = usize::try_from(spot.line.get() - 1).expect("a line fits usize");
+                prop_assert_eq!(spot.quote.as_deref(), text.lines().nth(index), "{:?}", spot);
+            }
+        }
+    }
 
     #[test]
     fn a_missing_blob_is_an_error_not_an_unread_file() {

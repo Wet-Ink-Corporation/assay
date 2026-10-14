@@ -21,21 +21,18 @@ const SKIPPED: [&str; 4] = ["target", ".git", "node_modules", ".temper"];
 pub(super) struct Index<'h> {
     /// Every entry's path and kind.
     kinds: HashMap<&'h str, EntryKind>,
-    /// Every directory: each proper prefix of an entry's path that ends at a `/`.
-    directories: HashSet<&'h str>,
+    /// Every directory.
+    directories: Directories<'h>,
 }
 
 impl<'h> Index<'h> {
     pub(super) fn new(entries: impl Iterator<Item = &'h TreeEntry>) -> Self {
         let mut kinds = HashMap::new();
-        let mut directories = HashSet::new();
+        let mut directories = Directories::default();
         for entry in entries {
             let path = entry.path.as_str();
             kinds.insert(path, entry.kind);
-            directories.extend(
-                path.match_indices('/')
-                    .filter_map(|(slash, _)| path.get(..slash)),
-            );
+            directories.add(path);
         }
         Self { kinds, directories }
     }
@@ -52,28 +49,33 @@ impl<'h> Index<'h> {
     /// The regular file of the tree that `target` names from the directory of the entry at
     /// `from`, resolved lexically: relative, never above the root, and every `..` leaving a
     /// real directory.
+    ///
+    /// Linear in `from` and `target`: each segment is one lookup in its parent directory.
     fn resolve(&self, from: &str, target: &str) -> Option<String> {
         if target.starts_with('/') {
             return None;
         }
+        // Each resolved part, with the directory it names when it names one.
+        let mut parts: Vec<(&str, Option<Dir>)> = Vec::new();
         // An entry at the root resolves from the root: no directory parts.
-        let mut parts: Vec<&str> = match from.rsplit_once('/') {
-            Some((directory, _)) => directory.split('/').collect(),
-            None => Vec::new(),
-        };
+        if let Some((directory, _)) = from.rsplit_once('/') {
+            for part in directory.split('/') {
+                parts.push((part, self.directories.child(innermost(&parts), part)));
+            }
+        }
         for part in target.split('/') {
             match part {
                 "" | "." => {}
                 ".." => {
-                    if !self.directories.contains(parts.join("/").as_str()) {
+                    // Only a real directory may be left: not the root, a file or nothing.
+                    let (_, Some(_)) = parts.pop()? else {
                         return None;
-                    }
-                    parts.pop()?;
+                    };
                 }
-                part => parts.push(part),
+                part => parts.push((part, self.directories.child(innermost(&parts), part))),
             }
         }
-        let resolved = parts.join("/");
+        let resolved = joined(&parts);
         self.is_file(&resolved).then_some(resolved)
     }
 
@@ -117,6 +119,57 @@ impl<'h> Index<'h> {
             found(&nested)
         }
     }
+}
+
+/// A directory of the tree: the root, or a node of [`Directories`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Dir {
+    Root,
+    Child(usize),
+}
+
+/// Every directory of the tree, each proper prefix up to a `/` of an entry's path, keyed by its
+/// parent and its last segment, so a lookup hashes one segment, never a whole prefix (#184).
+#[derive(Debug, Default)]
+struct Directories<'h>(HashMap<(Dir, &'h str), Dir>);
+
+impl<'h> Directories<'h> {
+    /// Adds the directories `path` lies in.
+    fn add(&mut self, path: &'h str) {
+        let Some((directory, _)) = path.rsplit_once('/') else {
+            return;
+        };
+        let mut parent = Dir::Root;
+        for segment in directory.split('/') {
+            let next = Dir::Child(self.0.len());
+            parent = *self.0.entry((parent, segment)).or_insert(next);
+        }
+    }
+
+    /// The directory `name` in `parent`, when both are directories.
+    fn child(&self, parent: Option<Dir>, name: &str) -> Option<Dir> {
+        self.0.get(&(parent?, name)).copied()
+    }
+}
+
+/// The directory the resolved `parts` name, when they name one: the root for none.
+fn innermost(parts: &[(&str, Option<Dir>)]) -> Option<Dir> {
+    parts.last().map_or(Some(Dir::Root), |&(_, dir)| dir)
+}
+
+/// The resolved `parts` joined by `/`, built in one allocation.
+fn joined(parts: &[(&str, Option<Dir>)]) -> String {
+    let length = parts.iter().fold(parts.len(), |length, &(part, _)| {
+        length.saturating_add(part.len())
+    });
+    let mut path = String::with_capacity(length);
+    for (at, &(part, _)) in parts.iter().enumerate() {
+        if at > 0 {
+            path.push('/');
+        }
+        path.push_str(part);
+    }
+    path
 }
 
 /// The directories `parts` (a path's components) would be a crate root of, one per pattern of
@@ -199,4 +252,122 @@ pub(super) fn exactly_rs(path: &str) -> bool {
     std::path::Path::new(path)
         .extension()
         .is_some_and(|e| e == "rs")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+
+    use super::Index;
+    use crate::revision::{EntryKind, TreeEntry};
+
+    fn entry(path: String, kind: EntryKind) -> TreeEntry {
+        TreeEntry {
+            path,
+            kind,
+            object: "0".repeat(40),
+            size: Some(0),
+        }
+    }
+
+    /// The reading before #184: every prefix of every path in a set, and the resolved path
+    /// re-joined at each `..`.
+    fn reference(entries: &[TreeEntry], from: &str, target: &str) -> Option<String> {
+        let kinds: HashMap<&str, EntryKind> = entries
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.kind))
+            .collect();
+        let directories: HashSet<&str> = entries
+            .iter()
+            .flat_map(|entry| {
+                entry
+                    .path
+                    .match_indices('/')
+                    .filter_map(|(slash, _)| entry.path.get(..slash))
+            })
+            .collect();
+        if target.starts_with('/') {
+            return None;
+        }
+        let mut parts: Vec<&str> = match from.rsplit_once('/') {
+            Some((directory, _)) => directory.split('/').collect(),
+            None => Vec::new(),
+        };
+        for part in target.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    if !directories.contains(parts.join("/").as_str()) {
+                        return None;
+                    }
+                    parts.pop()?;
+                }
+                part => parts.push(part),
+            }
+        }
+        let resolved = parts.join("/");
+        (kinds.get(resolved.as_str()) == Some(&EntryKind::File)).then_some(resolved)
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "20,000-segment worst case; Miri is ~1000x slower")]
+    fn a_link_twenty_thousand_directories_deep_resolves_quickly() {
+        let depth = 20_000;
+        let directory = vec!["d"; depth].join("/");
+        let entries = [
+            entry(format!("{directory}/link"), EntryKind::Symlink),
+            entry(format!("{directory}/file"), EntryKind::File),
+        ];
+        let [link, file] = &entries;
+        let target = format!("{}/{directory}/file", vec![".."; depth].join("/"));
+
+        let resolved = Index::new(entries.iter()).resolve(&link.path, &target);
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(file.path.as_str()),
+            "the target climbs to the root and back down to the file"
+        );
+    }
+
+    fn segment() -> impl Strategy<Value = &'static str> {
+        prop::sample::select(vec!["a", "b", ""])
+    }
+
+    fn target_segment() -> impl Strategy<Value = &'static str> {
+        prop::sample::select(vec!["a", "b", "", ".", ".."])
+    }
+
+    fn kind() -> impl Strategy<Value = EntryKind> {
+        prop::sample::select(vec![
+            EntryKind::File,
+            EntryKind::Symlink,
+            EntryKind::Submodule,
+        ])
+    }
+
+    proptest! {
+        #[test]
+        fn resolve_matches_the_segment_join_reading(
+            paths in vec((vec(segment(), 1..5), kind()), 0..12),
+            from in vec(segment(), 1..5),
+            target in vec(target_segment(), 0..8),
+            absolute in any::<bool>(),
+        ) {
+            let entries: Vec<TreeEntry> = paths
+                .into_iter()
+                .map(|(segments, kind)| entry(segments.join("/"), kind))
+                .collect();
+            let from = from.join("/");
+            let target = format!("{}{}", if absolute { "/" } else { "" }, target.join("/"));
+
+            prop_assert_eq!(
+                Index::new(entries.iter()).resolve(&from, &target),
+                reference(&entries, &from, &target)
+            );
+        }
+    }
 }

@@ -74,6 +74,7 @@ dependencies = [
 name = "assay-forge"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "tempfile",
  "thiserror",
 ]
@@ -84,6 +85,7 @@ version = "0.1.0"
 dependencies = [
  "assay-app",
  "assay-domain",
+ "proptest",
  "serde",
  "serde_json",
  "syn 2.0.119",
