@@ -4,9 +4,11 @@
 //! baseline --check --locked --base <base_sha> --findings-out target/temper/findings.json` from
 //! the head checkout, its ratchet believed only against the merge base Z2s computed.
 //!
-//! A run that does not exit (timeout, signal, output cap), or a `baseline --check` exit other
-//! than 0 or 1, is handed to the gate use case as that termination, so it is the matching
-//! `gate-error`. A step that exits non-zero fails the gate.
+//! A declared step a signal ended is run once more, and that run decides (06 F9, as in
+//! `gates-test`); `baseline --check` is never retried. A run that does not exit (timeout,
+//! signal after a step's one retry, output cap), or a `baseline --check` exit other than 0 or
+//! 1, is handed to the gate use case as that termination, so it is the matching `gate-error`. A
+//! step that exits non-zero fails the gate.
 
 use std::fs;
 use std::io;
@@ -51,7 +53,7 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
         // proc-macros run there).
         let mut failed = false;
         for step in steps.iter().filter(|step| step.job() == BuildJob::Lint) {
-            match self.step(step)? {
+            match self.step_retried(step)? {
                 Termination::Exited(0) => {}
                 Termination::Exited(_) => failed = true,
                 other => return Ok(stopped(other)),
