@@ -1,0 +1,28 @@
+{
+  "schema": "assay.status/1",
+  "source": "ci",
+  "repo": "Wet-Ink-Corporation/assay",
+  "pr": 42,
+  "branch": "feature/status",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "local_head_sha": null,
+  "stale": false,
+  "check": {
+    "conclusion": "failure",
+    "status": "completed",
+    "url": "https://github.com/Wet-Ink-Corporation/assay/runs/9001"
+  },
+  "decision": null,
+  "refused": {
+    "reason": "not-a-reason"
+  },
+  "tier": null,
+  "gates": [],
+  "findings": [],
+  "viewer": {
+    "login": "someone",
+    "is_owner": false,
+    "is_agent": false
+  },
+  "fetched_at": "2026-10-13T09:30:00Z"
+}

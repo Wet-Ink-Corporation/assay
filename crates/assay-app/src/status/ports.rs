@@ -94,6 +94,9 @@ pub struct CheckView {
     pub conclusion: Option<ObservedConclusion>,
     /// Its `external_id`, if set.
     pub external_id: Option<String>,
+    /// Its `output.title`, if set: for a refused run, the only place the verdict check carries
+    /// the refusal's reason code as closed vocabulary alone (#218).
+    pub output_title: Option<String>,
     /// Its `output.text`, if set.
     pub output_text: Option<String>,
     /// Its page (`html_url`).

@@ -65,7 +65,7 @@
       ]
     },
     "decision": {
-      "description": "The decision the check's evidence pointer names (assay.decision/1, 03 §5). Null only when there is none to read: no App verdict check, a check carrying `open`'s `pending:<run>:<seq>` stamp (a run in progress), or a decided check whose run persisted no bundle. A decided `pending` verdict (its check stays `in_progress`), such as a budget deferral, carries its decision. `local`: the local decision, null when there is no local result.",
+      "description": "The decision the check's evidence pointer names (assay.decision/1, 03 §5). Null only when there is none to read: no App verdict check, a check carrying `open`'s `pending:<run>:<seq>` stamp (a run in progress), or a decided check whose run persisted no bundle (a refused run persists none, and its status says why in `refused`). A decided `pending` verdict (its check stays `in_progress`), such as a budget deferral, carries its decision. `local`: the local decision, null when there is no local result.",
       "oneOf": [
         {
           "type": "object",
@@ -127,6 +127,15 @@
         },
         { "type": "null" }
       ]
+    },
+    "refused": {
+      "description": "`ci` only (#218): why the run was refused before the rubric, so a refusal is not read as nothing having run. Present only when the App's verdict check is completed `failure` and its `output.text` names neither an inputs digest nor an evidence pointer (a refused run persists no bundle, so `decision` is null); absent for every other check. `reason` is the one reason code of 03 §5 that check's title carries; anything else is refused, never guessed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "$ref": "#/$defs/reasonCode" }
+      }
     },
     "tier": {
       "description": "The decision's tier (04 §2.3), or null without a decision.",
@@ -247,6 +256,22 @@
           "tree": false,
           "local_tree": false,
           "check": { "oneOf": [{ "type": "object", "required": ["url"] }, { "type": "null" }] }
+        },
+        "if": { "required": ["refused"] },
+        "then": {
+          "required": ["check"],
+          "properties": {
+            "check": {
+              "type": "object",
+              "properties": {
+                "status": { "const": "completed" },
+                "conclusion": { "const": "failure" }
+              }
+            },
+            "decision": { "type": "null" },
+            "tier": { "type": "null" },
+            "weigh_in": false
+          }
         }
       }
     },
@@ -263,6 +288,7 @@
           "head_sha": false,
           "viewer": false,
           "weigh_in": false,
+          "refused": false,
           "aeu": false,
           "check": {
             "oneOf": [{ "type": "object", "properties": { "url": false } }, { "type": "null" }]
