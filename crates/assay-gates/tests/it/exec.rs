@@ -201,10 +201,20 @@ fn reports_a_missing_document() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// A document the default cap lets through is never refused for its size when it is read as a
+/// contract.
+#[test]
+fn default_document_cap_is_the_contract_read_cap() {
+    assert_eq!(
+        ExecLimits::DEFAULT.max_document_bytes,
+        assay_app::MAX_DOCUMENT_BYTES
+    );
+}
+
 #[test]
 fn does_not_read_a_document_over_the_cap() -> Result<(), Box<dyn Error>> {
     let dirs = Dirs::new()?;
-    let cap = usize::try_from(LIMITS.max_document_bytes)?;
+    let cap = LIMITS.max_document_bytes;
     let mut supervisor =
         FakeSupervisor::new(Termination::Exited(0), Leaves::File(vec![b' '; cap + 1]));
 
@@ -217,7 +227,7 @@ fn does_not_read_a_document_over_the_cap() -> Result<(), Box<dyn Error>> {
 #[test]
 fn reads_a_document_exactly_at_the_cap() -> Result<(), Box<dyn Error>> {
     let dirs = Dirs::new()?;
-    let cap = usize::try_from(LIMITS.max_document_bytes)?;
+    let cap = LIMITS.max_document_bytes;
     let mut supervisor = FakeSupervisor::new(Termination::Exited(0), Leaves::File(vec![b' '; cap]));
 
     let run = run_exec(&dirs, &mut supervisor, LINT)??;

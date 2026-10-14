@@ -77,14 +77,16 @@ pub struct ExecLimits {
     /// Most bytes the process may write to stdout, and separately to stderr.
     pub max_output_bytes: usize,
     /// Largest document read, in bytes; a larger one is [`GateDocument::TooLarge`].
-    pub max_document_bytes: u64,
+    pub max_document_bytes: usize,
 }
 
 impl ExecLimits {
-    /// 16 MiB of output per stream and an 8 MiB document.
+    /// 16 MiB of output per stream, and a document of at most
+    /// [`assay_app::MAX_DOCUMENT_BYTES`] (8 MiB), so a document read under the default cap is
+    /// never refused for its size when it is read as a contract.
     pub const DEFAULT: Self = Self {
         max_output_bytes: 16 << 20,
-        max_document_bytes: 8 << 20,
+        max_document_bytes: assay_app::MAX_DOCUMENT_BYTES,
     };
 }
 
@@ -206,12 +208,12 @@ impl<S: Supervisor> GateRunner for ExecAdapter<S> {
             max_output_bytes: self.settings.limits.max_output_bytes,
         };
         let termination = self.supervisor.run(&spec).map_err(ExecError::Supervisor)?;
-        let document = read_document(&document, self.settings.limits.max_document_bytes).map_err(
-            |source| ExecError::ReadDocument {
-                path: document,
-                source,
-            },
-        )?;
+        // A cap past `u64::MAX` bytes caps nothing a file can hold, so it saturates.
+        let cap = u64::try_from(self.settings.limits.max_document_bytes).unwrap_or(u64::MAX);
+        let document = read_document(&document, cap).map_err(|source| ExecError::ReadDocument {
+            path: document,
+            source,
+        })?;
         Ok(GateRun {
             termination,
             document,
