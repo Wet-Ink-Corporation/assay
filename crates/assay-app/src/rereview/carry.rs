@@ -3,10 +3,10 @@
 //! that stand, recorded in its `assay.run-inputs/1` bundle so a finding stays open until a run
 //! re-judges it, however many runs that takes.
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::BTreeMap;
 
-use assay_domain::{Fingerprint, Severity, VerifierVerdict};
+use assay_domain::{Fingerprint, Severity, Side, VerifierVerdict};
 
 use super::carried::{CarriedFinding, CarriedParts, CarriedRefusal, MAX_CARRIED};
 use super::settle::{CarriedState, settle_carried};
@@ -40,6 +40,9 @@ pub enum OmitReason {
     Cap,
     /// The carried intake would refuse it, so the next run would refuse the whole set.
     Refused(CarriedRefusal),
+    /// It is on deleted code (the diff's base side): it has no location at head to search
+    /// its evidence at or re-judge it by.
+    DeletedSide,
 }
 
 impl CarrySet {
@@ -61,8 +64,8 @@ impl CarrySet {
         &self.findings
     }
 
-    /// The open findings left out: refusals first, by fingerprint, then those past the cap in
-    /// rank order.
+    /// The open findings left out: refused and deleted-side ones first, by fingerprint, then
+    /// those past the cap in rank order.
     #[must_use]
     pub fn omitted(&self) -> &[Omitted] {
         &self.omitted
@@ -77,11 +80,13 @@ impl CarrySet {
 /// as the fresh finding; one confirmed or unclear carries this run's severity and verdict; one
 /// not re-verified (cap, a failed verifier, `micro`) stays as last verified. Its location is
 /// where its evidence is at head when [`recheck_anchors`](super::recheck_anchors) found it, else
-/// where it was last published. A fresh finding the verifier refuted is not carried; any other
-/// is carried at its head path with its verified severity and verdict, or its validated
-/// severity and no verdict when it was not judged. Where one fingerprint is both carried and
-/// raised, or raised twice, the latest text is kept at the higher severity (and that
-/// severity's verdict), so a re-raise cannot lower a carried finding without the verifier.
+/// where it was last published. A fresh finding the verifier refuted is not carried; one on the
+/// deleted (base) side is listed as [`OmitReason::DeletedSide`]; any other (a side not given
+/// reads as the head side, GitHub's default) is carried at its head path with its verified
+/// severity and verdict, or its validated severity and no verdict when it was not judged.
+/// Where one fingerprint is both carried and raised, or raised twice, the latest text is kept
+/// at the higher severity (and that severity's verdict; on a tie the latest verdict, else the
+/// one held), so a re-raise cannot lower a carried finding without the verifier.
 #[must_use]
 pub fn next_carry<E>(
     carried: Vec<CarriedFinding>,
@@ -106,9 +111,13 @@ pub fn next_carry<E>(
         let Some((severity, verdict)) = standing(found, verified) else {
             continue;
         };
+        if found.finding.side == Some(Side::Left) {
+            gathered.leave_out(found.fingerprint, OmitReason::DeletedSide);
+            continue;
+        }
         match CarriedFinding::read(fresh_parts(found, severity, verdict), repository) {
             Ok(fresh) => gathered.add(fresh),
-            Err(refusal) => gathered.refuse(found.fingerprint, refusal),
+            Err(refusal) => gathered.leave_out(found.fingerprint, OmitReason::Refused(refusal)),
         }
     }
     gathered.finish()
@@ -152,12 +161,15 @@ fn fresh_parts(
 struct Gathered {
     findings: Vec<CarriedFinding>,
     at: BTreeMap<Fingerprint, usize>,
-    refused: BTreeMap<Fingerprint, CarriedRefusal>,
+    left_out: BTreeMap<Fingerprint, OmitReason>,
 }
 
 impl Gathered {
     /// Adds `finding`, or merges it into the one already held for its fingerprint: the later
-    /// text, at the higher severity with that severity's verdict.
+    /// text, at the higher severity with that severity's verdict. On a tie the later verdict
+    /// wins when there is one (it is this run's), else the held one is kept, so a carried claim
+    /// confirmed this run is not recorded as never re-verified because its re-raise was not a
+    /// verifier candidate.
     fn add(&mut self, finding: CarriedFinding) {
         let Some(&index) = self.at.get(&finding.fp()) else {
             self.at.insert(finding.fp(), self.findings.len());
@@ -165,38 +177,39 @@ impl Gathered {
             return;
         };
         if let Some(held) = self.findings.get_mut(index) {
-            let merged = if held.severity() > finding.severity() {
-                finding.judged(held.severity(), held.verdict())
-            } else {
-                finding
+            let merged = match held.severity().cmp(&finding.severity()) {
+                Ordering::Greater => finding.judged(held.severity(), held.verdict()),
+                Ordering::Equal => {
+                    let verdict = finding.verdict().or_else(|| held.verdict());
+                    let severity = finding.severity();
+                    finding.judged(severity, verdict)
+                }
+                Ordering::Less => finding,
             };
             *held = merged;
         }
     }
 
-    /// Records that the open finding `fp` could not be carried (its first refusal).
-    fn refuse(&mut self, fp: Fingerprint, refusal: CarriedRefusal) {
-        self.refused.entry(fp).or_insert(refusal);
+    /// Records that the open finding `fp` could not be carried (the first reason given).
+    fn leave_out(&mut self, fp: Fingerprint, reason: OmitReason) {
+        self.left_out.entry(fp).or_insert(reason);
     }
 
     /// Ranks the findings (a stable sort, so ties keep insertion order), keeps the first
-    /// [`MAX_CARRIED`] and lists the rest; a refusal whose fingerprint is held anyway is not
-    /// listed as refused.
+    /// [`MAX_CARRIED`] and lists the rest; a finding left out whose fingerprint is held anyway
+    /// is not listed.
     fn finish(self) -> CarrySet {
         let Self {
             mut findings,
             at,
-            refused,
+            left_out,
         } = self;
         findings.sort_by_key(|finding| Reverse(finding.severity()));
         let past_cap = findings.split_off(findings.len().min(MAX_CARRIED));
-        let omitted = refused
+        let omitted = left_out
             .into_iter()
             .filter(|(fp, _)| !at.contains_key(fp))
-            .map(|(fp, refusal)| Omitted {
-                fp,
-                reason: OmitReason::Refused(refusal),
-            })
+            .map(|(fp, reason)| Omitted { fp, reason })
             .chain(past_cap.iter().map(|finding| Omitted {
                 fp: finding.fp(),
                 reason: OmitReason::Cap,

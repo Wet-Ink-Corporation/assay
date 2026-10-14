@@ -64,7 +64,7 @@
           "items": { "$ref": "#/$defs/carriedFinding" }
         },
         "omitted": {
-          "description": "Open findings not carried: `cap` past the 256 most severe, `refused` when the carried intake would refuse it.",
+          "description": "Open findings not carried: `cap` past the 256 most severe, `refused` when the carried intake would refuse it, `deleted-side` for a finding on deleted code (no location at head).",
           "type": "array",
           "items": {
             "type": "object",
@@ -72,7 +72,7 @@
             "required": ["fp", "reason"],
             "properties": {
               "fp": { "$ref": "#/$defs/fingerprint" },
-              "reason": { "enum": ["cap", "refused"] }
+              "reason": { "enum": ["cap", "refused", "deleted-side"] }
             }
           }
         }

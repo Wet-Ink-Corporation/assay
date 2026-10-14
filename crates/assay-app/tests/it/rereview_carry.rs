@@ -8,12 +8,13 @@ use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    BUNDLE_FILE, BundleShape, CarriedField, CarriedFinding, CarriedProblem, CarriedRefusal, Carry,
-    CarryRefused, CarryReset, CarrySet, Change, EvidencePointer, MAX_BUNDLE_BYTES, MAX_CARRIED,
-    OmitReason, Omitted, PriorCarry, PriorCarryError, Sha256Digest, ValidFinding, Verification,
-    VerifierTier, next_carry, prior_carry, recheck_anchors, verify,
+    BUNDLE_FILE, BundleShape, CarriedAnchor, CarriedField, CarriedFinding, CarriedProblem,
+    CarriedRefusal, Carry, CarryRefused, CarryReset, CarrySet, Change, DiffPaths, EvidencePointer,
+    FileDiff, MAX_BUNDLE_BYTES, MAX_CARRIED, Mismatch, OmitReason, Omitted, PriorCarry,
+    PriorCarryError, RunField, Sha256Digest, ValidFinding, Verification, VerifierTier, next_carry,
+    prior_carry, recheck_anchors, verify,
 };
-use assay_domain::{Fingerprint, RunUid, Severity, VerifierVerdict};
+use assay_domain::{Fingerprint, RunUid, Severity, Side, VerifierVerdict};
 use serde_json::{Value, json};
 
 use crate::plan_fakes::FakeError;
@@ -562,6 +563,162 @@ fn a_bundle_naming_another_run_is_inconsistent() -> Result<(), Box<dyn Error>> {
 
     let (read, _) = prior(&run, Carry::Kept, &pointer, Stored::Bytes(bytes));
 
-    assert_matches!(read, Err(PriorCarryError::Inconsistent));
+    assert_matches!(
+        read,
+        Err(PriorCarryError::Inconsistent(Mismatch::Run(
+            RunField::RunId
+        )))
+    );
+    Ok(())
+}
+
+/// Review F5: a store that hands back more than the cap is refused, whatever it claims.
+#[test]
+fn a_bundle_found_over_the_cap_is_too_large() -> Result<(), Box<dyn Error>> {
+    let (run, _, pointer) = published(two_carried()?)?;
+    let oversized = vec![b' '; MAX_BUNDLE_BYTES + 1];
+
+    let (read, _) = prior(&run, Carry::Kept, &pointer, Stored::Bytes(oversized));
+
+    assert_matches!(read, Err(PriorCarryError::TooLarge));
+    Ok(())
+}
+
+/// Review F1: a carried finding whose file was renamed to a path the intake refuses stays
+/// where it was published, so the next run still reads the whole set.
+#[test]
+fn a_rename_to_a_refused_path_keeps_the_published_location() -> Result<(), Box<dyn Error>> {
+    let hidden = "src/a\u{200b}.rs";
+    let change = Change {
+        head_files: [(
+            hidden.to_owned(),
+            "let x = input.parse().unwrap();\n".to_owned(),
+        )]
+        .into_iter()
+        .collect(),
+        diffs: vec![FileDiff {
+            paths: DiffPaths::Renamed {
+                base: "src/moved.rs".to_owned(),
+                head: hidden.to_owned(),
+            },
+            hunks: Vec::new(),
+        }],
+        ..Change::default()
+    };
+    let rechecked = recheck_anchors(
+        vec![carried(0, Severity::Major)?, carried(1, Severity::Minor)?],
+        &change,
+    );
+    let runner = Scripted::new([]);
+    let (set, _) = carried_on(VerifierTier::Micro, &rechecked, &[], &runner)?;
+    let (run, bytes, pointer) = published(set)?;
+
+    let (read, _) = prior(&run, Carry::Kept, &pointer, Stored::Bytes(bytes));
+
+    let placed: Vec<(CarriedAnchor, &str, u64)> = rechecked
+        .iter()
+        .map(|found| (found.anchor(), found.file(), found.line().get()))
+        .collect();
+    assert_eq!(
+        placed,
+        [
+            (CarriedAnchor::Gone, "src/moved.rs", 40),
+            (CarriedAnchor::Gone, "src/moved.rs", 40)
+        ]
+    );
+    let files: Vec<String> = read?.iter().map(|found| found.file().to_owned()).collect();
+    assert_eq!(files, ["src/moved.rs", "src/moved.rs"]);
+    Ok(())
+}
+
+/// Review F2: a finding on deleted code has no location at head, so it is not carried.
+#[test]
+fn a_fresh_finding_on_the_deleted_side_is_omitted_not_carried() -> Result<(), Box<dyn Error>> {
+    let mut deleted = fresh(4, Severity::Major)?;
+    deleted.finding.side = Some(Side::Left);
+    let mut kept = fresh(5, Severity::Minor)?;
+    kept.finding.side = Some(Side::Right);
+    let runner = Scripted::answering([(verdict("confirmed", "reachable"), 1)]);
+
+    let (set, _) = carried_on(VerifierTier::Lite, &[], &[deleted, kept], &runner)?;
+
+    assert_eq!(carried_out(&set), [(fp(5)?, Severity::Minor, None)]);
+    assert_eq!(
+        set.omitted(),
+        [Omitted {
+            fp: fp(4)?,
+            reason: OmitReason::DeletedSide,
+        }]
+    );
+    Ok(())
+}
+
+/// Review F3: a re-raise at the same severity keeps this run's verdict on the carried claim.
+#[test]
+fn a_re_raise_at_the_same_severity_keeps_the_carried_verdict() -> Result<(), Box<dyn Error>> {
+    let carried = [carried(0, Severity::Minor)?];
+    let mut again = fresh(0, Severity::Minor)?;
+    again.fingerprint = carried[0].fp();
+    let runner = Scripted::answering([(verdict("confirmed", "still unguarded"), 1)]);
+
+    let (set, _) = carried_on(VerifierTier::Lite, &carried, &[again], &runner)?;
+
+    assert_eq!(
+        carried_out(&set),
+        [(fp(0)?, Severity::Minor, Some(VerifierVerdict::Confirmed))]
+    );
+    Ok(())
+}
+
+/// Review F5: one fingerprint raised twice is carried once, the later text at the higher
+/// severity.
+#[test]
+fn a_fingerprint_raised_twice_is_carried_once_at_the_higher_severity() -> Result<(), Box<dyn Error>>
+{
+    let first = fresh(6, Severity::Major)?;
+    let mut second = fresh(7, Severity::Nit)?;
+    second.fingerprint = first.fingerprint;
+    let runner = Scripted::answering([(verdict("confirmed", "reachable"), 1)]);
+
+    let (set, _) = carried_on(VerifierTier::Lite, &[], &[first, second], &runner)?;
+
+    let shown: Vec<(Fingerprint, &str, Severity, Option<VerifierVerdict>)> = set
+        .findings()
+        .iter()
+        .map(|found| (found.fp(), found.title(), found.severity(), found.verdict()))
+        .collect();
+    assert_eq!(
+        shown,
+        [(
+            fp(6)?,
+            "unwrap on user input panics (7)",
+            Severity::Major,
+            Some(VerifierVerdict::Confirmed)
+        )]
+    );
+    Ok(())
+}
+
+/// Review F5: a lower re-raise of a carried finding that was not re-verified keeps its last
+/// severity, with the fresh text.
+#[test]
+fn a_lower_re_raise_of_an_unverified_carried_finding_keeps_its_severity()
+-> Result<(), Box<dyn Error>> {
+    let carried = [carried(0, Severity::Blocker)?];
+    let mut again = fresh(0, Severity::Nit)?;
+    again.fingerprint = carried[0].fp();
+    let runner = Scripted::new([]);
+
+    let (set, _) = carried_on(VerifierTier::Micro, &carried, &[again], &runner)?;
+
+    let shown: Vec<(&str, Severity, Option<VerifierVerdict>)> = set
+        .findings()
+        .iter()
+        .map(|found| (found.title(), found.severity(), found.verdict()))
+        .collect();
+    assert_eq!(
+        shown,
+        [("unwrap on user input panics (0)", Severity::Blocker, None)]
+    );
     Ok(())
 }

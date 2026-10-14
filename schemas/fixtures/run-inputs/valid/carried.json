@@ -31,6 +31,9 @@
         "evidence": "for i in 0..=items.len() {"
       }
     ],
-    "omitted": [{ "fp": "00000000000000bb", "reason": "cap" }]
+    "omitted": [
+      { "fp": "00000000000000bb", "reason": "cap" },
+      { "fp": "00000000000000cc", "reason": "deleted-side" }
+    ]
   }
 }

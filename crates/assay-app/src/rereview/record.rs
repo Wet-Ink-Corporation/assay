@@ -79,6 +79,7 @@ impl OmittedRecord {
             reason: match omitted.reason {
                 OmitReason::Cap => Reason::Cap,
                 OmitReason::Refused(_) => Reason::Refused,
+                OmitReason::DeletedSide => Reason::DeletedSide,
             },
         }
     }
@@ -90,6 +91,7 @@ impl OmittedRecord {
 enum Reason {
     Cap,
     Refused,
+    DeletedSide,
 }
 
 /// The carry set as read, not yet checked.

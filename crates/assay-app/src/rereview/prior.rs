@@ -12,7 +12,7 @@ use super::carried::{CarriedFinding, CarryRefused, read_carried};
 use super::target::Carry;
 use crate::config::Sha256Digest;
 use crate::publish::{BUNDLE_FILE, EvidencePointer, MAX_BUNDLE_BYTES};
-use crate::replay::{self, BundleShape, BundleSource, StoredBundle};
+use crate::replay::{self, BundleShape, BundleSource, Mismatch, StoredBundle};
 
 /// Where the previous completed run's bundle is, and the repository the findings are for.
 #[derive(Debug, Clone, Copy)]
@@ -52,9 +52,9 @@ pub enum PriorCarryError<E> {
     /// The bundle hashes to its pointer but is not `assay.run-inputs/1`.
     #[error("the bundle is not assay.run-inputs/1: {0}")]
     Shape(BundleShape),
-    /// The bundle names another run than the pointer, or disagrees with itself.
-    #[error("the bundle disagrees with its pointer or with itself")]
-    Inconsistent,
+    /// The bundle names another run than the pointer, or disagrees with itself: where.
+    #[error("the bundle disagrees with its pointer or with itself: {0}")]
+    Inconsistent(Mismatch),
     /// The carried intake refused the set.
     #[error("the bundle's carry set is refused")]
     Refused(#[source] CarryRefused),
@@ -115,8 +115,8 @@ pub fn prior_carry<S: BundleSource>(
     }
     let bundle = replay::read(&bytes).map_err(PriorCarryError::Shape)?;
     drop(bytes);
-    if replay::inconsistency(&bundle, run).is_some() {
-        return Err(PriorCarryError::Inconsistent);
+    if let Some(mismatch) = replay::inconsistency(&bundle, run) {
+        return Err(PriorCarryError::Inconsistent(mismatch));
     }
     read_carried(bundle.carry.into_parts(), request.repository).map_err(PriorCarryError::Refused)
 }

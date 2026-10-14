@@ -313,7 +313,14 @@ impl CarriedFinding {
 
     /// The finding moved to `line` of `file` at head, where its evidence still is; its range
     /// keeps its length (and is dropped only if it would pass `u64::MAX`).
+    ///
+    /// `file` is the PR's own head path (a rename), so it is checked as the intake checks a
+    /// carried path: one it would refuse leaves the finding where it was published, as
+    /// [`Self::gone`], so the carry set it is written into is never refused whole for it.
     pub(super) fn at_head(self, file: String, line: NonZeroU64) -> Self {
+        if check_path(&file).is_err() {
+            return self.gone();
+        }
         let end_line = self.end_line.and_then(|end| {
             end.get()
                 .checked_sub(self.line.get())
