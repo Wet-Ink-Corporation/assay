@@ -287,11 +287,13 @@ fn read_source<'h>(
             return;
         }
     };
+    // Indexed once, so a quote costs its own line, not every line before it (#184).
+    let text_lines: Vec<&str> = text.lines().collect();
     let spot = |(line, why)| Blind {
         path,
         line,
         why,
-        quote: line_text(text, line),
+        quote: line_text(&text_lines, line),
     };
     let mut lines: Vec<(NonZeroU64, Why)> = attributes::unread(lexed)
         .into_iter()
@@ -309,11 +311,13 @@ fn read_source<'h>(
     lines.sort_by_key(|(line, _)| *line);
     lines.dedup_by_key(|(line, _)| *line);
     analysis.blind.extend(lines.into_iter().map(spot));
-    analysis.allows.extend(
-        attributes::allows(lexed)
-            .into_iter()
-            .map(|line| spot((line, Why::Unreported))),
-    );
+    // One spot per line, as `blind_with` keeps: a line of many `allow`s is quoted once.
+    let mut allows = attributes::allows(lexed);
+    allows.sort_unstable();
+    allows.dedup();
+    analysis
+        .allows
+        .extend(allows.into_iter().map(|line| spot((line, Why::Unreported))));
     analysis.expects.extend(
         attributes::expects(lexed)
             .into_iter()
@@ -325,15 +329,114 @@ fn read_source<'h>(
     );
 }
 
-/// Line `line` of `text`, when it has one.
-fn line_text(text: &str, line: NonZeroU64) -> Option<String> {
+/// Line `line` of a file whose [`str::lines`] are `lines`, when it has one.
+fn line_text(lines: &[&str], line: NonZeroU64) -> Option<String> {
     let index = usize::try_from(line.get()).ok()?.checked_sub(1)?;
-    text.lines().nth(index).map(str::to_owned)
+    lines.get(index).map(|&text| text.to_owned())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+
     use super::*;
+
+    /// Far above what quoting takes at the sizes below, far below what reading each quote from
+    /// the start of the file took (#184).
+    const GENEROUS: Duration = Duration::from_secs(2);
+
+    /// A tree of one Rust file, `src/lib.rs`, holding `text`.
+    fn one_file(text: &str) -> HeadTree {
+        let entry = TreeEntry {
+            path: "src/lib.rs".to_owned(),
+            kind: EntryKind::File,
+            object: "0".repeat(40),
+            size: None,
+        };
+        HeadTree::new(vec![entry], vec![text.as_bytes().to_vec()]).expect("one blob for one file")
+    }
+
+    #[test]
+    fn twenty_thousand_blind_spots_are_quoted_quickly() {
+        let text = "#[allow(a)]\n".repeat(20_000);
+        let tree = one_file(&text);
+        let started = Instant::now();
+
+        let analysis = tree.analyse();
+        let blind = analysis.blind_with(&BTreeSet::new());
+
+        assert_eq!(
+            (
+                blind.len(),
+                blind.last().and_then(|spot| spot.quote.as_deref())
+            ),
+            (20_000, Some("#[allow(a)]")),
+            "every line is an unreported allow, quoted"
+        );
+        assert!(
+            started.elapsed() < GENEROUS,
+            "quoting is linear in the file: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn twenty_thousand_allows_on_one_line_are_quoted_quickly() {
+        let line = "#[allow(a)]".repeat(20_000);
+        let tree = one_file(&line);
+        let started = Instant::now();
+
+        let analysis = tree.analyse();
+        let blind = analysis.blind_with(&BTreeSet::new());
+
+        assert_eq!(
+            blind
+                .iter()
+                .map(|spot| (spot.line.get(), spot.quote.as_deref()))
+                .collect::<Vec<_>>(),
+            [(1, Some(line.as_str()))],
+            "one blind line, quoted whole"
+        );
+        assert!(
+            started.elapsed() < GENEROUS,
+            "a line is quoted once, not once per allow on it: {:?}",
+            started.elapsed()
+        );
+    }
+
+    fn line() -> impl Strategy<Value = &'static str> {
+        prop::sample::select(vec![
+            "#[allow(a)]",
+            "#[allow(a)] #[allow(b)]",
+            "fn f() {}",
+            "",
+        ])
+    }
+
+    proptest! {
+        #[test]
+        fn every_quote_is_its_line_as_lines_reads_it(
+            lines in vec((line(), prop::sample::select(vec!["\n", "\r\n"])), 0..24),
+            last in line(),
+        ) {
+            let mut text: String = lines
+                .iter()
+                .flat_map(|&(line, end)| [line, end])
+                .collect();
+            text.push_str(last);
+            let tree = one_file(&text);
+
+            let analysis = tree.analyse();
+
+            for spot in analysis.blind_with(&BTreeSet::new()) {
+                let index = usize::try_from(spot.line.get() - 1).expect("a line fits usize");
+                prop_assert_eq!(spot.quote.as_deref(), text.lines().nth(index), "{:?}", spot);
+            }
+        }
+    }
 
     #[test]
     fn a_missing_blob_is_an_error_not_an_unread_file() {

@@ -21,6 +21,8 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]
+# Property tests: path resolution and line quotes against their reference readings (#184).
+proptest = { workspace = true }
 # The lexer's token boundaries against proc-macro2's (src/temper/corpus.rs).
 syn = { workspace = true }
 tempfile = { workspace = true }

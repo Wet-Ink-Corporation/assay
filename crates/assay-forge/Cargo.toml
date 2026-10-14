@@ -12,3 +12,7 @@ workspace = true
 [dependencies]
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+# Property tests: path resolution against its reference reading (#184).
+proptest = { workspace = true }
