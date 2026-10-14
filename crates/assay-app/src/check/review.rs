@@ -270,7 +270,8 @@ impl<M: ModelRunner> Reviewer<'_, M> {
         Ok(Reviewed {
             disposed: validated.events().collect(),
             stage: Stage::Completed(validated.findings),
-            note: refused.then(|| "the model's document failed the findings schema".to_owned()),
+            note: refused
+                .then(|| "the model's document was refused at step 1 (schema or role)".to_owned()),
             cost,
         })
     }

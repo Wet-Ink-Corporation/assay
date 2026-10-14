@@ -157,15 +157,54 @@ fn refuses_a_micro_document_that_claims_combined_as_schema() -> Result<(), Box<d
 
     assert_eq!(
         (validated.transitions, validated.findings.len()),
-        (
-            vec![Transition {
-                at: FindingRef::Document { document: 0 },
-                code: Disposition::Schema,
-                from: None,
-                to: None
-            }],
-            0
-        )
+        (vec![REFUSED_WHOLE], 0)
+    );
+    Ok(())
+}
+
+/// The one transition a document refused whole at step 1 records.
+const REFUSED_WHOLE: Transition = Transition {
+    at: FindingRef::Document { document: 0 },
+    code: Disposition::Schema,
+    from: None,
+    to: None,
+};
+
+// #173, the downgrade direction: a claim below the caller's role is refused too, not believed,
+// so an unstamped document never has its ceiling chosen by the model either way.
+#[test]
+fn refuses_a_bugs_document_that_claims_combined_micro_as_schema() -> Result<(), Box<dyn Error>> {
+    let blocker = finding_with(json!({ "severity": "blocker" }));
+
+    let validated =
+        Run::default().validate_as(Role::Bugs, &[document_by("combined-micro", &[blocker])])?;
+
+    assert_eq!(
+        (validated.transitions, validated.findings.len()),
+        (vec![REFUSED_WHOLE], 0)
+    );
+    Ok(())
+}
+
+// #173: a document with no `source.role` cannot be matched to the caller's role, so it is
+// refused whole rather than assumed to be that role's.
+#[test]
+fn refuses_a_document_without_a_role_as_schema() -> Result<(), Box<dyn Error>> {
+    let blocker = finding_with(json!({ "severity": "blocker" }));
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&document_by("combined", &[blocker]))?;
+    let source = document
+        .get_mut("source")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or("the fixture has a source object")?;
+    source.remove("role").ok_or("the fixture names a role")?;
+
+    let validated =
+        Run::default().validate_as(Role::Combined, &[serde_json::to_vec(&document)?])?;
+
+    assert_eq!(
+        (validated.transitions, validated.findings.len()),
+        (vec![REFUSED_WHOLE], 0)
     );
     Ok(())
 }

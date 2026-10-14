@@ -90,12 +90,22 @@ impl fmt::Debug for Inputs<'_> {
 ///
 /// The role is the caller's, never read from the document (#173): a model that writes
 /// `source.role` cannot lift its findings past its role's severity ceiling.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct ReviewerDocument<'a> {
     /// The role the call that wrote `bytes` ran as; its ceiling is the one applied.
     pub role: Role,
     /// The document as the model's output was stamped and encoded.
     pub bytes: &'a [u8],
+}
+
+impl fmt::Debug for ReviewerDocument<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The bytes are model output: their length identifies the document without quoting it.
+        f.debug_struct("ReviewerDocument")
+            .field("role", &self.role)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
 }
 
 /// Which input a transition or a finding refers to.
@@ -232,7 +242,8 @@ impl Validated {
 /// the role its caller ran; the document's own `source.role` never sets it. A document that
 /// fails its schema, is not a reviewer's or whose `source.role` is not that role's code is one
 /// `schema` transition, so an unstamped document that claims another role is refused, not
-/// believed. Each file is indexed once per call, however many findings cite it. No transition
+/// believed: a [`FindingRef::Document`] transition coded [`Disposition::Schema`] means either a
+/// schema failure or a role mismatch. Each file is indexed once per call, however many findings cite it. No transition
 /// quotes model text. A kept finding's `evidence` and `caller.evidence` are replaced by the
 /// tree's lines; its other free-text fields are still model text, which the injection screen
 /// checks heuristically, refusing what it cannot be sure GitHub renders harmlessly.

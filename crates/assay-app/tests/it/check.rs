@@ -398,7 +398,7 @@ fn output_that_is_not_a_findings_object_completes_with_no_finding() -> Result<()
     assert_eq!(report.review().findings, []);
     assert_eq!(
         report.review().note.as_deref(),
-        Some("the model's document failed the findings schema")
+        Some("the model's document was refused at step 1 (schema or role)")
     );
     Ok(())
 }
