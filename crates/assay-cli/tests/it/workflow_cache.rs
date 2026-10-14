@@ -7,6 +7,8 @@
 use std::io;
 use std::path::Path;
 
+use tempfile::TempDir;
+
 use super::workflow::{action_files, action_files_in, is_local_action, jobs, uses};
 
 /// Jobs no assay decision reads. `rust.yml` is the repository's own developer feedback; assay's
@@ -227,21 +229,18 @@ fn accepts_a_local_action_only_as_one_segment_naming_an_existing_action() {
 }
 
 /// A scratch `.github` with an empty `workflows/` and one action directory `actions/x`
-/// holding `files`.
-fn scratch_github(test: &str, files: &[&str]) -> io::Result<std::path::PathBuf> {
-    let github = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("workflow-cache")
-        .join(test);
-    match std::fs::remove_dir_all(&github) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-        _ => {}
-    }
+/// holding `files`, in a directory of its own (#166) that is removed when it drops.
+fn scratch_github(test: &str, files: &[&str]) -> io::Result<TempDir> {
+    let scratch = tempfile::Builder::new()
+        .prefix(&format!("workflow-cache-{test}-"))
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))?;
+    let github = scratch.path();
     std::fs::create_dir_all(github.join("workflows"))?;
     std::fs::create_dir_all(github.join("actions/x"))?;
     for file in files {
         std::fs::write(github.join("actions/x").join(file), "name: x\n")?;
     }
-    Ok(github)
+    Ok(scratch)
 }
 
 #[test]
@@ -258,7 +257,7 @@ fn the_scan_fails_on_an_action_directory_it_cannot_read_whole() -> io::Result<()
         .map(|(test, files)| {
             Ok((
                 *test,
-                action_files_in(&scratch_github(test, files)?).is_ok(),
+                action_files_in(scratch_github(test, files)?.path()).is_ok(),
             ))
         })
         .collect::<io::Result<Vec<_>>>()?;

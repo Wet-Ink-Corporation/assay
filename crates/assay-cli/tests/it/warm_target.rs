@@ -12,6 +12,10 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use tempfile::TempDir;
+
+use crate::support::write_executable;
+
 /// `zstd` stand-in: any argument not starting with `-` is the input file, else stdin; the
 /// bytes are copied to stdout unchanged in both directions.
 const FAKE_ZSTD: &str = r#"#!/usr/bin/env bash
@@ -60,26 +64,27 @@ fn script() -> PathBuf {
 /// A per-test directory: `bin/` with the fakes, `ws/` (the workspace), `cargo-home/`.
 struct Sandbox {
     root: PathBuf,
+    /// Owns `root`, unique to this sandbox, so concurrent runs never share it (#166, #223);
+    /// removed on drop.
+    _dir: TempDir,
 }
 
 impl Sandbox {
     fn new(test: &str) -> io::Result<Self> {
-        let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join("warm-target")
-            .join(test);
-        match fs::remove_dir_all(&root) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
+        let scratch = tempfile::Builder::new()
+            .prefix(&format!("warm-target-{test}-"))
+            .tempdir_in(env!("CARGO_TARGET_TMPDIR"))?;
+        let root = scratch.path().to_path_buf();
         for dir in ["bin", "ws", "cargo-home"] {
             fs::create_dir_all(root.join(dir))?;
         }
         for (name, text) in [("zstd", FAKE_ZSTD), ("cargo", FAKE_CARGO)] {
-            let fake = root.join("bin").join(name);
-            fs::write(&fake, text)?;
-            fs::set_permissions(&fake, fs::Permissions::from_mode(0o755))?;
+            write_executable(&root.join("bin").join(name), text)?;
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            _dir: scratch,
+        })
     }
 
     fn path(&self, name: &str) -> PathBuf {

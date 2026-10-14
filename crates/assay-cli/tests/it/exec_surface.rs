@@ -8,7 +8,6 @@
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -21,6 +20,8 @@ use assay_gates::{
     CargoEnvironment, CargoError, CargoLimits, CargoSettings, PinnedCargo, PinnedToolchain,
 };
 use tempfile::TempDir;
+
+use crate::support::write_executable;
 
 /// The files of one crate in the directory registry.
 struct Vendored {
@@ -599,11 +600,10 @@ fn no_pr_configuration_or_toolchain_file_reaches_cargo() -> Result<(), Box<dyn E
     let outside = tempfile::tempdir()?;
     let marker = outside.path().join("ran");
     let evil = outside.path().join("evil.sh");
-    fs::write(
+    write_executable(
         &evil,
-        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        &format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
     )?;
-    fs::set_permissions(&evil, fs::Permissions::from_mode(0o755))?;
     let config = format!(
         "[build]\nrustc = \"{0}\"\nrustc-wrapper = \"{0}\"\n",
         evil.display()
