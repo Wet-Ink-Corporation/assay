@@ -1,7 +1,8 @@
 //! The assay repository's own trust paths (02 §7, 05 T16): base `.assay/globs.toml` makes all
 //! of `crates/**`, the rubric, the plugin, the schemas, the workflow templates, the release
-//! workflow, `.assay/`, `deny.toml` and the golden snapshots trust paths, so changing any of them
-//! (an `assay-self` snapshot update included) needs owner approval under rubric rule 4.
+//! workflow, `.assay/`, `deny.toml`, the golden snapshots and the eval splits (#230) trust paths,
+//! so changing any of them (an `assay-self` snapshot update or an eval case included) needs owner
+//! approval under rubric rule 4.
 
 use std::error::Error;
 use std::fs;
@@ -86,15 +87,38 @@ fn a_golden_snapshot_update_is_a_trust_path_change() -> Result<(), Box<dyn Error
 }
 
 #[test]
+fn an_eval_case_change_is_a_trust_path_change() -> Result<(), Box<dyn Error>> {
+    let globs = repo_globs()?;
+    // Sorted: the tiering reports changed trust paths in path order.
+    let labels = [
+        "corpus/dev/rd-plan-rest-truncated/case.json",
+        "corpus/inject/README.md",
+        "corpus/test/rd-waiver-unbound/case.json",
+    ];
+
+    let tiering = tiering(&globs, &labels);
+
+    assert_eq!(
+        (tiering.trust_paths_changed, tiering.classes),
+        (
+            labels
+                .iter()
+                .map(|path| (*path).to_owned())
+                .collect::<Vec<_>>(),
+            vec![PrClass::TrustPath]
+        ),
+        "the replay gate judges prompt PRs by these cases, so editing them needs the owner (#230)"
+    );
+    Ok(())
+}
+
+#[test]
 fn documentation_outside_the_trust_paths_is_not_one() -> Result<(), Box<dyn Error>> {
     let globs = repo_globs()?;
 
     let tiering = tiering(
         &globs,
-        &[
-            "docs/architecture/02-architecture.md",
-            "corpus/dev/README.md",
-        ],
+        &["docs/architecture/02-architecture.md", "corpus/README.md"],
     );
 
     assert_eq!(
