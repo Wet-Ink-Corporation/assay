@@ -117,8 +117,8 @@ fn an_existing_events_path_is_refused_and_left_as_it_was() -> Result<(), Box<dyn
 fn an_events_value_that_is_missing_empty_or_a_flag_is_a_usage_error() -> Result<(), Box<dyn Error>>
 {
     let scene = Scene::new()?;
-    let usage = "assay: usage: assay check --local [--base <branch>] [--claude <program>], run \
-                 from the repository root\n";
+    let usage = "assay: usage: assay check --local [--base <branch>] [--claude <program>] \
+                 [--events <path|->], run from the repository root\n";
 
     for args in [
         &["--local", "--events"][..],
