@@ -326,18 +326,25 @@ impl ObjectRepo {
     }
 }
 
-/// The exclude rules at `path`: empty when it does not exist, `None` when over `cap` bytes.
+/// The exclude rules at `path`: empty when it does not exist or is `/dev/null`, `None` when
+/// over `cap` bytes.
 ///
-/// Only a regular file (or a symlink to one, which git follows too) is read. Anything else is
-/// refused before it is opened, since `open()` itself blocks on a FIFO with no writer and a
-/// read of `/dev/tty` waits on the terminal (#219 R1); the handle is checked again after the
-/// open. A path swapped for a FIFO between the check and the open is a residual: closing it
-/// needs `O_NONBLOCK`, that is `libc` (H-16), as for local mode's report store.
+/// `core.excludesFile = /dev/null` is the usual way to turn global excludes off and git reads
+/// it as no rules, so that exact path is no rules and is not opened. Otherwise only a regular
+/// file (or a symlink to one, which git follows too) is read. Anything else, another device
+/// included, is refused before it is opened, since `open()` itself blocks on a FIFO with no
+/// writer and a read of `/dev/tty` waits on the terminal (#219 R1); the handle is checked
+/// again after the open. A path swapped for a FIFO between the check and the open is a
+/// residual: closing it needs `O_NONBLOCK`, that is `libc` (H-16), as for local mode's report
+/// store.
 fn read_exclude(path: &Path, cap: u64) -> Result<Option<Vec<u8>>, GitError> {
     let inspect = |source| GitError::Inspect {
         git_dir: path.to_path_buf(),
         source,
     };
+    if path == Path::new("/dev/null") {
+        return Ok(Some(Vec::new()));
+    }
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => {}
         Ok(_) => return Err(inspect(not_a_regular_file())),
@@ -443,6 +450,29 @@ fn not_a_tree(root: PathBuf, reason: &'static str) -> GitError {
 mod tests {
     use super::*;
 
+    /// `read`'s value, or `None` when it has not returned within ten seconds, so a FIFO test
+    /// fails instead of hanging. A reader stuck opening `fifo` is then freed by opening it for
+    /// writing, so the scoped thread is joined either way (H-13).
+    fn within_bound<T: Send>(
+        fifo: &Path,
+        read: impl FnOnce() -> T + Send,
+    ) -> io::Result<Option<T>> {
+        std::thread::scope(|scope| {
+            let (sent, received) = std::sync::mpsc::sync_channel(1);
+            std::thread::Builder::new()
+                .name("read-exclude".to_owned())
+                .spawn_scoped(scope, move || sent.send(read()))?;
+            match received.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(value) => Ok(Some(value)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    drop(OpenOptions::new().write(true).open(fifo)?);
+                    Ok(None)
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(None),
+            }
+        })
+    }
+
     #[test]
     fn reads_at_the_cap_and_refuses_one_byte_more() -> io::Result<()> {
         let at_cap = read_capped(&b"abcd"[..], 4)?;
@@ -462,7 +492,8 @@ mod tests {
         let made = std::process::Command::new("mkfifo").arg(&fifo).status()?;
         assert!(made.success(), "mkfifo {}", fifo.display());
 
-        let result = read_exclude(&fifo, MAX_EXCLUDE_BYTES);
+        let result = within_bound(&fifo, || read_exclude(&fifo, MAX_EXCLUDE_BYTES))?
+            .ok_or("read_exclude blocked on the FIFO")?;
 
         assert!(
             matches!(&result, Err(GitError::Inspect { source, .. })
@@ -473,13 +504,23 @@ mod tests {
     }
 
     #[test]
-    fn a_device_excludes_file_is_refused() {
+    fn dev_null_as_the_excludes_file_holds_no_rules() {
         let result = read_exclude(Path::new("/dev/null"), MAX_EXCLUDE_BYTES);
+
+        assert!(
+            matches!(&result, Ok(Some(rules)) if rules.is_empty()),
+            "/dev/null turns global excludes off, as in git, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn a_device_excludes_file_other_than_dev_null_is_refused() {
+        let result = read_exclude(Path::new("/dev/zero"), MAX_EXCLUDE_BYTES);
 
         assert!(
             matches!(&result, Err(GitError::Inspect { source, .. })
                 if source.kind() == io::ErrorKind::InvalidInput),
-            "only a regular file holds exclude rules, got {result:?}"
+            "only a regular file or /dev/null holds exclude rules, got {result:?}"
         );
     }
 

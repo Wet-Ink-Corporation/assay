@@ -14,7 +14,8 @@ pub struct FilePatch {
     /// it did not fit the [`PatchBudget`] and is not shown.
     pub text: Option<String>,
     /// Its `@@ -base +head @@` hunks, for validation's placement; none for a binary file. Kept
-    /// for every file, shown or not.
+    /// for every file, shown or not, except one whose diff is over the adapter's output cap: it
+    /// has no text and no hunks, like a binary file.
     pub hunks: Vec<Hunk>,
 }
 
@@ -51,7 +52,8 @@ pub trait ChangePatches {
     /// The patch of each of `files` over `base...head` (`commits`), in the same order: a renamed file's
     /// covers both its paths. Each text passes through `budget` as it is read
     /// ([`PatchBudget::keep`]), so the reply holds at most the budget's bytes of text; the hunks
-    /// of every file are kept.
+    /// of every file are kept, except a file whose diff is over the adapter's output cap, which
+    /// has no text and no hunks, like a binary file.
     ///
     /// # Errors
     ///

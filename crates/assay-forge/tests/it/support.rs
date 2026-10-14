@@ -304,3 +304,26 @@ pub(crate) fn plain_git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Err
     }
     Ok(String::from_utf8(output.stdout)?)
 }
+
+/// `read`'s value, or `None` when it has not returned within ten seconds, so a test of a
+/// FIFO that must not block fails instead of hanging. A reader stuck opening `fifo` is then
+/// freed by opening it for writing, so the scoped thread is joined either way (H-13).
+pub(crate) fn within_bound<T: Send>(
+    fifo: &Path,
+    read: impl FnOnce() -> T + Send,
+) -> Result<Option<T>, Box<dyn Error>> {
+    std::thread::scope(|scope| {
+        let (sent, received) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("fifo-read".to_owned())
+            .spawn_scoped(scope, move || sent.send(read()))?;
+        match received.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                drop(fs::OpenOptions::new().write(true).open(fifo)?);
+                Ok(None)
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(None),
+        }
+    })
+}

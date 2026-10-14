@@ -4,12 +4,13 @@
 
 use std::error::Error;
 use std::fs;
+use std::io;
 use std::path::Path;
 
 use assay_forge::git::{GitEnvironment, GitError, GitLimits, UserDirs, WorkingTree};
 
 use super::{Clone, files, open_error};
-use crate::support::{plain_git, write};
+use crate::support::{plain_git, within_bound, write};
 
 /// The developer's `~/.gitconfig` sets `core.excludesFile` to `value`.
 fn set_excludes_file(clone: &Clone, value: &str) -> Result<(), Box<dyn Error>> {
@@ -121,7 +122,7 @@ fn a_relative_global_excludes_file_is_refused() -> Result<(), Box<dyn Error>> {
 
 #[test]
 #[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
-fn an_unreadable_global_excludes_file_is_refused() -> Result<(), Box<dyn Error>> {
+fn a_directory_global_excludes_file_is_refused() -> Result<(), Box<dyn Error>> {
     let clone = Clone::new()?;
     set_excludes_file(&clone, "~/ignore-dir")?;
     fs::create_dir(clone.home().join("ignore-dir"))?;
@@ -131,9 +132,42 @@ fn an_unreadable_global_excludes_file_is_refused() -> Result<(), Box<dyn Error>>
     let result = repo.snapshot(&tree, &clone.head);
 
     assert!(
-        matches!(&result, Err(GitError::Inspect { .. })),
+        matches!(&result, Err(GitError::Inspect { source, .. })
+            if source.kind() == io::ErrorKind::InvalidInput),
+        "only a regular file holds exclude rules, got {result:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn an_unreadable_global_excludes_file_is_refused() -> Result<(), Box<dyn Error>> {
+    let clone = Clone::new()?;
+    set_excludes_file(&clone, "~/plain/ignore")?;
+    fs::write(clone.home().join("plain"), "a file, not a directory\n")?;
+    let tree = clone.open()?;
+    let repo = clone.scratch_repo("snap.git")?;
+
+    let result = repo.snapshot(&tree, &clone.head);
+
+    assert!(
+        matches!(&result, Err(GitError::Inspect { source, .. })
+            if source.kind() == io::ErrorKind::NotADirectory),
         "rules that cannot be read are not skipped, got {result:?}"
     );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn dev_null_as_the_global_excludes_file_turns_global_excludes_off() -> Result<(), Box<dyn Error>> {
+    let clone = Clone::new()?;
+    set_excludes_file(&clone, "/dev/null")?;
+    write(&clone.root, "kept.txt", b"kept\n")?;
+
+    let paths = snapshot_paths(&clone)?;
+
+    assert!(paths.iter().any(|path| path == "kept.txt"), "{paths:?}");
     Ok(())
 }
 
@@ -148,7 +182,8 @@ fn a_fifo_global_excludes_file_is_refused_without_blocking() -> Result<(), Box<d
     let tree = clone.open()?;
     let repo = clone.scratch_repo("snap.git")?;
 
-    let result = repo.snapshot(&tree, &clone.head);
+    let result = within_bound(&fifo, || repo.snapshot(&tree, &clone.head))?
+        .ok_or("the snapshot blocked on the FIFO")?;
 
     assert!(
         matches!(&result, Err(GitError::Inspect { git_dir, .. }) if *git_dir == fifo),
