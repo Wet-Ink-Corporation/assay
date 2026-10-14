@@ -259,3 +259,53 @@ fn symlink_or_gitlink_is_never_excluded() -> Result<(), assay_domain::GlobError>
     assert_eq!((filtered.files, filtered.excluded), (2, Vec::new()));
     Ok(())
 }
+
+/// How many changed paths, and roots or include targets, the scale tests use: quadratic
+/// matching would compare 400 million pairs (#186).
+const MANY: usize = 20_000;
+
+#[test]
+fn docs_only_stays_linear_at_20_000_paths_and_targets() {
+    let docs: Vec<_> = (0..MANY)
+        .map(|index| file(&format!("docs/f{index}.md"), 0, 0))
+        .collect();
+    let mut set = changes(docs);
+    set.include_targets = (0..MANY).map(|index| format!("docs/g{index}.md")).collect();
+    let unincluded = tier(&RepoGlobs::default(), &set).tier;
+    set.include_targets.push(format!("DOCS/F{}.MD", MANY - 1));
+
+    let included = tier(&RepoGlobs::default(), &set).tier;
+
+    assert_eq!(
+        (unincluded, included),
+        (Tier::Trivial, Tier::Micro),
+        "only the last path is included, ignoring ASCII case"
+    );
+}
+
+#[test]
+fn exec_surface_stays_linear_at_20_000_paths_and_roots() {
+    let docs: Vec<_> = (0..MANY)
+        .map(|index| file(&format!("docs/f{index}.md"), 0, 0))
+        .collect();
+    let mut set = changes(docs);
+    set.exec_roots = (0..MANY)
+        .flat_map(|index| {
+            [
+                root(&format!("docs/g{index}")),
+                ExecRoot::BuildSources {
+                    crate_dir: format!("docs/f{index}.md/c"),
+                },
+            ]
+        })
+        .chain([root("DOCS/F7.md")])
+        .collect();
+
+    let tiering = tier(&RepoGlobs::default(), &set);
+
+    assert_eq!(
+        (tiering.tier, tiering.exec_surface_changed),
+        (Tier::Full, vec!["docs/f7.md".to_owned()]),
+        "only the root at one path holds it, ignoring ASCII case"
+    );
+}

@@ -321,25 +321,31 @@ struct Visited {
     modules: Vec<String>,
 }
 
+impl Visited {
+    /// What `file` holds in `base`; `None` when it could not be counted or declares a module
+    /// this check cannot place.
+    fn of(base: &Tree<'_>, file: &str) -> Option<Self> {
+        let found = counted(base, file).ok()?;
+        let placed = !found.modules_uncertain && found.unplaced_modules.is_empty();
+        placed.then_some(Self {
+            tested: found.tests > 0 || !found.conditional.is_empty(),
+            modules: found.modules,
+        })
+    }
+}
+
 impl BaseWalks<'_, '_> {
     /// What `file` holds at base, counted on its first visit, and charged on every visit one
     /// unit for itself and one per byte of the places its modules queue (`module_files`' four
     /// each); `None`, so that it counts as tested, when it could not be counted or placed or
     /// the work is spent.
     fn visit(&mut self, file: &str) -> Option<&Visited> {
-        let base = self.base;
-        let visited = self
-            .visited
-            .entry(file.to_owned())
-            .or_insert_with(|| {
-                let found = counted(base, file).ok()?;
-                let placed = !found.modules_uncertain && found.unplaced_modules.is_empty();
-                placed.then_some(Visited {
-                    tested: found.tests > 0 || !found.conditional.is_empty(),
-                    modules: found.modules,
-                })
-            })
-            .as_ref()?;
+        if !self.visited.contains_key(file) {
+            // Looked up first, so the key is copied once per file, not on every visit.
+            self.visited
+                .insert(file.to_owned(), Visited::of(self.base, file));
+        }
+        let visited = self.visited.get(file)?.as_ref()?;
         // Each of `module_files`' four places is at most the file's path, the name and 8 bytes.
         let cost = visited.modules.iter().fold(1_usize, |cost, module| {
             let place = file.len().saturating_add(module.len()).saturating_add(8);
