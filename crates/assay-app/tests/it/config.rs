@@ -464,6 +464,7 @@ fn only_a_nextest_test_step_needs_no_tests_fail() -> Result<(), Box<dyn Error>> 
     let accepted = [
         ("test", "[\"cargo\", \"test\", \"--doc\"]"),
         ("lint", "[\"cargo\", \"nextest\", \"run\"]"),
+        ("test", "[\"cargo\", \"test\", \"--\", \"nextest\"]"),
         (
             "test",
             "[\"cargo\", \"nextest\", \"run\", \"--no-tests=fail\", \"--\", \"filter\"]",
