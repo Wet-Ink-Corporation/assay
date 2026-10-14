@@ -138,7 +138,11 @@ fn golden(name: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 }
 
 /// Asserts `github` gives exactly the golden `name` for `ask`.
-fn assert_golden(github: &FakeGitHub, ask: &Ask, name: &str) -> Result<(), Box<dyn Error>> {
+pub(crate) fn assert_golden(
+    github: &FakeGitHub,
+    ask: &Ask,
+    name: &str,
+) -> Result<(), Box<dyn Error>> {
     let json = report(github, ask)??.json().to_vec();
     let expected = golden(name)?;
     assert_eq!(
@@ -257,6 +261,7 @@ pub(crate) fn forged_verdict(conclusion: ObservedConclusion) -> assay_app::Check
         external_id: Some(
             "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_owned(),
         ),
+        output_title: Some("assay: success".to_owned()),
         output_text: Some("anything".to_owned()),
         url: run_url(666),
     }

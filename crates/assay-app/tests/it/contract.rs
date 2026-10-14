@@ -20,7 +20,7 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 54] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 57] = [
     (
         Contract::Status,
         "unknown-field",
@@ -97,6 +97,23 @@ const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 54] = [
         Contract::Status,
         "ci-with-local-tree",
         Rejection::Violation("/local_tree", "falseSchema"),
+    ),
+    // A refusal (#218) is the App verdict check's reason code, from 03's closed list, on a
+    // completed `failure` check; local mode has no App check to have refused it.
+    (
+        Contract::Status,
+        "local-refused",
+        Rejection::Violation("/refused", "falseSchema"),
+    ),
+    (
+        Contract::Status,
+        "refused-unknown-reason",
+        Rejection::Violation("/refused/reason", "enum"),
+    ),
+    (
+        Contract::Status,
+        "refused-check-not-failed",
+        Rejection::Violation("/check/conclusion", "const"),
     ),
     (
         Contract::Findings,

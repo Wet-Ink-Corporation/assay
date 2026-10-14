@@ -357,6 +357,7 @@ impl Step {
     fn from_dto(plugin: &str, dto: StepDto) -> Result<Self, ConfigError> {
         let name = GateName::new(dto.name).map_err(|name| ConfigError::Name { name })?;
         let gate = format!("{plugin}.{name}");
+        let job = job_of(&gate, dto.job)?;
         let command = argv_of(&gate, dto.cmd)?;
         if let Some(arg) = command.args().iter().find(|arg| lets_zero_tests_pass(arg)) {
             return Err(ConfigError::NoTests {
@@ -365,8 +366,11 @@ impl Step {
                 gate,
             });
         }
+        if job == BuildJob::Test && runs_nextest(&command) && !fails_zero_tests(&command) {
+            return Err(ConfigError::NoTestsFailMissing { gate });
+        }
         Ok(Self {
-            job: job_of(&gate, dto.job)?,
+            job,
             command,
             timeout: timeout(&gate, dto.timeout_s)?,
             name,
@@ -379,6 +383,31 @@ impl Step {
 /// argument. Refused rather than modelled, so a declared step can never let zero tests pass.
 fn lets_zero_tests_pass(arg: &str) -> bool {
     arg != "--no-tests=fail" && (arg == "--no-tests" || arg.starts_with("--no-tests="))
+}
+
+/// The arguments nextest reads as its own: those before the first `--`, after which they go to
+/// the test binaries.
+fn own_args(command: &Argv) -> impl Iterator<Item = &str> + '_ {
+    command
+        .args()
+        .iter()
+        .map(String::as_str)
+        .take_while(|arg| *arg != "--")
+}
+
+/// Whether `command` runs nextest: its program's file name is `cargo-nextest`, or one of its
+/// own arguments is the `nextest` subcommand. Read wide rather than modelled (any `nextest`
+/// argument, wherever cargo's options put it), so a nextest run cannot slip past
+/// [`fails_zero_tests`].
+fn runs_nextest(command: &Argv) -> bool {
+    let program = command.program();
+    let file_name = program.rsplit('/').next().unwrap_or(program);
+    file_name == "cargo-nextest" || own_args(command).any(|arg| arg == "nextest")
+}
+
+/// Whether nextest reads `--no-tests=fail` as its own argument.
+fn fails_zero_tests(command: &Argv) -> bool {
+    own_args(command).any(|arg| arg == "--no-tests=fail")
 }
 
 fn pin(gate: &str, pin: Option<String>) -> Result<Pin, ConfigError> {

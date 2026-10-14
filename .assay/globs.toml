@@ -7,6 +7,8 @@
 # whole. `corpus/golden/**` goes beyond 02 §7's list: the `assay-self` gate passes a verdict
 # change only when the PR updates its snapshot, and the snapshot update is what the owner
 # approves, whatever caused it (fail-closed reading, wi-b5affa; owner to confirm).
+# `corpus/{dev,test,inject}/**` (owner, #230): the replay gate accepts a prompt or rubric PR by
+# its result on these cases, so a PR that could edit their labels could grade itself.
 trust = [
     "crates/**",
     "rubric/**",
@@ -17,4 +19,7 @@ trust = [
     ".assay/**",
     "deny.toml",
     "corpus/golden/**",
+    "corpus/dev/**",
+    "corpus/test/**",
+    "corpus/inject/**",
 ]

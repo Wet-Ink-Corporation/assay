@@ -3,8 +3,8 @@
 //! (`docs/architecture/03-contracts.md` §2.1 steps 1-4, ADR-12, 05 T4 and T5). In `gates-lint`
 //! (Z2b): the pinned `baseline --check` with its ratchet asserted, and the declared `lint`
 //! steps (steps 5-7, `temper/lint.rs`). In `gates-test` (Z2b, its own VM): the declared `test`
-//! steps (step 7, `temper/test_job.rs`), each retried once when a signal ended it (F9,
-//! `temper/steps.rs`).
+//! steps (step 7, `temper/test_job.rs`). A declared step of either job is retried once when a
+//! signal ended it (F9, `temper/steps.rs`).
 //!
 //! 1. `raised`: `.claude/temper-baseline.json` at base and head; any count that rises, any new
 //!    entry, and any crate added to or moved in `crates` fails.
@@ -266,8 +266,8 @@ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R> 
     /// `raised` or unadmitted `exception` entry is reported, or a step exits non-zero; a run
     /// that does not exit, or a `baseline --check` exit other than 0 or 1, is reported as that
     /// termination. In `gates-test`, runs the declared `test` steps and concludes `fail` when one
-    /// exits non-zero; a step that does not exit is reported as that termination. A test step a
-    /// signal ended is run once more, and that run decides.
+    /// exits non-zero; a step that does not exit is reported as that termination. A declared
+    /// step of either job that a signal ended is run once more, and that run decides.
     ///
     /// # Errors
     ///
@@ -275,8 +275,9 @@ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R> 
     /// `gates-test` and the plugin declares no `test` step, or `gates-lint` has no
     /// [`RatchetBase`]; when a file the checks need is missing, not a regular file or
     /// unparsable, the head tree cannot be read, a process cannot run, the scan does not exit 0
-    /// or 1 or prints unreadable output, or the pinned copy cannot be read; and in `gates-lint` when temper's findings document is unusable
-    /// or its ratchet is degraded ([`TemperError::RatchetDegraded`]).
+    /// or 1 or prints unreadable output, or the pinned copy cannot be read; and in `gates-lint`
+    /// when temper's findings document is unusable or its ratchet is degraded
+    /// ([`TemperError::RatchetDegraded`]).
     fn run(&mut self, plugin: &Plugin, job: GateJob) -> Result<GateRun, Self::Error> {
         let Adapter::Temper { pin, steps } = plugin.adapter() else {
             return Err(TemperError::NotTemper {
