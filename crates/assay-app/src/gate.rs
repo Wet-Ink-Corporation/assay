@@ -167,7 +167,8 @@ pub struct GateReport {
     /// The validated document, present exactly when the outcome is [`GateOutcome::Concluded`].
     pub document: Option<Value>,
     /// Why the outcome is an error, in assay's own words (a runner or validation error), for
-    /// logs. Never the gate's output.
+    /// logs. A runner error is followed by each of its sources, joined by `: `. Never the gate's
+    /// output.
     pub cause: Option<String>,
 }
 
@@ -246,7 +247,7 @@ pub(crate) fn run_observed<R: GateRunner, O: GateObserver>(
             Ok(_) | Err(_) => None,
         };
         let classified = run
-            .map_err(|error| Rejected::because(R::gate_error(&error), error.to_string()))
+            .map_err(|error| Rejected::because(R::gate_error(&error), chain(&error)))
             .and_then(|run| classify(plugin.name(), run, validator));
         let (outcome, document, cause) = match classified {
             Ok((conclusion, document)) => {
@@ -302,6 +303,17 @@ pub(crate) fn scheduled(plugin: &Plugin, job: GateJob) -> bool {
         Adapter::WeighIn { .. } => job == GateJob::Static,
         Adapter::Exec { job: own, .. } => job == GateJob::Build(*own),
     }
+}
+
+/// `error` and every `source()` below it, joined by `: `, so a runner error keeps the I/O error
+/// that caused it. The chain is assay's own error types, never the gate's output.
+fn chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    for cause in std::iter::successors(error.source(), |cause| cause.source()) {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+    }
+    text
 }
 
 /// A run that does not count, and why in assay's own words.

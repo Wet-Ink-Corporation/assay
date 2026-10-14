@@ -483,3 +483,91 @@ fn a_degraded_ratchet_displays_as_its_reason_code() {
         "gate-error:ratchet-degraded"
     );
 }
+
+/// An error that displays as `text` and has `below` as its source.
+#[derive(Debug)]
+struct Layer {
+    text: &'static str,
+    below: Option<Box<dyn Error>>,
+}
+
+impl fmt::Display for Layer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.text)
+    }
+}
+
+impl Error for Layer {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.below.as_deref()
+    }
+}
+
+/// Fails every run with an error three layers deep.
+#[derive(Debug, Default)]
+struct LayeredRunner;
+
+impl GateRunner for LayeredRunner {
+    type Error = Layer;
+
+    fn run(&mut self, _plugin: &Plugin, _job: GateJob) -> Result<GateRun, Layer> {
+        let os = Layer {
+            text: "no such file or directory",
+            below: None,
+        };
+        let supervisor = Layer {
+            text: "the supervisor could not start the process",
+            below: Some(Box::new(os)),
+        };
+        Err(Layer {
+            text: "could not run the exec gate",
+            below: Some(Box::new(supervisor)),
+        })
+    }
+}
+
+#[test]
+fn a_runner_errors_cause_names_every_source_below_it() -> Result<(), Box<dyn Error>> {
+    let config = config()?;
+    let validator = ContractValidator::new()?;
+
+    let reports = run_gates(&config, LINT, &mut LayeredRunner, &validator);
+
+    let report = reports
+        .iter()
+        .find(|report| report.plugin.as_str() == "custom-lint")
+        .ok_or("no report for custom-lint")?;
+    assert_eq!(
+        (report.outcome, report.cause.as_deref()),
+        (
+            GateOutcome::Error(GateError::NotRun),
+            Some(
+                "could not run the exec gate: the supervisor could not start the process: \
+                 no such file or directory"
+            )
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn a_required_gate_reported_only_in_another_job_is_skipped() -> Result<(), Box<dyn Error>> {
+    let config = config()?;
+    let validator = ContractValidator::new()?;
+    let mut runner = FakeRunner::with(
+        "temper",
+        Termination::Exited(0),
+        GateDocument::Written(document("temper", "pass")),
+    );
+    let mut reports = run_gates(&config, GateJob::Static, &mut runner, &validator);
+
+    account_for_required(&config, LINT, &mut reports);
+
+    let lint: Vec<(&str, &GateOutcome)> = reports
+        .iter()
+        .filter(|report| report.job == LINT)
+        .map(|report| (report.plugin.as_str(), &report.outcome))
+        .collect();
+    assert_eq!(lint, [("temper", &GateOutcome::Error(GateError::Skipped))]);
+    Ok(())
+}

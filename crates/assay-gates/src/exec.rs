@@ -5,7 +5,8 @@
 //! [`FINDINGS_OUT_VAR`], which names a file in a directory created fresh for this run, so a
 //! document left by an earlier run can never be read. The process itself is run by a
 //! [`Supervisor`], which owns the timeout, the output cap and the process group. The document
-//! is read only if it is a regular file (never through a symlink) and no larger than the cap.
+//! is read only if its final path component is a regular file (not a symlink) and it is no
+//! larger than the cap; the directories above it are not re-checked (see `read_document`).
 
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -240,7 +241,14 @@ pub(crate) fn resolve(checkout: &Path, program: &str) -> PathBuf {
     }
 }
 
-/// Reads the document at `path` without following a symlink and without reading past `cap`.
+/// Reads the document at `path` without reading past `cap`, when its final component is a
+/// regular file rather than a symlink.
+///
+/// Only that final component is checked. The gate could swap its output directory, or one
+/// above it, for a symlink, and the read would follow it; re-checking the directories would not
+/// change what the gate can reach, since it runs as the same user and could copy any file it
+/// can read into its document itself. The check exists so that a symlink, FIFO or device at the
+/// document path is never opened; the job's VM or container is the boundary.
 ///
 /// The type check and the open are two calls. The supervisor has already shown the gate's
 /// process group gone, so only a process that left the group (`setsid`) could swap the file in
