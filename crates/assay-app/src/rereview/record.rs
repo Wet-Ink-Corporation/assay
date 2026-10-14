@@ -1,6 +1,6 @@
 //! A carry set as `assay.run-inputs/1` records it (`docs/architecture/03-contracts.md` §6a,
 //! #224): `{findings: [{fp, file, line, end_line?, class, severity, verdict?, title, trigger?,
-//! evidence}], omitted: [{fp, reason: cap|refused}]}`. `publish` writes it through
+//! evidence}], omitted: [{fp, reason: cap|refused|deleted-side}]}`. `publish` writes it through
 //! [`CarryOut`], borrowing the set; [`prior_carry`](super::prior_carry) reads it back through
 //! [`CarryIn`], refusing an unknown field, and hands the findings to the carried intake.
 

@@ -1,7 +1,7 @@
 //! The plugin's declared steps (`[[plugin.step]]`), run in their Z2b job from the head tree
 //! (`docs/architecture/03-contracts.md` §1, §2.1 step 7): each under its own `timeout_s`, with
 //! the gate environment. Shared by `gates-lint` (`fmt`, `deny`) and `gates-test` (`tests`,
-//! `doctests`); `gates-test` retries a step once when its run ended in an infra-class way (F9,
+//! `doctests`); both retry a step once when its run ended in an infra-class way (F9,
 //! `06-operations.md` §4).
 
 use std::path::Path;
@@ -38,7 +38,7 @@ const fn infra_class(termination: Termination) -> bool {
 impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
     /// Runs one declared step once, from the head tree with the gate environment under its own
     /// timeout.
-    pub(super) fn step(&mut self, step: &Step) -> Result<Termination, ErrorOf<S, R>> {
+    fn step(&mut self, step: &Step) -> Result<Termination, ErrorOf<S, R>> {
         let program = resolve(&self.settings.head_tree, step.command().program());
         capture(
             &mut self.supervisor,
