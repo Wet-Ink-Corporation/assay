@@ -491,6 +491,37 @@ fn a_model_written_source_is_replaced_so_the_role_ceiling_holds() -> Result<(), 
     Ok(())
 }
 
+// #173, the lite path: the stamp is the role that ran, so a claim of `combined-micro` neither
+// caps a `combined` review's blocker nor gets its document refused.
+#[test]
+fn a_lite_review_claiming_micro_keeps_its_blocker() -> Result<(), Box<dyn Error>> {
+    let pr = sized_tree(30);
+    let mut blocker = unwrap_finding();
+    blocker["severity"] = json!("blocker");
+    let model = FakeModel::answering([Ok(ModelOutcome::Ok(Structured::new(json!({
+        "schema": "assay.findings/1",
+        "source": {"kind": "reviewer", "name": "x", "version": "x", "role": "combined-micro",
+                   "run_key": "x"},
+        "findings": [blocker],
+    }))))]);
+
+    let report = check(&pr, &mut FakeGates::passing(), &model)?;
+
+    assert_eq!(
+        (
+            report.tier(),
+            report
+                .review()
+                .findings
+                .iter()
+                .map(|finding| finding.finding.severity)
+                .collect::<Vec<_>>()
+        ),
+        (Tier::Lite, vec![Severity::Blocker])
+    );
+    Ok(())
+}
+
 #[test]
 fn a_context_pack_holding_a_nul_is_not_sent() -> Result<(), Box<dyn Error>> {
     let pr = dirty_tree();

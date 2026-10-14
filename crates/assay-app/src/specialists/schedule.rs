@@ -384,7 +384,8 @@ const fn ended_first(first_in_flight: usize, attempts: u8) -> usize {
 }
 
 /// `structured` with `source.role` set to the role that ran, whatever the model wrote there
-/// (#173): validation applies the role's severity ceiling by that field. Output without a
+/// (#173): validation takes the ceiling from the role its caller passes and refuses a document
+/// naming another, so an unstamped claim would lose the role's findings. Output without a
 /// `source` object is left as it is, for validation to refuse.
 fn stamp(structured: Structured, role: Role) -> Structured {
     let mut output = structured.into_value();
