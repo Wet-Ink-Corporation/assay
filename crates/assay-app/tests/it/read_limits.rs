@@ -1,5 +1,6 @@
 //! What `ContractValidator::read` refuses before the schema runs: a document over the size cap
-//! (H-13), and an object that repeats a key, which parsers resolve differently (OUT-05).
+//! (H-13), nesting past `serde_json`'s recursion limit, and an object that repeats a key, which
+//! parsers resolve differently (OUT-05).
 
 use std::assert_matches;
 use std::error::Error;
@@ -79,6 +80,88 @@ fn rejects_a_repeated_key_in_a_nested_object_as_malformed() -> Result<(), Box<dy
     assert_ne!(repeated, text, "the fixture names a `gates-lint` artifact");
 
     let read = validator.read(Contract::Run, repeated.as_bytes());
+
+    assert_matches!(
+        read,
+        Err(ReadContractError::Malformed {
+            contract: Contract::Run,
+            ..
+        })
+    );
+    Ok(())
+}
+
+/// The deepest nesting of arrays or objects `serde_json` parses. Its recursion limit is 128,
+/// counted down on entry to each array or object, and the one that reaches zero is refused, so
+/// 127 levels parse and 128 do not. `read` relies on that limit to bound the strict visitor's
+/// recursion (`src/contract/strict.rs`), which adds none of its own; a `serde_json` that dropped
+/// it (its `unbounded_depth` feature) or moved it would turn these red (TST-18).
+const DEEPEST_ACCEPTED_NESTING: usize = 127;
+
+fn nested_arrays(depth: usize) -> Vec<u8> {
+    [b"[".repeat(depth), b"]".repeat(depth)].concat()
+}
+
+fn nested_objects(depth: usize) -> Vec<u8> {
+    [
+        br#"{"a":"#.repeat(depth),
+        b"null".to_vec(),
+        b"}".repeat(depth),
+    ]
+    .concat()
+}
+
+#[test]
+fn parses_arrays_nested_to_serde_json_s_limit() -> Result<(), Box<dyn Error>> {
+    let validator = ContractValidator::new()?;
+
+    let read = validator.read(Contract::Run, &nested_arrays(DEEPEST_ACCEPTED_NESTING));
+
+    assert_matches!(
+        read,
+        Err(ReadContractError::MissingSchema {
+            contract: Contract::Run
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_arrays_nested_one_past_serde_json_s_limit_as_malformed() -> Result<(), Box<dyn Error>> {
+    let validator = ContractValidator::new()?;
+
+    let read = validator.read(Contract::Run, &nested_arrays(DEEPEST_ACCEPTED_NESTING + 1));
+
+    assert_matches!(
+        read,
+        Err(ReadContractError::Malformed {
+            contract: Contract::Run,
+            ..
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn parses_objects_nested_to_serde_json_s_limit() -> Result<(), Box<dyn Error>> {
+    let validator = ContractValidator::new()?;
+
+    let read = validator.read(Contract::Run, &nested_objects(DEEPEST_ACCEPTED_NESTING));
+
+    assert_matches!(
+        read,
+        Err(ReadContractError::MissingSchema {
+            contract: Contract::Run
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_objects_nested_one_past_serde_json_s_limit_as_malformed() -> Result<(), Box<dyn Error>> {
+    let validator = ContractValidator::new()?;
+
+    let read = validator.read(Contract::Run, &nested_objects(DEEPEST_ACCEPTED_NESTING + 1));
 
     assert_matches!(
         read,

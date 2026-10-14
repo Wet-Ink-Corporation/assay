@@ -3,6 +3,10 @@
 //! JSON leaves a repeated key's meaning to the parser (RFC 8259 §4): `serde_json` keeps the last
 //! value, others keep the first. A document validated in one reading and acted on in another is
 //! not validated, so a repeated key is refused instead of resolved.
+//!
+//! The visitor recurses once per nested array or object and sets no depth limit of its own:
+//! `serde_json`'s recursion limit refuses a 128th level as a parse error before the visitor
+//! sees it (pinned by `tests/it/read_limits.rs`).
 
 use std::fmt;
 
