@@ -19,5 +19,6 @@
   "inputs": { "decision_key": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
   "rubric_version": "v1",
   "decision": { "schema": "assay.decision/1" },
-  "events": [{ "schema": "assay.event/1", "job": "decide", "idx": 0 }]
+  "events": [{ "schema": "assay.event/1", "job": "decide", "idx": 0 }],
+  "carry": { "findings": [], "omitted": [] }
 }

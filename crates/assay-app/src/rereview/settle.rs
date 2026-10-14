@@ -39,7 +39,10 @@ pub enum CarriedState {
     /// Confirmed or unclear at head: it stays open at its new severity.
     Open,
     /// Refuted as carried, but this run raised the same fingerprint again and did not refute
-    /// it there: the fresh finding stands, so the thread is not resolved.
+    /// it there: the fresh finding stands, so the thread is not resolved. The outcome's
+    /// `severity` and `verdict` are the refuted carried claim's (`minor`, `refuted`): they
+    /// describe that claim only, so the carry set holds the fresh finding instead
+    /// ([`next_carry`](super::next_carry)) and what is shown is the fresh finding's.
     Raised,
     /// Not re-verified this run: it stays open as of its last verification and its thread is
     /// left open.

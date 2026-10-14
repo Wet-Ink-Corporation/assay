@@ -18,8 +18,10 @@ fn published(file: &str, line: u64, evidence: &str) -> Result<CarriedFinding, Bo
             fp: "00000000000000aa".parse()?,
             file: file.to_owned(),
             line: NonZeroU64::new(line).ok_or("line 0")?,
+            end_line: NonZeroU64::new(line + 1),
             class: Class::Logic,
             severity: Severity::Blocker,
+            verdict: None,
             title: "off by one in the loop bound".to_owned(),
             trigger: Some("an empty slice reaches the loop".to_owned()),
             evidence: evidence.to_owned(),
@@ -61,6 +63,22 @@ fn evidence_still_at_head_moves_the_finding_to_it() -> Result<(), Box<dyn Error>
         placed(&rechecked),
         [(CarriedAnchor::AtHead, "src/lib.rs", 7)]
     );
+    Ok(())
+}
+
+/// #224: the range moves with its first line, so the carried range still covers the defect.
+#[test]
+fn a_moved_finding_keeps_the_length_of_its_line_range() -> Result<(), Box<dyn Error>> {
+    let head = "// a comment\n\n\n\nfn sum(items: &[u8]) {\n    let mut total = 0;\n    for i in 0..=items.len() {\n";
+    let change = change(&[("src/lib.rs", head)], Vec::new());
+
+    let rechecked = recheck_anchors(vec![published("src/lib.rs", 3, EVIDENCE)?], &change);
+
+    let ranges: Vec<(u64, Option<u64>)> = rechecked
+        .iter()
+        .map(|found| (found.line().get(), found.end_line().map(NonZeroU64::get)))
+        .collect();
+    assert_eq!(ranges, [(7, Some(8))]);
     Ok(())
 }
 

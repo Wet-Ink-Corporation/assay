@@ -40,6 +40,7 @@ use self::write::Pending;
 use crate::config::Sha256Digest;
 use crate::decide::{AuthenticatedRun, Refusal};
 use crate::plan::PullRequestEvent;
+use crate::rereview::CarrySet;
 
 /// What `decide` publishes for one run.
 #[derive(Debug)]
@@ -85,6 +86,9 @@ pub struct Decided<'a> {
     pub inputs: &'a DecisionInputs,
     /// Every job's events, merged into the bundle in `(job, idx)` order.
     pub events: &'a [Event],
+    /// The findings this run carries into the next (#224, [`next_carry`](crate::next_carry)),
+    /// recorded in the bundle for [`prior_carry`](crate::prior_carry) to read back.
+    pub carry: &'a CarrySet,
     /// What the run's LLM stage cost.
     pub cost: Aeu,
 }

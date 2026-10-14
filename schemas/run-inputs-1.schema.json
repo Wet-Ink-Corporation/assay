@@ -2,11 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:assay:schema:run-inputs:1",
   "title": "assay.run-inputs/1",
-  "description": "The bundle `decide` persists as `run-inputs.json` in its own artifact, the one the evidence pointer's sha256 names (docs/architecture/02-architecture.md §5, 03-contracts.md §6a): every authenticated input document as its job published it, the decision inputs, the decision and the run's events. Unknown fields are rejected.",
+  "description": "The bundle `decide` persists as `run-inputs.json` in its own artifact, the one the evidence pointer's sha256 names (docs/architecture/02-architecture.md §5, 03-contracts.md §6a): every authenticated input document as its job published it, the decision inputs, the decision, the run's events and the findings it carries into the next run. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema", "run_uid", "evidence_key", "documents", "inputs", "rubric_version", "decision", "events"
+    "schema", "run_uid", "evidence_key", "documents", "inputs", "rubric_version", "decision", "events",
+    "carry"
   ],
   "properties": {
     "schema": { "const": "assay.run-inputs/1" },
@@ -50,9 +51,60 @@
       "description": "The run's events (assay.event/1), ordered by job, then index.",
       "type": "array",
       "items": { "type": "object" }
+    },
+    "carry": {
+      "description": "The re-review carry set (04-pipeline.md §7, #224): the run's carried findings still open after it, as last verified, and its own findings that stand, which the next run seeds its carry set from once this bundle hashes to its evidence pointer. At most 256 findings, one per fingerprint (the reader refuses a repeat), most severe first; open findings left out are listed in `omitted`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["findings", "omitted"],
+      "properties": {
+        "findings": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/carriedFinding" }
+        },
+        "omitted": {
+          "description": "Open findings not carried: `cap` past the 256 most severe, `refused` when the carried intake would refuse it, `deleted-side` for a finding on deleted code (no location at head).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["fp", "reason"],
+            "properties": {
+              "fp": { "$ref": "#/$defs/fingerprint" },
+              "reason": { "enum": ["cap", "refused", "deleted-side"] }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
-    "nonEmpty": { "type": "string", "minLength": 1 }
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+    "line": { "type": "integer", "minimum": 1 },
+    "carriedFinding": {
+      "description": "A finding open into the next run: where it is at head (or was last published, if its evidence was not found), its class, its severity and verifier verdict as last verified (`verdict` absent if never re-verified), and the text the verifier re-judges. `evidence` is the tree's lines it matched, searched for again at head; the reader checks every field as carried model text (wi-b5affa).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fp", "file", "line", "class", "severity", "title", "evidence"],
+      "properties": {
+        "fp": { "$ref": "#/$defs/fingerprint" },
+        "file": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "line": { "$ref": "#/$defs/line" },
+        "end_line": { "$ref": "#/$defs/line" },
+        "class": {
+          "enum": [
+            "logic", "error-handling", "concurrency", "resource", "security", "api-design",
+            "layering", "tests", "docs", "compliance", "deps"
+          ]
+        },
+        "severity": { "enum": ["blocker", "major", "minor", "nit"] },
+        "verdict": { "enum": ["confirmed", "refuted", "unclear"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "trigger": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "evidence": { "type": "string", "minLength": 1, "maxLength": 400 }
+      }
+    }
   }
 }

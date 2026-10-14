@@ -7,9 +7,16 @@
 //! dismissals are ledger records outside this set and stay), their evidence is searched for
 //! again at head ([`recheck_anchors`]), the blind verifier asks whether each defect is still
 //! present ([`verify`](crate::verify)), and [`settle_carried`] says what becomes of each.
+//!
+//! The set persists across runs (#224): [`next_carry`] builds what a run hands on, which
+//! `publish` records in its `assay.run-inputs/1` bundle, and [`prior_carry`] seeds the next run
+//! from that bundle once its evidence pointer authenticates it.
 
 mod anchor;
 mod carried;
+mod carry;
+mod prior;
+pub(crate) mod record;
 mod settle;
 mod target;
 
@@ -18,6 +25,8 @@ pub use carried::{
     CarriedAnchor, CarriedField, CarriedFinding, CarriedParts, CarriedProblem, CarriedRefusal,
     CarryRefused, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, read_carried,
 };
+pub use carry::{CarrySet, OmitReason, Omitted, next_carry};
+pub use prior::{PriorCarry, PriorCarryError, prior_carry};
 pub use settle::{CarriedOutcome, CarriedState, NotReverified, settle_carried};
 pub use target::{
     Ancestry, Carry, CarryReset, Cumulative, Increment, MAX_RANGE_DIFF_BYTES, PriorHistory,

@@ -9,7 +9,8 @@ use crate::validation::{Change, EvidenceIndex, head_file};
 /// Searches for each carried finding's evidence at head with validation step 2's rule (nearest
 /// the line last published, the earlier on a tie), following a rename `change` records.
 ///
-/// A finding whose evidence is found moves there ([`CarriedAnchor::AtHead`]); one whose file is
+/// A finding whose evidence is found moves there ([`CarriedAnchor::AtHead`]), unless its head
+/// path is one the carried intake would refuse, when it stays as published; one whose file is
 /// gone at head, was not supplied, or no longer holds the evidence stays where it was published
 /// ([`CarriedAnchor::Gone`]): it needs re-verification, which is not resolution. Each file is
 /// indexed once and searched once per distinct normalised evidence, so the cost is the files'
@@ -75,8 +76,10 @@ mod tests {
                         fp: format!("{n:016x}").parse().expect("16 hex digits"),
                         file: "src/lib.rs".to_owned(),
                         line: NonZeroU64::MIN,
+                        end_line: None,
                         class: Class::Logic,
                         severity: Severity::Major,
+                        verdict: None,
                         title: "off by one".to_owned(),
                         trigger: None,
                         evidence: "for i in 0..=items.len() {".to_owned(),

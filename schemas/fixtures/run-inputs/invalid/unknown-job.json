@@ -13,5 +13,6 @@
   "inputs": {},
   "rubric_version": "v1",
   "decision": {},
-  "events": []
+  "events": [],
+  "carry": { "findings": [], "omitted": [] }
 }

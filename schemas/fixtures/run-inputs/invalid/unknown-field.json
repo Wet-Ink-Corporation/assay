@@ -7,5 +7,6 @@
   "rubric_version": "v1",
   "decision": {},
   "events": [],
+  "carry": { "findings": [], "omitted": [] },
   "raw_snapshot": {}
 }

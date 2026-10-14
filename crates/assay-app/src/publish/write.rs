@@ -174,6 +174,7 @@ fn upload<F, L: PublishLedger, B: BundleStore>(
         inputs: decided.inputs,
         decision,
         events: decided.events,
+        carry: decided.carry,
     })
     .map_err(PersistFailure::Bundle)?;
     let artifact = &decided.run.record().bundle_artifact;
