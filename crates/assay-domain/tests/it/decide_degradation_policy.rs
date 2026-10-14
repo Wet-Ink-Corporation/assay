@@ -6,7 +6,8 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use assay_domain::{
-    Conclusion, DegradedRole, InfraPolicy, PrClass, Reason, ReasonCode, RequiredRole, decide,
+    CallFailure, Conclusion, DegradedReport, InfraPolicy, PrClass, Reason, ReasonCode,
+    RequiredRole, decide,
 };
 
 use crate::support::{full_trust_path, reason, rubric_v1};
@@ -57,9 +58,9 @@ fn a_degraded_role_fails_exactly_the_blocking_classes_and_policies() -> Result<(
         inputs.policy.block_on_infra_for = case.block_on_infra_for.to_vec();
         inputs.policy.on_infra_failure = case.on_infra_failure;
         inputs.completed_roles = BTreeSet::from([RequiredRole::Security, RequiredRole::Design]);
-        inputs.degraded = vec![DegradedRole {
+        inputs.degraded = vec![DegradedReport {
             role: "bugs".to_owned(),
-            reason: "cap".to_owned(),
+            reason: CallFailure::Cap,
         }];
 
         let decision = decide(&rubric, &inputs);

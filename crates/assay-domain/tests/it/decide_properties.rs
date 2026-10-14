@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 
 use assay_domain::{
-    Authorship, CallFailure, Conclusion, Counts, DecisionInputs, Deferral, DegradedRole,
+    Authorship, CallFailure, Conclusion, Counts, DecisionInputs, Deferral, DegradedReport,
     Disposition, FindingDisposition, Fingerprint, GateConclusion, GateFinding, GateOutcome,
     GateReport, InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope,
     OwnerApproval, Policy, PrClass, PullRequest, Readiness, RequiredRole, ReviewedFinding, Rubric,
@@ -220,11 +220,11 @@ fn inputs() -> impl Strategy<Value = DecisionInputs> {
     let degraded = vec(
         (
             select(vec!["bugs", "security"]),
-            select(vec!["cap", "timeout"]),
+            select(CallFailure::ALL.to_vec()),
         )
-            .prop_map(|(role, reason)| DegradedRole {
+            .prop_map(|(role, reason)| DegradedReport {
                 role: role.to_owned(),
-                reason: reason.to_owned(),
+                reason,
             }),
         0..2,
     );

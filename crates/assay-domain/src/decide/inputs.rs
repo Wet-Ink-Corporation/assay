@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::decision::{DegradedRole, FindingDisposition};
+use crate::decision::FindingDisposition;
 use crate::event::VerifierVerdict;
 use crate::findings::GateConclusion;
 use crate::fingerprint::Fingerprint;
@@ -53,11 +53,25 @@ pub struct DecisionInputs {
     pub verifier: SupportOutcome,
     /// Roles reported degraded, each with its reason: own cap, turns, timeout, or malformed
     /// output after a retry (rules 8b, 8c). A role degraded on any shard is degraded.
-    pub degraded: Vec<DegradedRole>,
+    pub degraded: Vec<DegradedReport>,
     /// Valid waiver command records for this head.
     pub waivers: Vec<Waiver>,
     /// The valid override command record for this head, if any.
     pub override_record: Option<Override>,
+}
+
+/// A role of the LLM stage that reported itself degraded (rules 8b, 8c).
+///
+/// The reason is a [`CallFailure`], never free text, so a report with an empty or unknown
+/// reason is refused where the inputs are parsed rather than reaching the decision's
+/// `degraded[].reason`, which `assay.decision/1` requires to be non-empty (#185).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DegradedReport {
+    /// The role: a specialist (`bugs`, `combined`), `coordinator` or `verifier`.
+    pub role: String,
+    /// Why it produced nothing.
+    pub reason: CallFailure,
 }
 
 /// Base policy (03 §1 `[assay]`).

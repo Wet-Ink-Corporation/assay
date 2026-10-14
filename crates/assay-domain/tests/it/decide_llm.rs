@@ -4,9 +4,9 @@
 use std::error::Error;
 
 use assay_domain::{
-    Authorship, Conclusion, Decision, DecisionInputs, Deferral, DegradedRole, InfraPolicy,
-    LlmPolicy, LlmStage, OwnerApproval, PrClass, Reason, ReasonCode, Severity, VerifierVerdict,
-    decide,
+    Authorship, CallFailure, Conclusion, Decision, DecisionInputs, Deferral, DegradedReport,
+    DegradedRole, InfraPolicy, LlmPolicy, LlmStage, OwnerApproval, PrClass, Reason, ReasonCode,
+    Severity, VerifierVerdict, decide,
 };
 
 use crate::support::{clean_inputs, confirmed, fp, reason, rubric_v1};
@@ -31,6 +31,13 @@ fn trust_path(mut inputs: DecisionInputs) -> DecisionInputs {
     inputs.pr.classes = vec![PrClass::TrustPath];
     inputs.pr.owner_approval = OwnerApproval::Approved;
     inputs
+}
+
+fn bugs_reported() -> DegradedReport {
+    DegradedReport {
+        role: "bugs".to_owned(),
+        reason: CallFailure::Cap,
+    }
 }
 
 fn bugs_degraded() -> DegradedRole {
@@ -264,7 +271,7 @@ fn a_busy_slot_on_a_human_pr_warns_llm_degraded() -> Result<(), Box<dyn Error>> 
 #[test]
 fn a_degraded_required_role_fails_a_trust_path_pr() -> Result<(), Box<dyn Error>> {
     let mut inputs = trust_path(clean_inputs());
-    inputs.degraded = vec![bugs_degraded()];
+    inputs.degraded = vec![bugs_reported()];
 
     let decision = decided(&inputs)?;
 
@@ -280,7 +287,7 @@ fn a_degraded_required_role_fails_a_trust_path_pr() -> Result<(), Box<dyn Error>
 #[test]
 fn a_degraded_required_role_otherwise_warns_llm_degraded() -> Result<(), Box<dyn Error>> {
     let mut inputs = clean_inputs();
-    inputs.degraded = vec![bugs_degraded()];
+    inputs.degraded = vec![bugs_reported()];
 
     let decision = decided(&inputs)?;
 
@@ -310,7 +317,7 @@ fn a_missing_owner_approval_wins_over_a_pending_deferral() -> Result<(), Box<dyn
 #[test]
 fn a_pending_deferral_wins_over_a_degraded_role() -> Result<(), Box<dyn Error>> {
     let mut inputs = trust_path(deferred(Deferral::BudgetDeferred));
-    inputs.degraded = vec![bugs_degraded()];
+    inputs.degraded = vec![bugs_reported()];
 
     let decision = decided(&inputs)?;
 

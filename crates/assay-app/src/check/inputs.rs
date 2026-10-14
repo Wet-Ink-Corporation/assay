@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 
 use assay_domain::{
-    Authorship, CallFailure, DecisionInputs, Deferral, DegradedRole, GateReport, LlmStage,
+    Authorship, CallFailure, DecisionInputs, Deferral, DegradedReport, GateReport, LlmStage,
     NotRunReason, OwnerApproval, Policy, PullRequest, Readiness, RequiredRole, ReviewedFinding,
     Severity, SupportOutcome, Tier, Tiering, WeighIn,
 };
@@ -80,7 +80,7 @@ struct Review {
     llm: LlmStage,
     findings: Vec<ReviewedFinding>,
     completed: BTreeSet<RequiredRole>,
-    degraded: Vec<DegradedRole>,
+    degraded: Vec<DegradedReport>,
 }
 
 impl Review {
@@ -116,9 +116,9 @@ impl Review {
             },
             Stage::Degraded(failure) => Self {
                 llm: LlmStage::Completed,
-                degraded: vec![DegradedRole {
+                degraded: vec![DegradedReport {
                     role: role.bundle().code().to_owned(),
-                    reason: failure.code().to_owned(),
+                    reason: *failure,
                 }],
                 ..none
             },

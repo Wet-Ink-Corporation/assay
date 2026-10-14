@@ -31,9 +31,10 @@ mod tiering;
 pub use aeu::Aeu;
 pub use content_hash::ContentHash;
 pub use decide::inputs::{
-    Authorship, CallFailure, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport,
-    InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy,
-    PullRequest, Readiness, ReviewedFinding, StepAttribution, SupportOutcome, Waiver, WeighIn,
+    Authorship, CallFailure, DecisionInputs, Deferral, DegradedReport, GateFinding, GateOutcome,
+    GateReport, InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope,
+    OwnerApproval, Policy, PullRequest, Readiness, ReviewedFinding, StepAttribution,
+    SupportOutcome, Waiver, WeighIn,
 };
 pub use decide::{decide, waivable_fingerprints};
 pub use decision::{
