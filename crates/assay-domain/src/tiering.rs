@@ -8,8 +8,9 @@
 mod change;
 mod glob;
 mod lists;
+mod roots;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 pub use change::{
     BaselineChange, ChangeSet, ExecCause, ExecRoot, FileChange, FileKind, Lines, ManifestKey,
@@ -18,6 +19,7 @@ pub use change::{
 pub use glob::{Glob, GlobError};
 pub use lists::RepoGlobs;
 use lists::{Lists, TEMPER_BASELINE};
+use roots::RootIndex;
 
 use crate::tier::{PrClass, Tier};
 use crate::vocabulary::closed_enum;
@@ -298,14 +300,14 @@ fn trust_paths(lists: &Lists<'_>, changes: &ChangeSet) -> Vec<String> {
 }
 
 /// Build scripts and files under an exec root on either side of every file, and exec-surface
-/// packages.
+/// packages. Linear in the bytes of the paths and roots ([`RootIndex`]).
 fn exec_surface(lists: &Lists<'_>, changes: &ChangeSet) -> Vec<String> {
-    let under_root = |path: &str| changes.exec_roots.iter().any(|root| root.holds(path));
+    let roots = RootIndex::new(&changes.exec_roots);
     let scripts = changes
         .files
         .iter()
         .flat_map(FileChange::sides)
-        .filter(|path| lists.is_build_script(path) || under_root(path))
+        .filter(|path| lists.is_build_script(path) || roots.holds(path))
         .map(str::to_owned);
     let packages: Vec<String> = match &changes.packages {
         PackageDiff::Computed(packages) => packages
@@ -327,21 +329,25 @@ fn exec_surface(lists: &Lists<'_>, changes: &ChangeSet) -> Vec<String> {
 }
 
 /// Whether there is at least one file and every file is a regular file whose every side is
-/// allowlisted docs that no compile-time include names (compared ignoring ASCII case).
+/// allowlisted docs that no compile-time include names (compared ignoring ASCII case). Linear in
+/// the bytes of the paths and targets: one set of targets, one lookup per side.
 fn docs_only(lists: &Lists<'_>, changes: &ChangeSet) -> bool {
     // A target that is not canonical is one the scan could not place: it may name any file.
-    let included = |path: &str| {
-        changes
-            .include_targets
-            .iter()
-            .any(|target| !change::is_canonical(target) || target.eq_ignore_ascii_case(path))
+    // The set stores each lowercased target.
+    let Some(included) = changes
+        .include_targets
+        .iter()
+        .map(|target| change::is_canonical(target).then(|| target.to_ascii_lowercase()))
+        .collect::<Option<HashSet<String>>>()
+    else {
+        return false;
     };
     !changes.files.is_empty()
         && changes.files.iter().all(|file| {
             file.kind == FileKind::File
-                && file
-                    .sides()
-                    .all(|path| lists.is_docs(path) && !included(path))
+                && file.sides().all(|path| {
+                    lists.is_docs(path) && !included.contains(&path.to_ascii_lowercase())
+                })
         })
 }
 

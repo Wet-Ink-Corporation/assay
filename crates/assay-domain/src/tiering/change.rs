@@ -90,33 +90,44 @@ fn build_source(path: &str, crate_dir: &str) -> bool {
     if !crate_dir.is_empty() && !is_canonical(crate_dir) {
         return true;
     }
-    let is_rust = |name: &str| {
-        name.len() > 3
-            && name
-                .get(name.len().saturating_sub(3)..)
-                .is_some_and(|ext| ext.eq_ignore_ascii_case(".rs"))
-    };
     if crate_dir.is_empty() {
-        return match path.split('/').collect::<Vec<_>>().as_slice() {
-            [file] => is_rust(file),
-            [_, file] => file.eq_ignore_ascii_case("mod.rs"),
-            _ => false,
-        };
+        return root_build_source(path);
     }
-    let Some(relative) = path
-        .get(..crate_dir.len())
+    path.get(..crate_dir.len())
         .filter(|prefix| prefix.eq_ignore_ascii_case(crate_dir))
         .and_then(|_| path.get(crate_dir.len()..))
         .and_then(|rest| rest.strip_prefix('/'))
-    else {
-        return false;
-    };
+        .is_some_and(crate_build_source)
+}
+
+/// Whether `path` is a build source of the root package: a top-level `.rs` file or a
+/// `<segment>/mod.rs`.
+pub(super) fn root_build_source(path: &str) -> bool {
+    let mut segments = path.split('/');
+    match (segments.next(), segments.next(), segments.next()) {
+        (Some(file), None, None) => is_rust(file),
+        (Some(_), Some(file), None) => file.eq_ignore_ascii_case("mod.rs"),
+        _ => false,
+    }
+}
+
+/// Whether `relative`, a path relative to a crate's directory, is a `.rs` file outside the
+/// crate's target directories.
+pub(super) fn crate_build_source(relative: &str) -> bool {
     let in_target_dir = relative.split_once('/').is_some_and(|(first, _)| {
         TARGET_DIRS
             .iter()
             .any(|dir| first.eq_ignore_ascii_case(dir))
     });
     is_rust(relative) && !in_target_dir
+}
+
+/// Whether `name` ends in `.rs`, ignoring ASCII case, with something before it.
+fn is_rust(name: &str) -> bool {
+    name.len() > 3
+        && name
+            .get(name.len().saturating_sub(3)..)
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(".rs"))
 }
 
 /// One changed file.

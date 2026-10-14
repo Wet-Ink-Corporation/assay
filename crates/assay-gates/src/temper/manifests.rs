@@ -9,7 +9,7 @@
 //! `exclude` must inherit, whether or not `members` names it (Cargo makes path dependencies
 //! members too).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use toml::{Table, Value};
 
@@ -50,31 +50,14 @@ fn parse(bytes: &[u8]) -> Option<Table> {
 }
 
 /// A manifest on one side: absent, unparseable, or parsed.
-enum Side {
+#[derive(Clone, Copy)]
+enum Side<'m> {
     Absent,
     Unreadable,
-    Parsed(Table),
+    Parsed(&'m Table),
 }
 
-impl Side {
-    fn of(tree: &Tree<'_>, path: &str) -> Self {
-        match (tree.object(path), tree.bytes(path)) {
-            (None, _) => Self::Absent,
-            (Some(_), Some(bytes)) => parse(bytes).map_or(Self::Unreadable, Self::Parsed),
-            (Some(_), None) => Self::Unreadable,
-        }
-    }
-
-    /// The table, when the manifest is present and parses.
-    const fn parsed(&self) -> Option<&Table> {
-        match self {
-            Self::Parsed(table) => Some(table),
-            Self::Absent | Self::Unreadable => None,
-        }
-    }
-}
-
-/// Steps 4b-4d over every manifest of `base` and `head`.
+/// Steps 4b-4d over every manifest of `base` and `head`, each parsed once per side ([`Owner`]).
 pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> {
     let mut found = ManifestChecks::default();
     let paths: Vec<&'t str> = base
@@ -88,7 +71,7 @@ pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> 
     let empty = Table::new();
     for (path, (excluded, base_outside, head_outside)) in paths.into_iter().zip(placed) {
         let changed = base.object(path) != head.object(path);
-        let (before, after) = match (Side::of(base, path), Side::of(head, path)) {
+        let (before, after) = match (base_owner.side(path), head_owner.side(path)) {
             (_, Side::Unreadable) => {
                 found.unreadable.push((path, true));
                 continue;
@@ -102,7 +85,7 @@ pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> 
             (Side::Parsed(before), Side::Absent) => (Some(before), None),
             (Side::Parsed(before), Side::Parsed(after)) => (Some(before), Some(after)),
         };
-        if let Some(after) = &after
+        if let Some(after) = after
             && !excluded
             && is_package(after)
             && !inherits(after)
@@ -116,7 +99,7 @@ pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> 
             base: base_owner.root_unless(base_outside),
             head: head_owner.root_unless(head_outside),
         };
-        let switches = changed_switches(before.as_ref(), after.as_ref(), &roots);
+        let switches = changed_switches(before, after, &roots);
         if !switches.is_empty() {
             found.switches.push(SwitchChange {
                 path,
@@ -125,7 +108,7 @@ pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> 
                 switches,
             });
         }
-        let weakened = weakened(before.as_ref().unwrap_or(&empty), after.as_ref());
+        let weakened = weakened(before.unwrap_or(&empty), after);
         if !weakened.is_empty() {
             found.weakened.push((path, after.is_some(), weakened));
         }
@@ -147,9 +130,11 @@ fn inherits(manifest: &Table) -> bool {
         == Some(&Value::Boolean(true))
 }
 
-/// One side's workspace manifest and the manifests it does not own.
+/// One side's manifests, each parsed once, and the manifests its workspace manifest does not
+/// own.
 struct Owner<'t> {
-    root: Side,
+    /// Every manifest of the side, by path; `None` when it was not read or does not parse.
+    manifests: BTreeMap<&'t str, Option<Table>>,
     /// The directories its `[workspace] exclude` names. An entry that is not a plain relative
     /// path (absolute, holding `\` or a `..` segment) is not honoured.
     excluded: BTreeSet<String>,
@@ -160,9 +145,13 @@ struct Owner<'t> {
 
 impl<'t> Owner<'t> {
     fn of(tree: &Tree<'t>) -> Self {
-        let root = Side::of(tree, ROOT);
-        let excluded = root
-            .parsed()
+        let manifests: BTreeMap<&'t str, Option<Table>> = tree
+            .files(is_manifest)
+            .map(|path| (path, tree.bytes(path).and_then(parse)))
+            .collect();
+        let excluded = manifests
+            .get(ROOT)
+            .and_then(Option::as_ref)
             .and_then(|manifest| manifest.get("workspace"))
             .and_then(|workspace| workspace.get("exclude"))
             .and_then(Value::as_array)
@@ -171,19 +160,28 @@ impl<'t> Owner<'t> {
             .filter_map(Value::as_str)
             .filter_map(directory)
             .collect();
-        let nested = tree
-            .files(is_manifest)
-            .filter(|path| {
-                tree.bytes(path)
-                    .and_then(parse)
+        let nested = manifests
+            .iter()
+            .filter(|(_, manifest)| {
+                manifest
+                    .as_ref()
                     .is_none_or(|manifest| manifest.contains_key("workspace"))
             })
-            .filter_map(|path| Some(path.rsplit_once('/')?.0))
+            .filter_map(|(path, _)| Some(path.rsplit_once('/')?.0))
             .collect();
         Self {
-            root,
+            manifests,
             excluded,
             nested,
+        }
+    }
+
+    /// The manifest at `path` on this side.
+    fn side(&self, path: &str) -> Side<'_> {
+        match self.manifests.get(path) {
+            None => Side::Absent,
+            Some(None) => Side::Unreadable,
+            Some(Some(manifest)) => Side::Parsed(manifest),
         }
     }
 
@@ -199,7 +197,11 @@ impl<'t> Owner<'t> {
     /// The workspace manifest, unless the manifest being compared is `outside` it (below a
     /// directory of [`Self::outside`]); `None` too when it is absent or does not parse.
     fn root_unless(&self, outside: bool) -> Option<&Table> {
-        if outside { None } else { self.root.parsed() }
+        if outside {
+            None
+        } else {
+            self.manifests.get(ROOT).and_then(Option::as_ref)
+        }
     }
 }
 

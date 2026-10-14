@@ -231,10 +231,6 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
         }
         let mut found = Vec::new();
         for (dir, manifest) in self.manifests()? {
-            if found.len() > MAX_VISITS {
-                // The closure could not visit them all: refused before more resolve.
-                return None;
-            }
             if let Some(package) = manifest.get("package").or_else(|| manifest.get("project")) {
                 found.extend(self.build_scripts(dir, package.get("build"))?);
             }
@@ -244,6 +240,10 @@ impl<'r, 't, R: RevisionFiles> Walk<'r, 't, R> {
                     Some(path) => path.as_str()?,
                 };
                 found.push(self.resolve(dir, lib_path)?);
+            }
+            if found.len() > MAX_VISITS {
+                // The closure could not visit them all: refused before more resolve.
+                return None;
             }
         }
         Some(found)
@@ -292,5 +292,71 @@ fn join(dir: &str, name: &str) -> String {
         name.to_owned()
     } else {
         format!("{dir}/{name}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+
+    use super::*;
+
+    /// A reader with no blobs: `Walk::entries` reads only the tree it is given.
+    struct NoBlobs;
+
+    impl RevisionFiles for NoBlobs {
+        type Error = Infallible;
+
+        fn list(&self, _: Revision, _: Option<&str>) -> Result<Vec<TreeEntry>, Infallible> {
+            Ok(Vec::new())
+        }
+
+        fn read(&self, _: &[&TreeEntry]) -> Result<Vec<Vec<u8>>, Infallible> {
+            Ok(Vec::new())
+        }
+
+        fn blob_id(&self, _: &[u8]) -> Result<String, Infallible> {
+            Ok(String::new())
+        }
+    }
+
+    /// The number of entries `Walk::entries` finds for a package with `scripts` build scripts
+    /// and, when `proc_macro`, a proc-macro lib; `None` when it refuses.
+    fn entry_count(scripts: usize, proc_macro: bool) -> Option<usize> {
+        let names: Vec<String> = (0..scripts)
+            .map(|index| format!("\"b{index}.rs\""))
+            .collect();
+        let lib = if proc_macro {
+            "\n[lib]\nproc-macro = true\n"
+        } else {
+            ""
+        };
+        let manifest = format!(
+            "[package]\nname = \"p\"\nbuild = [{}]\n{lib}",
+            names.join(", ")
+        );
+        let entry = TreeEntry {
+            path: "p/Cargo.toml".to_owned(),
+            kind: EntryKind::File,
+            object: "1".to_owned(),
+            size: None,
+        };
+        let tree = Tree::new([(&entry, Some(manifest.as_bytes()))]);
+
+        Walk::new(&NoBlobs, &tree)
+            .entries()
+            .map(|found| found.len())
+    }
+
+    #[test]
+    fn entries_at_the_visit_cap_resolve_and_one_more_is_refused() {
+        assert_eq!(
+            (
+                entry_count(MAX_VISITS - 1, true),
+                entry_count(MAX_VISITS, true)
+            ),
+            (Some(MAX_VISITS), None),
+            "10,000 entries resolve; the 10,001st is refused before the closure starts"
+        );
     }
 }
