@@ -4,9 +4,10 @@ use std::error::Error;
 use std::time::Duration;
 
 use assay_app::{
-    Adapter, BuildJob, CommitId, ConfigError, ExactVersion, InfraFailurePolicy, ParseCommitIdError,
-    ParseDigestError, ParsePinError, Pin, Plugin, PluginsConfig, PrClass, Promotion, RunnerKind,
+    Adapter, BuildJob, CommitId, ConfigError, ExactVersion, ParseCommitIdError, ParseDigestError,
+    ParsePinError, Pin, Plugin, PluginsConfig, RunnerKind,
 };
+use assay_domain::{InfraPolicy, LlmPolicy, PrClass};
 
 const GIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const HEX64: &str = "dc7c1d8e3ccab68cfdb828ce40a446c3913f7172f899ffe3f439839cfd917a8b";
@@ -147,9 +148,9 @@ fn parses_the_assay_table_of_the_spec_example() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(assay.runner, Some(RunnerKind::ClaudeOauth));
     assert_eq!(assay.protected_bases, ["main"]);
-    assert_eq!(assay.llm_blockers, Promotion::Advisory);
-    assert_eq!(assay.llm_majors, Promotion::Block);
-    assert_eq!(assay.on_infra_failure, InfraFailurePolicy::Block);
+    assert_eq!(assay.llm_blockers, LlmPolicy::Advisory);
+    assert_eq!(assay.llm_majors, LlmPolicy::Block);
+    assert_eq!(assay.on_infra_failure, InfraPolicy::Block);
     assert_eq!(assay.block_on_infra_for, [PrClass::ExecSurface]);
     assert_eq!(
         assay.ledger_repo.as_deref(),
@@ -166,9 +167,9 @@ fn applies_the_documented_defaults_to_a_minimal_file() -> Result<(), Box<dyn Err
     )))?;
 
     let assay = config.assay();
-    assert_eq!(assay.llm_blockers, Promotion::Advisory);
-    assert_eq!(assay.llm_majors, Promotion::Advisory);
-    assert_eq!(assay.on_infra_failure, InfraFailurePolicy::Warn);
+    assert_eq!(assay.llm_blockers, LlmPolicy::Advisory);
+    assert_eq!(assay.llm_majors, LlmPolicy::Advisory);
+    assert_eq!(assay.on_infra_failure, InfraPolicy::Warn);
     assert_eq!(
         assay.block_on_infra_for,
         [PrClass::TrustPath, PrClass::ExecSurface]
@@ -520,6 +521,93 @@ fn rejects_an_unknown_adapter() {
         matches!(parsed, Err(ConfigError::UnknownAdapter { ref adapter, .. }) if adapter == "builtin:other"),
         "{parsed:?}"
     );
+}
+
+/// Parses one plugin entry named `name` with `body` and expects it refused as a name reserved
+/// for `builtin:<name>`, quoting `expected_adapter` as the adapter given.
+fn assert_reserved(name: &str, body: &str, expected_adapter: &str) {
+    let text = with_plugin(&format!("name = \"{name}\"\n{body}"));
+
+    let parsed = parse(&text);
+
+    assert!(
+        matches!(
+            parsed,
+            Err(ConfigError::ReservedName { ref gate, ref adapter, reserved_for })
+                if gate == name
+                    && adapter == expected_adapter
+                    && reserved_for == format!("builtin:{name}")
+        ),
+        "{parsed:?}"
+    );
+}
+
+const EXEC_BODY: &str =
+    "adapter = \"exec\"\nexec = [\"./lint.sh\"]\njob = \"lint\"\nrequired = false";
+
+#[test]
+fn rejects_an_exec_plugin_named_temper() {
+    assert_reserved("temper", EXEC_BODY, "exec");
+}
+
+#[test]
+fn rejects_an_exec_plugin_named_weigh_in() {
+    assert_reserved("weigh-in", EXEC_BODY, "exec");
+}
+
+#[test]
+fn rejects_a_weigh_in_plugin_named_temper() {
+    let body = format!("adapter = \"builtin:weigh-in\"\npin = \"git:{GIT}\"\nrequired = true");
+    assert_reserved("temper", &body, "builtin:weigh-in");
+}
+
+#[test]
+fn rejects_a_temper_plugin_named_weigh_in() {
+    let body = format!("adapter = \"builtin:temper\"\npin = \"git:{GIT}\"\nrequired = true");
+    assert_reserved("weigh-in", &body, "builtin:temper");
+}
+
+#[test]
+fn rejects_an_unknown_adapter_named_temper_as_reserved() {
+    let body = format!("adapter = \"builtin:other\"\npin = \"git:{GIT}\"\nrequired = true");
+    assert_reserved("temper", &body, "builtin:other");
+}
+
+#[test]
+fn accepts_a_builtin_under_another_name() -> Result<(), Box<dyn Error>> {
+    let text = with_plugin(&format!(
+        "name = \"lint-temper\"\nadapter = \"builtin:temper\"\npin = \"git:{GIT}\"\nrequired = true"
+    ));
+
+    let config = parse(&text)?;
+
+    let [plugin] = config.plugins() else {
+        return Err("one plugin expected".into());
+    };
+    assert_eq!(plugin.name().as_str(), "lint-temper");
+    assert!(matches!(plugin.adapter(), Adapter::Temper { .. }));
+    Ok(())
+}
+
+/// Rubric v1 keys waivable rules by gate name, so each such name must be one a plugin can only
+/// take with the matching built-in adapter: an `exec` plugin under it is refused.
+#[test]
+fn every_rubric_waivable_gate_is_a_reserved_builtin_name() -> Result<(), Box<dyn Error>> {
+    let rubric: toml::Table = include_str!("../../../../rubric/v1.toml").parse()?;
+    let waivable = rubric
+        .get("waivable")
+        .and_then(toml::Value::as_array)
+        .ok_or("rubric v1 lists waivable rules")?;
+    assert!(!waivable.is_empty());
+
+    for rule in waivable {
+        let gate = rule
+            .get("gate")
+            .and_then(toml::Value::as_str)
+            .ok_or("a waivable rule names its gate")?;
+        assert_reserved(gate, EXEC_BODY, "exec");
+    }
+    Ok(())
 }
 
 #[test]

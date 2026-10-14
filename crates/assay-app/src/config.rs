@@ -17,9 +17,7 @@ use std::collections::BTreeSet;
 use std::str::FromStr;
 use std::time::Duration;
 
-pub use self::assay::{
-    AssaySettings, ExactVersion, InfraFailurePolicy, PrClass, Promotion, RunnerKind,
-};
+pub use self::assay::{AssaySettings, ExactVersion, RunnerKind};
 pub use self::builtins::{
     BuiltinAllowlist, BuiltinKind, BuiltinsError, MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS,
 };
@@ -298,6 +296,7 @@ impl TryFrom<PluginDto> for Plugin {
     fn try_from(dto: PluginDto) -> Result<Self, Self::Error> {
         let name = GateName::new(dto.name).map_err(|name| ConfigError::Name { name })?;
         let gate = name.as_str();
+        Builtin::check_name(gate, &dto.adapter)?;
         let timeout = timeout(gate, dto.timeout_s.unwrap_or(DEFAULT_TIMEOUT_SECS))?;
         let adapter = match dto.adapter.as_str() {
             "builtin:temper" => {
@@ -350,6 +349,50 @@ impl TryFrom<PluginDto> for Plugin {
             required: dto.required,
             timeout,
         })
+    }
+}
+
+/// The built-in adapters, whose names are reserved: a plugin may take one only when it is that
+/// built-in, so a rubric rule keyed by the name (`[[waivable]] gate = "temper"`) never reads
+/// another adapter's findings (#153, wi-b5affa).
+#[derive(Debug, Clone, Copy)]
+enum Builtin {
+    Temper,
+    WeighIn,
+}
+
+impl Builtin {
+    const ALL: [Self; 2] = [Self::Temper, Self::WeighIn];
+
+    /// Refuses plugin `gate` when its name is a built-in's and `adapter` is not that built-in.
+    /// Checked on the adapter as written, before it is parsed, so an unknown adapter under a
+    /// reserved name is refused for the name.
+    fn check_name(gate: &str, adapter: &str) -> Result<(), ConfigError> {
+        match Self::ALL.into_iter().find(|builtin| builtin.name() == gate) {
+            // The error owns its copies; the entry is dropped with the refusal.
+            Some(builtin) if adapter != builtin.adapter() => Err(ConfigError::ReservedName {
+                gate: gate.to_owned(),
+                adapter: adapter.to_owned(),
+                reserved_for: builtin.adapter(),
+            }),
+            Some(_) | None => Ok(()),
+        }
+    }
+
+    /// The plugin name reserved for it.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Temper => "temper",
+            Self::WeighIn => "weigh-in",
+        }
+    }
+
+    /// Its `adapter` value in plugins.toml.
+    const fn adapter(self) -> &'static str {
+        match self {
+            Self::Temper => "builtin:temper",
+            Self::WeighIn => "builtin:weigh-in",
+        }
     }
 }
 

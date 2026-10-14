@@ -12,7 +12,8 @@ use crate::contract::ContractValidator;
 use crate::decide::{Anchors, Cited, Texts};
 use crate::events::EventSink;
 use crate::gate::{
-    self, BuildJob, GateError, GateJob, GateObserver, GateRunner, account_for_required,
+    self, BuildJob, GateError, GateJob, GateJobOutcome, GateJobReport, GateObserver, GateRunner,
+    account_for_required,
 };
 
 /// Every gate job, in pipeline order.
@@ -43,7 +44,7 @@ pub struct LocalGate {
 
 /// One gate run before its findings are anchored.
 pub(super) struct Ran {
-    report: gate::GateReport,
+    report: GateJobReport,
     /// The document's findings; `None` when a concluded document did not read as this gate's.
     findings: Option<Vec<Finding>>,
 }
@@ -91,7 +92,7 @@ pub(super) fn run<G: GateRunner, S: EventSink>(
 /// pass, as in CI.
 fn account_and_record<O: GateObserver>(
     config: &PluginsConfig,
-    reports: &mut Vec<gate::GateReport>,
+    reports: &mut Vec<GateJobReport>,
     observer: &mut O,
 ) -> Result<(), O::Error> {
     let ran_count = reports.len();
@@ -103,7 +104,7 @@ fn account_and_record<O: GateObserver>(
 }
 
 /// A report with its validated document read as findings.
-fn read(mut report: gate::GateReport) -> Ran {
+fn read(mut report: GateJobReport) -> Ran {
     // `run_gates` validated the document; one that still does not read as this gate's is a
     // drift between schema and type, and the gate is an invalid-document error.
     let findings = report.document.take().map(|value| {
@@ -118,7 +119,7 @@ fn read(mut report: gate::GateReport) -> Ran {
         }
     });
     let findings = match (&report.outcome, findings) {
-        (gate::GateOutcome::Concluded(_), Some(read)) => read,
+        (GateJobOutcome::Concluded(_), Some(read)) => read,
         _ => Some(Vec::new()),
     };
     Ran { report, findings }
@@ -131,13 +132,13 @@ pub(super) fn anchor(ran: Vec<Ran>, texts: &Texts) -> Gates {
     let mut gates = Gates::default();
     for Ran { report, findings } in ran {
         let (outcome, mut findings) = match (report.outcome, findings) {
-            (gate::GateOutcome::Concluded(conclusion), Some(findings)) => {
+            (GateJobOutcome::Concluded(conclusion), Some(findings)) => {
                 (LocalOutcome::concluded(conclusion), findings)
             }
-            (gate::GateOutcome::Concluded(_), None) => {
+            (GateJobOutcome::Concluded(_), None) => {
                 (gate_error(&GateError::InvalidDocument.detail()), Vec::new())
             }
-            (gate::GateOutcome::Error(error), _) => (gate_error(&error.detail()), Vec::new()),
+            (GateJobOutcome::Error(error), _) => (gate_error(&error.detail()), Vec::new()),
         };
         let fingerprints: Option<Vec<GateFinding>> = findings
             .iter_mut()
@@ -201,7 +202,7 @@ mod tests {
     use std::convert::Infallible;
 
     use crate::config::{Plugin, PluginsConfig};
-    use crate::gate::{BuildJob, GateError, GateJob, GateObserver, GateOutcome, GateReport};
+    use crate::gate::{BuildJob, GateError, GateJob, GateJobOutcome, GateJobReport, GateObserver};
 
     use super::account_and_record;
 
@@ -221,7 +222,7 @@ required = true
 
     /// Keeps each ended gate's plugin, outcome and exit.
     #[derive(Default)]
-    struct Ended(Vec<(String, GateOutcome, Option<i32>)>);
+    struct Ended(Vec<(String, GateJobOutcome, Option<i32>)>);
 
     impl GateObserver for Ended {
         type Error = Infallible;
@@ -234,7 +235,7 @@ required = true
             Ok(())
         }
 
-        fn ended(&mut self, report: &GateReport, exit: Option<i32>) -> Result<(), Infallible> {
+        fn ended(&mut self, report: &GateJobReport, exit: Option<i32>) -> Result<(), Infallible> {
             // The fake keeps its own copy of the plugin's name.
             let seen = (report.plugin.as_str().to_owned(), report.outcome, exit);
             self.0.push(seen);
@@ -255,7 +256,7 @@ required = true
             observer.0,
             [(
                 "unit".to_owned(),
-                GateOutcome::Error(GateError::Skipped),
+                GateJobOutcome::Error(GateError::Skipped),
                 None
             )]
         );

@@ -5,11 +5,11 @@ use std::assert_matches;
 use std::error::Error;
 
 use assay_app::{
-    ArtifactJob, Authentication, Conclusion, DecideError, GateError, JobResult, MAX_DOCUMENT_BYTES,
+    ArtifactJob, Authentication, DecideError, GateError, JobResult, MAX_DOCUMENT_BYTES,
     MAX_FETCHED_BYTES, MAX_REVIEW_DOCUMENTS, Moved, OutputsProblem, Refusal, Reported,
     ReportedGate, Sha256Digest, StateStep, Unreadable, UpstreamJob,
 };
-use assay_domain::GateOutcome;
+use assay_domain::{GateConclusion, GateOutcome};
 use serde_json::json;
 
 use crate::decide_fakes::{Scenario, authenticated, gate_document, refusal};
@@ -215,7 +215,7 @@ fn an_oversized_gate_document_is_a_gate_error() -> Result<(), Box<dyn Error>> {
     let mut scenario = Scenario::new()?;
     scenario.publish_gate(
         (ArtifactJob::GatesLint, "temper"),
-        Conclusion::Pass,
+        GateConclusion::Pass,
         oversized(),
     )?;
 
@@ -289,7 +289,7 @@ fn a_passing_job_with_a_neutral_document_is_an_invalid_document() -> Result<(), 
     let mut scenario = Scenario::new()?;
     scenario.publish_gate(
         (ArtifactJob::GatesStatic, "temper"),
-        Conclusion::Pass,
+        GateConclusion::Pass,
         gate_document("temper", "neutral", &json!([])),
     )?;
 

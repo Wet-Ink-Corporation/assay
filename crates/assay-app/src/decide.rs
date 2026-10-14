@@ -24,8 +24,7 @@ use std::convert::Infallible;
 use std::num::NonZeroU64;
 
 use assay_domain::{
-    Authorship, Finding, GateReport, InfraPolicy, LlmPolicy, OwnerApproval, Policy, PrClass,
-    PullRequest, Readiness, Tier, Tiering,
+    Authorship, Finding, GateReport, OwnerApproval, Policy, PullRequest, Readiness, Tier, Tiering,
 };
 use thiserror::Error;
 
@@ -40,7 +39,7 @@ pub use self::request::{
     AdmitJob, ArtifactDocument, DecideRequest, GateJobOutputs, JobResult, PlanJob, Reported,
     ReportedGate, ReviewJob, TierDegrade, UpstreamJob,
 };
-use crate::config::{self, AssaySettings, InfraFailurePolicy, Promotion, Sha256Digest};
+use crate::config::{AssaySettings, Sha256Digest};
 use crate::contract::ContractValidator;
 use crate::plan::{ArtifactJob, EvidenceKey, PlanError, PullRequestEvent, PullRequestObjects};
 
@@ -578,26 +577,12 @@ fn is_document_name(file: &str) -> bool {
 
 /// Base policy as the rubric reads it.
 pub(crate) fn policy(settings: &AssaySettings) -> Policy {
-    let llm = |promotion| match promotion {
-        Promotion::Advisory => LlmPolicy::Advisory,
-        Promotion::Block => LlmPolicy::Block,
-    };
     Policy {
-        // The policy owns its list; the configuration keeps its own.
+        // The policy owns its lists; the configuration keeps its own.
         protected_bases: settings.protected_bases.clone(),
-        llm_blockers: llm(settings.llm_blockers),
-        llm_majors: llm(settings.llm_majors),
-        on_infra_failure: match settings.on_infra_failure {
-            InfraFailurePolicy::Warn => InfraPolicy::Warn,
-            InfraFailurePolicy::Block => InfraPolicy::Block,
-        },
-        block_on_infra_for: settings
-            .block_on_infra_for
-            .iter()
-            .map(|class| match class {
-                config::PrClass::TrustPath => PrClass::TrustPath,
-                config::PrClass::ExecSurface => PrClass::ExecSurface,
-            })
-            .collect(),
+        llm_blockers: settings.llm_blockers,
+        llm_majors: settings.llm_majors,
+        on_infra_failure: settings.on_infra_failure,
+        block_on_infra_for: settings.block_on_infra_for.clone(),
     }
 }

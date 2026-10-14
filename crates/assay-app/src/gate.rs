@@ -11,6 +11,7 @@ mod job;
 use std::borrow::Cow;
 use std::convert::Infallible;
 
+use assay_domain::GateConclusion;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -77,22 +78,13 @@ pub enum GateDocument {
     Written(Vec<u8>),
 }
 
-/// A gate's own verdict, believed only from a clean run.
+/// What assay concludes from one gate run in one job. The domain's
+/// [`GateOutcome`](assay_domain::GateOutcome) is what `decide` reads of the gate across jobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Conclusion {
-    /// The gate passed.
-    Pass,
-    /// The gate failed.
-    Fail,
-    /// The gate neither passed nor failed.
-    Neutral,
-}
-
-/// What assay concludes from one gate run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GateOutcome {
-    /// The gate ran cleanly: exit 0 with the document's conclusion, or exit 1 (fail).
-    Concluded(Conclusion),
+pub enum GateJobOutcome {
+    /// The gate ran cleanly: exit 0 with the document's conclusion, or exit 1 (fail). The
+    /// gate's own verdict is believed only from such a run.
+    Concluded(GateConclusion),
     /// Anything else: fail-closed, reason `gate-error:<detail>`.
     Error(GateError),
 }
@@ -153,9 +145,10 @@ impl GateError {
     }
 }
 
-/// One gate's result in one job.
+/// One gate's result in one job, as that job reports it. `decide` reads the reports of every
+/// job into the domain's [`GateReport`](assay_domain::GateReport).
 #[derive(Debug, Clone, PartialEq)]
-pub struct GateReport {
+pub struct GateJobReport {
     /// The plugin.
     pub plugin: GateName,
     /// The job it ran in.
@@ -163,8 +156,8 @@ pub struct GateReport {
     /// Whether the plugin is required.
     pub required: bool,
     /// What assay concludes.
-    pub outcome: GateOutcome,
-    /// The validated document, present exactly when the outcome is [`GateOutcome::Concluded`].
+    pub outcome: GateJobOutcome,
+    /// The validated document, present exactly when the outcome is [`GateJobOutcome::Concluded`].
     pub document: Option<Value>,
     /// Why the outcome is an error, in assay's own words (a runner or validation error), for
     /// logs. Never the gate's output.
@@ -182,7 +175,7 @@ pub fn run_gates<R: GateRunner>(
     job: GateJob,
     runner: &mut R,
     validator: &ContractValidator,
-) -> Vec<GateReport> {
+) -> Vec<GateJobReport> {
     let Ok(reports) = run_observed(config, runner, validator, &mut Unobserved(job));
     reports
 }
@@ -199,7 +192,7 @@ pub(crate) trait GateObserver {
     fn started(&mut self, plugin: &Plugin) -> Result<(), Self::Error>;
 
     /// The gate of `report` ended; `exit` is its process's exit code, when it exited by itself.
-    fn ended(&mut self, report: &GateReport, exit: Option<i32>) -> Result<(), Self::Error>;
+    fn ended(&mut self, report: &GateJobReport, exit: Option<i32>) -> Result<(), Self::Error>;
 }
 
 /// No observer of the job's gates.
@@ -216,7 +209,7 @@ impl GateObserver for Unobserved {
         Ok(())
     }
 
-    fn ended(&mut self, _report: &GateReport, _exit: Option<i32>) -> Result<(), Self::Error> {
+    fn ended(&mut self, _report: &GateJobReport, _exit: Option<i32>) -> Result<(), Self::Error> {
         Ok(())
     }
 }
@@ -228,7 +221,7 @@ pub(crate) fn run_observed<R: GateRunner, O: GateObserver>(
     runner: &mut R,
     validator: &ContractValidator,
     observer: &mut O,
-) -> Result<Vec<GateReport>, O::Error> {
+) -> Result<Vec<GateJobReport>, O::Error> {
     let job = observer.job();
     let mut reports = Vec::new();
     for plugin in config
@@ -250,11 +243,11 @@ pub(crate) fn run_observed<R: GateRunner, O: GateObserver>(
             .and_then(|run| classify(plugin.name(), run, validator));
         let (outcome, document, cause) = match classified {
             Ok((conclusion, document)) => {
-                (GateOutcome::Concluded(conclusion), Some(document), None)
+                (GateJobOutcome::Concluded(conclusion), Some(document), None)
             }
-            Err(rejected) => (GateOutcome::Error(rejected.error), None, rejected.cause),
+            Err(rejected) => (GateJobOutcome::Error(rejected.error), None, rejected.cause),
         };
-        let report = GateReport {
+        let report = GateJobReport {
             plugin: plugin.name().clone(),
             job,
             required: plugin.required(),
@@ -270,8 +263,12 @@ pub(crate) fn run_observed<R: GateRunner, O: GateObserver>(
 
 /// Appends `gate-error:skipped` for every required plugin scheduled for `job` that has no report
 /// for that job in `reports`. A missing required gate is never a pass.
-pub fn account_for_required(config: &PluginsConfig, job: GateJob, reports: &mut Vec<GateReport>) {
-    let skipped: Vec<GateReport> = config
+pub fn account_for_required(
+    config: &PluginsConfig,
+    job: GateJob,
+    reports: &mut Vec<GateJobReport>,
+) {
+    let skipped: Vec<GateJobReport> = config
         .plugins()
         .iter()
         .filter(|plugin| plugin.required() && scheduled(plugin, job))
@@ -280,11 +277,11 @@ pub fn account_for_required(config: &PluginsConfig, job: GateJob, reports: &mut 
                 .iter()
                 .any(|report| report.job == job && report.plugin == *plugin.name())
         })
-        .map(|plugin| GateReport {
+        .map(|plugin| GateJobReport {
             plugin: plugin.name().clone(),
             job,
             required: true,
-            outcome: GateOutcome::Error(GateError::Skipped),
+            outcome: GateJobOutcome::Error(GateError::Skipped),
             document: None,
             cause: None,
         })
@@ -331,7 +328,7 @@ fn classify(
     gate: &GateName,
     run: GateRun,
     validator: &ContractValidator,
-) -> Result<(Conclusion, Value), Rejected> {
+) -> Result<(GateConclusion, Value), Rejected> {
     let exit_failed = match run.termination {
         Termination::Exited(0) => false,
         Termination::Exited(1) => true,
@@ -357,7 +354,7 @@ fn classify(
         return Err(Rejected::because(GateError::InvalidDocument, cause));
     };
     let conclusion = if exit_failed {
-        Conclusion::Fail
+        GateConclusion::Fail
     } else {
         conclusion
     };
@@ -365,15 +362,15 @@ fn classify(
 }
 
 /// The conclusion of a schema-valid findings document, when it is a gate document from `gate`.
-fn gate_conclusion(gate: &GateName, document: &Value) -> Option<Conclusion> {
+fn gate_conclusion(gate: &GateName, document: &Value) -> Option<GateConclusion> {
     let source = document.get("source")?;
     if source.get("kind")?.as_str()? != "gate" || source.get("name")?.as_str()? != gate.as_str() {
         return None;
     }
     match document.get("conclusion")?.as_str()? {
-        "pass" => Some(Conclusion::Pass),
-        "fail" => Some(Conclusion::Fail),
-        "neutral" => Some(Conclusion::Neutral),
+        "pass" => Some(GateConclusion::Pass),
+        "fail" => Some(GateConclusion::Fail),
+        "neutral" => Some(GateConclusion::Neutral),
         _ => None,
     }
 }

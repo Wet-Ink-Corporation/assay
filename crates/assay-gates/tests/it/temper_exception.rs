@@ -4,14 +4,14 @@
 use std::assert_matches;
 use std::error::Error;
 
-use assay_app::{Conclusion, GateJob, GateOutcome, Termination};
-use assay_domain::Severity;
+use assay_app::{GateJob, GateJobOutcome, Termination};
+use assay_domain::{GateConclusion, Severity};
 use assay_gates::{Revision, TemperError};
 
 use crate::temper_support::{EXCEPTIONS, Pr, Seen, hit};
 
-const FAILED: GateOutcome = GateOutcome::Concluded(Conclusion::Fail);
-const PASSED: GateOutcome = GateOutcome::Concluded(Conclusion::Pass);
+const FAILED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Fail);
+const PASSED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Pass);
 const PROCESS: &str = "crates/assay-forge/src/process.rs";
 const EXPECT: &str = "expect-attr";
 const LINT: &str = "clippy::too_many_lines";

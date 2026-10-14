@@ -53,9 +53,9 @@ pub use check::{
 pub use config::{
     Adapter, Argv, AssaySettings, BuiltinAllowlist, BuiltinKind, BuiltinsError, CommitId,
     ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion, GateName, GlobsConfigError,
-    InfraFailurePolicy, MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS, MAX_TIMEOUT_SECS, ParseCommitIdError,
-    ParseDigestError, ParsePinError, Pin, Plugin, PluginsConfig, PrClass, Promotion, RunnerKind,
-    Sha256Digest, Step, TomlError, parse_globs,
+    MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS, MAX_TIMEOUT_SECS, ParseCommitIdError, ParseDigestError,
+    ParsePinError, Pin, Plugin, PluginsConfig, RunnerKind, Sha256Digest, Step, TomlError,
+    parse_globs,
 };
 pub use contract::{
     Contract, ContractSchemaError, ContractValidator, MAX_DOCUMENT_BYTES, ReadContractError,
@@ -84,8 +84,8 @@ pub use eval::{
 };
 pub use events::{EventSink, NoEvents};
 pub use gate::{
-    BuildJob, Conclusion, GateDocument, GateError, GateJob, GateOutcome, GateReport, GateRun,
-    GateRunner, Termination, account_for_required, run_gates,
+    BuildJob, GateDocument, GateError, GateJob, GateJobOutcome, GateJobReport, GateRun, GateRunner,
+    Termination, account_for_required, run_gates,
 };
 pub use golden::{CorpusEntry, CorpusEntryKind, GoldenReplay, SELF_GATE, replay_golden};
 pub use model_runner::{

@@ -7,8 +7,6 @@ use std::str::FromStr;
 use assay_domain::{GateConclusion, GateOutcome, StepAttribution};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::gate::Conclusion;
-
 /// What precedes a gate error's detail.
 const GATE_ERROR: &str = "gate-error:";
 
@@ -65,11 +63,11 @@ impl LocalOutcome {
     }
 
     /// The outcome of a gate that concluded `conclusion`.
-    pub(super) const fn concluded(conclusion: Conclusion) -> Self {
+    pub(super) const fn concluded(conclusion: GateConclusion) -> Self {
         match conclusion {
-            Conclusion::Pass => Self::Pass,
-            Conclusion::Fail => Self::Fail,
-            Conclusion::Neutral => Self::Neutral,
+            GateConclusion::Pass => Self::Pass,
+            GateConclusion::Fail => Self::Fail,
+            GateConclusion::Neutral => Self::Neutral,
         }
     }
 

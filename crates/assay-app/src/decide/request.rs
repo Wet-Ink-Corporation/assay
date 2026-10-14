@@ -2,8 +2,10 @@
 //! of the jobs it needs, which steps PR code cannot reach wrote (02 §1). They are trusted; the
 //! artifacts they name are not until their digests match.
 
+use assay_domain::GateConclusion;
+
 use crate::config::Sha256Digest;
-use crate::gate::{Conclusion, GateError};
+use crate::gate::GateError;
 use crate::plan::PlanRequest;
 
 /// How an upstream job ended, as `needs.<job>.result` reports it.
@@ -102,7 +104,7 @@ pub enum Reported {
     /// It ran cleanly and uploaded `<plugin>.json` in the job's artifact.
     Concluded {
         /// The conclusion assay drew from the exit code and the document.
-        conclusion: Conclusion,
+        conclusion: GateConclusion,
         /// The sha256 of the uploaded document.
         document: Sha256Digest,
     },

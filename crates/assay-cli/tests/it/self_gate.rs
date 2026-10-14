@@ -8,10 +8,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assay_app::{
-    BuildJob, Conclusion, ContractValidator, GateError, GateJob, GateOutcome, PluginsConfig,
-    run_gates,
+    BuildJob, ContractValidator, GateError, GateJob, GateJobOutcome, PluginsConfig, run_gates,
 };
 use assay_cli::ForgeSupervisor;
+use assay_domain::GateConclusion;
 use assay_forge::process::GroupKiller;
 use assay_gates::{ExecAdapter, ExecLimits, ExecSettings, GateEnvironment};
 use tempfile::TempDir;
@@ -54,7 +54,7 @@ fn run_key() -> Vec<(OsString, OsString)> {
 fn run_gate(
     checkout: &Path,
     vars: Vec<(OsString, OsString)>,
-) -> Result<GateOutcome, Box<dyn Error>> {
+) -> Result<GateJobOutcome, Box<dyn Error>> {
     let output = TempDir::new()?;
     let settings = ExecSettings::new(
         checkout,
@@ -119,7 +119,7 @@ fn the_gate_passes_on_this_repository() -> TestResult {
 
     assert_eq!(
         outcome,
-        GateOutcome::Concluded(Conclusion::Pass),
+        GateJobOutcome::Concluded(GateConclusion::Pass),
         "every recorded snapshot replays to its bytes"
     );
     Ok(())
@@ -134,7 +134,7 @@ fn a_rubric_change_without_a_snapshot_update_fails_the_gate() -> TestResult {
 
     assert_eq!(
         outcome,
-        GateOutcome::Concluded(Conclusion::Fail),
+        GateJobOutcome::Concluded(GateConclusion::Fail),
         "a verdict change without a snapshot update fails (rule 1)"
     );
     Ok(())
@@ -147,7 +147,7 @@ fn without_a_run_key_the_gate_is_a_gate_error() -> TestResult {
 
     assert_eq!(
         outcome,
-        GateOutcome::Error(GateError::Exit(2)),
+        GateJobOutcome::Error(GateError::Exit(2)),
         "no document can name its run, so nothing is written and nothing passes"
     );
     Ok(())
@@ -168,7 +168,7 @@ fn a_missing_corpus_is_a_gate_error() -> TestResult {
 
     assert_eq!(
         outcome,
-        GateOutcome::Error(GateError::Exit(2)),
+        GateJobOutcome::Error(GateError::Exit(2)),
         "an unreadable corpus is never a pass"
     );
     Ok(())

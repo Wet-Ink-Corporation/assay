@@ -11,7 +11,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use assay_app::{
-    ContractValidator, GateJob, GateOutcome, GateRun, GateRunner, Termination, run_gates,
+    ContractValidator, GateJob, GateJobOutcome, GateRun, GateRunner, Termination, run_gates,
 };
 use assay_domain::{FindingsDocument, Severity};
 use assay_gates::{
@@ -331,7 +331,7 @@ impl Pr {
 
     /// Runs `gates-static` through the gate use case, and returns its outcome with the rule,
     /// file, line and severity of each finding in the validated document.
-    pub(crate) fn outcome(&mut self) -> Result<(GateOutcome, Vec<Seen>), Box<dyn Error>> {
+    pub(crate) fn outcome(&mut self) -> Result<(GateJobOutcome, Vec<Seen>), Box<dyn Error>> {
         let document = self.document()?;
         let seen = document
             .1
@@ -352,7 +352,7 @@ impl Pr {
     /// Runs `gates-static` through the gate use case: the outcome and the validated document.
     pub(crate) fn document(
         &mut self,
-    ) -> Result<(GateOutcome, Option<FindingsDocument>), Box<dyn Error>> {
+    ) -> Result<(GateJobOutcome, Option<FindingsDocument>), Box<dyn Error>> {
         let config = config()?;
         let settings = self.settings()?;
         let mut adapter = TemperAdapter::new(&mut self.scan, &self.revisions, settings);

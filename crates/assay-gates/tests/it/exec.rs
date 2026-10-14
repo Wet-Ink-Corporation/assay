@@ -10,9 +10,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use assay_app::{
-    BuildJob, Conclusion, ContractValidator, GateDocument, GateJob, GateOutcome, GateRun,
-    GateRunner, Termination, run_gates,
+    BuildJob, ContractValidator, GateDocument, GateJob, GateJobOutcome, GateRun, GateRunner,
+    Termination, run_gates,
 };
+use assay_domain::GateConclusion;
 use assay_gates::{
     ExecAdapter, ExecError, ExecLimits, ExecSettings, ExecSettingsError, GateEnvironment,
 };
@@ -387,15 +388,21 @@ fn a_clean_exec_run_passes_through_the_gate_use_case() -> Result<(), Box<dyn Err
 
     let reports = run_gates(&config, LINT, &mut adapter, &validator);
 
-    let outcomes: Vec<(&str, GateOutcome)> = reports
+    let outcomes: Vec<(&str, GateJobOutcome)> = reports
         .iter()
         .map(|report| (report.plugin.as_str(), report.outcome))
         .collect();
     assert_eq!(
         outcomes,
         [
-            ("temper", GateOutcome::Error(assay_app::GateError::NotRun)),
-            ("custom-lint", GateOutcome::Concluded(Conclusion::Pass)),
+            (
+                "temper",
+                GateJobOutcome::Error(assay_app::GateError::NotRun)
+            ),
+            (
+                "custom-lint",
+                GateJobOutcome::Concluded(GateConclusion::Pass)
+            ),
         ]
     );
     Ok(())

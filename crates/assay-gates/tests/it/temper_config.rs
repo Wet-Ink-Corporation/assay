@@ -4,14 +4,14 @@
 use std::assert_matches;
 use std::error::Error;
 
-use assay_app::{Conclusion, GateJob, GateOutcome};
-use assay_domain::Severity;
+use assay_app::{GateJob, GateJobOutcome};
+use assay_domain::{GateConclusion, Severity};
 use assay_gates::{Revision, TemperError};
 
 use crate::temper_support::{CONFIG, EXCEPTIONS, PINNED, Pr, TEMPER_JSON};
 
-const FAILED: GateOutcome = GateOutcome::Concluded(Conclusion::Fail);
-const PASSED: GateOutcome = GateOutcome::Concluded(Conclusion::Pass);
+const FAILED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Fail);
+const PASSED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Pass);
 
 /// [`TEMPER_JSON`] with the gate's step timeout raised.
 fn longer_steps() -> String {

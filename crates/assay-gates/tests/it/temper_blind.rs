@@ -4,14 +4,14 @@
 
 use std::error::Error;
 
-use assay_app::{Conclusion, GateOutcome, Termination};
-use assay_domain::Severity;
+use assay_app::{GateJobOutcome, Termination};
+use assay_domain::{GateConclusion, Severity};
 use assay_gates::Revision;
 
 use crate::temper_support::{Pr, Seen, hit};
 
-const FAILED: GateOutcome = GateOutcome::Concluded(Conclusion::Fail);
-const PASSED: GateOutcome = GateOutcome::Concluded(Conclusion::Pass);
+const FAILED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Fail);
+const PASSED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Pass);
 
 /// A package manifest, inheriting the workspace lints as step 4d requires of every package.
 const PACKAGE: &str = "[package]\nname = \"x\"\n\n[lints]\nworkspace = true\n";
@@ -294,7 +294,7 @@ fn a_cfg_attr_without_lints_or_paths_passes() -> Result<(), Box<dyn Error>> {
 }
 
 /// A gate outcome and its findings, as `Pr::outcome` returns them.
-type Outcome = (GateOutcome, Vec<Seen>);
+type Outcome = (GateJobOutcome, Vec<Seen>);
 
 /// The outcome of a head whose `src/lib.rs` is `source`, by `source`, for every source.
 fn outcomes<'s>(sources: &[&'s str]) -> Result<Vec<(&'s str, Outcome)>, Box<dyn Error>> {

@@ -8,8 +8,8 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
-use assay_app::{BuildJob, Conclusion, GateError, GateJob, GateOutcome, GateRunner};
-use assay_domain::Severity;
+use assay_app::{BuildJob, GateError, GateJob, GateJobOutcome, GateRunner};
+use assay_domain::{GateConclusion, Severity};
 use assay_gates::{
     EntryKind, GateEnvironment, Revision, RevisionFiles, TemperAdapter, TemperError, TemperPaths,
     TemperSettings, TemperSettingsError, TreeEntry,
@@ -18,9 +18,9 @@ use assay_gates::{
 use crate::support::{config, plugin};
 use crate::temper_support::{BASELINE, CRATES, FakeError, NODE, Pr, baseline, baseline_with};
 
-const FAILED: GateOutcome = GateOutcome::Concluded(Conclusion::Fail);
-const PASSED: GateOutcome = GateOutcome::Concluded(Conclusion::Pass);
-const NOT_RUN: GateOutcome = GateOutcome::Error(GateError::NotRun);
+const FAILED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Fail);
+const PASSED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Pass);
+const NOT_RUN: GateJobOutcome = GateJobOutcome::Error(GateError::NotRun);
 
 fn path_only(path: &str) -> GateEnvironment {
     GateEnvironment::from_vars([(OsString::from("PATH"), OsString::from(path))])

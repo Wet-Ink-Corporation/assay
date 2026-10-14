@@ -1,10 +1,11 @@
 //! The wire shape of `.assay/plugins.toml`. Unknown keys are rejected at every level; the
 //! values are validated when converted into the types of [`super`] (OUT-01).
 
+use assay_domain::{InfraPolicy, LlmPolicy, PrClass};
 use serde::Deserialize;
 
 use super::assay::{
-    InfraFailurePolicy, PrClass, Promotion, RunnerKind, default_block_on_infra_for,
+    RunnerKind, default_block_on_infra_for, default_infra_policy, default_llm_policy,
 };
 use super::builtins::BuiltinsDto;
 
@@ -28,12 +29,12 @@ pub(super) struct AssayDto {
     pub(super) runner: Option<RunnerKind>,
     #[serde(default)]
     pub(super) protected_bases: Vec<String>,
-    #[serde(default)]
-    pub(super) llm_blockers: Promotion,
-    #[serde(default)]
-    pub(super) llm_majors: Promotion,
-    #[serde(default)]
-    pub(super) on_infra_failure: InfraFailurePolicy,
+    #[serde(default = "default_llm_policy")]
+    pub(super) llm_blockers: LlmPolicy,
+    #[serde(default = "default_llm_policy")]
+    pub(super) llm_majors: LlmPolicy,
+    #[serde(default = "default_infra_policy")]
+    pub(super) on_infra_failure: InfraPolicy,
     #[serde(default = "default_block_on_infra_for")]
     pub(super) block_on_infra_for: Vec<PrClass>,
     pub(super) ledger_repo: Option<String>,

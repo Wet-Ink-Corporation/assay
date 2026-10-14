@@ -5,10 +5,10 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use assay_app::{
-    ArtifactJob, AuthenticatedRun, ChangedFiles, Conclusion, MAX_EVIDENCE_BYTES,
-    MAX_EVIDENCE_FILES, MAX_SYMBOL_BYTES,
+    ArtifactJob, AuthenticatedRun, ChangedFiles, MAX_EVIDENCE_BYTES, MAX_EVIDENCE_FILES,
+    MAX_SYMBOL_BYTES,
 };
-use assay_domain::{FileChange, Fingerprint, Lines};
+use assay_domain::{FileChange, Fingerprint, GateConclusion, Lines};
 use serde_json::{Value, json};
 
 use crate::decide_fakes::{Scenario, authenticated, gate_document, gate_finding};
@@ -27,7 +27,7 @@ fn lint_findings(pr: FakePr, findings: &[Value]) -> Result<AuthenticatedRun, Box
     let mut scenario = Scenario::of(pr)?;
     scenario.publish_gate(
         (ArtifactJob::GatesLint, "temper"),
-        Conclusion::Fail,
+        GateConclusion::Fail,
         gate_document("temper", "fail", &json!(findings)),
     )?;
     authenticated(scenario.authenticate()?)

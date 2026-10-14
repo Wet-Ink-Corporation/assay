@@ -15,8 +15,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use assay_app::{Conclusion, ContractValidator, GateJob, GateOutcome, PluginsConfig, run_gates};
+use assay_app::{ContractValidator, GateJob, GateJobOutcome, PluginsConfig, run_gates};
 use assay_cli::{ForgeRevisions, ForgeSupervisor};
+use assay_domain::GateConclusion;
 use assay_forge::git::{CommitSha, GitEnvironment, GitLimits, ObjectRepo, TreeLimits};
 use assay_forge::process::GroupKiller;
 use assay_gates::{GateEnvironment, TemperAdapter, TemperPaths, TemperSettings};
@@ -123,7 +124,7 @@ impl Pr {
     }
 
     /// Runs `gates-static` through the gate use case: the outcome and each finding's rule.
-    fn outcome(&self) -> Result<(GateOutcome, Vec<String>), Box<dyn Error>> {
+    fn outcome(&self) -> Result<(GateJobOutcome, Vec<String>), Box<dyn Error>> {
         let environment =
             GateEnvironment::from_vars([(OsString::from("PATH"), OsString::from("/usr/bin:/bin"))]);
         let paths = TemperPaths {
@@ -162,8 +163,8 @@ impl Pr {
     }
 }
 
-const FAILED: GateOutcome = GateOutcome::Concluded(Conclusion::Fail);
-const PASSED: GateOutcome = GateOutcome::Concluded(Conclusion::Pass);
+const FAILED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Fail);
+const PASSED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Pass);
 
 #[test]
 #[cfg_attr(

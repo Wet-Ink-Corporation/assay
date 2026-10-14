@@ -6,10 +6,10 @@ use std::error::Error;
 use std::fmt;
 
 use assay_app::{
-    BuildJob, Conclusion, ContractValidator, GateDocument, GateError, GateJob, GateOutcome,
-    GateReport, GateRun, GateRunner, Plugin, PluginsConfig, Termination, account_for_required,
-    run_gates,
+    BuildJob, ContractValidator, GateDocument, GateError, GateJob, GateJobOutcome, GateJobReport,
+    GateRun, GateRunner, Plugin, PluginsConfig, Termination, account_for_required, run_gates,
 };
+use assay_domain::GateConclusion;
 
 const GIT: &str = "0123456789abcdef0123456789abcdef01234567";
 const HEX64: &str = "dc7c1d8e3ccab68cfdb828ce40a446c3913f7172f899ffe3f439839cfd917a8b";
@@ -109,7 +109,7 @@ impl GateRunner for FakeRunner {
 fn exec_outcome(
     termination: Termination,
     document: GateDocument,
-) -> Result<GateOutcome, Box<dyn Error>> {
+) -> Result<GateJobOutcome, Box<dyn Error>> {
     let config = config()?;
     let validator = ContractValidator::new()?;
     let mut runner = FakeRunner::with("custom-lint", termination, document);
@@ -130,7 +130,7 @@ fn exit_zero_with_a_pass_document_passes() -> Result<(), Box<dyn Error>> {
         GateDocument::Written(document("custom-lint", "pass")),
     )?;
 
-    assert_eq!(outcome, GateOutcome::Concluded(Conclusion::Pass));
+    assert_eq!(outcome, GateJobOutcome::Concluded(GateConclusion::Pass));
     Ok(())
 }
 
@@ -141,7 +141,7 @@ fn exit_zero_takes_the_documents_failing_conclusion() -> Result<(), Box<dyn Erro
         GateDocument::Written(document("custom-lint", "fail")),
     )?;
 
-    assert_eq!(outcome, GateOutcome::Concluded(Conclusion::Fail));
+    assert_eq!(outcome, GateJobOutcome::Concluded(GateConclusion::Fail));
     Ok(())
 }
 
@@ -152,7 +152,7 @@ fn exit_zero_takes_the_documents_neutral_conclusion() -> Result<(), Box<dyn Erro
         GateDocument::Written(document("custom-lint", "neutral")),
     )?;
 
-    assert_eq!(outcome, GateOutcome::Concluded(Conclusion::Neutral));
+    assert_eq!(outcome, GateJobOutcome::Concluded(GateConclusion::Neutral));
     Ok(())
 }
 
@@ -163,7 +163,7 @@ fn exit_one_fails_even_when_the_document_says_pass() -> Result<(), Box<dyn Error
         GateDocument::Written(document("custom-lint", "pass")),
     )?;
 
-    assert_eq!(outcome, GateOutcome::Concluded(Conclusion::Fail));
+    assert_eq!(outcome, GateJobOutcome::Concluded(GateConclusion::Fail));
     Ok(())
 }
 
@@ -174,7 +174,7 @@ fn exit_two_is_a_gate_error_whatever_the_document_says() -> Result<(), Box<dyn E
         GateDocument::Written(document("custom-lint", "pass")),
     )?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::Exit(2)));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::Exit(2)));
     Ok(())
 }
 
@@ -182,7 +182,7 @@ fn exit_two_is_a_gate_error_whatever_the_document_says() -> Result<(), Box<dyn E
 fn a_high_exit_code_is_a_gate_error() -> Result<(), Box<dyn Error>> {
     let outcome = exec_outcome(Termination::Exited(127), GateDocument::Missing)?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::Exit(127)));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::Exit(127)));
     Ok(())
 }
 
@@ -193,7 +193,7 @@ fn a_signal_is_a_gate_error() -> Result<(), Box<dyn Error>> {
         GateDocument::Written(document("custom-lint", "pass")),
     )?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::Signal));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::Signal));
     Ok(())
 }
 
@@ -204,7 +204,7 @@ fn a_timeout_is_a_gate_error() -> Result<(), Box<dyn Error>> {
         GateDocument::Written(document("custom-lint", "pass")),
     )?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::Timeout));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::Timeout));
     Ok(())
 }
 
@@ -215,7 +215,7 @@ fn output_over_the_cap_is_a_gate_error() -> Result<(), Box<dyn Error>> {
         GateDocument::Written(document("custom-lint", "pass")),
     )?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::OutputTooLarge));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::OutputTooLarge));
     Ok(())
 }
 
@@ -223,7 +223,7 @@ fn output_over_the_cap_is_a_gate_error() -> Result<(), Box<dyn Error>> {
 fn exit_zero_without_a_document_is_a_gate_error() -> Result<(), Box<dyn Error>> {
     let outcome = exec_outcome(Termination::Exited(0), GateDocument::Missing)?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::MissingDocument));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::MissingDocument));
     Ok(())
 }
 
@@ -231,7 +231,7 @@ fn exit_zero_without_a_document_is_a_gate_error() -> Result<(), Box<dyn Error>> 
 fn exit_one_without_a_document_is_a_gate_error() -> Result<(), Box<dyn Error>> {
     let outcome = exec_outcome(Termination::Exited(1), GateDocument::Missing)?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::MissingDocument));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::MissingDocument));
     Ok(())
 }
 
@@ -239,7 +239,7 @@ fn exit_one_without_a_document_is_a_gate_error() -> Result<(), Box<dyn Error>> {
 fn an_oversized_document_is_a_gate_error() -> Result<(), Box<dyn Error>> {
     let outcome = exec_outcome(Termination::Exited(0), GateDocument::TooLarge)?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::DocumentTooLarge));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::DocumentTooLarge));
     Ok(())
 }
 
@@ -247,7 +247,7 @@ fn an_oversized_document_is_a_gate_error() -> Result<(), Box<dyn Error>> {
 fn a_document_that_is_not_a_regular_file_is_a_gate_error() -> Result<(), Box<dyn Error>> {
     let outcome = exec_outcome(Termination::Exited(0), GateDocument::NotAFile)?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::InvalidDocument));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::InvalidDocument));
     Ok(())
 }
 
@@ -258,7 +258,7 @@ fn a_document_that_breaks_the_schema_is_a_gate_error() -> Result<(), Box<dyn Err
         GateDocument::Written(br#"{"schema":"assay.findings/1","conclusion":"pass"}"#.to_vec()),
     )?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::InvalidDocument));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::InvalidDocument));
     Ok(())
 }
 
@@ -269,7 +269,7 @@ fn a_document_from_another_gate_is_a_gate_error() -> Result<(), Box<dyn Error>> 
         GateDocument::Written(document("temper", "pass")),
     )?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::InvalidDocument));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::InvalidDocument));
     Ok(())
 }
 
@@ -282,7 +282,7 @@ fn a_reviewer_document_is_a_gate_error() -> Result<(), Box<dyn Error>> {
         GateDocument::Written(reviewer.to_vec()),
     )?;
 
-    assert_eq!(outcome, GateOutcome::Error(GateError::InvalidDocument));
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::InvalidDocument));
     Ok(())
 }
 
@@ -294,15 +294,15 @@ fn a_runner_that_cannot_run_the_gate_is_a_gate_error() -> Result<(), Box<dyn Err
 
     let reports = run_gates(&config, LINT, &mut runner, &validator);
 
-    let outcomes: Vec<(&str, &GateOutcome)> = reports
+    let outcomes: Vec<(&str, &GateJobOutcome)> = reports
         .iter()
         .map(|report| (report.plugin.as_str(), &report.outcome))
         .collect();
     assert_eq!(
         outcomes,
         [
-            ("temper", &GateOutcome::Error(GateError::NotRun)),
-            ("custom-lint", &GateOutcome::Error(GateError::NotRun)),
+            ("temper", &GateJobOutcome::Error(GateError::NotRun)),
+            ("custom-lint", &GateJobOutcome::Error(GateError::NotRun)),
         ]
     );
     Ok(())
@@ -373,17 +373,17 @@ fn every_gate_scheduled_for_the_job_is_run_in_file_order() -> Result<(), Box<dyn
 #[test]
 fn a_required_gate_without_a_report_is_a_skipped_gate_error() -> Result<(), Box<dyn Error>> {
     let config = config()?;
-    let mut reports: Vec<GateReport> = Vec::new();
+    let mut reports: Vec<GateJobReport> = Vec::new();
 
     account_for_required(&config, LINT, &mut reports);
 
-    let outcomes: Vec<(&str, bool, &GateOutcome)> = reports
+    let outcomes: Vec<(&str, bool, &GateJobOutcome)> = reports
         .iter()
         .map(|report| (report.plugin.as_str(), report.required, &report.outcome))
         .collect();
     assert_eq!(
         outcomes,
-        [("temper", true, &GateOutcome::Error(GateError::Skipped))]
+        [("temper", true, &GateJobOutcome::Error(GateError::Skipped))]
     );
     Ok(())
 }
@@ -462,15 +462,18 @@ fn a_runner_error_is_recorded_as_the_gate_error_its_runner_names() -> Result<(),
 
     let reports = run_gates(&config, GateJob::Static, &mut DegradedRunner, &validator);
 
-    let outcomes: Vec<(&str, GateOutcome)> = reports
+    let outcomes: Vec<(&str, GateJobOutcome)> = reports
         .iter()
         .map(|report| (report.plugin.as_str(), report.outcome))
         .collect();
     assert_eq!(
         outcomes,
         [
-            ("temper", GateOutcome::Error(GateError::RatchetDegraded)),
-            ("weigh-in", GateOutcome::Error(GateError::RatchetDegraded)),
+            ("temper", GateJobOutcome::Error(GateError::RatchetDegraded)),
+            (
+                "weigh-in",
+                GateJobOutcome::Error(GateError::RatchetDegraded)
+            ),
         ]
     );
     Ok(())
