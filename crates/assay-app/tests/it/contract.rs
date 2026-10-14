@@ -7,10 +7,10 @@ use std::error::Error;
 use std::fs;
 
 use assay_app::{Contract, ContractValidator, ReadContractError};
-use assay_domain::Disposition;
+use assay_domain::{CallFailure, DecisionInputs, DegradedReport, Disposition, decide};
 use serde_json::Value;
 
-use crate::support::{Validity, fixtures, schemas_dir};
+use crate::support::{Validity, fixtures, golden_inputs, rubric_v1, schemas_dir};
 
 /// How each invalid fixture must be rejected: `Version(n)` for an unknown version, otherwise the
 /// JSON Pointer of the offending instance and the schema keyword that rejects it.
@@ -528,5 +528,59 @@ fn schemas_list_exactly_the_domain_disposition_codes() -> Result<(), Box<dyn Err
 
         assert_eq!(listed, domain, "disposition codes at {pointer}");
     }
+    Ok(())
+}
+
+/// The decision over the `rule-8c-llm-degraded` golden inputs with `combined` reported degraded
+/// for each of `reasons`, as published JSON.
+fn decision_over(reasons: &[CallFailure]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let inputs = golden_inputs()?;
+    let bytes = inputs
+        .get("rule-8c-llm-degraded")
+        .ok_or("the rule-8c-llm-degraded golden case exists")?;
+    let mut inputs: DecisionInputs = serde_json::from_slice(bytes)?;
+    inputs.degraded = reasons
+        .iter()
+        .map(|&reason| DegradedReport {
+            role: "combined".to_owned(),
+            reason,
+        })
+        .collect();
+    Ok(serde_json::to_vec(&decide(&rubric_v1()?, &inputs))?)
+}
+
+#[test]
+fn a_decision_over_every_reported_degradation_reason_is_schema_valid() -> Result<(), Box<dyn Error>>
+{
+    let validator = ContractValidator::new()?;
+
+    for reason in CallFailure::ALL {
+        let decision = decision_over(&[reason])?;
+        let read = validator.read(Contract::Decision, &decision);
+        assert!(read.is_ok(), "{reason:?}: {read:?}");
+    }
+    let every = decision_over(&CallFailure::ALL)?;
+    let read = validator.read(Contract::Decision, &every);
+    assert!(read.is_ok(), "every reason: {read:?}");
+    Ok(())
+}
+
+/// What #185 found: a decision whose degraded role has an empty reason is not `decision-1`, so
+/// the test above would catch an empty reason reaching the decision.
+#[test]
+fn a_decision_with_an_empty_degraded_reason_is_rejected() -> Result<(), Box<dyn Error>> {
+    let validator = ContractValidator::new()?;
+    let mut decision: Value = serde_json::from_slice(&decision_over(&[CallFailure::Cap])?)?;
+    *decision
+        .pointer_mut("/degraded/0/reason")
+        .ok_or("the decision lists a degraded role")? = Value::from("");
+
+    let read = validator.read(Contract::Decision, &serde_json::to_vec(&decision)?);
+
+    let error = read.err().ok_or("an empty degraded reason was accepted")?;
+    assert_eq!(
+        rejection_of(&error),
+        Some(Rejection::Violation("/degraded/0/reason", "minLength"))
+    );
     Ok(())
 }

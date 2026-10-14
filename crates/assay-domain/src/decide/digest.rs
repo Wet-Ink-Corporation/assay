@@ -12,11 +12,12 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 use crate::decide::inputs::{
-    Authorship, CallFailure, DecisionInputs, Deferral, GateFinding, GateOutcome, GateReport,
-    InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope, OwnerApproval, Policy,
-    PullRequest, Readiness, ReviewedFinding, StepAttribution, SupportOutcome, Waiver, WeighIn,
+    Authorship, CallFailure, DecisionInputs, Deferral, DegradedReport, GateFinding, GateOutcome,
+    GateReport, InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope,
+    OwnerApproval, Policy, PullRequest, Readiness, ReviewedFinding, StepAttribution,
+    SupportOutcome, Waiver, WeighIn,
 };
-use crate::decision::{DegradedRole, FindingDisposition, Reason};
+use crate::decision::{FindingDisposition, Reason};
 use crate::disposition::Disposition;
 use crate::event::VerifierVerdict;
 use crate::findings::GateConclusion;
@@ -252,7 +253,7 @@ canonical_struct!(ReviewedFinding {
     verdict,
 });
 canonical_struct!(FindingDisposition { fp, code });
-canonical_struct!(DegradedRole { role, reason });
+canonical_struct!(DegradedReport { role, reason });
 canonical_struct!(Waiver { fp, by });
 canonical_struct!(Override {
     scope,

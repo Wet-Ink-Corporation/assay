@@ -27,7 +27,7 @@ pub(super) fn degraded_roles(inputs: &DecisionInputs) -> Vec<DegradedRole> {
         reasons.entry(role).or_default().insert(reason);
     };
     for reported in &inputs.degraded {
-        add(reported.role.as_str(), reported.reason.as_str());
+        add(reported.role.as_str(), reported.reason.code());
     }
     for (role, outcome) in [
         ("coordinator", &inputs.coordinator),
