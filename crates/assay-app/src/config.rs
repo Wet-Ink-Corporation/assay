@@ -357,6 +357,8 @@ impl Step {
     fn from_dto(plugin: &str, dto: StepDto) -> Result<Self, ConfigError> {
         let name = GateName::new(dto.name).map_err(|name| ConfigError::Name { name })?;
         let gate = format!("{plugin}.{name}");
+        // The job is checked first, so an entry with a bad job and a bad command reports the job.
+        let job = job_of(&gate, dto.job)?;
         let command = argv_of(&gate, dto.cmd)?;
         if let Some(arg) = command.args().iter().find(|arg| lets_zero_tests_pass(arg)) {
             return Err(ConfigError::NoTests {
@@ -365,8 +367,11 @@ impl Step {
                 gate,
             });
         }
+        if job == BuildJob::Test && lets_nextest_default_zero_tests(&command) {
+            return Err(ConfigError::NoTestsFail { gate });
+        }
         Ok(Self {
-            job: job_of(&gate, dto.job)?,
+            job,
             command,
             timeout: timeout(&gate, dto.timeout_s)?,
             name,
@@ -379,6 +384,14 @@ impl Step {
 /// argument. Refused rather than modelled, so a declared step can never let zero tests pass.
 fn lets_zero_tests_pass(arg: &str) -> bool {
     arg != "--no-tests=fail" && (arg == "--no-tests" || arg.starts_with("--no-tests="))
+}
+
+/// Whether `command` runs nextest (the program or any argument is exactly `nextest`) without the
+/// argument `--no-tests=fail`, leaving zero tests to nextest's default. Refused rather than
+/// modelled: an alias or wrapper that hides `nextest` is not looked through.
+fn lets_nextest_default_zero_tests(command: &Argv) -> bool {
+    command.iter().any(|word| word == "nextest")
+        && !command.iter().any(|word| word == "--no-tests=fail")
 }
 
 fn pin(gate: &str, pin: Option<String>) -> Result<Pin, ConfigError> {

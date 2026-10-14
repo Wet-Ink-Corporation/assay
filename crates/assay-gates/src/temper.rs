@@ -275,8 +275,9 @@ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R> 
     /// `gates-test` and the plugin declares no `test` step, or `gates-lint` has no
     /// [`RatchetBase`]; when a file the checks need is missing, not a regular file or
     /// unparsable, the head tree cannot be read, a process cannot run, the scan does not exit 0
-    /// or 1 or prints unreadable output, or the pinned copy cannot be read; and in `gates-lint` when temper's findings document is unusable
-    /// or its ratchet is degraded ([`TemperError::RatchetDegraded`]).
+    /// or 1 or prints unreadable output, or the pinned copy cannot be read; and in `gates-lint`
+    /// when temper's findings document is unusable or its ratchet is degraded
+    /// ([`TemperError::RatchetDegraded`]).
     fn run(&mut self, plugin: &Plugin, job: GateJob) -> Result<GateRun, Self::Error> {
         let Adapter::Temper { pin, steps } = plugin.adapter() else {
             return Err(TemperError::NotTemper {

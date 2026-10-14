@@ -108,6 +108,14 @@ pub enum ConfigError {
         /// The refused argument.
         arg: String,
     },
+    /// A `job = "test"` step whose program or an argument is exactly `nextest` has no argument
+    /// exactly `--no-tests=fail`, so nextest's default would decide what a run of zero tests
+    /// means (`docs/architecture/03-contracts.md` §2.1 step 7).
+    #[error("`{gate}` runs nextest in job `test` without `--no-tests=fail`")]
+    NoTestsFail {
+        /// The `plugin.step`.
+        gate: String,
+    },
 }
 
 /// The TOML parser's error, with line and column. Opaque, so the parser's type stays out of this

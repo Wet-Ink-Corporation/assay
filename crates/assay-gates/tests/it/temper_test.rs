@@ -163,12 +163,18 @@ fn runs_tests_then_doctests_each_under_its_own_timeout_from_the_head_tree()
 
     adapter.run(&temper, TEST)?;
 
-    let seen: Vec<(PathBuf, Vec<&str>, PathBuf, Duration)> = steps
+    let seen: Vec<(PathBuf, Vec<&str>, PathBuf, Duration, usize)> = steps
         .seen
         .iter()
         .map(|seen| {
             let args = seen.args.iter().map(String::as_str).collect();
-            (seen.program.clone(), args, seen.cwd.clone(), seen.timeout)
+            (
+                seen.program.clone(),
+                args,
+                seen.cwd.clone(),
+                seen.timeout,
+                seen.max_output_bytes,
+            )
         })
         .collect();
     assert_eq!(
@@ -178,16 +184,19 @@ fn runs_tests_then_doctests_each_under_its_own_timeout_from_the_head_tree()
                 PathBuf::from("cargo"),
                 vec!["nextest", "run", "--workspace", "--no-tests=fail"],
                 pr.head_tree.clone(),
-                Duration::from_mins(25)
+                Duration::from_mins(25),
+                16 << 20
             ),
             (
                 PathBuf::from("cargo"),
                 vec!["test", "--doc"],
                 pr.head_tree.clone(),
-                Duration::from_mins(10)
+                Duration::from_mins(10),
+                16 << 20
             ),
         ],
-        "the test steps in file order; no lint step and no temper baseline --check"
+        "the test steps in file order, each capped at 16 MiB of output; no lint step and no temper \
+         baseline --check"
     );
     Ok(())
 }
