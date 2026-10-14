@@ -117,10 +117,25 @@ fn the_default_budget_is_the_documented_caps() {
     );
 }
 
+#[test]
+fn an_empty_findings_out_is_a_missing_variable() {
+    let args = [OsString::from("corpus"), OsString::from("rubric.toml")];
+    let variables = GateVariables {
+        findings_out: Some(OsString::new()),
+        run_key: Some(run_key()),
+    };
+
+    let refused = run(args.into_iter(), variables);
+
+    assert!(
+        matches!(refused, Err(SelfGateError::Variable(FINDINGS_OUT))),
+        "an empty `ASSAY_FINDINGS_OUT` is refused before any file is opened: {refused:?}"
+    );
+}
+
 #[cfg(unix)]
 mod unix {
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::symlink;
 
     use super::*;
@@ -257,8 +272,13 @@ mod unix {
         Ok(())
     }
 
+    /// Linux only: APFS refuses a file name that is not UTF-8, so macOS cannot build the tree.
     #[test]
+    #[cfg(target_os = "linux")]
     fn a_non_utf8_file_name_is_the_wrong_shape() -> TestResult {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
         let corpus = TempDir::new()?;
         fs::write(corpus.path().join(OsStr::from_bytes(b"case-\xff")), b"{}")?;
 

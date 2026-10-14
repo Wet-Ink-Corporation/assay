@@ -3,6 +3,7 @@
 
 use std::num::NonZeroU64;
 
+use assay_app::clip_chars;
 use assay_domain::{Class, Finding, FindingKind, Severity, Side};
 
 /// Most characters of `evidence` (03 §3).
@@ -53,7 +54,7 @@ impl Spot {
             side: Side::Right,
             evidence: quote
                 .and_then(line_evidence)
-                .unwrap_or_else(|| clip(fallback, EVIDENCE_CHARS)),
+                .unwrap_or_else(|| clip_chars(fallback, EVIDENCE_CHARS)),
         }
     }
 
@@ -70,7 +71,7 @@ impl Spot {
             file: file.to_owned(),
             line: NonZeroU64::MIN,
             side,
-            evidence: clip(evidence, EVIDENCE_CHARS),
+            evidence: clip_chars(evidence, EVIDENCE_CHARS),
         }
     }
 }
@@ -78,7 +79,7 @@ impl Spot {
 /// `line` trimmed and clipped, or `None` when nothing is left to quote.
 pub(super) fn line_evidence(line: &str) -> Option<String> {
     let trimmed = line.trim();
-    (!trimmed.is_empty()).then(|| clip(trimmed, EVIDENCE_CHARS))
+    (!trimmed.is_empty()).then(|| clip_chars(trimmed, EVIDENCE_CHARS))
 }
 
 /// A rule of the temper adapter: its id in findings, and how its findings are classed.
@@ -106,34 +107,12 @@ pub(super) fn finding(rule: Rule, spot: Spot, title: &str, body: &str) -> Findin
         expected_behavior: None,
         trigger: None,
         caller: None,
-        title: clip(title, TITLE_CHARS),
-        body: clip(body, BODY_CHARS),
+        title: clip_chars(title, TITLE_CHARS),
+        body: clip_chars(body, BODY_CHARS),
         fix: None,
         confidence: None,
         group_hint: None,
     }
-}
-
-/// A PR-controlled name (a lint, a crate, a path) made safe to put in a title or inside a
-/// markdown code span: anything but ASCII letters, digits and `_:-./` becomes `?`, so no
-/// backtick, newline or markup gets through, and `://` becomes `?` so no URL renders as a link
-/// where the name is not in a code span. Evidence is quoted verbatim instead.
-pub(super) fn plain(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "_:-./".contains(c) {
-                c
-            } else {
-                '?'
-            }
-        })
-        .collect::<String>()
-        .replace("://", "?")
-}
-
-/// `text` cut to its first `max` characters.
-pub(super) fn clip(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
 }
 
 /// What was wrong with a JSON document, without quoting it: its text may be PR-controlled, and
@@ -155,6 +134,7 @@ pub(super) fn json_detail(error: &serde_json::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assay_app::plain_name;
 
     const TEXT: &str = "{\n  \"totals\": {\n    \"a\": {\n      \"x\": 1\n    },\n    \"b\": {\n      \"x\": 2\n    }\n  }\n}\n";
 
@@ -184,7 +164,7 @@ mod tests {
     #[test]
     fn a_name_cannot_break_out_of_a_code_span() {
         assert_eq!(
-            plain("clippy::x`\n[link](http://e)"),
+            plain_name("clippy::x`\n[link](http://e)"),
             "clippy::x???link??http?e?",
             "backticks, newlines and markup are replaced"
         );
@@ -193,7 +173,7 @@ mod tests {
     #[test]
     fn a_name_cannot_render_as_a_link() {
         assert_eq!(
-            plain("https://evil.example/x"),
+            plain_name("https://evil.example/x"),
             "https?evil.example/x",
             "GitHub autolinks `scheme://` outside code spans"
         );
@@ -202,7 +182,7 @@ mod tests {
     #[test]
     fn clips_by_characters_not_bytes() {
         assert_eq!(
-            clip("ééé", 2),
+            clip_chars("ééé", 2),
             "éé",
             "a multi-byte character is never split"
         );
