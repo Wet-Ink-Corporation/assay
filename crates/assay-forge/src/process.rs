@@ -633,10 +633,28 @@ mod tests {
     }
 
     /// An executable shell script at `dir/name` with `body`.
+    ///
+    /// A child `install` writes the executable, so no thread of this test binary ever holds it
+    /// open for writing: a sibling test's fork would inherit that descriptor until its exec,
+    /// and executing the script meanwhile fails with ETXTBSY (#176). Renaming alone would not
+    /// help, as the inode stays the same. The rename only makes `dir/name` appear complete.
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let source = dir.join(format!(".{name}.source"));
+        let staged = dir.join(format!(".{name}.staged"));
         let path = dir.join(name);
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write the script");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("make it executable");
+        fs::write(&source, format!("#!/bin/sh\n{body}\n")).expect("write the script's text");
+        let installed = Command::new("install")
+            .args(["-m", "0755"])
+            .arg(&source)
+            .arg(&staged)
+            .status()
+            .expect("coreutils install runs");
+        assert!(
+            installed.success(),
+            "install copies the script: {installed}"
+        );
+        fs::rename(&staged, &path).expect("move the script into place");
+        fs::remove_file(&source).expect("drop the script's text");
         path
     }
 

@@ -11,7 +11,6 @@ use std::env;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -21,6 +20,8 @@ use assay_forge::git::{CommitSha, GitEnvironment, GitLimits, ObjectRepo, TreeLim
 use assay_forge::process::GroupKiller;
 use assay_gates::{GateEnvironment, TemperAdapter, TemperPaths, TemperSettings};
 use tempfile::TempDir;
+
+use crate::support::write_executable;
 
 const BASELINE: &str = ".claude/temper-baseline.json";
 const CONFIG: &str = ".claude/temper.json";
@@ -323,8 +324,8 @@ fn stand_in_node(scratch: &Path, head: &Path, scan: &str) -> Result<(), Box<dyn 
         head = head.display(),
         printed = printed.display(),
     );
-    write(scratch, "bin/node", &body)?;
-    fs::set_permissions(&node, fs::Permissions::from_mode(0o755))?;
+    fs::create_dir_all(scratch.join("bin"))?;
+    write_executable(&node, &body)?;
     Ok(())
 }
 
