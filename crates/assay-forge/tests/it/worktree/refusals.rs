@@ -137,6 +137,26 @@ fn an_unreadable_global_excludes_file_is_refused() -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_fifo_global_excludes_file_is_refused_without_blocking() -> Result<(), Box<dyn Error>> {
+    let clone = Clone::new()?;
+    set_excludes_file(&clone, "~/ignore-fifo")?;
+    let fifo = clone.home().join("ignore-fifo");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status()?;
+    assert!(made.success(), "mkfifo {}", fifo.display());
+    let tree = clone.open()?;
+    let repo = clone.scratch_repo("snap.git")?;
+
+    let result = repo.snapshot(&tree, &clone.head);
+
+    assert!(
+        matches!(&result, Err(GitError::Inspect { git_dir, .. }) if *git_dir == fifo),
+        "a FIFO is refused, never opened and waited on, got {result:?}"
+    );
+    Ok(())
+}
+
 /// A comment line of `len` bytes, newline included.
 fn exclude_text(len: usize) -> String {
     let mut text = "#".repeat(len.saturating_sub(1));

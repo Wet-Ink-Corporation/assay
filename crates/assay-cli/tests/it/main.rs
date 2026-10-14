@@ -17,6 +17,8 @@ mod fetch_by_digest;
 mod layering;
 mod layout;
 mod plan;
+#[cfg(unix)] // process groups, through forge's git
+mod pull_request;
 mod release_workflow;
 #[cfg(unix)] // process groups, through `ForgeSupervisor`
 mod self_gate;

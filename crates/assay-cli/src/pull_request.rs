@@ -15,6 +15,7 @@ use assay_forge::git::{
     self, ChangeListing, ChangedFile, CommitSha, GitError, LineCount, ObjectRepo, ParseShaError,
     TreeLimits,
 };
+use assay_forge::process::ProcessError;
 
 /// The PR's commits in a hardened object-only repository, read as data: the file list over
 /// `base...head` within a wall-clock cap, and listings and reads bounded by [`TreeLimits`].
@@ -150,11 +151,14 @@ impl ChangePatches for ForgePullRequest<'_> {
     /// its base path too. The text is read as UTF-8 with any invalid byte replaced: it is
     /// context for the model, while the hunks are git's own line numbers. Each text passes
     /// through `budget` before the next diff runs, so at most the budget's bytes of text, plus
-    /// one diff, are held.
+    /// one diff, are held. A diff git cannot print within forge's output cap (64 MiB by
+    /// default) is not shown and has no hunks, as for a binary file, rather than failing the
+    /// whole change.
     ///
     /// # Errors
     ///
-    /// [`ForgeObjectsError`] when a diff cannot run or does not read as one file's patch.
+    /// [`ForgeObjectsError`] when a diff cannot run (other than over the output cap) or does
+    /// not read as one file's patch.
     fn patches(
         &self,
         (base, head): (&CommitId, &CommitId),
@@ -171,7 +175,11 @@ impl ChangePatches for ForgePullRequest<'_> {
                     .into_iter()
                     .chain([file.path.as_str()])
                     .collect();
-                let patch = self.repo.file_patch(&base, &head, &paths)?;
+                let patch = match self.repo.file_patch(&base, &head, &paths) {
+                    Ok(patch) => patch,
+                    Err(error) if is_output_overrun(&error) => return Ok(FilePatch::default()),
+                    Err(error) => return Err(error.into()),
+                };
                 let text = String::from_utf8_lossy(&patch.text).into_owned();
                 Ok(FilePatch {
                     text: budget.keep(text),
@@ -187,6 +195,19 @@ impl ChangePatches for ForgePullRequest<'_> {
             })
             .collect()
     }
+}
+
+/// Whether git was killed for printing more than forge's output cap and nothing else: the
+/// group was shown gone, so the file can be left out. A failed group kill is not one, since a
+/// git process may still be running (#219 R2).
+const fn is_output_overrun(error: &GitError) -> bool {
+    matches!(
+        error,
+        GitError::Process {
+            source: ProcessError::OutputTooLarge,
+            ..
+        }
+    )
 }
 
 const fn span(range: git::LineRange) -> LineSpan {
@@ -228,5 +249,36 @@ fn file_change(file: ChangedFile) -> FileChange {
         renamed_from,
         lines,
         kind,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use assay_forge::git::GitOperation;
+
+    use super::*;
+
+    fn process(source: ProcessError) -> GitError {
+        GitError::Process {
+            operation: GitOperation::Diff,
+            source,
+        }
+    }
+
+    #[test]
+    fn only_an_output_overrun_whose_group_is_gone_leaves_a_file_out() {
+        let failed_kill = ProcessError::Kill {
+            cause: Box::new(ProcessError::OutputTooLarge),
+            source: io::Error::other("kill failed"),
+        };
+
+        assert!(is_output_overrun(&process(ProcessError::OutputTooLarge)));
+        assert!(
+            !is_output_overrun(&process(failed_kill)),
+            "a git process may still be running"
+        );
+        assert!(!is_output_overrun(&process(ProcessError::TimedOut)));
     }
 }

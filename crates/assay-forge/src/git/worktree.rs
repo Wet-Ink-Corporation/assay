@@ -192,10 +192,11 @@ impl ObjectRepo {
     ///
     /// # Errors
     /// [`GitError::Write`] when the borrowed store or exclude file cannot be set up (including
-    /// on a second call), [`GitError::Inspect`] when an exclude file cannot be read,
-    /// [`GitError::NotAWorkingTree`] when the exclude files hold over 1 MiB together or the
-    /// object store's path holds a newline, and [`GitError`] when a git step cannot run, fails
-    /// or prints something other than one object id.
+    /// on a second call), [`GitError::Inspect`] when an exclude file cannot be read or is not
+    /// a regular file (a FIFO or device is never opened), [`GitError::NotAWorkingTree`] when
+    /// the exclude files hold over 1 MiB together or the object store's path holds a newline,
+    /// and [`GitError`] when a git step cannot run, fails or prints something other than one
+    /// object id.
     pub fn snapshot(&self, worktree: &WorkingTree, head: &CommitSha) -> Result<Snapshot, GitError> {
         self.borrow_objects(worktree)?;
         self.copy_exclude(worktree)?;
@@ -326,16 +327,33 @@ impl ObjectRepo {
 }
 
 /// The exclude rules at `path`: empty when it does not exist, `None` when over `cap` bytes.
+///
+/// Only a regular file (or a symlink to one, which git follows too) is read. Anything else is
+/// refused before it is opened, since `open()` itself blocks on a FIFO with no writer and a
+/// read of `/dev/tty` waits on the terminal (#219 R1); the handle is checked again after the
+/// open. A path swapped for a FIFO between the check and the open is a residual: closing it
+/// needs `O_NONBLOCK`, that is `libc` (H-16), as for local mode's report store.
 fn read_exclude(path: &Path, cap: u64) -> Result<Option<Vec<u8>>, GitError> {
     let inspect = |source| GitError::Inspect {
         git_dir: path.to_path_buf(),
         source,
     };
-    match File::open(path) {
-        Ok(file) => read_capped(file, cap).map_err(inspect),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Some(Vec::new())),
-        Err(source) => Err(inspect(source)),
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Err(inspect(not_a_regular_file())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Some(Vec::new())),
+        Err(source) => return Err(inspect(source)),
     }
+    let file = File::open(path).map_err(inspect)?;
+    if !file.metadata().map_err(inspect)?.is_file() {
+        return Err(inspect(not_a_regular_file()));
+    }
+    read_capped(file, cap).map_err(inspect)
+}
+
+/// Why an exclude path that is not a regular file is not read.
+fn not_a_regular_file() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "not a regular file")
 }
 
 /// The `objects/info/alternates` line naming `objects`; `None` when the path holds a newline,
@@ -433,6 +451,36 @@ mod tests {
         assert_eq!(at_cap, Some(b"abcd".to_vec()));
         assert_eq!(over, None);
         Ok(())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "runs mkfifo; Miri cannot spawn processes")]
+    fn a_fifo_excludes_file_is_refused_without_blocking() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let fifo = dir.path().join("ignore");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status()?;
+        assert!(made.success(), "mkfifo {}", fifo.display());
+
+        let result = read_exclude(&fifo, MAX_EXCLUDE_BYTES);
+
+        assert!(
+            matches!(&result, Err(GitError::Inspect { source, .. })
+                if source.kind() == io::ErrorKind::InvalidInput),
+            "a FIFO is refused before it is opened, got {result:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_device_excludes_file_is_refused() {
+        let result = read_exclude(Path::new("/dev/null"), MAX_EXCLUDE_BYTES);
+
+        assert!(
+            matches!(&result, Err(GitError::Inspect { source, .. })
+                if source.kind() == io::ErrorKind::InvalidInput),
+            "only a regular file holds exclude rules, got {result:?}"
+        );
     }
 
     #[test]
