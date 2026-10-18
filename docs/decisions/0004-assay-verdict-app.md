@@ -40,6 +40,8 @@ GitHub allows one installation per App per org, so v1.2's "second installation" 
 | Item | Value |
 |---|---|
 | App | `assay-ledger-writer`, org-owned, installable only on this account, installed only on `assay-ledger` |
+| App id | `5372934` |
+| Key rotation | Annual; next due 2027-10-18 |
 | Repository permissions | Contents: read and write; Metadata: read. Nothing else. Webhook off. |
 | Key storage | Environment `assay-publish` (and the ledger repo's own environment for the ledger-side reconcile): secret `ASSAY_LEDGER_PRIVATE_KEY`, variable `ASSAY_LEDGER_APP_ID` |
 | Ledger repo | `Wet-Ink-Corporation/assay-ledger`, private, created by the owner |
@@ -48,4 +50,4 @@ GitHub allows one installation per App per org, so v1.2's "second installation" 
 
 - #70 (ledger adapter) mints its ledger token from `assay-ledger-writer`; every other App token is `assay-verdict`'s (`05 §4`).
 - The ledger-side reconcile needs both: the ledger token for the ledger and an `assay-verdict` token for `actions: read` on consumer repos.
-- App id and key-rotation date are added here once the owner creates the App.
+- #40's check that creating an existing slot ref fails (A-26) needs a ledger token, which no agent holds by design; it runs as part of #70's adapter tests against the live ledger and the M1 canary (A-33).
