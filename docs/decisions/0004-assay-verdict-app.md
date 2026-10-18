@@ -17,7 +17,7 @@ The owner created the App and rulesets on 2026-10-18.
 |---|---|
 | App | `assay-verdict`, owned by the `Wet-Ink-Corporation` org, installable only on this account |
 | App id (`integration_id`) | `5371952` |
-| Installation on `assay` | id pending (recorded by the owner) |
+| Installation on `assay` | `172801043` |
 | Repository permissions | Actions: read and write (requeue dispatch); Checks: read and write; Contents: read; Pull requests: read and write; Metadata: read. Nothing else. Webhook off. |
 | Authentication | Private key only (no client secret is used) |
 | Key storage | Environment `assay-publish`, deployment branches `main` only. Secret `ASSAY_VERDICT_PRIVATE_KEY`, variable `ASSAY_VERDICT_APP_ID`. No other copy is kept; the key is never agent-reachable (H-06). |
