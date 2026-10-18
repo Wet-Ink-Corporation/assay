@@ -1,8 +1,8 @@
-# 0004 · The `assay-verdict` App and rulesets (H-12)
+# 0004 · The `assay-verdict` and `assay-ledger-writer` Apps (H-12, H-14)
 
 - **Status:** accepted
 - **Date:** 2026-10-18
-- **Issue:** #39
+- **Issues:** #39, #40
 - **Spec:** `docs/architecture/07-decisions-assumptions.md` ADR-11 and H-12, `05-security.md` §3
 
 ## Context
@@ -32,4 +32,20 @@ The owner created the App and rulesets on 2026-10-18.
 - Both rulesets stay in Evaluate until #81 (M1 go-live): nothing publishes `assay / verdict` before #54, and the build still edits workflows and `.claude/`.
 - The branch ruleset targets the default branch, so it covers `main` once the default branch moves from `spec/architecture`.
 - H-06 makes the break-glass account the only bypass actor. Rulesets cannot name one user, so a team holding only that account is added with #41.
-- #40 adds `assay-ledger` as the App's second installation (H-14).
+
+## Ledger App (ADR-26, #40)
+
+GitHub allows one installation per App per org, so v1.2's "second installation" on `assay-ledger` would have been the same installation, and App permissions apply to every repository it covers: `contents: write` for the ledger would have reached every consumer repo. On 2026-10-18 the owner chose a separate App instead (the option `07 §5` had listed as considered, not adopted).
+
+| Item | Value |
+|---|---|
+| App | `assay-ledger-writer`, org-owned, installable only on this account, installed only on `assay-ledger` |
+| Repository permissions | Contents: read and write; Metadata: read. Nothing else. Webhook off. |
+| Key storage | Environment `assay-publish` (and the ledger repo's own environment for the ledger-side reconcile): secret `ASSAY_LEDGER_PRIVATE_KEY`, variable `ASSAY_LEDGER_APP_ID` |
+| Ledger repo | `Wet-Ink-Corporation/assay-ledger`, private, created by the owner |
+| Ledger ruleset | All branches, Active: creations, updates and deletions restricted, `assay-ledger-writer` the only bypass actor |
+| `assay-verdict` | Stays Contents read-only and is never installed on the ledger |
+
+- #70 (ledger adapter) mints its ledger token from `assay-ledger-writer`; every other App token is `assay-verdict`'s (`05 §4`).
+- The ledger-side reconcile needs both: the ledger token for the ledger and an `assay-verdict` token for `actions: read` on consumer repos.
+- App id and key-rotation date are added here once the owner creates the App.
