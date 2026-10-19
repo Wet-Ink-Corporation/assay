@@ -7,6 +7,8 @@
 //! `assay status [--json] [--pr <n>] [--full]` (#126) checks its arguments and
 //! then stops with exit 2: its GitHub adapter is #53's, and [`assay_cli::run_status`] wires it
 //! once that exists. `assay status [--json] --local` (#130) shows the local check's result.
+//! `assay open` (#54) reads its run from the Actions environment, refuses a re-run, and then
+//! stops with exit 2: the live transport it writes through is #273's.
 //! With no arguments it exits successfully without doing anything.
 
 mod check;
@@ -19,7 +21,7 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::SystemTime;
 
-use assay_cli::{Format, StatusCommand};
+use assay_cli::{Format, OpenCommand, OpenVariables, StatusCommand};
 use assay_domain::GateConclusion;
 
 /// Exit code of a usage error or a gate error (03 §2: 2 and above).
@@ -35,6 +37,9 @@ fn main() -> ExitCode {
     }
     if command == "check" {
         return run_check(args);
+    }
+    if command == "open" {
+        return run_open(args);
     }
     if command == "status" {
         return match StatusCommand::parse(args) {
@@ -58,6 +63,20 @@ fn main() -> ExitCode {
         Ok(GateConclusion::Pass) => ExitCode::SUCCESS,
         Ok(GateConclusion::Fail | GateConclusion::Neutral) => ExitCode::FAILURE,
         Err(error) => report(&error),
+    }
+}
+
+/// `assay open` (#54): exit 2 for a re-run or a bad environment, and, until the live
+/// transport (#273) exists, for every run, naming it.
+fn run_open(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = OpenVariables {
+        run_id: env::var_os("GITHUB_RUN_ID"),
+        run_attempt: env::var_os("GITHUB_RUN_ATTEMPT"),
+        repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
+    };
+    match OpenCommand::parse(args, variables) {
+        Ok(_) => report(&"open: the GitHub transport it writes through is not built yet (#273)"),
+        Err(usage) => report(&usage),
     }
 }
 

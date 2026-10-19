@@ -1,6 +1,7 @@
-//! Push records, `assay.ledger-push/1`: `pushes/<repo_id>/<pr>.jsonl`, appended by `open` on
-//! each `synchronize`, numbered 1, 2, 3, ... (06 §1, R3-07). The latest record's `seq` goes in the
-//! pending stamp and its `at` is the push clock (02 §5).
+//! Push records, `assay.ledger-push/1`: `pushes/<repo_id>/<pr>.jsonl`, appended by `open`, an
+//! opener record for `opened` and a push record for each `synchronize`, numbered 1, 2, 3, ...
+//! (06 §1, R3-07). The latest record's `seq` goes in the pending stamp; the `at` of the latest
+//! record whose `after` is the head is the push clock (02 §5, 04 §5).
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -28,16 +29,30 @@ pub struct PushDraft {
     pub run_uid: RunUid,
     /// The PR number.
     pub pr: NonZeroU64,
-    /// The head before the push.
-    pub before: CommitId,
-    /// The head after it.
+    /// An opener or a push.
+    pub kind: PushKind,
+    /// The head after it: the head the PR opened with, or the head after the push.
     pub after: CommitId,
-    /// Who pushed, by numeric id: a pusher is never an eligible approver (P10, T9).
+    /// Who sent the event, by numeric id: a pusher is never an eligible approver (P10, T9); an
+    /// opener is not a pusher.
     pub sender_id: UserId,
-    /// Whether the push rewrote history (`before` is not an ancestor of `after`).
-    pub forced: bool,
-    /// When `open` recorded it: the push clock approvals must be later than.
+    /// The triggering workflow run's `created_at`: the push clock approvals must be later than.
     pub at: LedgerTime,
+}
+
+/// What a push record records (04 §5, R3-07).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushKind {
+    /// `opened`: the head the PR arrived with. Its sender is the opener, not a pusher; it has no
+    /// `before` and is never forced.
+    Opener,
+    /// `synchronize`: a push to the PR's head branch.
+    Push {
+        /// The head before the push.
+        before: CommitId,
+        /// Whether the push rewrote history (`before` is not an ancestor of `after`).
+        forced: bool,
+    },
 }
 
 /// A push record as the ledger holds it: the push and its number in the PR's stream.
@@ -172,25 +187,43 @@ struct PushLine {
     run_uid: RunUid,
     pr: NonZeroU64,
     seq: NonZeroU64,
-    before: String,
+    kind: KindLine,
+    // Absent for an opener: never written as `null`, so a `null` is not canonical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    before: Option<String>,
     after: String,
     sender_id: NonZeroU64,
     forced: bool,
     at: String,
 }
 
+/// The wire form of a record's `kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum KindLine {
+    Opener,
+    Push,
+}
+
 impl From<&PushRecord> for PushLine {
     fn from(record: &PushRecord) -> Self {
         let push = &record.push;
+        let (kind, before, forced) = match &push.kind {
+            PushKind::Opener => (KindLine::Opener, None, false),
+            PushKind::Push { before, forced } => {
+                (KindLine::Push, Some(before.to_string()), *forced)
+            }
+        };
         Self {
             schema: Cow::Borrowed(PUSH_SCHEMA),
             run_uid: push.run_uid,
             pr: push.pr,
             seq: record.seq,
-            before: push.before.to_string(),
+            kind,
+            before,
             after: push.after.to_string(),
             sender_id: push.sender_id.0,
-            forced: push.forced,
+            forced,
             at: push.at.to_string(),
         }
     }
@@ -201,15 +234,25 @@ impl TryFrom<PushLine> for PushRecord {
 
     fn try_from(line: PushLine) -> Result<Self, Corruption> {
         check_schema(&line.schema, PUSH_SCHEMA)?;
+        let kind = match (line.kind, line.before, line.forced) {
+            (KindLine::Push, Some(before), forced) => PushKind::Push {
+                before: field(&before, "before")?,
+                forced,
+            },
+            (KindLine::Opener, None, false) => PushKind::Opener,
+            (KindLine::Push, None, _) | (KindLine::Opener, Some(_), _) => {
+                return Err(Corruption::Field("before"));
+            }
+            (KindLine::Opener, None, true) => return Err(Corruption::Field("forced")),
+        };
         Ok(Self {
             seq: line.seq,
             push: PushDraft {
                 run_uid: line.run_uid,
                 pr: line.pr,
-                before: field(&line.before, "before")?,
+                kind,
                 after: field(&line.after, "after")?,
                 sender_id: UserId(line.sender_id),
-                forced: line.forced,
                 at: field(&line.at, "at")?,
             },
         })

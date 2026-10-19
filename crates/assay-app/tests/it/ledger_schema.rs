@@ -10,9 +10,9 @@ use std::fs;
 
 use assay_app::{
     CommandRecord, CommentId, CostKind, GrantKey, LeaseRef, LedgerPath, LockRequest, PrState,
-    PushDraft, RetryGrant, Role, Slot, UserId, acquire_lock, acquire_slot, append_command,
-    append_cost, append_push, consume_grant, grant_retry, read_commands, read_costs, read_pushes,
-    read_slots, read_state, update_state,
+    PushDraft, PushKind, RetryGrant, Role, Slot, UserId, acquire_lock, acquire_slot,
+    append_command, append_cost, append_push, consume_grant, grant_retry, read_commands,
+    read_costs, read_pushes, read_slots, read_state, update_state,
 };
 use serde_json::Value;
 
@@ -185,8 +185,12 @@ fn the_push_fixtures_pass_or_fail_schema_and_reader_alike() -> Result<(), Box<dy
     check(
         "ledger-push",
         &[
+            ("forced-opener", "/forced", "const"),
+            ("opener-with-before", "", "not"),
+            ("push-without-before", "", "required"),
             ("short-after", "/after", "pattern"),
             ("unknown-field", "", "additionalProperties"),
+            ("unknown-kind", "/kind", "enum"),
             ("zero-seq", "/seq", "minimum"),
         ],
     )
@@ -303,7 +307,8 @@ fn documents(text: &str) -> Result<Vec<Value>, Box<dyn Error>> {
         .collect::<Result<_, _>>()?)
 }
 
-/// Writes a reservation and its cancelled settlement, a push, a command and a state.
+/// Writes a reservation and its cancelled settlement, an opener and a push, a command and a
+/// state.
 fn write_one_of_each(ledger: &MemoryLedger) -> Result<(), Box<dyn Error>> {
     let mut settled = cost(1, CostKind::Final, 2_300_000, "2026-10-12T09:41:00.000Z");
     settled.cancelled = true;
@@ -315,12 +320,25 @@ fn write_one_of_each(ledger: &MemoryLedger) -> Result<(), Box<dyn Error>> {
     append_push(
         ledger,
         &PushDraft {
+            run_uid: run(5),
+            pr: id(7),
+            kind: PushKind::Opener,
+            after: commit('a'),
+            sender_id: UserId(id(1001)),
+            at: at("2026-10-12T09:20:00.000Z"),
+        },
+    )?;
+    append_push(
+        ledger,
+        &PushDraft {
             run_uid: run(2),
             pr: id(7),
-            before: commit('a'),
+            kind: PushKind::Push {
+                before: commit('a'),
+                forced: true,
+            },
             after: commit('b'),
             sender_id: UserId(id(1001)),
-            forced: true,
             at: at("2026-10-12T09:30:00.000Z"),
         },
     )?;
@@ -372,8 +390,8 @@ fn every_record_the_writer_produces_passes_its_schema() -> Result<(), Box<dyn Er
         }
     }
     assert_eq!(
-        checked, 5,
-        "two cost records, one push, one command, one state"
+        checked, 6,
+        "two cost records, an opener and a push, one command, one state"
     );
     Ok(())
 }
