@@ -182,9 +182,9 @@ pub use verify::{
 
 mod reconcile;
 pub use reconcile::{
-    ASSAY_WORKFLOWS, ChecksReconcileError, ChecksReconcileRequest, ChecksReconciled, ClosedCheck,
-    Closure, LLM_PENDING_LABEL, LedgerReconcileError, LedgerReconcileRequest, LedgerReconciled,
-    Listing, LiveRun, LockListing, MAX_HEAD_CHECKS, MAX_HEAD_RUNS, MAX_OPEN_PULLS,
-    MAX_PUBLISH_LOCKS, MAX_SUPERSEDED_HEADS, OpenPull, PullHead, ReconcileCheck, ReconcileForge,
-    ReconcilePorts, STUCK_AFTER, Skip, SkippedCheck, reconcile_checks, reconcile_ledger,
+    ChecksReconcileError, ChecksReconcileRequest, ChecksReconciled, ClosedCheck, Closure,
+    LLM_PENDING_LABEL, LedgerReconcileError, LedgerReconcileRequest, LedgerReconciled, Listing,
+    LockListing, LostLock, MAX_HEAD_CHECKS, MAX_OPEN_PULLS, MAX_PUBLISH_LOCKS,
+    MAX_SUPERSEDED_HEADS, OpenPull, PullHead, ReconcileCheck, ReconcileForge, ReconcilePorts,
+    RunProgress, STUCK_AFTER, Skip, SkippedCheck, StampedRun, reconcile_checks, reconcile_ledger,
 };

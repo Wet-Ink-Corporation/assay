@@ -1,13 +1,15 @@
 //! Fakes for the reconcile ports (TST-09): the ledger refs' lock listing over the in-memory ref
-//! store, and one consumer repository's GitHub as the per-repo reconcile reads and writes it.
+//! store, refs whose deletions fail, and one consumer repository's GitHub as the per-repo
+//! reconcile reads and writes it.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    CheckRunId, CheckStatus, CheckUpdate, CommitId, CompareAndSetError, LedgerTime, LiveRun,
-    LockListing, OpenPull, PullHead, ReconcileCheck, ReconcileForge,
+    CheckRunId, CheckStatus, CheckUpdate, CommitId, CompareAndSetError, LeaseRef, LedgerRefs,
+    LedgerTime, LockListing, OpenPull, PullHead, ReconcileCheck, ReconcileForge, RefCreation,
+    RefDeletion, RefTip, RunProgress, StampedRun,
 };
 
 use crate::lease_fakes::{MemoryRefs, RefsDown};
@@ -20,6 +22,25 @@ impl LockListing for MemoryRefs {
             .filter(|name| name.starts_with("refs/heads/lock-"))
             .take(limit)
             .collect())
+    }
+}
+
+/// `MemoryRefs` whose every deletion fails: a lock taken through it is never released.
+pub(crate) struct NoDelete<'a>(pub(crate) &'a MemoryRefs);
+
+impl LedgerRefs for NoDelete<'_> {
+    type Error = RefsDown;
+
+    fn create(&self, name: &LeaseRef, message: &str) -> Result<RefCreation, RefsDown> {
+        self.0.create(name, message)
+    }
+
+    fn read(&self, name: &LeaseRef) -> Result<Option<RefTip>, RefsDown> {
+        self.0.read(name)
+    }
+
+    fn delete_if(&self, _name: &LeaseRef, _expected: &CommitId) -> Result<RefDeletion, RefsDown> {
+        Err(RefsDown)
     }
 }
 
@@ -43,18 +64,26 @@ struct Held {
     check: ReconcileCheck,
 }
 
-/// One consumer repository: its open PRs, the App's checks by head, the live workflow runs by
-/// head and each PR's labels.
+/// What the fake runs just before it writes a check.
+type Probe = Box<dyn Fn() -> bool>;
+
+/// One consumer repository: its open PRs, the App's checks by head, its workflow runs by id and
+/// each PR's labels.
 #[derive(Default)]
 pub(crate) struct FakeRepo {
     pulls: Vec<OpenPull>,
     checks: RefCell<Vec<Held>>,
-    runs: Vec<(CommitId, LiveRun)>,
+    runs: BTreeMap<NonZeroU64, StampedRun>,
     labels: BTreeMap<NonZeroU64, Vec<String>>,
     heads_now: BTreeMap<NonZeroU64, PullHead>,
     writes: RefCell<Vec<CheckWrite>>,
+    listed: RefCell<Vec<CommitId>>,
+    runs_read: RefCell<Vec<NonZeroU64>>,
     restamp_before_write: RefCell<Option<String>>,
+    probe: Option<Probe>,
+    probed: RefCell<Vec<bool>>,
     down: bool,
+    writes_fail: bool,
 }
 
 impl FakeRepo {
@@ -73,14 +102,21 @@ impl FakeRepo {
         self
     }
 
-    /// A run of workflow `path` on `head` has not completed.
-    pub(crate) fn live_run(mut self, head: CommitId, path: &str) -> Self {
-        self.runs.push((
-            head,
-            LiveRun {
-                path: path.to_owned(),
+    /// Workflow run `run_id` is `progress`, started at `started_at`.
+    pub(crate) fn run(
+        mut self,
+        run_id: u64,
+        progress: RunProgress,
+        started_at: LedgerTime,
+    ) -> Self {
+        let run_id = NonZeroU64::new(run_id).expect("run ids in tests are positive");
+        self.runs.insert(
+            run_id,
+            StampedRun {
+                progress,
+                started_at,
             },
-        ));
+        );
         self
     }
 
@@ -105,15 +141,42 @@ impl FakeRepo {
         self
     }
 
+    /// Just before each check write, `probe` runs; [`Self::probed`] holds what it returned.
+    pub(crate) fn probing(mut self, probe: impl Fn() -> bool + 'static) -> Self {
+        self.probe = Some(Box::new(probe));
+        self
+    }
+
     /// Every call fails.
     pub(crate) fn down(mut self) -> Self {
         self.down = true;
         self
     }
 
+    /// Every check write fails; reads succeed.
+    pub(crate) fn writes_fail(mut self) -> Self {
+        self.writes_fail = true;
+        self
+    }
+
     /// Every check write made, in order.
     pub(crate) fn writes(&self) -> Vec<CheckWrite> {
         self.writes.borrow().clone()
+    }
+
+    /// The heads whose checks were listed, in order.
+    pub(crate) fn listed(&self) -> Vec<CommitId> {
+        self.listed.borrow().clone()
+    }
+
+    /// The workflow runs read, in order.
+    pub(crate) fn runs_read(&self) -> Vec<NonZeroU64> {
+        self.runs_read.borrow().clone()
+    }
+
+    /// What the probe returned before each check write.
+    pub(crate) fn probed(&self) -> Vec<bool> {
+        self.probed.borrow().clone()
     }
 
     fn up(&self) -> Result<(), GitHubDown> {
@@ -131,6 +194,7 @@ impl ReconcileForge for FakeRepo {
 
     fn app_checks(&self, head: &CommitId, limit: usize) -> Result<Vec<ReconcileCheck>, GitHubDown> {
         self.up()?;
+        self.listed.borrow_mut().push(head.clone());
         Ok(self
             .checks
             .borrow()
@@ -141,15 +205,10 @@ impl ReconcileForge for FakeRepo {
             .collect())
     }
 
-    fn live_runs(&self, head: &CommitId, limit: usize) -> Result<Vec<LiveRun>, GitHubDown> {
+    fn workflow_run(&self, run_id: NonZeroU64) -> Result<Option<StampedRun>, GitHubDown> {
         self.up()?;
-        Ok(self
-            .runs
-            .iter()
-            .filter(|(on, _)| on == head)
-            .take(limit)
-            .map(|(_, run)| run.clone())
-            .collect())
+        self.runs_read.borrow_mut().push(run_id);
+        Ok(self.runs.get(&run_id).copied())
     }
 
     fn labels(&self, number: NonZeroU64) -> Result<Vec<String>, GitHubDown> {
@@ -178,6 +237,12 @@ impl ReconcileForge for FakeRepo {
         update: &CheckUpdate,
     ) -> Result<(), CompareAndSetError<GitHubDown>> {
         self.up().map_err(CompareAndSetError::Forge)?;
+        if let Some(probe) = &self.probe {
+            self.probed.borrow_mut().push(probe());
+        }
+        if self.writes_fail {
+            return Err(CompareAndSetError::Forge(GitHubDown));
+        }
         let mut checks = self.checks.borrow_mut();
         let held = checks
             .iter_mut()
@@ -208,18 +273,12 @@ pub(crate) fn head(n: u64) -> CommitId {
         .expect("40 hex digits are a commit id")
 }
 
-/// An App check `id` named `name`, in progress, stamped `external_id`, started at `started_at`.
-pub(crate) fn check(
-    id: u64,
-    name: &str,
-    external_id: &str,
-    started_at: LedgerTime,
-) -> ReconcileCheck {
+/// An App check `id` named `name`, in progress, stamped `external_id`.
+pub(crate) fn check(id: u64, name: &str, external_id: &str) -> ReconcileCheck {
     ReconcileCheck {
         id: CheckRunId(NonZeroU64::new(id).expect("check ids in tests are positive")),
         name: name.to_owned(),
         external_id: Some(external_id.to_owned()),
         status: CheckStatus::InProgress,
-        started_at,
     }
 }

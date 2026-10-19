@@ -14,14 +14,15 @@ mod outcome;
 mod ports;
 
 pub use checks::{
-    ASSAY_WORKFLOWS, ChecksReconcileRequest, LLM_PENDING_LABEL, MAX_HEAD_CHECKS, MAX_HEAD_RUNS,
-    MAX_OPEN_PULLS, MAX_SUPERSEDED_HEADS, ReconcilePorts, STUCK_AFTER, reconcile_checks,
+    ChecksReconcileRequest, LLM_PENDING_LABEL, MAX_HEAD_CHECKS, MAX_OPEN_PULLS,
+    MAX_SUPERSEDED_HEADS, ReconcilePorts, STUCK_AFTER, reconcile_checks,
 };
 pub use ledger::{
     LedgerReconcileError, LedgerReconcileRequest, LedgerReconciled, reconcile_ledger,
 };
 pub use locks::{LockListing, MAX_PUBLISH_LOCKS};
 pub use outcome::{
-    ChecksReconcileError, ChecksReconciled, ClosedCheck, Closure, Listing, Skip, SkippedCheck,
+    ChecksReconcileError, ChecksReconciled, ClosedCheck, Closure, Listing, LostLock, Skip,
+    SkippedCheck,
 };
-pub use ports::{LiveRun, OpenPull, PullHead, ReconcileCheck, ReconcileForge};
+pub use ports::{OpenPull, PullHead, ReconcileCheck, ReconcileForge, RunProgress, StampedRun};

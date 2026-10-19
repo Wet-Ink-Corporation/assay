@@ -9,19 +9,20 @@ use std::time::Duration;
 use assay_domain::RunUid;
 
 use super::outcome::{
-    ChecksReconcileError, ChecksReconciled, ClosedCheck, Closure, Listing, STUCK_MINUTES, Skip,
-    SkippedCheck, closure_update,
+    ChecksReconcileError, ChecksReconciled, ClosedCheck, Closure, Listing, LostLock, STUCK_MINUTES,
+    Skip, SkippedCheck, closure_update,
 };
-use super::ports::{OpenPull, PullHead, ReconcileCheck, ReconcileForge};
+use super::ports::{OpenPull, PullHead, ReconcileCheck, ReconcileForge, RunProgress};
 use crate::config::CommitId;
 use crate::forge::CompareAndSetError;
 use crate::ledger::{
-    Ledger, LedgerRefs, LedgerTime, LockAcquired, LockRequest, acquire_lock, read_pushes,
+    Ledger, LedgerRefs, LedgerTime, LockAcquired, LockRequest, Released, acquire_lock, read_pushes,
     read_state, release_lock,
 };
 use crate::publish::CheckStatus;
 
-/// How long a verdict check may stay in progress before it is stuck: 2 × the `full` tier's p95.
+/// How long after the run that opened a verdict check started the check may stay in progress
+/// before it is stuck: 2 × the `full` tier's p95.
 ///
 /// That p95 is the 25-minute critical path of 06 §3. An in-progress check does not say its
 /// tier, so every check is given the slowest tier's time.
@@ -33,19 +34,9 @@ pub const MAX_OPEN_PULLS: usize = 256;
 /// The most App check runs read on one head; more are refused.
 pub const MAX_HEAD_CHECKS: usize = 256;
 
-/// The most live workflow runs read on one head; more are refused.
-pub const MAX_HEAD_RUNS: usize = 100;
-
 /// How many of a PR's earlier heads, latest first from its ledger push records, are swept for
 /// superseded checks. A run on an older head was cancelled by a push long since swept.
 pub const MAX_SUPERSEDED_HEADS: usize = 16;
-
-/// The workflows whose live run may still publish a verdict: the pipeline and decide-only
-/// (02 §5's provenance rules name them).
-pub const ASSAY_WORKFLOWS: [&str; 2] = [
-    ".github/workflows/assay.yml",
-    ".github/workflows/assay-decide.yml",
-];
 
 /// The label a deferred run is projected as (06 §1).
 pub const LLM_PENDING_LABEL: &str = "assay:llm-pending";
@@ -88,20 +79,24 @@ type Failed<F, L, R> = ChecksReconcileError<
 /// Sweeps the consumer repository's verdict checks at `request.now`.
 ///
 /// For each open PR, a verdict check still in progress on its head is closed `failure
-/// (publish-error)` when it started more than [`STUCK_AFTER`] ago, no run of an
-/// [`ASSAY_WORKFLOWS`] workflow is live on the head, and no requeue is still scheduled: the PR
-/// carries [`LLM_PENDING_LABEL`] *and* its ledger deferral record is for this head with fewer
-/// than `max_requeues` requeues (the label alone never excludes a check, R3-15). A verdict check
-/// not completed on one of the PR's [`MAX_SUPERSEDED_HEADS`] latest earlier heads (from its
-/// ledger push records), when no open PR is on that head, is closed `cancelled`.
+/// (publish-error)` when the run its `pending:<run_id>:<seq>` stamp names (the last run that
+/// opened it, on whatever commit: a requeue or decide-only run is on the default branch's) has
+/// completed and started more than [`STUCK_AFTER`] ago, and no requeue is still scheduled: the
+/// PR carries [`LLM_PENDING_LABEL`] *and* its ledger deferral record is for this head with fewer
+/// than `max_requeues` requeues (the label alone never excludes a check, R3-15). A check with
+/// any other stamp, or whose run GitHub no longer has, is left and reported. A verdict check not
+/// completed on one of the PR's [`MAX_SUPERSEDED_HEADS`] latest earlier heads (from its ledger
+/// push records; the scan stops at the first head with none), when no open PR is on that head,
+/// is closed `cancelled`.
 ///
-/// Each write holds the head's publish lock (02 §5), re-reads the PR's head, and is
-/// conditioned on the `external_id` read, so a run that re-stamped the check meanwhile wins.
+/// The sweep reads everything and checks every cap before it writes anything. Each write holds
+/// the head's publish lock (02 §5), re-reads the PR's head, and is conditioned on the
+/// `external_id` read, so a run that re-stamped the check meanwhile wins.
 ///
 /// # Errors
 ///
-/// [`ChecksReconcileError::NotFirstAttempt`] for a re-run, before any port is called; otherwise
-/// the first port failure or a listing past its cap.
+/// [`ChecksReconcileError::NotFirstAttempt`] for a re-run, before any port is called; a listing
+/// past its cap, or a failed read, before any write; otherwise the first failed write or lock.
 pub fn reconcile_checks<F: ReconcileForge, L: Ledger, R: LedgerRefs>(
     ports: ReconcilePorts<'_, F, L, R>,
     request: &ChecksReconcileRequest<'_>,
@@ -122,27 +117,14 @@ pub fn reconcile_checks<F: ReconcileForge, L: Ledger, R: LedgerRefs>(
         current,
     };
     let mut done = ChecksReconciled::default();
+    // Read first, write after: a cap or failed read refuses the whole sweep, never part of it.
+    let mut due = Vec::new();
     for pull in &pulls {
-        for check in &sweep.stuck(pull)? {
-            let due = Due {
-                pr: pull.number,
-                head: &pull.head_sha,
-                check,
-                closure: Closure::Stuck,
-            };
-            sweep.close(due, &mut done)?;
-        }
-        for head in &sweep.superseded_heads(pull)? {
-            for check in &sweep.open_verdicts(head)? {
-                let due = Due {
-                    pr: pull.number,
-                    head,
-                    check,
-                    closure: Closure::Superseded,
-                };
-                sweep.close(due, &mut done)?;
-            }
-        }
+        sweep.stuck(pull, &mut due, &mut done.skipped)?;
+        sweep.superseded(pull, &mut due)?;
+    }
+    for each in due {
+        sweep.close(each, &mut done)?;
     }
     Ok(done)
 }
@@ -152,6 +134,16 @@ struct Sweep<'a, F, L, R> {
     ports: ReconcilePorts<'a, F, L, R>,
     request: &'a ChecksReconcileRequest<'a>,
     current: HashSet<&'a CommitId>,
+}
+
+/// What the stamped run says of an in-progress verdict check.
+enum Judged {
+    /// Its run completed more than [`STUCK_AFTER`] after it started.
+    Stuck,
+    /// Its run is live, or started less than [`STUCK_AFTER`] ago.
+    NotStuck,
+    /// Nothing says how old it is.
+    Unjudged(Skip),
 }
 
 impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
@@ -170,37 +162,62 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
             .collect())
     }
 
-    /// The verdict checks on `pull`'s head that are stuck.
-    fn stuck(&self, pull: &OpenPull) -> Result<Vec<ReconcileCheck>, Failed<F, L, R>> {
-        let now = self.request.now;
-        let old: Vec<ReconcileCheck> = self
-            .open_verdicts(&pull.head_sha)?
-            .into_iter()
-            .filter(|check| {
-                check
-                    .started_at
-                    .checked_add(STUCK_AFTER)
-                    .is_some_and(|due| now > due)
-            })
-            .collect();
-        if old.is_empty() || self.live(&pull.head_sha)? || self.requeue_scheduled(pull)? {
-            return Ok(Vec::new());
+    /// Adds `pull`'s stuck verdict checks to `due`, and those it cannot judge to `skipped`.
+    fn stuck(
+        &self,
+        pull: &OpenPull,
+        due: &mut Vec<Due>,
+        skipped: &mut Vec<SkippedCheck>,
+    ) -> Result<(), Failed<F, L, R>> {
+        // Each reported or due check owns its head: they are reported one by one.
+        let mut old = Vec::new();
+        for check in self.open_verdicts(&pull.head_sha)? {
+            match self.judge(&check)? {
+                Judged::Stuck => old.push(check),
+                Judged::NotStuck => {}
+                Judged::Unjudged(reason) => skipped.push(SkippedCheck {
+                    pr: pull.number,
+                    head: pull.head_sha.clone(),
+                    check: check.id,
+                    reason,
+                }),
+            }
         }
-        Ok(old)
+        if old.is_empty() || self.requeue_scheduled(pull)? {
+            return Ok(());
+        }
+        due.extend(old.into_iter().map(|check| Due {
+            pr: pull.number,
+            head: pull.head_sha.clone(),
+            check,
+            closure: Closure::Stuck,
+        }));
+        Ok(())
     }
 
-    /// Whether a run of an assay workflow on `head` has not completed.
-    fn live(&self, head: &CommitId) -> Result<bool, Failed<F, L, R>> {
-        let runs = capped(
-            self.ports
-                .forge
-                .live_runs(head, MAX_HEAD_RUNS.saturating_add(1)),
-            Listing::Runs,
-            MAX_HEAD_RUNS,
-        )?;
-        Ok(runs
-            .iter()
-            .any(|run| ASSAY_WORKFLOWS.contains(&run.path.as_str())))
+    /// Reads the run `check`'s stamp names and judges the check by it.
+    fn judge(&self, check: &ReconcileCheck) -> Result<Judged, Failed<F, L, R>> {
+        let Some(run_id) = check.external_id.as_deref().and_then(stamped_run_id) else {
+            return Ok(Judged::Unjudged(Skip::NotPending));
+        };
+        let Some(run) = self
+            .ports
+            .forge
+            .workflow_run(run_id)
+            .map_err(ChecksReconcileError::Forge)?
+        else {
+            return Ok(Judged::Unjudged(Skip::RunGone));
+        };
+        let now = self.request.now;
+        let old = run
+            .started_at
+            .checked_add(STUCK_AFTER)
+            .is_some_and(|due| now > due);
+        Ok(if old && run.progress == RunProgress::Completed {
+            Judged::Stuck
+        } else {
+            Judged::NotStuck
+        })
     }
 
     /// Whether `pull` is deferred with a requeue still scheduled: labelled, and its ledger
@@ -219,6 +236,25 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
         Ok(state.deferral.is_some_and(|deferral| {
             deferral.head == pull.head_sha && deferral.count < self.request.max_requeues
         }))
+    }
+
+    /// Adds the open verdict checks on `pull`'s superseded heads to `due`, latest head first,
+    /// down to the first head with none: a head below it was swept when it was superseded.
+    fn superseded(&self, pull: &OpenPull, due: &mut Vec<Due>) -> Result<(), Failed<F, L, R>> {
+        for head in self.superseded_heads(pull)? {
+            let checks = self.open_verdicts(&head)?;
+            if checks.is_empty() {
+                break;
+            }
+            due.extend(checks.into_iter().map(|check| Due {
+                pr: pull.number,
+                // Each due check owns its head: they are reported one by one.
+                head: head.clone(),
+                check,
+                closure: Closure::Superseded,
+            }));
+        }
+        Ok(())
     }
 
     /// `pull`'s latest earlier heads from its ledger push records, latest first, none of them
@@ -244,7 +280,7 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
 
     /// Closes the check `due` names under its head's publish lock, recording what happened in
     /// `done`.
-    fn close(&self, due: Due<'_>, done: &mut ChecksReconciled) -> Result<(), Failed<F, L, R>> {
+    fn close(&self, due: Due, done: &mut ChecksReconciled) -> Result<(), Failed<F, L, R>> {
         let Some(expected) = due
             .check
             .external_id
@@ -257,6 +293,7 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
         let lock = LockRequest {
             run_uid: self.request.run_uid,
             repo: self.request.repo.to_owned(),
+            // The request owns its head; `due` still reports it.
             head: due.head.clone(),
         };
         let LockAcquired::Held(hold) = acquire_lock(self.ports.refs, &lock, self.request.now)
@@ -265,27 +302,36 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
             done.skipped.push(due.skipped(Skip::LockBusy));
             return Ok(());
         };
-        let written = self.write(due, expected);
-        // When the write failed, its failure is the one reported: a lock this release could not
-        // delete expires with its 2-minute TTL and is reaped (F21).
-        let released = release_lock(self.ports.refs, &hold).map_err(ChecksReconcileError::Lock);
-        match written? {
+        let written = self.write(&due, expected);
+        let released = release_lock(self.ports.refs, &hold);
+        let skip = match (written, released) {
+            (Err(source), released) => {
+                return Err(ChecksReconcileError::Write {
+                    source,
+                    release: released.err(),
+                });
+            }
+            (Ok(_), Err(release)) => return Err(ChecksReconcileError::Lock(release)),
+            (Ok(skip), Ok(released)) => {
+                if skip.is_none() && released == Released::NotHeld {
+                    done.lost_locks.push(due.lost_lock());
+                }
+                skip
+            }
+        };
+        match skip {
             None => done.closed.push(due.closed()),
             Some(reason) => done.skipped.push(due.skipped(reason)),
         }
-        released.map(drop)
+        Ok(())
     }
 
     /// Under the lock: re-reads the PR's head and writes `due`'s closure to its check if the
     /// head still makes it that closure and the check still carries `expected`. `None` when
     /// written, else why not.
-    fn write(&self, due: Due<'_>, expected: &str) -> Result<Option<Skip>, Failed<F, L, R>> {
-        let now = self
-            .ports
-            .forge
-            .pull_head(due.pr)
-            .map_err(ChecksReconcileError::Forge)?;
-        let on_head = matches!(&now, PullHead::Open(current) if current == due.head);
+    fn write(&self, due: &Due, expected: &str) -> Result<Option<Skip>, F::Error> {
+        let now = self.ports.forge.pull_head(due.pr)?;
+        let on_head = matches!(&now, PullHead::Open(current) if *current == due.head);
         let still = match due.closure {
             Closure::Stuck => on_head,
             Closure::Superseded => !on_head,
@@ -301,25 +347,24 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
         {
             Ok(()) => Ok(None),
             Err(CompareAndSetError::Conflict { .. }) => Ok(Some(Skip::Moved)),
-            Err(CompareAndSetError::Forge(error)) => Err(ChecksReconcileError::Forge(error)),
+            Err(CompareAndSetError::Forge(error)) => Err(error),
         }
     }
 }
 
 /// A check due to be closed: on which PR and head, and how.
-#[derive(Clone, Copy)]
-struct Due<'a> {
+struct Due {
     pr: NonZeroU64,
-    head: &'a CommitId,
-    check: &'a ReconcileCheck,
+    head: CommitId,
+    check: ReconcileCheck,
     closure: Closure,
 }
 
-impl Due<'_> {
+impl Due {
     fn closed(self) -> ClosedCheck {
         ClosedCheck {
             pr: self.pr,
-            head: self.head.clone(),
+            head: self.head,
             check: self.check.id,
             closure: self.closure,
         }
@@ -328,11 +373,31 @@ impl Due<'_> {
     fn skipped(self, reason: Skip) -> SkippedCheck {
         SkippedCheck {
             pr: self.pr,
-            head: self.head.clone(),
+            head: self.head,
             check: self.check.id,
             reason,
         }
     }
+
+    fn lost_lock(&self) -> LostLock {
+        LostLock {
+            pr: self.pr,
+            // Reported twice: the lock lost here, and the check closed in `closed`.
+            head: self.head.clone(),
+            check: self.check.id,
+        }
+    }
+}
+
+/// The run id of `open`'s stamp `pending:<run_id>:<seq>`, both ASCII digits and the id
+/// positive; `None` for any other text.
+fn stamped_run_id(stamp: &str) -> Option<NonZeroU64> {
+    let (run_id, seq) = stamp.strip_prefix("pending:")?.split_once(':')?;
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    if !digits(run_id) || !digits(seq) {
+        return None;
+    }
+    run_id.parse().ok()
 }
 
 /// Whether `name` is a verdict check's: `assay / verdict`, or `assay / verdict @<base>`.

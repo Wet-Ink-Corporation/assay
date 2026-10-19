@@ -2,25 +2,28 @@
 //! stuck verdict checks as `failure (publish-error)` and its superseded heads' as `cancelled`,
 //! each under the head's publish lock and by compare-and-set on the check's `external_id`.
 
+use std::rc::Rc;
+
 use assay_app::{
     CheckConclusion, CheckRunId, CheckState, CheckStatus, ChecksReconcileError,
     ChecksReconcileRequest, ChecksReconciled, ClosedCheck, Closure, CommitId, LedgerPath, Listing,
-    MAX_OPEN_PULLS, MAX_SUPERSEDED_HEADS, PullHead, ReconcilePorts, Skip, SkippedCheck,
-    reconcile_checks,
+    LostLock, MAX_HEAD_CHECKS, MAX_OPEN_PULLS, MAX_SUPERSEDED_HEADS, PullHead, ReconcilePorts,
+    RunProgress, Skip, SkippedCheck, reconcile_checks,
 };
 use assay_domain::RunUid;
 
-use crate::lease_fakes::{Call, MemoryRefs, RefsDown, lease_line};
+use crate::lease_fakes::{Before, Call, MemoryRefs, RefsDown, lease_line};
 use crate::ledger_fakes::{Down, MemoryLedger, at, commit, id};
-use crate::reconcile_fakes::{FakeRepo, GitHubDown, check, head};
+use crate::reconcile_fakes::{FakeRepo, GitHubDown, NoDelete, check, head};
 
 const NOW: &str = "2026-10-12T12:00:00.000Z";
-/// Started 50 minutes and a millisecond before `NOW`: stuck.
+/// A run started 50 minutes and a millisecond before `NOW`: its check is stuck.
 const OLD: &str = "2026-10-12T11:09:59.999Z";
-/// Started exactly 50 minutes before `NOW`: not yet stuck.
+/// A run started exactly 50 minutes before `NOW`: its check is not yet stuck.
 const DUE: &str = "2026-10-12T11:10:00.000Z";
 const VERDICT: &str = "assay / verdict";
-const PIPELINE: &str = ".github/workflows/assay.yml";
+/// The stamp `open` wrote for run 100.
+const STAMP: &str = "pending:100:1";
 
 fn request() -> ChecksReconcileRequest<'static> {
     ChecksReconcileRequest {
@@ -48,8 +51,9 @@ fn sweep(forge: &FakeRepo, ledger: &MemoryLedger, refs: &MemoryRefs) -> Swept {
     )
 }
 
-fn pending(started: &str) -> assay_app::ReconcileCheck {
-    check(1, VERDICT, "pending:100:1", at(started))
+/// The verdict check 1, in progress, stamped by run 100.
+fn pending() -> assay_app::ReconcileCheck {
+    check(1, VERDICT, STAMP)
 }
 
 fn check_id(n: u64) -> CheckRunId {
@@ -59,6 +63,14 @@ fn check_id(n: u64) -> CheckRunId {
 /// A repository with PR 7 open on head `b…`.
 fn on_b() -> FakeRepo {
     FakeRepo::default().pull(id(7), commit('b'))
+}
+
+/// PR 7 on head `b…` with its verdict check stamped by run 100, which completed after starting
+/// at `OLD`: stuck.
+fn stuck() -> FakeRepo {
+    on_b()
+        .check(commit('b'), pending())
+        .run(100, RunProgress::Completed, at(OLD))
 }
 
 /// PR 7's push records for the pushes that moved its head through `heads`, in order.
@@ -109,6 +121,15 @@ fn lock_ref(head: char) -> String {
     format!("refs/heads/lock-42-{}", head.to_string().repeat(40))
 }
 
+fn skipped(head: char, reason: Skip) -> SkippedCheck {
+    SkippedCheck {
+        pr: id(7),
+        head: commit(head),
+        check: check_id(1),
+        reason,
+    }
+}
+
 #[test]
 fn a_re_run_is_refused_before_any_port_is_called() {
     let forge = on_b().down();
@@ -133,12 +154,12 @@ fn a_re_run_is_refused_before_any_port_is_called() {
 }
 
 #[test]
-fn a_stuck_verdict_check_is_closed_as_a_publish_error_under_the_lock() {
-    let forge = on_b().check(commit('b'), pending(OLD));
-    let ledger = MemoryLedger::default();
-    let refs = MemoryRefs::default();
+fn a_stuck_verdict_check_is_closed_as_a_publish_error_while_its_lock_is_held() {
+    let refs = Rc::new(MemoryRefs::default());
+    let watched = Rc::clone(&refs);
+    let forge = stuck().probing(move || watched.names().contains(&lock_ref('b')));
 
-    let done = sweep(&forge, &ledger, &refs).expect("the ports are up");
+    let done = sweep(&forge, &MemoryLedger::default(), &refs).expect("the ports are up");
 
     assert_eq!(
         done.closed,
@@ -149,11 +170,16 @@ fn a_stuck_verdict_check_is_closed_as_a_publish_error_under_the_lock() {
             closure: Closure::Stuck,
         }]
     );
+    assert_eq!(
+        forge.probed(),
+        [true],
+        "the head's lock was held at the write"
+    );
     let writes = forge.writes();
     let [write] = writes.as_slice() else {
         panic!("one write: {writes:?}");
     };
-    assert_eq!(write.expected, "pending:100:1");
+    assert_eq!(write.expected, STAMP);
     assert_eq!(
         write.update.state,
         CheckState::Completed(CheckConclusion::Failure)
@@ -161,41 +187,36 @@ fn a_stuck_verdict_check_is_closed_as_a_publish_error_under_the_lock() {
     assert_eq!(write.update.title, "assay: failure (publish-error)");
     assert_eq!(write.update.text, "");
     assert_eq!(write.update.external_id, "reconcile:5000");
-    let creates = refs
-        .calls()
-        .into_iter()
-        .filter(
-            |call| matches!(call, Call::Create { name, created: true } if *name == lock_ref('b')),
-        )
-        .count();
-    assert_eq!(creates, 1, "the head's publish lock was taken");
-    assert_eq!(refs.names(), Vec::<String>::new(), "and released");
+    assert_eq!(refs.names(), Vec::<String>::new(), "and released after it");
 }
 
 #[test]
 fn checks_that_are_not_stuck_are_left() {
-    let cases: [(&str, FakeRepo); 5] = [
-        ("young", on_b().check(commit('b'), pending(DUE))),
+    let cases: [(&str, FakeRepo); 4] = [
         (
-            "a live pipeline run",
+            "its run started 50 minutes ago",
             on_b()
-                .check(commit('b'), pending(OLD))
-                .live_run(commit('b'), PIPELINE),
+                .check(commit('b'), pending())
+                .run(100, RunProgress::Completed, at(DUE)),
         ),
         (
-            "a live decide-only run",
+            "its run is live",
             on_b()
-                .check(commit('b'), pending(OLD))
-                .live_run(commit('b'), ".github/workflows/assay-decide.yml"),
+                .check(commit('b'), pending())
+                .run(100, RunProgress::Live, at(OLD)),
         ),
         (
             "a gate check",
-            on_b().check(commit('b'), check(1, "assay / gate: temper", "x", at(OLD))),
+            on_b()
+                .check(commit('b'), check(1, "assay / gate: temper", STAMP))
+                .run(100, RunProgress::Completed, at(OLD)),
         ),
         ("a completed check", {
-            let mut done = pending(OLD);
+            let mut done = pending();
             done.status = CheckStatus::Completed;
-            on_b().check(commit('b'), done)
+            on_b()
+                .check(commit('b'), done)
+                .run(100, RunProgress::Completed, at(OLD))
         }),
     ];
     for (case, forge) in cases {
@@ -207,24 +228,67 @@ fn checks_that_are_not_stuck_are_left() {
     }
 }
 
+/// A requeue (`workflow_dispatch`) or decide-only run runs on the default branch's commit, not
+/// the PR's head: the check is live because the run its stamp names is, wherever that run is.
 #[test]
-fn another_workflow_running_on_the_head_does_not_keep_a_check_alive() {
+fn a_check_whose_stamped_run_is_live_on_another_commit_is_left() {
     let forge = on_b()
-        .check(commit('b'), pending(OLD))
-        .live_run(commit('b'), ".github/workflows/rust.yml");
+        .check(commit('b'), check(1, VERDICT, "pending:39282503375:2"))
+        .run(39_282_503_375, RunProgress::Live, at(OLD));
 
     let done =
         sweep(&forge, &MemoryLedger::default(), &MemoryRefs::default()).expect("the ports are up");
 
-    assert_eq!(done.closed.len(), 1);
+    assert_eq!(done, ChecksReconciled::default());
+    assert_eq!(forge.runs_read(), [id(39_282_503_375)]);
+    assert_eq!(forge.writes(), []);
+}
+
+#[test]
+fn a_check_whose_stamp_is_not_an_open_stamp_is_left_unjudged() {
+    let stamps = [
+        Some("9d92d7e9b4ef5e819bd7bf80bcf43df59d92d7e9b4ef5e819bd7bf80bcf43df5"),
+        Some("pending:abc:1"),
+        Some("pending:100:"),
+        Some("pending:+100:1"),
+        Some("pending:0:1"),
+        Some("pending:100:1:2"),
+        Some("pending:100:-1"),
+        Some(""),
+        None,
+    ];
+    for stamp in stamps {
+        let mut unjudged = pending();
+        unjudged.external_id = stamp.map(str::to_owned);
+        let forge = on_b()
+            .check(commit('b'), unjudged)
+            .run(100, RunProgress::Completed, at(OLD));
+
+        let done = sweep(&forge, &MemoryLedger::default(), &MemoryRefs::default())
+            .expect("the ports are up");
+
+        assert_eq!(done.skipped, [skipped('b', Skip::NotPending)], "{stamp:?}");
+        assert_eq!(done.closed, [], "{stamp:?}");
+        assert_eq!(forge.runs_read(), [], "{stamp:?}");
+    }
+}
+
+#[test]
+fn a_check_whose_stamped_run_github_no_longer_has_is_left() {
+    let forge = on_b().check(commit('b'), pending());
+
+    let done =
+        sweep(&forge, &MemoryLedger::default(), &MemoryRefs::default()).expect("the ports are up");
+
+    assert_eq!(done.skipped, [skipped('b', Skip::RunGone)]);
+    assert_eq!(forge.writes(), []);
 }
 
 #[test]
 fn a_verdict_check_for_another_base_is_swept_too() {
-    let forge = on_b().check(
-        commit('b'),
-        check(1, "assay / verdict @release", "pending:1:1", at(OLD)),
-    );
+    let forge = on_b()
+        .check(commit('b'), check(1, "assay / verdict @release", STAMP))
+        .run(100, RunProgress::Completed, at(OLD));
 
     let done =
         sweep(&forge, &MemoryLedger::default(), &MemoryRefs::default()).expect("the ports are up");
@@ -234,9 +298,7 @@ fn a_verdict_check_for_another_base_is_swept_too() {
 
 #[test]
 fn a_deferred_check_with_a_requeue_scheduled_is_left() {
-    let forge = on_b()
-        .check(commit('b'), pending(OLD))
-        .label(id(7), "assay:llm-pending");
+    let forge = stuck().label(id(7), "assay:llm-pending");
 
     let done = sweep(&forge, &deferred('b', 2), &MemoryRefs::default()).expect("the ports are up");
 
@@ -252,7 +314,7 @@ fn the_label_alone_or_a_spent_deferral_does_not_keep_a_check() {
         ("deferral, no label", deferred('b', 0), false),
     ];
     for (case, ledger, labelled) in cases {
-        let mut forge = on_b().check(commit('b'), pending(OLD));
+        let mut forge = stuck();
         if labelled {
             forge = forge.label(id(7), "assay:llm-pending");
         }
@@ -265,7 +327,7 @@ fn the_label_alone_or_a_spent_deferral_does_not_keep_a_check() {
 
 #[test]
 fn a_superseded_heads_check_is_cancelled() {
-    let forge = on_b().check(commit('a'), pending(DUE));
+    let forge = on_b().check(commit('a'), pending());
     let ledger = ledger_with_pushes(&[commit('a'), commit('b')]);
 
     let done = sweep(&forge, &ledger, &MemoryRefs::default()).expect("the ports are up");
@@ -292,9 +354,11 @@ fn a_superseded_heads_check_is_cancelled() {
 
 #[test]
 fn a_head_another_open_pr_is_on_is_not_superseded() {
+    // PR 8 is on `a…`, and the run that opened its check is live.
     let forge = on_b()
         .pull(id(8), commit('a'))
-        .check(commit('a'), pending(DUE));
+        .check(commit('a'), pending())
+        .run(100, RunProgress::Live, at(OLD));
     let ledger = ledger_with_pushes(&[commit('a'), commit('b')]);
 
     let done = sweep(&forge, &ledger, &MemoryRefs::default()).expect("the ports are up");
@@ -304,19 +368,36 @@ fn a_head_another_open_pr_is_on_is_not_superseded() {
 
 #[test]
 fn only_the_latest_earlier_heads_are_swept() {
-    let mut heads: Vec<CommitId> = (1..=17).map(head).collect();
+    let earlier = u64::try_from(MAX_SUPERSEDED_HEADS).expect("the cap fits") + 1;
+    let mut heads: Vec<CommitId> = (1..=earlier).map(head).collect();
     heads.push(commit('b'));
-    // Latest first, the earlier heads are 17, 16, ..., 2 (sixteen of them), then 1.
-    let forge = on_b()
-        .check(head(2), pending(DUE))
-        .check(head(1), check(2, VERDICT, "pending:1:1", at(DUE)));
+    let mut forge = on_b();
+    for n in 1..=earlier {
+        forge = forge.check(head(n), check(n, VERDICT, STAMP));
+    }
 
     let done = sweep(&forge, &ledger_with_pushes(&heads), &MemoryRefs::default())
         .expect("the ports are up");
 
-    assert_eq!(MAX_SUPERSEDED_HEADS, 16);
+    // Latest first, the earlier heads are `earlier`, ..., 2, then 1: the oldest is past the cap.
+    let closed: Vec<_> = done.closed.iter().map(|closed| closed.check).collect();
+    let expected: Vec<_> = (2..=earlier).rev().map(check_id).collect();
+    assert_eq!(closed, expected);
+}
+
+#[test]
+fn the_earlier_heads_are_scanned_only_down_to_one_with_no_open_verdict_check() {
+    // Latest first, PR 7's earlier heads are d, c and a; c has no open verdict check.
+    let forge = on_b()
+        .check(commit('d'), pending())
+        .check(commit('a'), check(2, VERDICT, STAMP));
+    let ledger = ledger_with_pushes(&[commit('a'), commit('c'), commit('d'), commit('b')]);
+
+    let done = sweep(&forge, &ledger, &MemoryRefs::default()).expect("the ports are up");
+
     let closed: Vec<_> = done.closed.iter().map(|closed| closed.check).collect();
     assert_eq!(closed, [check_id(1)]);
+    assert_eq!(forge.listed(), [commit('b'), commit('d'), commit('c')]);
 }
 
 #[test]
@@ -329,7 +410,7 @@ fn a_busy_lock_leaves_the_check() {
             "b".repeat(40)
         ),
     );
-    let forge = on_b().check(commit('b'), pending(OLD));
+    let forge = stuck();
 
     let done = sweep(&forge, &MemoryLedger::default(), &refs).expect("the ports are up");
 
@@ -339,9 +420,7 @@ fn a_busy_lock_leaves_the_check() {
 
 #[test]
 fn a_check_re_stamped_meanwhile_is_left() {
-    let forge = on_b()
-        .check(commit('b'), pending(OLD))
-        .restamped_to("pending:101:2");
+    let forge = stuck().restamped_to("pending:101:2");
     let refs = MemoryRefs::default();
 
     let done = sweep(&forge, &MemoryLedger::default(), &refs).expect("the ports are up");
@@ -353,15 +432,13 @@ fn a_check_re_stamped_meanwhile_is_left() {
 
 #[test]
 fn a_head_that_moved_before_the_write_is_left() {
-    let stuck = on_b()
-        .check(commit('b'), pending(OLD))
-        .head_moves(id(7), PullHead::Open(commit('c')));
+    let moved = stuck().head_moves(id(7), PullHead::Open(commit('c')));
     let done =
-        sweep(&stuck, &MemoryLedger::default(), &MemoryRefs::default()).expect("the ports are up");
+        sweep(&moved, &MemoryLedger::default(), &MemoryRefs::default()).expect("the ports are up");
     assert_eq!(done.skipped, [skipped('b', Skip::HeadMoved)]);
 
     let superseded = on_b()
-        .check(commit('a'), pending(DUE))
+        .check(commit('a'), pending())
         .head_moves(id(7), PullHead::Open(commit('a')));
     let done = sweep(
         &superseded,
@@ -373,15 +450,15 @@ fn a_head_that_moved_before_the_write_is_left() {
 }
 
 #[test]
-fn a_check_with_no_stamp_is_left() {
-    let mut unstamped = pending(OLD);
+fn a_superseded_check_with_no_stamp_is_left() {
+    let mut unstamped = pending();
     unstamped.external_id = None;
-    let forge = on_b().check(commit('b'), unstamped);
+    let forge = on_b().check(commit('a'), unstamped);
+    let ledger = ledger_with_pushes(&[commit('a'), commit('b')]);
 
-    let done =
-        sweep(&forge, &MemoryLedger::default(), &MemoryRefs::default()).expect("the ports are up");
+    let done = sweep(&forge, &ledger, &MemoryRefs::default()).expect("the ports are up");
 
-    assert_eq!(done.skipped, [skipped('b', Skip::NoStamp)]);
+    assert_eq!(done.skipped, [skipped('a', Skip::NoStamp)]);
 }
 
 #[test]
@@ -392,9 +469,7 @@ fn the_per_repo_sweep_never_reaps_a_slot_or_writes_a_cost_record() {
         &lease_line(1, "2026-10-12T10:00:00.000Z"),
     );
     let ledger = ledger_with_pushes(&[commit('a'), commit('b')]);
-    let forge = on_b()
-        .check(commit('b'), pending(OLD))
-        .check(commit('a'), check(2, VERDICT, "pending:99:1", at(DUE)));
+    let forge = stuck().check(commit('a'), check(2, VERDICT, "pending:99:1"));
 
     let done = sweep(&forge, &ledger, &refs).expect("the ports are up");
 
@@ -423,6 +498,107 @@ fn more_open_pulls_than_the_cap_are_refused() {
 }
 
 #[test]
+fn a_head_with_more_checks_than_the_cap_refuses_the_sweep_before_any_write() {
+    // PR 7's stuck check is listed first; PR 8's head then passes the cap.
+    let mut forge = stuck().pull(id(8), commit('c'));
+    for n in 2..=u64::try_from(MAX_HEAD_CHECKS).expect("the cap fits") + 2 {
+        forge = forge.check(commit('c'), check(n, "assay / gate: temper", STAMP));
+    }
+    let refs = MemoryRefs::default();
+
+    let refused = sweep(&forge, &MemoryLedger::default(), &refs);
+
+    assert!(
+        matches!(
+            refused,
+            Err(ChecksReconcileError::TooMany { what: Listing::Checks, limit })
+                if limit == MAX_HEAD_CHECKS
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(forge.writes(), []);
+    assert_eq!(refs.calls(), [], "no lock was taken");
+}
+
+#[test]
+fn a_failed_write_and_a_failed_release_are_both_reported() {
+    let forge = stuck().writes_fail();
+    let refs = MemoryRefs::default();
+
+    let refused = reconcile_checks(
+        ReconcilePorts {
+            forge: &forge,
+            ledger: &MemoryLedger::default(),
+            refs: &NoDelete(&refs),
+        },
+        &request(),
+    );
+
+    assert!(
+        matches!(
+            refused,
+            Err(ChecksReconcileError::Write {
+                source: GitHubDown,
+                release: Some(_)
+            })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        refs.names(),
+        [lock_ref('b')],
+        "the lock expires with its TTL"
+    );
+}
+
+#[test]
+fn a_failed_write_still_releases_the_lock() {
+    let forge = stuck().writes_fail();
+    let refs = MemoryRefs::default();
+
+    let refused = sweep(&forge, &MemoryLedger::default(), &refs);
+
+    assert!(
+        matches!(
+            refused,
+            Err(ChecksReconcileError::Write {
+                source: GitHubDown,
+                release: None
+            })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(refs.names(), Vec::<String>::new());
+}
+
+#[test]
+fn a_lock_lost_before_its_release_is_reported() {
+    let refs = MemoryRefs::default().rival(Before::Delete, |store| {
+        store.remove(&lock_ref('b'));
+    });
+    let forge = stuck();
+
+    let done = sweep(&forge, &MemoryLedger::default(), &refs).expect("the ports are up");
+
+    assert_eq!(done.closed.len(), 1);
+    assert_eq!(
+        done.lost_locks,
+        [LostLock {
+            pr: id(7),
+            head: commit('b'),
+            check: check_id(1),
+        }]
+    );
+    assert!(
+        refs.calls().contains(&Call::Delete {
+            name: lock_ref('b'),
+            deleted: false,
+        }),
+        "the release was a compare-and-set that found the lock gone"
+    );
+}
+
+#[test]
 fn github_down_stops_the_sweep() {
     let refused = sweep(
         &on_b().down(),
@@ -434,18 +610,4 @@ fn github_down_stops_the_sweep() {
         matches!(refused, Err(ChecksReconcileError::Forge(GitHubDown))),
         "{refused:?}"
     );
-}
-
-fn skipped(head: char, reason: Skip) -> SkippedCheck {
-    SkippedCheck {
-        pr: id(7),
-        head: commit(head),
-        check: check_id(1),
-        reason,
-    }
-}
-
-#[test]
-fn the_stuck_threshold_is_twice_the_full_tiers_p95() {
-    assert_eq!(assay_app::STUCK_AFTER.as_secs(), 50 * 60);
 }

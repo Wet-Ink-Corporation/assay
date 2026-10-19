@@ -9,6 +9,7 @@ use assay_domain::RunUid;
 use thiserror::Error;
 
 use super::locks::{LockListing, MAX_PUBLISH_LOCKS, lock_key};
+use crate::config::CommitId;
 use crate::ledger::{
     Appended, CostKind, CostRecord, LeaseError, Ledger, LedgerReadError, LedgerTime,
     LedgerWriteError, LockLease, SLOT_TTL, SlotView, append_cost, read_costs, read_slots,
@@ -69,22 +70,48 @@ pub enum LedgerReconcileError<L, R> {
     /// The publish locks could not be listed.
     #[error("the publish locks could not be listed")]
     ListLocks(#[source] R),
-    /// More publish locks than [`MAX_PUBLISH_LOCKS`] exist; none was read.
+    /// More publish locks than [`MAX_PUBLISH_LOCKS`] exist; nothing was reaped or written.
     #[error("more than {limit} publish locks exist")]
     TooManyLocks {
         /// The cap.
         limit: usize,
     },
-    /// A ref under `refs/heads/lock-` is not named as assay names a lock; nothing more was read.
-    #[error("a ref under refs/heads/lock- is not a publish lock assay names")]
-    LockName,
+    /// A ref under `refs/heads/lock-` is not named as assay names a lock; nothing was reaped or
+    /// written. Its name is untrusted text, displayed escaped and cut at 120 characters.
+    #[error("the ref {} is not a publish lock assay names", shown(.name))]
+    LockName {
+        /// The ref's full name, as listed.
+        name: String,
+    },
     /// A publish lock could not be read or reaped, or its lease is unreadable (it is kept).
     #[error("a publish lock could not be reaped")]
     Locks(#[source] LeaseError<R>),
 }
 
-/// Runs one ledger-side sweep at `request.now`: reaps every expired slot lease, back-fills the
-/// unsettled reservations whose lease is gone, then reaps every expired publish lock.
+/// How many characters of a refused lock name an error shows.
+const SHOWN_NAME_CHARS: usize = 120;
+
+/// `name` escaped (no control character reaches a terminal or log) and cut after
+/// [`SHOWN_NAME_CHARS`] characters, marked with `…` when cut.
+fn shown(name: &str) -> String {
+    let mut chars = name.chars();
+    let mut shown: String = chars
+        .by_ref()
+        .take(SHOWN_NAME_CHARS)
+        .flat_map(char::escape_debug)
+        .collect();
+    if chars.next().is_some() {
+        shown.push('…');
+    }
+    shown
+}
+
+/// Runs one ledger-side sweep at `request.now`.
+///
+/// It first lists the publish locks and refuses the sweep, before any reap or write, when they
+/// pass [`MAX_PUBLISH_LOCKS`] or one is not named as assay names a lock; then it reaps every
+/// expired slot lease, back-fills the unsettled reservations whose lease is gone, and reaps
+/// every expired publish lock.
 ///
 /// A run is back-filled when its `reserved` record has no `final` one, no slot's lease names it,
 /// and the reservation is older than [`SLOT_TTL`] (a run's review never outlives its lease). The
@@ -107,6 +134,7 @@ pub fn reconcile_ledger<L: Ledger, R: LockListing>(
         return Err(LedgerReconcileError::NotFirstAttempt { attempt });
     }
     let now = request.now;
+    let locks = publish_locks(refs)?;
     let reaped_slots = reap_expired_slots(refs, now).map_err(LedgerReconcileError::Slots)?;
     let holding: HashSet<RunUid> = read_slots(refs, now)
         .map_err(LedgerReconcileError::Slots)?
@@ -140,7 +168,7 @@ pub fn reconcile_ledger<L: Ledger, R: LockListing>(
         .filter(|view| !recorded.contains(&view.lease.run_uid))
         .cloned()
         .collect();
-    let reaped_locks = reap_locks(refs, now)?;
+    let reaped_locks = reap_locks(refs, locks, now)?;
     Ok(LedgerReconciled {
         reaped_slots,
         reaped_locks,
@@ -173,11 +201,14 @@ fn unsettled<'r>(
     })
 }
 
-/// Reaps every expired publish lock, each by compare-and-set on the commit read.
-fn reap_locks<L, R: LockListing>(
+/// Publish locks by repository id and head.
+type LockKeys = Vec<(NonZeroU64, CommitId)>;
+
+/// The publish locks by repository id and head, refused when they pass [`MAX_PUBLISH_LOCKS`] or
+/// one is not named as assay names a lock.
+fn publish_locks<L, R: LockListing>(
     refs: &R,
-    now: LedgerTime,
-) -> Result<Vec<LockLease>, LedgerReconcileError<L, R::Error>> {
+) -> Result<LockKeys, LedgerReconcileError<L, R::Error>> {
     let names = refs
         .publish_locks(MAX_PUBLISH_LOCKS.saturating_add(1))
         .map_err(LedgerReconcileError::ListLocks)?;
@@ -186,12 +217,20 @@ fn reap_locks<L, R: LockListing>(
             limit: MAX_PUBLISH_LOCKS,
         });
     }
-    let keys = names
-        .iter()
-        .map(|name| lock_key(name).ok_or(LedgerReconcileError::LockName))
-        .collect::<Result<Vec<_>, _>>()?;
+    names
+        .into_iter()
+        .map(|name| lock_key(&name).ok_or(LedgerReconcileError::LockName { name }))
+        .collect()
+}
+
+/// Reaps each of `locks` that expired, by compare-and-set on the commit read.
+fn reap_locks<L, R: LockListing>(
+    refs: &R,
+    locks: LockKeys,
+    now: LedgerTime,
+) -> Result<Vec<LockLease>, LedgerReconcileError<L, R::Error>> {
     let mut reaped = Vec::new();
-    for (repo_id, head) in keys {
+    for (repo_id, head) in locks {
         if let Some(lease) =
             reap_expired_lock(refs, repo_id, &head, now).map_err(LedgerReconcileError::Locks)?
         {

@@ -17,8 +17,23 @@ pub(super) const STUCK_MINUTES: u64 = 50;
 pub struct ChecksReconciled {
     /// The checks closed.
     pub closed: Vec<ClosedCheck>,
-    /// The checks due to be closed that this sweep left; the next one tries again.
+    /// The checks due to be closed, or that the sweep could not judge, that it left; the next
+    /// sweep tries again.
     pub skipped: Vec<SkippedCheck>,
+    /// The checks written whose lock was gone at its release: it had expired and been reaped,
+    /// so the write may not have been the head's only writer (02 §5).
+    pub lost_locks: Vec<LostLock>,
+}
+
+/// A check written under a lock that was gone when the sweep released it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LostLock {
+    /// The PR.
+    pub pr: NonZeroU64,
+    /// The head whose lock was lost.
+    pub head: CommitId,
+    /// The check written.
+    pub check: CheckRunId,
 }
 
 /// A check the sweep closed.
@@ -67,6 +82,12 @@ pub enum Skip {
     Moved,
     /// The check carries no `external_id`, so no write can be conditioned on it.
     NoStamp,
+    /// The in-progress check on the PR's head is not stamped `pending:<run_id>:<seq>` as `open`
+    /// stamps it, so no run says how old it is or whether it is live: a deferred check carries
+    /// its decision key. It is never closed as stuck.
+    NotPending,
+    /// GitHub has no run with the id the check's stamp names, so nothing says how old it is.
+    RunGone,
 }
 
 /// Which listing passed its cap.
@@ -76,11 +97,12 @@ pub enum Listing {
     OpenPulls,
     /// The App's checks on a head ([`MAX_HEAD_CHECKS`](super::MAX_HEAD_CHECKS)).
     Checks,
-    /// The live runs on a head ([`MAX_HEAD_RUNS`](super::MAX_HEAD_RUNS)).
-    Runs,
 }
 
-/// Why the per-repo reconcile stopped. Checks closed before the error stay closed.
+/// Why the per-repo reconcile stopped.
+///
+/// A listing past its cap, or any failure while the sweep reads, stops it before any check is
+/// written; a failure while it writes leaves the checks closed before it closed.
 #[derive(Debug, Error)]
 pub enum ChecksReconcileError<F, L, R> {
     /// A re-run of the reconcile (R3-05): nothing was read or written.
@@ -95,10 +117,23 @@ pub enum ChecksReconcileError<F, L, R> {
     /// The ledger's push records or PR state could not be read.
     #[error("the ledger could not be read")]
     Ledger(#[source] LedgerReadError<L>),
-    /// A publish lock could not be taken or released.
+    /// A publish lock could not be taken, or released after a write that succeeded.
     #[error("a publish lock could not be taken or released")]
     Lock(#[source] LeaseError<R>),
-    /// A listing passed its cap; it was not used.
+    /// Under the head's lock, the PR could not be re-read or the check could not be written.
+    #[error(
+        "a check could not be closed under its head's publish lock{}",
+        if .release.is_some() { ", and the lock could not be released" } else { "" }
+    )]
+    Write {
+        /// Why GitHub refused.
+        #[source]
+        source: F,
+        /// Why the lock's release failed too, when it did; that lock expires with its TTL and
+        /// the ledger-side reconcile reaps it (F21).
+        release: Option<LeaseError<R>>,
+    },
+    /// A listing passed its cap; nothing was written.
     #[error("the {what:?} listing passed its cap of {limit}")]
     TooMany {
         /// The listing.
@@ -117,10 +152,9 @@ pub(super) fn closure_update(closure: Closure, run_uid: RunUid) -> CheckUpdate {
             state: CheckState::Completed(CheckConclusion::Failure),
             title: format!("assay: failure ({})", ReasonCode::PublishError.code()),
             summary: format!(
-                "assay's reconcile closed this check: it stayed in progress for more than \
-                 {STUCK_MINUTES} minutes with no assay workflow run live on this head, so no run \
-                 would publish it (06 §4). Push a commit or comment `/assay recheck` to run assay \
-                 again."
+                "assay's reconcile closed this check: the run that opened it started more than \
+                 {STUCK_MINUTES} minutes ago and is no longer running, so no run would publish \
+                 it (06 §4). Push a commit or comment `/assay recheck` to run assay again."
             ),
             text: String::new(),
             external_id,

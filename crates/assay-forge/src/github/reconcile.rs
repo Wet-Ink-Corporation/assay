@@ -1,17 +1,17 @@
 //! The per-repo reconcile's port (06 §4) over the adapter's calls: the open PRs, the App's
-//! checks on a head with their start time, the live workflow runs on a head, and the
-//! compare-and-set check update `decide` uses.
+//! checks on a head, the workflow run a verdict check's stamp names, and the compare-and-set
+//! check update `decide` uses.
 
 use std::num::NonZeroU64;
 
 use assay_app::{
-    CheckRunId, CheckUpdate, CommitId, CompareAndSetError, LedgerTime, LiveRun, OpenPull, PullHead,
-    ReconcileCheck, ReconcileForge,
+    CheckRunId, CheckUpdate, CommitId, CompareAndSetError, LedgerTime, OpenPull, PullHead,
+    ReconcileCheck, ReconcileForge, RunProgress, StampedRun,
 };
 use serde::Deserialize;
 
 use super::GitHub;
-use super::api::{PER_PAGE, Page};
+use super::api::PER_PAGE;
 use super::checks::check_status;
 use super::dto::{self, CheckRunDto, PullDto};
 use super::error::{ForgeError, Operation};
@@ -19,24 +19,10 @@ use super::transport::{Sleep, Transport};
 
 /// A workflow run as the reconcile reads it.
 #[derive(Debug, Deserialize)]
-struct HeadRunDto {
-    head_sha: String,
+struct StampedRunDto {
+    id: u64,
     status: String,
-    path: String,
-}
-
-/// A page of `GET /actions/runs?head_sha=`.
-#[derive(Debug, Deserialize)]
-struct HeadRunsPage {
-    workflow_runs: Vec<HeadRunDto>,
-}
-
-impl Page for HeadRunsPage {
-    type Item = HeadRunDto;
-
-    fn items(self) -> Vec<HeadRunDto> {
-        self.workflow_runs
-    }
+    run_started_at: Option<String>,
 }
 
 impl<T: Transport, S: Sleep> ReconcileForge for GitHub<T, S> {
@@ -91,26 +77,38 @@ impl<T: Transport, S: Sleep> ReconcileForge for GitHub<T, S> {
         Ok(checks)
     }
 
-    fn live_runs(&self, head: &CommitId, limit: usize) -> Result<Vec<LiveRun>, Self::Error> {
+    /// A 404 is a run GitHub does not have: the sweep has just listed this repository's PRs
+    /// with the same token, so the token sees the repository.
+    fn workflow_run(&self, run_id: NonZeroU64) -> Result<Option<StampedRun>, Self::Error> {
         let operation = Operation::ListRuns;
-        let path = self.path(
-            operation,
-            &format!("actions/runs?head_sha={head}&per_page={PER_PAGE}"),
-        )?;
-        let mut live = Vec::new();
-        for run in self.api.list::<HeadRunsPage>(operation, path, None)? {
-            if run.head_sha != head.as_str() {
+        let path = self.path(operation, &format!("actions/runs/{run_id}"))?;
+        let Some(run) = self.api.get_optional::<StampedRunDto>(operation, &path)? else {
+            return Ok(None);
+        };
+        if run.id != run_id.get() {
+            return Err(ForgeError::Malformed {
+                operation,
+                detail: "GitHub returned another run",
+            });
+        }
+        let progress = match run.status.as_str() {
+            "completed" => RunProgress::Completed,
+            "queued" | "in_progress" | "waiting" | "pending" | "requested" => RunProgress::Live,
+            _ => {
                 return Err(ForgeError::Malformed {
                     operation,
-                    detail: "a listed run is on another head",
+                    detail: "a run's status is not one GitHub documents",
                 });
             }
-            if run.status != "completed" {
-                live.push(LiveRun { path: run.path });
-            }
-        }
-        live.truncate(limit);
-        Ok(live)
+        };
+        let started_at = run.run_started_at.as_deref().ok_or(ForgeError::Malformed {
+            operation,
+            detail: "a run has no run_started_at",
+        })?;
+        Ok(Some(StampedRun {
+            progress,
+            started_at: github_time(operation, started_at)?,
+        }))
     }
 
     fn labels(&self, number: NonZeroU64) -> Result<Vec<String>, Self::Error> {
@@ -152,17 +150,12 @@ fn reconcile_check<E>(
     operation: Operation,
     check: CheckRunDto,
 ) -> Result<ReconcileCheck, ForgeError<E>> {
-    let started_at = check.started_at.as_deref().ok_or(ForgeError::Malformed {
-        operation,
-        detail: "the App's check has no started_at",
-    })?;
     Ok(ReconcileCheck {
         id: CheckRunId(dto::nonzero(operation, check.id, "a check id is zero")?),
         external_id: check
             .external_id
             .filter(|external_id| !external_id.is_empty()),
         status: check_status(operation, &check.status)?,
-        started_at: github_time(operation, started_at)?,
         name: check.name,
     })
 }

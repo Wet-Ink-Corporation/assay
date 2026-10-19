@@ -8,8 +8,8 @@ use assay_app::{
 };
 use assay_domain::{Aeu, RunUid};
 
-use crate::lease_fakes::{Before, Call, MemoryRefs, lease_line, slot};
-use crate::ledger_fakes::{MemoryLedger, at, cost, cost_line, id, run};
+use crate::lease_fakes::{Before, Call, MemoryRefs, RefsDown, lease_line, slot};
+use crate::ledger_fakes::{Down, MemoryLedger, at, cost, cost_line, id, run};
 
 const NOW: &str = "2026-10-12T12:00:00.000Z";
 
@@ -281,18 +281,41 @@ fn a_lock_taken_again_after_the_read_is_not_deleted() {
     );
 }
 
-#[test]
-fn a_lock_ref_assay_did_not_name_is_refused() {
-    let ledger = MemoryLedger::default();
+/// A ledger with an unsettled reservation past its TTL, and refs with its expired slot lease:
+/// work a sweep would do, to show that a refusal does none of it.
+fn work_pending() -> (MemoryLedger, MemoryRefs) {
+    let reserved = cost_line(1, "reserved", "2.3", "2026-10-12T10:00:00.000Z");
+    let ledger = MemoryLedger::default().with_file(&october(), reserved.as_bytes());
     let refs = MemoryRefs::default();
+    refs.holding(&slot_ref(0), &lease_line(1, "2026-10-12T10:45:00.000Z"));
+    (ledger, refs)
+}
+
+#[test]
+fn a_lock_ref_assay_did_not_name_refuses_the_sweep_before_any_reap_or_back_fill() {
+    let (ledger, refs) = work_pending();
     refs.holding("refs/heads/lock-042-x", "anything");
 
     let refused = reconcile_ledger(&ledger, &refs, &request());
 
     assert!(
-        matches!(refused, Err(LedgerReconcileError::LockName)),
+        matches!(&refused, Err(LedgerReconcileError::LockName { name }) if name == "refs/heads/lock-042-x"),
         "{refused:?}"
     );
+    assert_eq!(refs.names(), ["refs/heads/lock-042-x", &slot_ref(0)]);
+    assert_eq!(ledger.writes(), []);
+}
+
+#[test]
+fn a_refused_lock_name_is_shown_escaped_and_capped() {
+    let name = format!("refs/heads/lock-\n\u{1b}[31m{}", "x".repeat(400));
+    let refused: LedgerReconcileError<Down, RefsDown> = LedgerReconcileError::LockName { name };
+
+    let shown = refused.to_string();
+
+    assert!(!shown.contains(['\n', '\u{1b}']), "{shown}");
+    assert!(shown.contains(r"lock-\n\u{1b}[31m"), "{shown}");
+    assert!(shown.len() < 300, "{} bytes: {shown}", shown.len());
 }
 
 #[test]
@@ -314,9 +337,8 @@ fn a_lock_naming_another_head_is_refused_and_kept() {
 }
 
 #[test]
-fn more_publish_locks_than_the_cap_are_refused() {
-    let ledger = MemoryLedger::default();
-    let refs = MemoryRefs::default();
+fn more_publish_locks_than_the_cap_refuse_the_sweep_before_any_reap_or_back_fill() {
+    let (ledger, refs) = work_pending();
     for n in 0..=MAX_PUBLISH_LOCKS {
         let head = format!("{n:040x}");
         refs.holding(&format!("refs/heads/lock-42-{head}"), "unread");
@@ -331,6 +353,11 @@ fn more_publish_locks_than_the_cap_are_refused() {
         ),
         "{refused:?}"
     );
+    assert!(
+        refs.names().contains(&slot_ref(0)),
+        "the slot was not reaped"
+    );
+    assert_eq!(ledger.writes(), []);
 }
 
 #[test]

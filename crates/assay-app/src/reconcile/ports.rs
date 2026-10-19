@@ -31,13 +31,14 @@ pub trait ReconcileForge {
     fn app_checks(&self, head: &CommitId, limit: usize)
     -> Result<Vec<ReconcileCheck>, Self::Error>;
 
-    /// The workflow runs on `head` that have not completed (queued, waiting, pending, requested
-    /// or in progress), of every workflow, at most `limit` of them.
+    /// The repository's workflow run `run_id`, whatever commit it runs on (a requeue's
+    /// `workflow_dispatch` and decide-only's runs are on the default branch's); `None` when
+    /// GitHub has no such run.
     ///
     /// # Errors
     ///
-    /// [`Self::Error`] when the runs cannot be listed.
-    fn live_runs(&self, head: &CommitId, limit: usize) -> Result<Vec<LiveRun>, Self::Error>;
+    /// [`Self::Error`] when the run cannot be read.
+    fn workflow_run(&self, run_id: NonZeroU64) -> Result<Option<StampedRun>, Self::Error>;
 
     /// The names of the labels on PR `number`.
     ///
@@ -98,13 +99,23 @@ pub struct ReconcileCheck {
     pub external_id: Option<String>,
     /// Its status.
     pub status: CheckStatus,
-    /// When GitHub started it (`started_at`), to the second.
+}
+
+/// The workflow run a verdict check's `pending:<run_id>:<seq>` stamp names: the last run that
+/// opened the check, so the one that would finish it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StampedRun {
+    /// Whether it is still running.
+    pub progress: RunProgress,
+    /// When its attempt started (`run_started_at`), to the second.
     pub started_at: LedgerTime,
 }
 
-/// A workflow run on a head that has not completed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LiveRun {
-    /// Its workflow file, as GitHub names it (`.github/workflows/assay.yml`).
-    pub path: String,
+/// Whether a workflow run has completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RunProgress {
+    /// Queued, waiting, pending, requested or in progress: it may still publish.
+    Live,
+    /// Completed, whatever its conclusion.
+    Completed,
 }
