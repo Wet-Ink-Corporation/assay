@@ -184,3 +184,12 @@ pub use verify::{
     Verification, VerifiedFinding, VerifierFailure, VerifierStatus, VerifierTier, VerifyRequest,
     verify,
 };
+
+mod reconcile;
+pub use reconcile::{
+    ChecksReconcileError, ChecksReconcileRequest, ChecksReconciled, ClosedCheck, Closure,
+    LLM_PENDING_LABEL, LedgerReconcileError, LedgerReconcileRequest, LedgerReconciled, Listing,
+    LockListing, LostLock, MAX_HEAD_CHECKS, MAX_OPEN_PULLS, MAX_PUBLISH_LOCKS,
+    MAX_SUPERSEDED_HEADS, OpenPull, PullHead, ReconcileCheck, ReconcileForge, ReconcilePorts,
+    RunProgress, STUCK_AFTER, Skip, SkippedCheck, StampedRun, reconcile_checks, reconcile_ledger,
+};
