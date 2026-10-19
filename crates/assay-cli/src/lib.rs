@@ -7,12 +7,15 @@
 //! the PR's base and head files, and [`ForgePullRequest`] lends it to the
 //! `plan` use case as the PR's objects. [`run_status`] wires `assay status` (#126) over any
 //! [`assay_app::StatusForge`], so it is tested with fakes until the GitHub adapter (#53) exists.
+//! [`OpenCommand`] reads `assay open`'s run from the Actions environment and refuses a re-run.
 
+mod open;
 mod pull_request;
 mod revisions;
 mod status;
 mod supervisor;
 
+pub use open::{OpenCommand, OpenUsage, OpenVariables};
 pub use pull_request::{ForgeObjectsError, ForgePullRequest};
 pub use revisions::ForgeRevisions;
 pub use status::{

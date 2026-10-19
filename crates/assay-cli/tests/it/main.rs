@@ -18,6 +18,7 @@ mod gh;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod layering;
 mod layout;
+mod open;
 mod plan;
 #[cfg(unix)] // process groups, through forge's git
 mod pull_request;

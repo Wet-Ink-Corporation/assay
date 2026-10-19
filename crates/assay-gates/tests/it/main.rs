@@ -16,3 +16,6 @@ mod temper_manifest;
 #[cfg(test)]
 mod temper_support;
 mod temper_test;
+mod weigh_in;
+#[cfg(test)]
+mod weigh_in_support;

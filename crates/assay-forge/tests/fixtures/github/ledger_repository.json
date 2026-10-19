@@ -1,0 +1,25 @@
+{
+  "id": 1098765432,
+  "node_id": "R_kgDOQXl2eA",
+  "name": "assay-ledger",
+  "full_name": "Wet-Ink-Corporation/assay-ledger",
+  "private": true,
+  "owner": {
+    "login": "Wet-Ink-Corporation",
+    "id": 231234567,
+    "type": "Organization"
+  },
+  "html_url": "https://github.com/Wet-Ink-Corporation/assay-ledger",
+  "description": null,
+  "fork": false,
+  "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay-ledger",
+  "default_branch": "main",
+  "visibility": "private",
+  "permissions": {
+    "admin": false,
+    "maintain": false,
+    "push": true,
+    "triage": false,
+    "pull": true
+  }
+}

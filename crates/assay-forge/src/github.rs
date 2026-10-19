@@ -15,6 +15,8 @@ mod dto;
 mod error;
 mod gh;
 mod identity;
+mod ledger;
+mod ledger_refs;
 mod ports;
 mod pulls;
 mod reads;
@@ -32,6 +34,8 @@ pub use gh::{
     GhToken, InvalidToken,
 };
 pub use identity::MAX_COMMITS;
+pub use ledger::{LedgerRepo, LedgerRepoError};
+pub use ledger_refs::{LedgerRefsError, LedgerRefsRepo, LedgerRemoteError, ledger_push_remote};
 pub use repository::{ParseRepositoryError, Repository};
 pub use token::{Access, InstallationId, InstallationToken, Permission, ScopeError, TokenScope};
 pub use transport::{

@@ -1,0 +1,5 @@
+{
+  "message": "Invalid request.\n\n\"sha\" wasn't supplied.",
+  "documentation_url": "https://docs.github.com/rest/repos/contents#create-or-update-file-contents",
+  "status": "422"
+}

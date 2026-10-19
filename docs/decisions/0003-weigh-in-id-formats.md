@@ -26,3 +26,7 @@ Read at `Wet-Ink-Corporation/weigh-in` commit `68a6e33f031eed4853bfed532cb2b009d
 - Join the three sources on the exact id string. A trailer or atom whose id does not parse is refused, not matched loosely (wi-b5affa).
 - Unchanged from `04 §9`: the journal hook is still not in the plugin (`plugin/hooks/hooks.json` has none at this commit), so local desktop sessions write no journal, and none of these records is signed. Matching ids proves only that the records agree, not who wrote them.
 - Re-check this record when the adapter pins a newer weigh-in commit or `D-WI` (#44) lands.
+
+## Note, 2026-10-19 (#109)
+
+Checked against the Weigh-In 0.9.0 CLI (by running it, not by reading its source): after `weighin raise` and then `weighin defer`, `weighin journal` shows the deferral journaled as an `item_deferred` event, and `ts` is whole-second UTC (`2026-10-19T03:12:27Z`). The experimental `weigh-in` adapter (`assay-gates`, #109) relies on both. It refuses a journal with any other event `type`, or with a `ts` not in exactly that form.
