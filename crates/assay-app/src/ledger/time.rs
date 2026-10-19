@@ -70,6 +70,13 @@ impl LedgerTime {
         }
     }
 
+    /// The instant `duration` later, or `None` past 9999-12-31: a lease's expiry.
+    #[must_use]
+    pub fn checked_add(self, duration: Duration) -> Option<Self> {
+        let ahead = u64::try_from(duration.as_millis()).ok()?;
+        Self::from_unix_millis(self.millis.checked_add(ahead)?).ok()
+    }
+
     /// The UTC month this instant falls in: the cost file `ledger/YYYY-MM.jsonl` it belongs to.
     #[must_use]
     pub fn month(self) -> LedgerMonth {

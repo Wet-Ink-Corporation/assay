@@ -92,6 +92,11 @@ pub enum GitOperation {
     ConfigBool,
     /// `git ls-files -t -z`: a developer's index with each entry's tag (`S` is skip-worktree).
     ListIndex,
+    /// `git push --porcelain` of one ref to an https remote (the ledger's lease refs, 06 §1),
+    /// with no redirect followed.
+    Push,
+    /// The same push to a local bare repository: the only operation allowed the file protocol.
+    PushLocal,
 }
 
 impl GitOperation {
@@ -132,7 +137,19 @@ impl GitOperation {
             Self::ConfigPath => &["config", "--null", "--path", "--get"],
             Self::ConfigBool => &["config", "--null", "--bool", "--get"],
             Self::ListIndex => &["ls-files", "-t", "-z"],
+            Self::Push | Self::PushLocal => &[
+                "push",
+                "--porcelain",
+                "--no-recurse-submodules",
+                "--no-signed",
+                "--no-follow-tags",
+            ],
         }
+    }
+
+    /// Whether the operation sends a ref update to a remote, and so may carry an HTTP header.
+    const fn pushes(self) -> bool {
+        matches!(self, Self::Push | Self::PushLocal)
     }
 
     /// Whether the operation may read the developer's system and user config: only a setting's
@@ -143,10 +160,13 @@ impl GitOperation {
 
     /// `-c` settings the operation adds to [`HARDENED_CONFIG`]: a checkout writes symlinks as
     /// plain files holding their target, so nothing read from the written tree can follow one
-    /// out of it.
+    /// out of it; a push to https follows no redirect, so its credential header goes to the
+    /// ledger's host only; a push to a local bare repository may use the file protocol.
     const fn extra_config(self) -> &'static [&'static str] {
         match self {
             Self::CheckoutIndex => &["core.symlinks=false"],
+            Self::Push => &["http.followRedirects=false"],
+            Self::PushLocal => &["protocol.file.allow=always"],
             _ => &[],
         }
     }
@@ -190,6 +210,7 @@ impl fmt::Display for GitOperation {
             Self::RevParse => "rev-parse",
             Self::ReadTree => "read-tree",
             Self::AddAll => "add",
+            Self::Push | Self::PushLocal => "push",
             Self::WriteTree => "write-tree",
             Self::CommitTree => "commit-tree",
             Self::CheckoutIndex => "checkout-index",
@@ -298,6 +319,28 @@ pub(super) struct Scope<'a> {
     pub(super) index: Option<&'a Path>,
     /// The developer's user config, read only by a setting's lookup.
     pub(super) user: Option<&'a UserDirs>,
+    /// An HTTP header a push sends to its remote, and only to it: the ledger token.
+    pub(super) header: Option<HttpHeader<'a>>,
+}
+
+/// An HTTP header for one remote URL, passed as `http.<url>.extraHeader` through
+/// `GIT_CONFIG_COUNT` variables, never on the command line, where any process on the host could
+/// read it.
+#[derive(Clone, Copy)]
+pub(super) struct HttpHeader<'a> {
+    /// The remote URL the header is sent to.
+    pub(super) url: &'a str,
+    /// The header line, `Name: value`.
+    pub(super) line: &'a str,
+}
+
+impl fmt::Debug for HttpHeader<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpHeader")
+            .field("url", &self.url)
+            .field("line", &"<redacted>")
+            .finish()
+    }
 }
 
 /// A hardened `git --git-dir <git_dir> [--work-tree <tree>] -c ... <operation>` command, with
@@ -321,6 +364,14 @@ pub(super) fn git_in(
         command.env_remove("GIT_CONFIG_NOSYSTEM");
         command.env_remove("GIT_CONFIG_GLOBAL");
         command.envs(user.variables());
+    }
+    if let (Some(header), true) = (scope.header, operation.pushes()) {
+        command.env("GIT_CONFIG_COUNT", "1");
+        command.env(
+            "GIT_CONFIG_KEY_0",
+            format!("http.{}.extraHeader", header.url),
+        );
+        command.env("GIT_CONFIG_VALUE_0", header.line);
     }
     command.arg("--git-dir").arg(git_dir);
     if let Some(work_tree) = scope.work_tree {
@@ -354,7 +405,7 @@ mod tests {
     use crate::process::{Limits, run};
 
     /// Every operation.
-    const ALL: [GitOperation; 20] = [
+    const ALL: [GitOperation; 22] = [
         GitOperation::Init,
         GitOperation::Fetch,
         GitOperation::VerifyCommit,
@@ -375,6 +426,8 @@ mod tests {
         GitOperation::ConfigPath,
         GitOperation::ConfigBool,
         GitOperation::ListIndex,
+        GitOperation::Push,
+        GitOperation::PushLocal,
     ];
 
     /// The command for `operation` with no scope, as every operation on PR objects builds it.
@@ -420,7 +473,8 @@ mod tests {
                 "http.lowSpeedTime=30",
                 "attr.tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904",
             ];
-            // Only a checkout adds a setting, after the hardened ones (pinned below).
+            // Only a checkout and the pushes add a setting, after the hardened ones (pinned
+            // below).
             expected.extend(operation.extra_config());
 
             assert_eq!(
@@ -504,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_checkout_adds_config_and_it_writes_symlinks_as_files() {
+    fn only_a_checkout_and_the_pushes_add_config() {
         let extras: Vec<(GitOperation, &[&str])> = ALL
             .into_iter()
             .map(|operation| (operation, operation.extra_config()))
@@ -513,10 +567,58 @@ mod tests {
 
         assert_eq!(
             extras,
-            [(
-                GitOperation::CheckoutIndex,
-                ["core.symlinks=false"].as_slice()
-            )]
+            [
+                (
+                    GitOperation::CheckoutIndex,
+                    ["core.symlinks=false"].as_slice()
+                ),
+                (
+                    GitOperation::Push,
+                    ["http.followRedirects=false"].as_slice()
+                ),
+                (
+                    GitOperation::PushLocal,
+                    ["protocol.file.allow=always"].as_slice()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_push_carries_the_section_9_config_and_only_its_own_additions() {
+        for (operation, extra) in [
+            (GitOperation::Push, "http.followRedirects=false"),
+            (GitOperation::PushLocal, "protocol.file.allow=always"),
+        ] {
+            let command = hardened(operation);
+
+            let mut expected: Vec<&str> = HARDENED_CONFIG.to_vec();
+            expected.push(extra);
+            assert_eq!(config(&command), expected, "{operation}");
+            let pushed: Vec<&OsStr> = args(&command)
+                .into_iter()
+                .skip_while(|arg| *arg != "push")
+                .collect();
+            assert_eq!(
+                pushed,
+                [
+                    "push",
+                    "--porcelain",
+                    "--no-recurse-submodules",
+                    "--no-signed",
+                    "--no-follow-tags"
+                ]
+                .map(OsStr::new),
+                "{operation}"
+            );
+        }
+        assert!(
+            ALL.iter()
+                .filter(|operation| **operation != GitOperation::PushLocal)
+                .all(|operation| !operation
+                    .extra_config()
+                    .contains(&"protocol.file.allow=always")),
+            "only a local push may use the file protocol"
         );
     }
 
@@ -528,6 +630,7 @@ mod tests {
                 work_tree: Some(Path::new("/home/dev/work")),
                 index: Some(Path::new("/scratch.git/snapshot-index")),
                 user: None,
+                header: None,
             },
             &host(),
             GitOperation::AddAll,
@@ -619,62 +722,75 @@ mod tests {
             .map(|operation| (operation, operation.leading_args()))
             .collect();
 
-        let expected: [(GitOperation, &[&str]); 20] = [
-            (GitOperation::Init, &["init", "--bare", "--quiet"]),
-            (
-                GitOperation::Fetch,
-                &[
-                    "fetch",
-                    "--quiet",
-                    "--no-tags",
-                    "--no-recurse-submodules",
-                    "--no-write-fetch-head",
-                    "--no-auto-gc",
-                    "--no-auto-maintenance",
-                ],
-            ),
-            (GitOperation::VerifyCommit, &["cat-file", "-e"]),
-            (
-                GitOperation::Diff,
-                &["diff", "--no-ext-diff", "--no-textconv", "--no-color"],
-            ),
-            (GitOperation::CheckAttr, &["check-attr", "-z", "--stdin"]),
-            (GitOperation::ListTree, &["ls-tree", "-r", "-z", "-l"]),
-            (GitOperation::ReadBlobs, &["cat-file", "--batch"]),
-            (
-                GitOperation::HashBlob,
-                &["hash-object", "--no-filters", "--stdin"],
-            ),
-            (GitOperation::IsAncestor, &["merge-base", "--is-ancestor"]),
-            (
-                GitOperation::RangeDiff,
-                &[
-                    "range-diff",
-                    "--no-color",
-                    "--no-notes",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                ],
-            ),
-            (GitOperation::RevListCount, &["rev-list", "--count"]),
-            (GitOperation::RevParse, &["rev-parse"]),
-            (GitOperation::ReadTree, &["read-tree"]),
-            (GitOperation::AddAll, &["add", "--all"]),
-            (GitOperation::WriteTree, &["write-tree"]),
-            (GitOperation::CommitTree, &["commit-tree"]),
-            (GitOperation::CheckoutIndex, &["checkout-index", "--all"]),
-            (
-                GitOperation::ConfigPath,
-                &["config", "--null", "--path", "--get"],
-            ),
-            (
-                GitOperation::ConfigBool,
-                &["config", "--null", "--bool", "--get"],
-            ),
-            (GitOperation::ListIndex, &["ls-files", "-t", "-z"]),
-        ];
-        assert_eq!(leading, expected);
+        assert_eq!(leading, LEADING);
     }
+
+    /// The flags every push carries.
+    const PUSH_ARGS: &[&str] = &[
+        "push",
+        "--porcelain",
+        "--no-recurse-submodules",
+        "--no-signed",
+        "--no-follow-tags",
+    ];
+
+    /// Each operation's subcommand and fixed flags, in [`ALL`]'s order.
+    const LEADING: [(GitOperation, &[&str]); 22] = [
+        (GitOperation::Init, &["init", "--bare", "--quiet"]),
+        (
+            GitOperation::Fetch,
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-recurse-submodules",
+                "--no-write-fetch-head",
+                "--no-auto-gc",
+                "--no-auto-maintenance",
+            ],
+        ),
+        (GitOperation::VerifyCommit, &["cat-file", "-e"]),
+        (
+            GitOperation::Diff,
+            &["diff", "--no-ext-diff", "--no-textconv", "--no-color"],
+        ),
+        (GitOperation::CheckAttr, &["check-attr", "-z", "--stdin"]),
+        (GitOperation::ListTree, &["ls-tree", "-r", "-z", "-l"]),
+        (GitOperation::ReadBlobs, &["cat-file", "--batch"]),
+        (
+            GitOperation::HashBlob,
+            &["hash-object", "--no-filters", "--stdin"],
+        ),
+        (GitOperation::IsAncestor, &["merge-base", "--is-ancestor"]),
+        (
+            GitOperation::RangeDiff,
+            &[
+                "range-diff",
+                "--no-color",
+                "--no-notes",
+                "--no-ext-diff",
+                "--no-textconv",
+            ],
+        ),
+        (GitOperation::RevListCount, &["rev-list", "--count"]),
+        (GitOperation::RevParse, &["rev-parse"]),
+        (GitOperation::ReadTree, &["read-tree"]),
+        (GitOperation::AddAll, &["add", "--all"]),
+        (GitOperation::WriteTree, &["write-tree"]),
+        (GitOperation::CommitTree, &["commit-tree"]),
+        (GitOperation::CheckoutIndex, &["checkout-index", "--all"]),
+        (
+            GitOperation::ConfigPath,
+            &["config", "--null", "--path", "--get"],
+        ),
+        (
+            GitOperation::ConfigBool,
+            &["config", "--null", "--bool", "--get"],
+        ),
+        (GitOperation::ListIndex, &["ls-files", "-t", "-z"]),
+        (GitOperation::Push, PUSH_ARGS),
+        (GitOperation::PushLocal, PUSH_ARGS),
+    ];
 
     #[test]
     fn only_a_setting_lookup_with_user_dirs_reads_the_developer_s_config() {

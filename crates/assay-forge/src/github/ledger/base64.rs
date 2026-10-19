@@ -8,7 +8,7 @@ const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 const PAD: u8 = b'=';
 
 /// `bytes` in padded standard base64, without line breaks.
-pub(super) fn encode(bytes: &[u8]) -> String {
+pub(in crate::github) fn encode(bytes: &[u8]) -> String {
     let mut encoded = String::with_capacity(bytes.len().div_ceil(3).saturating_mul(4));
     for chunk in bytes.chunks(3) {
         let (group, sextets) = match *chunk {

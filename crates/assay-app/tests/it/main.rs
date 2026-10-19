@@ -25,6 +25,11 @@ mod eval_run;
 mod exec_roots;
 mod gate;
 mod golden;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod lease_fakes;
+mod lease_grant;
+mod lease_lock;
+mod lease_slot;
 mod ledger_budget;
 mod ledger_cost;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns

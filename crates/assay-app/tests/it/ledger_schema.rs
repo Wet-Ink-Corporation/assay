@@ -1,17 +1,22 @@
 //! The ledger record schemas (`schemas/ledger-*-1.schema.json`) and the strict reader agree on
 //! the golden fixtures: each valid one passes both, each invalid one fails the schema where
 //! listed and is refused by the reader; and every record the writer produces passes its schema.
+//! The lease contracts (`ledger-lease`, `ledger-lock`, `ledger-grant`, #71) are commit messages
+//! of lease refs rather than files, checked the same way.
 
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 
 use assay_app::{
-    CommandRecord, CommentId, CostKind, LedgerPath, PrState, PushDraft, UserId, append_command,
-    append_cost, append_push, read_commands, read_costs, read_pushes, read_state, update_state,
+    CommandRecord, CommentId, CostKind, GrantKey, LeaseRef, LedgerPath, LockRequest, PrState,
+    PushDraft, RetryGrant, Role, Slot, UserId, acquire_lock, acquire_slot, append_command,
+    append_cost, append_push, consume_grant, grant_retry, read_commands, read_costs, read_pushes,
+    read_slots, read_state, update_state,
 };
 use serde_json::Value;
 
+use crate::lease_fakes::{MemoryRefs, slot_request};
 use crate::ledger_fakes::{MemoryLedger, at, commit, cost, digest, id, run};
 use crate::support::{schema, schemas_dir};
 
@@ -79,9 +84,51 @@ fn reader_accepts(contract: &str, bytes: &[u8]) -> Result<bool, Box<dyn Error>> 
                 MemoryLedger::default().with_file(&LedgerPath::state(id(42), id(7)), bytes);
             read_state(&ledger, id(42), id(7)).is_ok()
         }
+        "ledger-lease" | "ledger-lock" | "ledger-grant" => lease_reader_accepts(contract, bytes)?,
         other => return Err(format!("no reader for {other}").into()),
     };
     Ok(accepted)
+}
+
+/// Whether the lease reader of `contract` accepts `bytes` as the message of its ref: slot-0, the
+/// lock of head `bbbb…` in repository 42, or the `security` grant of PR 7 on that head.
+fn lease_reader_accepts(contract: &str, bytes: &[u8]) -> Result<bool, Box<dyn Error>> {
+    let message = std::str::from_utf8(bytes)?;
+    let refs = MemoryRefs::default();
+    let before = at("2026-10-12T09:00:00.000Z");
+    Ok(match contract {
+        "ledger-lease" => {
+            let slot = Slot::new(0).ok_or("slot 0")?;
+            refs.holding(LeaseRef::slot(slot).as_str(), message);
+            read_slots(&refs, before).is_ok_and(|views| views.len() == 1)
+        }
+        "ledger-lock" => {
+            refs.holding(
+                LeaseRef::publish_lock(id(42), &commit('b')).as_str(),
+                message,
+            );
+            let request = LockRequest {
+                run_uid: run(1),
+                repo: "acme/widgets".to_owned(),
+                head: commit('b'),
+            };
+            acquire_lock(&refs, &request, before).is_ok()
+        }
+        _ => {
+            let key = GrantKey {
+                repo_id: id(42),
+                pr: id(7),
+                head_sha: commit('b'),
+                role: Role::Security,
+            };
+            refs.holding(
+                LeaseRef::retry_grant(key.repo_id, key.pr, &key.head_sha, key.role).as_str(),
+                message,
+            );
+            consume_grant(&refs, &key)
+                .is_ok_and(|consumed| consumed != assay_app::Consumed::NoGrant)
+        }
+    })
 }
 
 /// Checks every fixture of `contract`: valid ones pass schema and reader; invalid ones fail the
@@ -171,6 +218,81 @@ fn the_state_fixtures_pass_or_fail_schema_and_reader_alike() -> Result<(), Box<d
             ("unknown-llm", "/evidence_records/0/llm", "enum"),
         ],
     )
+}
+
+#[test]
+fn the_lease_fixtures_pass_or_fail_schema_and_reader_alike() -> Result<(), Box<dyn Error>> {
+    check(
+        "ledger-lease",
+        &[
+            ("inexact-aeu", "/reserved_aeu", "pattern"),
+            ("second-precision", "/expires_at", "pattern"),
+            ("unknown-field", "", "additionalProperties"),
+            ("unknown-version", "/schema", "const"),
+        ],
+    )
+}
+
+#[test]
+fn the_lock_fixtures_pass_or_fail_schema_and_reader_alike() -> Result<(), Box<dyn Error>> {
+    check(
+        "ledger-lock",
+        &[
+            ("missing-expiry", "", "required"),
+            ("short-head", "/head_sha", "pattern"),
+            ("unknown-field", "", "additionalProperties"),
+        ],
+    )
+}
+
+#[test]
+fn the_grant_fixtures_pass_or_fail_schema_and_reader_alike() -> Result<(), Box<dyn Error>> {
+    check(
+        "ledger-grant",
+        &[
+            ("unknown-field", "", "additionalProperties"),
+            ("unknown-role", "/role", "enum"),
+            ("zero-pr", "/pr", "minimum"),
+        ],
+    )
+}
+
+#[test]
+fn every_lease_the_writer_produces_passes_its_schema() -> Result<(), Box<dyn Error>> {
+    let refs = MemoryRefs::default();
+    let now = at("2026-10-12T09:30:00.000Z");
+    acquire_slot(&refs, &slot_request(1), now)?;
+    let lock = LockRequest {
+        run_uid: run(2),
+        repo: "acme/widgets".to_owned(),
+        head: commit('b'),
+    };
+    acquire_lock(&refs, &lock, now)?;
+    let grant = RetryGrant {
+        run_uid: run(3),
+        repo: "acme/widgets".to_owned(),
+        pr: id(7),
+        head_sha: commit('b'),
+        role: Role::CombinedMicro,
+        at: now,
+    };
+    grant_retry(&refs, &grant)?;
+
+    let mut checked = 0_usize;
+    for name in refs.names() {
+        let stem = match name.split('/').nth(2) {
+            Some(leaf) if leaf.starts_with("slot-") => "ledger-lease-1",
+            Some(leaf) if leaf.starts_with("lock-") => "ledger-lock-1",
+            Some("retry") => "ledger-grant-1",
+            _ => return Err(format!("unexpected ref {name}").into()),
+        };
+        let (_, message) = refs.get(&name).ok_or("the ref was listed")?;
+        let document: Value = serde_json::from_str(&message)?;
+        assert_eq!(violations(stem, &document)?, [], "{stem}: {document}");
+        checked += 1;
+    }
+    assert_eq!(checked, 3, "a slot lease, a lock and a grant");
+    Ok(())
 }
 
 /// Each line of `text` as JSON.

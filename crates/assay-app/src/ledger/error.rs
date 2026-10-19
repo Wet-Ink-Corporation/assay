@@ -106,6 +106,9 @@ pub enum Corruption {
     /// A second record with the key of an earlier one.
     #[error("a second record with the same key")]
     Duplicate,
+    /// A lease, lock or grant whose parts differ from those its ref is named by.
+    #[error("a lease of another ref")]
+    WrongRef,
     /// A push record whose `seq` is not one more than the previous one's (the first is 1).
     #[error("a push record out of sequence")]
     Sequence,
