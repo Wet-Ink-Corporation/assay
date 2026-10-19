@@ -53,9 +53,9 @@ use crate::contract::ContractValidator;
 use crate::decide::TierDegrade;
 use crate::events::EventSink;
 use crate::ledger::{
-    DeferralRecord, Ledger, LedgerRefs, LedgerTime, ParseLedgerTimeError, PrState, SlotRequest,
-    SlotView, StateUpdate, read_commands, read_costs, read_pushes, read_slots, read_state,
-    update_state,
+    DeferralRecord, Ledger, LedgerRefs, LedgerTime, ParseLedgerTimeError, PrState, PushKind,
+    SlotRequest, SlotView, StateUpdate, read_commands, read_costs, read_pushes, read_slots,
+    read_state, update_state,
 };
 use crate::publish::EvidenceRecord;
 use crate::replay::BundleSource;
@@ -326,9 +326,11 @@ where
             return Err(AdmitError::SuppressTooLarge { size: text.len() });
         }
         let (repo_id, pr) = (self.repo_id(), self.planned.pr);
+        // An opener record's sender opened the PR and is not a pusher (03 §6c).
         let pushers: BTreeSet<UserId> = read_pushes(self.ledger, repo_id, pr)
             .map_err(AdmitError::LedgerRead)?
             .into_iter()
+            .filter(|record| matches!(record.push.kind, PushKind::Push { .. }))
             .map(|record| record.push.sender_id)
             .collect();
         let records = read_commands(self.ledger, repo_id, pr).map_err(AdmitError::LedgerRead)?;

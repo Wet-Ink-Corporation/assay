@@ -2,24 +2,41 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:assay:schema:ledger-push:1",
   "title": "assay.ledger-push/1",
-  "description": "One line of a push file `pushes/<repo_id>/<pr>.jsonl` in the ledger repository (docs/architecture/06-operations.md §1, 02-architecture.md §5, 03-contracts.md §6c), appended by `open` on each `synchronize`. `seq` is 1 for the first line and one more on each next one (the pending stamp's `seq`); `at` is the push clock; one record per `run_uid`; `run_uid.repo_id` and `pr` are the file's. Unknown fields are rejected.",
+  "description": "One line of a push file `pushes/<repo_id>/<pr>.jsonl` in the ledger repository (docs/architecture/06-operations.md §1, 02-architecture.md §5, 03-contracts.md §6c), appended by `open`: an `opener` record for `opened` (the head the PR arrived with; its sender is the opener, never a pusher, and it has no `before` and is never `forced`) and a `push` record for each `synchronize` (with `before`). `seq` is 1 for the first line and one more on each next one (the pending stamp's `seq`); `at` is the push clock; one record per `run_uid`; `run_uid.repo_id` and `pr` are the file's. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "run_uid", "pr", "seq", "before", "after", "sender_id", "forced", "at"],
+  "required": ["schema", "run_uid", "pr", "seq", "kind", "after", "sender_id", "forced", "at"],
   "properties": {
     "schema": { "const": "assay.ledger-push/1" },
     "run_uid": { "$ref": "#/$defs/runUid" },
     "pr": { "$ref": "#/$defs/id" },
     "seq": { "$ref": "#/$defs/id" },
+    "kind": {
+      "description": "`opener` for `opened`, `push` for `synchronize` (04 §5).",
+      "enum": ["opener", "push"]
+    },
     "before": { "$ref": "#/$defs/sha" },
     "after": { "$ref": "#/$defs/sha" },
     "sender_id": {
-      "description": "Who pushed, by numeric GitHub id; a pusher is never an eligible approver (P10).",
+      "description": "Who sent the event, by numeric GitHub id: a pusher is never an eligible approver (P10); an opener is not a pusher.",
       "$ref": "#/$defs/id"
     },
     "forced": { "type": "boolean" },
     "at": { "$ref": "#/$defs/time" }
   },
+  "allOf": [
+    {
+      "if": { "required": ["kind"], "properties": { "kind": { "const": "push" } } },
+      "then": { "required": ["before"] }
+    },
+    {
+      "if": { "required": ["kind"], "properties": { "kind": { "const": "opener" } } },
+      "then": {
+        "not": { "required": ["before"] },
+        "properties": { "forced": { "const": false } }
+      }
+    }
+  ],
   "$defs": {
     "id": { "type": "integer", "minimum": 1 },
     "runUid": {

@@ -6,8 +6,8 @@ use std::error::Error;
 
 use assay_app::{
     Appended, CommandRecord, CommentId, Corruption, LedgerPath, LedgerReadError, LedgerWriteError,
-    PushAppended, PushDraft, PushRecord, UserId, WriteOutcome, append_command, append_push,
-    read_commands, read_pushes,
+    PushAppended, PushDraft, PushKind, PushRecord, UserId, WriteOutcome, append_command,
+    append_push, read_commands, read_pushes,
 };
 
 use crate::ledger_fakes::{MemoryLedger, at, commit, digest, id, run};
@@ -24,10 +24,12 @@ fn push(run_id: u64, when: &str) -> PushDraft {
     PushDraft {
         run_uid: run(run_id),
         pr: id(7),
-        before: commit('a'),
+        kind: PushKind::Push {
+            before: commit('a'),
+            forced: false,
+        },
         after: commit('b'),
         sender_id: UserId(id(1001)),
-        forced: false,
         at: at(when),
     }
 }
@@ -36,8 +38,8 @@ fn push_line(run_id: u64, seq: u64, when: &str) -> String {
     format!(
         concat!(
             r#"{{"schema":"assay.ledger-push/1","run_uid":{{"repo_id":42,"run_id":{run_id},"#,
-            r#""run_attempt":1}},"pr":7,"seq":{seq},"before":"{before}","after":"{after}","#,
-            r#""sender_id":1001,"forced":false,"at":"{when}"}}"#,
+            r#""run_attempt":1}},"pr":7,"seq":{seq},"kind":"push","before":"{before}","#,
+            r#""after":"{after}","sender_id":1001,"forced":false,"at":"{when}"}}"#,
             "\n"
         ),
         run_id = run_id,

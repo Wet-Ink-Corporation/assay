@@ -10,8 +10,8 @@ use std::num::NonZeroU64;
 
 use assay_app::{
     AdmitError, Carry, CarryReset, CarrySet, CommandRecord, CommentId, CommentNow, EvidencePointer,
-    LedgerPath, MAX_SUPPRESS_BYTES, PlanDocument, PriorCarryError, PushDraft, Sha256Digest, UserId,
-    append_command, append_push,
+    LedgerPath, MAX_SUPPRESS_BYTES, PlanDocument, PriorCarryError, PushDraft, PushKind,
+    Sha256Digest, UserId, append_command, append_push,
 };
 use assay_domain::{RunUid, Severity};
 use serde_json::{Value, json};
@@ -171,19 +171,35 @@ fn command(id: u64, actor: u64, body: &str) -> (CommandRecord, CommentNow) {
 /// The ledger and comment store hold `dismiss` from the owner (comment 1) and from each identity
 /// or comment state that voids it: the author (2), an agent (3), an edit (4), a deletion (5), a
 /// changed body (6) and a pusher (7); and the owner's `/assay recheck` (8). Every one of them is
-/// a privileged identity.
+/// a privileged identity. The owner's opener record does not make the owner a pusher.
 fn dismissals_of_every_kind(world: &mut World, dismiss: &str) -> Result<(), Box<dyn Error>> {
     world.identities.privileged =
         BTreeSet::from([OWNER, AUTHOR, AGENT, PUSHER].map(|id| UserId(nz(id))));
     append_push(
         &world.ledger,
         &PushDraft {
+            run_uid: RunUid {
+                run_id: nz(5),
+                ..this_run(1)
+            },
+            pr: nz(PR),
+            kind: PushKind::Opener,
+            after: "a".repeat(40).parse()?,
+            sender_id: UserId(nz(OWNER)),
+            at: at("2026-10-19T08:00:00.000Z"),
+        },
+    )?;
+    append_push(
+        &world.ledger,
+        &PushDraft {
             run_uid: this_run(1),
             pr: nz(PR),
-            before: "a".repeat(40).parse()?,
+            kind: PushKind::Push {
+                before: "a".repeat(40).parse()?,
+                forced: false,
+            },
             after: "b".repeat(40).parse()?,
             sender_id: UserId(nz(PUSHER)),
-            forced: false,
             at: at("2026-10-19T09:00:00.000Z"),
         },
     )?;
