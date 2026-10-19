@@ -6,8 +6,9 @@
 //! `assay-decide-<nonce>` and listed for the pointer's run of this repository. It is downloaded
 //! with `gh run download`, which extracts it into a scratch directory and is killed once that
 //! directory holds more than the limit (an extraction past it is [`StoredBundle::TooLarge`]),
-//! and the one file in it is read under the limit. The sha256 against the pointer, the run inside the bundle and its shape
-//! are `assay-app`'s checks; this adapter refuses anything ambiguous before them (wi-b5affa).
+//! and the one file in it is read under the limit. The sha256 against the pointer, the run
+//! inside the bundle and its shape are `assay-app`'s checks; this adapter refuses anything
+//! ambiguous before them (wi-b5affa).
 
 use std::fs::{self, File};
 use std::io::{self, Read};

@@ -284,8 +284,10 @@ fn a_bundle_that_does_not_hash_to_its_pointer_is_refused_after_its_download()
 #[test]
 fn each_missing_or_invalid_variable_is_named_before_gh_runs() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new(OWNERS)?;
-    // Each invalid value is distinctive, so its absence from the message is meaningful.
+    // Each non-empty invalid value is distinctive, so its absence from the message is
+    // meaningful.
     let cases = [
+        ("ASSAY_GITHUB_TOKEN", ""),
         ("ASSAY_GITHUB_TOKEN", "ghs_not a-token"),
         ("ASSAY_VERDICT_APP_ID", "00"),
         ("ASSAY_VERDICT_APP_ID", "+5"),
@@ -306,11 +308,13 @@ fn each_missing_or_invalid_variable_is_named_before_gh_runs() -> Result<(), Box<
                 "{value:?}: {}",
                 outcome.stderr
             );
-            assert!(
-                !outcome.stderr.contains(value),
-                "{value:?} is shown: {}",
-                outcome.stderr
-            );
+            if !value.is_empty() {
+                assert!(
+                    !outcome.stderr.contains(value),
+                    "{value:?} is shown: {}",
+                    outcome.stderr
+                );
+            }
         }
     }
     assert_eq!(scene.calls()?, Vec::<String>::new());

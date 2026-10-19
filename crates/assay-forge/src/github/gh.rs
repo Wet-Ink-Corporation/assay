@@ -16,7 +16,7 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
@@ -200,12 +200,16 @@ pub struct GhApi<R> {
     token: GhToken,
     environment: GhEnvironment,
     config: TempDir,
+    /// `<config>/tmp`, gh's `TMPDIR`: a temporary file gh leaves behind when it is killed
+    /// (`gh run download`'s zip) stays inside the directory [`close`](Self::close) removes.
+    tmp: PathBuf,
     timeout: Duration,
 }
 
 impl<R> GhApi<R> {
     /// gh at the absolute path `program`, run by `runner` with `token` and the variables of
-    /// `environment`, in a new scratch configuration directory.
+    /// `environment`, in a new scratch configuration directory, with a mode-0700 `tmp/` inside
+    /// it as gh's `TMPDIR`.
     ///
     /// Each request has [`GH_TIMEOUT`] unless [`with_timeout`](Self::with_timeout) sets
     /// another. Dropping the transport removes the directory too; [`close`](Self::close)
@@ -214,7 +218,7 @@ impl<R> GhApi<R> {
     /// # Errors
     ///
     /// [`GhSetupError::RelativeProgram`] when `program` is not absolute,
-    /// [`GhSetupError::ConfigDir`] when the directory cannot be created.
+    /// [`GhSetupError::ConfigDir`] when the directory or its `tmp/` cannot be created.
     pub fn new(
         runner: R,
         program: impl Into<PathBuf>,
@@ -230,12 +234,18 @@ impl<R> GhApi<R> {
             .permissions(fs::Permissions::from_mode(0o700))
             .tempdir()
             .map_err(GhSetupError::ConfigDir)?;
+        let tmp = config.path().join("tmp");
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&tmp)
+            .map_err(GhSetupError::ConfigDir)?;
         Ok(Self {
             runner,
             program,
             token,
             environment,
             config,
+            tmp,
             timeout: GH_TIMEOUT,
         })
     }
@@ -256,7 +266,7 @@ impl<R> GhApi<R> {
     }
 
     /// gh's whole environment, the same for every call: the token, the fixed switches, the
-    /// scratch configuration directory, then what [`GhEnvironment`] passes on.
+    /// scratch configuration directory and its `tmp/`, then what [`GhEnvironment`] passes on.
     fn env(&self) -> Vec<(&'static str, &OsStr)> {
         let mut env = vec![
             ("GH_TOKEN", OsStr::new(&self.token.0)),
@@ -265,6 +275,7 @@ impl<R> GhApi<R> {
             ("NO_COLOR", OsStr::new("1")),
             ("GH_NO_UPDATE_NOTIFIER", OsStr::new("1")),
             ("GH_CONFIG_DIR", self.config.path().as_os_str()),
+            ("TMPDIR", self.tmp.as_os_str()),
         ];
         env.extend(self.environment.vars());
         env

@@ -123,6 +123,7 @@ printf 'HTTP/2.0 201 Created\nX-Test: yes\r\n\r\n{"id":1}'
     assert_eq!(gh.record("stdin")?, r#"{"name":"assay"}"#);
     let env = gh.env()?;
     let config = env.get("GH_CONFIG_DIR").ok_or("GH_CONFIG_DIR is set")?;
+    let tmp = format!("{config}/tmp");
     let expected = [
         ("GH_CONFIG_DIR", config.as_str()),
         ("GH_HOST", "github.com"),
@@ -131,6 +132,7 @@ printf 'HTTP/2.0 201 Created\nX-Test: yes\r\n\r\n{"id":1}'
         ("GH_TOKEN", "ghs_test"),
         ("NO_COLOR", "1"),
         ("SSL_CERT_DIR", "/etc/ssl/certs"),
+        ("TMPDIR", tmp.as_str()),
     ];
     assert!(
         env.iter()
@@ -266,6 +268,45 @@ fn run_seven() -> Result<RunUid, Box<dyn Error>> {
         run_id: NonZeroU64::new(7).ok_or("non-zero")?,
         run_attempt: NonZeroU64::MIN,
     })
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+fn a_temporary_zip_gh_leaves_when_killed_stays_in_the_scratch_directory()
+-> Result<(), Box<dyn Error>> {
+    // As gh does: the zip goes to `$TMPDIR`, removed by a defer a kill never runs.
+    let gh = FakeGh::new(
+        r#"if [ "$1" = run ]; then
+  while [ $# -gt 0 ]; do
+    if [ "$1" = --dir ]; then dest="$2"; fi
+    shift
+  done
+  zip="$TMPDIR/gh-artifact.1.zip"
+  printf 'PK' > "$zip"
+  printf '%s' "$zip" > "$dir/zip"
+  printf '%s' "$GH_CONFIG_DIR" > "$dir/config"
+  exec /bin/cat /dev/zero > "$dest/run-inputs.json"
+fi
+printf 'HTTP/2.0 200 OK\n\r\n{"total_count":1,"artifacts":[{"name":"assay-decide-0123456789abcdef0123456789abcdef","size_in_bytes":40,"expired":false,"workflow_run":{"id":7,"repository_id":5}}]}'
+"#,
+    )?;
+    let github = bundle_store(&gh, GhEnvironment::default())?;
+
+    let fetched = github.fetch(run_seven()?, "run-inputs.json", 1024)?;
+
+    assert_eq!(fetched, StoredBundle::TooLarge);
+    let zip = PathBuf::from(gh.record("zip")?);
+    let config = PathBuf::from(gh.record("config")?);
+    assert!(
+        zip.starts_with(&config),
+        "{} is under {}",
+        zip.display(),
+        config.display()
+    );
+    assert!(zip.exists(), "the kill left the zip behind");
+    github.into_api().into_transport().close()?;
+    assert!(!zip.exists(), "close removes it with the scratch directory");
+    Ok(())
 }
 
 #[test]

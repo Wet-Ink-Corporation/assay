@@ -143,6 +143,7 @@ fn a_read_runs_gh_api_with_exactly_its_arguments_and_environment() -> TestResult
             ("NO_COLOR".to_owned(), OsString::from("1")),
             ("GH_NO_UPDATE_NOTIFIER".to_owned(), OsString::from("1")),
             ("GH_CONFIG_DIR".to_owned(), ran.cwd.as_os_str().to_owned()),
+            ("TMPDIR".to_owned(), ran.cwd.join("tmp").into_os_string()),
         ]
     );
     assert!(ran.cwd_was_a_directory, "{}", ran.cwd.display());
@@ -208,6 +209,7 @@ fn only_the_proxy_and_certificate_variables_pass_through() -> TestResult {
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_os_str()))
         .collect();
+    let tmp = ran.cwd.join("tmp");
     assert_eq!(
         pairs,
         [
@@ -217,6 +219,7 @@ fn only_the_proxy_and_certificate_variables_pass_through() -> TestResult {
             ("NO_COLOR", OsStr::new("1")),
             ("GH_NO_UPDATE_NOTIFIER", OsStr::new("1")),
             ("GH_CONFIG_DIR", ran.cwd.as_os_str()),
+            ("TMPDIR", tmp.as_os_str()),
             ("HTTPS_PROXY", OsStr::new("http://proxy:3128")),
             ("no_proxy", OsStr::new("localhost")),
             ("SSL_CERT_FILE", OsStr::new("/etc/ssl/ca.pem")),
