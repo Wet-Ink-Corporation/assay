@@ -128,3 +128,25 @@ fn a_grant_of_an_unknown_role_is_refused() {
         "{consumed:?}"
     );
 }
+
+#[test]
+fn a_grant_its_reader_would_refuse_writes_nothing() {
+    let refs = MemoryRefs::default();
+    let grant = RetryGrant {
+        repo: "acme/..".to_owned(),
+        ..grant(1)
+    };
+
+    let granted = grant_retry(&refs, &grant);
+
+    assert!(
+        matches!(
+            granted,
+            Err(LeaseError::Invalid {
+                problem: Corruption::Field("repo")
+            })
+        ),
+        "{granted:?}"
+    );
+    assert_eq!(refs.calls(), []);
+}

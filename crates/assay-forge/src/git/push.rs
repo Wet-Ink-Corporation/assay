@@ -170,10 +170,13 @@ impl ObjectRepo {
     /// # Errors
     ///
     /// [`GitError::Failed`] when the push fails for any other reason than the lease check (the
-    /// remote refused the deletion, could not be reached or the credential was refused), with
-    /// the deletion then not made; [`GitError::Malformed`] when git reported success without
-    /// reporting the deletion; [`GitError::Process`] when it could not be run to completion,
-    /// after which the ref may or may not have been deleted.
+    /// remote refused the deletion, could not be reached or the credential was refused). The
+    /// deletion is then usually not made, but git can also exit non-zero after reporting the
+    /// ref deleted, and that is reported as `Failed` too (fail closed, not mapped to
+    /// [`DeleteOutcome::Deleted`]): a caller treats the ref as possibly deleted.
+    /// [`GitError::Malformed`] when git reported success without reporting the deletion;
+    /// [`GitError::Process`] when it could not be run to completion, after which the ref may or
+    /// may not have been deleted.
     pub fn delete_ref_if(
         &self,
         remote: &PushRemote,

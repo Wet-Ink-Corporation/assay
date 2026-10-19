@@ -69,6 +69,10 @@ pub enum LockAcquired {
 /// Takes the publish lock of `request.head` at `now`, for [`LOCK_TTL`]: creates its ref, and when
 /// it is held by an expired lease, reaps that by compare-and-set and creates it once more.
 ///
+/// A lock held by a live lease of `request.run_uid` is this run's already (an earlier creation
+/// landed though its answer was lost, wi-d55bfe): it is returned held, with the lease its ref
+/// carries.
+///
 /// # Errors
 ///
 /// [`LeaseError::Invalid`] when the lease would break its contract, [`LeaseError::Corrupt`] when
@@ -95,10 +99,14 @@ pub fn acquire_lock<R: LedgerRefs>(
         name: &name,
         message: &message,
         now,
+        holder: request.run_uid,
     };
     let taken = take(refs, attempt, read)?;
     Ok(match taken.held {
-        Some(lock_commit) => LockAcquired::Held(LockHold { lock_commit, lease }),
+        Some(held) => {
+            let (lock_commit, lease) = held.into_parts(lease);
+            LockAcquired::Held(LockHold { lock_commit, lease })
+        }
         None => LockAcquired::Busy,
     })
 }
@@ -122,6 +130,10 @@ pub fn release_lock<R: LedgerRefs>(
 impl Expiring for LockLease {
     fn expires_at(&self) -> LedgerTime {
         self.expires_at
+    }
+
+    fn holder(&self) -> RunUid {
+        self.run_uid
     }
 }
 
