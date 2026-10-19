@@ -275,6 +275,39 @@ fn a_compare_and_set_with_the_read_stamp_writes() {
 }
 
 #[test]
+fn opens_restamp_of_an_existing_check_never_sends_started_at() {
+    let recorded = Recorded::default()
+        .ok(
+            Method::Get,
+            &path("check-runs/117798470001"),
+            fixture("check_run_app.json"),
+        )
+        .ok(
+            Method::Patch,
+            &path("check-runs/117798470001"),
+            fixture("check_run_app.json"),
+        );
+    let waits = Waits::default();
+
+    let written = github(&recorded, &waits).update_check_if(
+        app_check().id,
+        "pending:39168909542:3",
+        &pending(),
+    );
+
+    assert_eq!(written.expect("written"), ());
+    let Some(Some(Value::Object(body))) = write_bodies(&recorded).into_iter().next() else {
+        panic!("one PATCH with a JSON object body");
+    };
+    let keys: Vec<&str> = body.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        ["external_id", "output", "status"],
+        "no started_at, so the check keeps the one GitHub set at creation (R3-07)"
+    );
+}
+
+#[test]
 fn an_empty_expected_stamp_is_refused_unasked() {
     let recorded = Recorded::default();
     let waits = Waits::default();

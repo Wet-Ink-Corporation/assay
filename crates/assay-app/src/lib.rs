@@ -21,6 +21,7 @@ mod gate;
 mod golden;
 mod ledger;
 mod model_runner;
+mod open;
 mod plan;
 mod preflight;
 mod prompt_bundle;
@@ -113,6 +114,10 @@ pub use ledger::{
 pub use model_runner::{
     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
     PromptError, RateLimitObserved, RetryError, Structured, run_with_retry,
+};
+pub use open::{
+    MAX_LOCK_RETRIES, OpenClock, OpenError, OpenFailure, OpenOutcome, OpenPorts, OpenRequest,
+    OpenStep, OpenTrigger, Opened, PendingStamp, PushEvent, ReopenRefused, Stamped, open,
 };
 pub use plan::{
     ArtifactJob, ArtifactNonce, BaseConfigError, ChangedFiles, EntryKind, EvidenceKey,
