@@ -271,6 +271,8 @@ pub enum CheckConclusion {
     Failure,
     /// `neutral`: an owner override.
     Neutral,
+    /// `cancelled`: written only by the reconcile, on a superseded head's check (06 §4).
+    Cancelled,
 }
 
 /// The App's summary comment on a PR.

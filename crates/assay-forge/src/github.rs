@@ -3,8 +3,8 @@
 //!
 //! [`GitHub`] implements `assay-app`'s [`Forge`](assay_app::Forge),
 //! [`VerdictForge`](assay_app::VerdictForge), [`CommentForge`](assay_app::CommentForge),
-//! [`StatusForge`](assay_app::StatusForge) and [`PullRequestState`](assay_app::PullRequestState)
-//! for one repository. [`Api::mint_installation_token`] mints the narrowed token a job's
+//! [`StatusForge`](assay_app::StatusForge), [`PullRequestState`](assay_app::PullRequestState)
+//! and [`ReconcileForge`](assay_app::ReconcileForge) for one repository. [`Api::mint_installation_token`] mints the narrowed token a job's
 //! [`GitHub`] is built with. Every response is decoded into a wire DTO and converted, and data
 //! the adapter cannot read exactly is refused ([`ForgeError`], wi-b5affa).
 
@@ -20,6 +20,7 @@ mod ledger_refs;
 mod ports;
 mod pulls;
 mod reads;
+mod reconcile;
 mod repository;
 mod status;
 mod token;
