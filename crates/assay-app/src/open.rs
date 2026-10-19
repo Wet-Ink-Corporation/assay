@@ -1,7 +1,7 @@
 //! The `open` use case (S0, 04 §1, 06 §4.1): the single App verdict check for (head, name),
 //! found or created and stamped `in_progress` with `pending:<run_id>:<seq>` under the per-head
-//! publish lock, after the push record of a `synchronize` is in the ledger (02 §5, R3-07,
-//! R3-09, R3-21).
+//! publish lock, after the opener record of an `opened` or the push record of a `synchronize`
+//! is in the ledger (02 §5, R3-07, R3-09, R3-21).
 //!
 //! `open` holds no `contents` permission and reads no PR content (05 §4): it calls only
 //! [`Forge::find_or_create_check`] and [`Forge::update_check_if`], the push records of the
@@ -18,7 +18,7 @@ use crate::config::CommitId;
 use crate::forge::Forge;
 use crate::ledger::{
     LeaseError, Ledger, LedgerReadError, LedgerRefs, LedgerTime, LedgerWriteError, LockAcquired,
-    LockHold, LockRequest, PushAppended, PushDraft, Released, acquire_lock, append_push,
+    LockHold, LockRequest, PushAppended, PushDraft, PushKind, Released, acquire_lock, append_push,
     read_pushes, release_lock,
 };
 use crate::publish::{CheckName, CheckRunId, Unlock};
@@ -47,14 +47,17 @@ pub trait OpenClock {
     fn pause(&self, retry: u8);
 }
 
-/// The event behind the workflow run, as far as `open` acts on it. Only a push records
-/// anything in the ledger (R3-07); the composition root refuses any other event.
+/// The event behind the workflow run, as far as `open` acts on it.
+///
+/// Only `opened` (an opener record) and `synchronize` (a push record) write to the ledger
+/// (R3-07); the composition root refuses any other event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenTrigger {
-    /// `pull_request_target` `opened`. Its sender is the opener, never a pusher; recording the
-    /// opener needs a contract change to `assay.ledger-push/1` (03 §6c), so for now it records
-    /// nothing.
-    Opened,
+    /// `pull_request_target` `opened`: the head is the one the PR arrived with.
+    Opened {
+        /// The event's sender: the opener, never a pusher.
+        sender: UserId,
+    },
     /// `pull_request_target` `synchronize`: a push to the PR's head branch.
     Synchronize(PushEvent),
     /// `pull_request_target` `reopened`.
@@ -123,7 +126,7 @@ pub struct Opened<F, R> {
     pub stamp: PendingStamp,
     /// What was written to the check.
     pub stamped: Stamped<F>,
-    /// The push record, for a `synchronize`.
+    /// The opener record of an `opened` or the push record of a `synchronize`.
     pub push: Option<PushAppended>,
     /// What became of the publish lock.
     pub unlock: Unlock<LeaseError<R>>,
@@ -184,7 +187,7 @@ pub enum OpenError<F, L, R, C> {
         /// The attempt.
         attempt: NonZeroU64,
     },
-    /// The push record of a `synchronize` could not be appended; no lock or check was touched.
+    /// The opener or push record could not be appended; no lock or check was touched.
     #[error("the push record could not be appended to the ledger")]
     Push(#[source] LedgerWriteError<L>),
     /// The PR's push records could not be read for the stamp's number; no lock or check was
@@ -251,8 +254,9 @@ pub type OpenOutcome<F, L, R, C> =
 
 /// Opens the verdict check of `request.head` for this run (S0).
 ///
-/// In order: a re-run is refused before any port call; a `synchronize` appends its push record
-/// (any other event reads the latest record's number); the publish lock is taken, retried
+/// In order: a re-run is refused before any port call; an `opened` appends its opener record and
+/// a `synchronize` its push record (any other event reads the latest record's number); the
+/// publish lock is taken, retried
 /// [`MAX_LOCK_RETRIES`] times when busy; under it the check is found or created and stamped
 /// (see [`Stamped`]); the lock is released by compare-and-set. Forge calls are retried by the
 /// adapter; `open` aborts on the error it returns.
@@ -301,32 +305,44 @@ pub fn open<F: Forge, L: Ledger, R: LedgerRefs, C: OpenClock>(
 
 /// The push record a run appended, if any, and the number its stamp carries.
 struct Recorded {
-    /// The record of a `synchronize`.
+    /// The record of an `opened` or a `synchronize`.
     push: Option<PushAppended>,
     /// The number of the PR's latest push record, 0 when there is none.
     seq: u64,
 }
 
-/// Appends the push record of a `synchronize`; any other event only reads the PR's push
-/// records for the latest number.
+/// Appends the opener record of an `opened` or the push record of a `synchronize`; any other
+/// event only reads the PR's push records for the latest number.
 fn record_push<L: Ledger, F, R, C>(
     request: &OpenRequest<'_>,
     ledger: &L,
 ) -> Result<Recorded, OpenError<F, L::Error, R, C>> {
-    let OpenTrigger::Synchronize(event) = request.trigger else {
-        let records =
-            read_pushes(ledger, request.run_uid.repo_id, request.pr).map_err(OpenError::Pushes)?;
-        let seq = records.last().map_or(0, |record| record.seq.get());
-        return Ok(Recorded { push: None, seq });
+    // The draft stores its own commits; the request keeps its.
+    let (kind, sender_id) = match request.trigger {
+        OpenTrigger::Opened { sender } => (PushKind::Opener, *sender),
+        OpenTrigger::Synchronize(event) => (
+            PushKind::Push {
+                before: event.before.clone(),
+                forced: event.forced,
+            },
+            event.sender,
+        ),
+        OpenTrigger::Reopened
+        | OpenTrigger::ReadyForReview
+        | OpenTrigger::Edited
+        | OpenTrigger::Dispatch => {
+            let records = read_pushes(ledger, request.run_uid.repo_id, request.pr)
+                .map_err(OpenError::Pushes)?;
+            let seq = records.last().map_or(0, |record| record.seq.get());
+            return Ok(Recorded { push: None, seq });
+        }
     };
-    // The draft is stored as the record's push; the request keeps its own commits.
     let draft = PushDraft {
         run_uid: request.run_uid,
         pr: request.pr,
-        before: event.before.clone(),
+        kind,
         after: request.head.clone(),
-        sender_id: event.sender,
-        forced: event.forced,
+        sender_id,
         at: request.run_created_at,
     };
     let appended = append_push(ledger, &draft).map_err(OpenError::Push)?;

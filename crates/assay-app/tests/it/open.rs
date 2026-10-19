@@ -1,11 +1,11 @@
 //! `open` (S0, 04 §1, 06 §4.1): the single App verdict check per head, stamped
-//! `pending:<run_id>:<seq>` under the per-head publish lock, and the push record on
-//! `synchronize` only (R3-05, R3-07, R3-09, R3-21).
+//! `pending:<run_id>:<seq>` under the per-head publish lock, the opener record on `opened` and
+//! the push record on `synchronize` only (R3-05, R3-07, R3-09, R3-21).
 
 use assay_app::{
     CheckConclusion, CheckState, CheckStatus, CommitId, LedgerPath, OpenError, OpenPorts,
-    OpenRequest, OpenStep, OpenTrigger, PendingStamp, PushAppended, PushEvent, ReopenRefused,
-    Stamped, Unlock, UserId, open,
+    OpenRequest, OpenStep, OpenTrigger, PendingStamp, PushAppended, PushEvent, PushKind,
+    ReopenRefused, Stamped, Unlock, UserId, open,
 };
 use assay_domain::RunUid;
 
@@ -40,8 +40,8 @@ fn push_line(run_id: u64, seq: u64, forced: bool) -> String {
     format!(
         concat!(
             r#"{{"schema":"assay.ledger-push/1","run_uid":{{"repo_id":42,"run_id":{run_id},"#,
-            r#""run_attempt":1}},"pr":7,"seq":{seq},"before":"{before}","after":"{after}","#,
-            r#""sender_id":1001,"forced":{forced},"at":"{when}"}}"#,
+            r#""run_attempt":1}},"pr":7,"seq":{seq},"kind":"push","before":"{before}","#,
+            r#""after":"{after}","sender_id":1001,"forced":{forced},"at":"{when}"}}"#,
             "\n"
         ),
         run_id = run_id,
@@ -49,6 +49,22 @@ fn push_line(run_id: u64, seq: u64, forced: bool) -> String {
         before = "a".repeat(40),
         after = "b".repeat(40),
         forced = forced,
+        when = CREATED,
+    )
+}
+
+/// The opener line of run `run_id` numbered `seq`, head `bbbb…`, by user 1001.
+fn opener_line(run_id: u64, seq: u64) -> String {
+    format!(
+        concat!(
+            r#"{{"schema":"assay.ledger-push/1","run_uid":{{"repo_id":42,"run_id":{run_id},"#,
+            r#""run_attempt":1}},"pr":7,"seq":{seq},"kind":"opener","after":"{after}","#,
+            r#""sender_id":1001,"forced":false,"at":"{when}"}}"#,
+            "\n"
+        ),
+        run_id = run_id,
+        seq = seq,
+        after = "b".repeat(40),
         when = CREATED,
     )
 }
@@ -435,9 +451,8 @@ fn a_synchronize_appends_its_push_with_the_runs_created_at() {
 }
 
 #[test]
-fn events_other_than_a_push_never_touch_the_push_records() {
+fn events_other_than_opened_and_a_push_never_touch_the_push_records() {
     for trigger in [
-        OpenTrigger::Opened,
         OpenTrigger::Reopened,
         OpenTrigger::ReadyForReview,
         OpenTrigger::Edited,
@@ -462,12 +477,38 @@ fn events_other_than_a_push_never_touch_the_push_records() {
 }
 
 #[test]
-fn an_opened_pr_with_no_push_record_is_stamped_number_zero() {
+fn an_opened_pr_records_its_sender_as_the_opener_with_the_runs_created_at() {
     let refs = MemoryRefs::default();
     let forge = FakeGitHub::new(&refs, &lock_ref());
     let ledger = MemoryLedger::default();
     let clock = FakeClock::reading(&[NOW]);
-    let case = Case::new(30, OpenTrigger::Opened);
+    let case = Case::new(
+        30,
+        OpenTrigger::Opened {
+            sender: UserId(id(1001)),
+        },
+    );
+
+    let opened = open(&case.request(), &ports(&forge, &ledger, &refs, &clock)).expect("opened");
+
+    assert_eq!(ledger.text(&pushes()), opener_line(30, 1));
+    let Some(PushAppended::Recorded(record)) = &opened.push else {
+        panic!("the opener was recorded: {:?}", opened.push);
+    };
+    assert_eq!(record.push.kind, PushKind::Opener);
+    assert_eq!(record.push.sender_id, UserId(id(1001)));
+    assert_eq!(record.push.after, commit('b'));
+    assert_eq!(record.push.at, at(CREATED));
+    assert_eq!(opened.stamp, PendingStamp::new(id(30), 1));
+}
+
+#[test]
+fn a_reopened_pr_with_no_push_record_is_stamped_number_zero() {
+    let refs = MemoryRefs::default();
+    let forge = FakeGitHub::new(&refs, &lock_ref());
+    let ledger = MemoryLedger::default();
+    let clock = FakeClock::reading(&[NOW]);
+    let case = Case::new(30, OpenTrigger::Reopened);
 
     let opened = open(&case.request(), &ports(&forge, &ledger, &refs, &clock)).expect("opened");
 
