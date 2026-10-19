@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:assay:schema:context-pack:1",
+  "title": "assay.context-pack/1",
+  "description": "The Z4 half of the context pack `admit` builds for the review job (docs/architecture/04-pipeline.md §1 S1a and §3, 02-architecture.md §2, 03-contracts.md §6d): the base suppress text, the owner-valid dismissals read from the ledger's command records, and the prior findings read from the previous run's bundle through the ledger's evidence pointer. Nothing in it comes from PR comment text. `admit` publishes its sha256 in its outputs. Unknown fields are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_uid", "run_key", "suppress", "dismissals", "prior"],
+  "properties": {
+    "schema": {
+      "const": "assay.context-pack/1"
+    },
+    "run_uid": {
+      "description": "The workflow run that admitted, (repo_id, run_id, run_attempt) (03 §4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_id", "run_id", "run_attempt"],
+      "properties": {
+        "repo_id": { "type": "integer", "minimum": 1 },
+        "run_id": { "type": "integer", "minimum": 1 },
+        "run_attempt": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "run_key": {
+      "description": "The run's evidence key (03 §4 `run_key`).",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "suppress": {
+      "description": "The base `.assay/suppress.toml` text as read at the pinned base, unparsed (03 §1 does not yet fix its format); null when the file does not exist. `admit` refuses one over 64 KiB.",
+      "type": ["string", "null"],
+      "maxLength": 65536
+    },
+    "dismissals": {
+      "description": "The owner-valid dismissals (04 §6, 05 T21): each from a command record `/assay dismiss <fp> <reason>` by a privileged identity that is no agent, author or pusher, whose comment still stands as recorded. In record order, at most 256.",
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["comment_id", "actor_id", "fp", "reason"],
+        "properties": {
+          "comment_id": { "type": "integer", "minimum": 1 },
+          "actor_id": { "type": "integer", "minimum": 1 },
+          "fp": { "$ref": "#/$defs/fingerprint" },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 256 }
+        }
+      }
+    },
+    "prior": {
+      "description": "The previous completed run's open findings, as its `assay.run-inputs/1` bundle carries them (03 §6a `carry.findings`), when the carry-over is kept; empty otherwise.",
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/carriedFinding" }
+    }
+  },
+  "$defs": {
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "line": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "carriedFinding": {
+      "description": "A finding open into this run, as `assay.run-inputs/1` writes it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fp", "file", "line", "class", "severity", "title", "evidence"],
+      "properties": {
+        "fp": { "$ref": "#/$defs/fingerprint" },
+        "file": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "line": { "$ref": "#/$defs/line" },
+        "end_line": { "$ref": "#/$defs/line" },
+        "class": {
+          "enum": [
+            "logic", "error-handling", "concurrency", "resource", "security", "api-design",
+            "layering", "tests", "docs", "compliance", "deps"
+          ]
+        },
+        "severity": { "enum": ["blocker", "major", "minor", "nit"] },
+        "verdict": { "enum": ["confirmed", "refuted", "unclear"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "trigger": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "evidence": { "type": "string", "minLength": 1, "maxLength": 400 }
+      }
+    }
+  }
+}

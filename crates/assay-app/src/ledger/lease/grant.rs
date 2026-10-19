@@ -159,6 +159,27 @@ pub fn consume_grant<R: LedgerRefs>(
     )
 }
 
+/// The grant `key` names, when one waits, read without consuming it: what `admit` reserves for
+/// before it takes a slot, so a run that is then deferred leaves the grant waiting.
+///
+/// # Errors
+///
+/// [`LeaseError::Corrupt`] when the grant cannot be read or names another ref, and
+/// [`LeaseError::Refs`] when the ref cannot be read.
+pub fn pending_grant<R: LedgerRefs>(
+    refs: &R,
+    key: &GrantKey,
+) -> Result<Option<RetryGrant>, LeaseError<R::Error>> {
+    let key = GrantKeyRef::of_key(key);
+    let name = key.name();
+    let Some(RefTip { message, .. }) = refs.read(&name).map_err(LeaseError::Refs)? else {
+        return Ok(None);
+    };
+    read_grant(&message, key)
+        .map(Some)
+        .map_err(|problem| LeaseError::Corrupt { name, problem })
+}
+
 /// The grant a commit message carries, exactly as assay writes it, refused unless its parts are
 /// those of `key`.
 fn read_grant(message: &str, key: GrantKeyRef<'_>) -> Result<RetryGrant, Corruption> {

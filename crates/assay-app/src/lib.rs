@@ -6,8 +6,10 @@
 //! Every versioned contract is validated on read through [`ContractValidator`]
 //! (`docs/architecture/03-contracts.md`). Base configuration is parsed into [`PluginsConfig`].
 
+mod admit;
 mod calendar;
 mod check;
+mod clock;
 mod config;
 mod contract;
 mod coordinate;
@@ -33,7 +35,14 @@ mod specialists;
 mod status;
 mod tiering;
 
+pub use admit::{
+    ADMISSIONS_PER_HOUR, Admission, AdmitError, AdmitFailure, AdmitPorts, AdmitRequest, Admitted,
+    AfterSlot, Budget, CommandComments, CommentNow, ContextPack, DAY_CAP, Deferred,
+    MAX_COMMENT_BYTES, MAX_DISMISSALS, MAX_SUPPRESS_BYTES, PlanDocument, SLOT_POLL, SLOT_POLLS,
+    Spend, Unwound, admit,
+};
 pub use calendar::{CalendarDate, CalendarDateError};
+pub use clock::Clock;
 pub use doctor::{
     CanaryProbe, CanaryRun, CanaryToken, Check, CheckFailure, CheckResult, DoctorError,
     DoctorReport, EXPIRY_WARNING_DAYS, ExpiryWarning, doctor, token_expiry_warning,
@@ -107,8 +116,8 @@ pub use ledger::{
     RefCreation, RefDeletion, RefTip, Released, RetryGrant, RoleCost, SLOT_TTL, Slot, SlotAcquired,
     SlotAcquisition, SlotHold, SlotLease, SlotRequest, SlotView, StateUpdate, WriteCondition,
     WriteOutcome, acquire_lock, acquire_slot, append_command, append_cost, append_push,
-    consume_grant, grant_retry, read_commands, read_costs, read_pushes, read_slots, read_state,
-    reap_expired_slots, release_lock, release_slot, update_state,
+    consume_grant, grant_retry, pending_grant, read_commands, read_costs, read_pushes, read_slots,
+    read_state, reap_expired_slots, release_lock, release_slot, update_state,
 };
 pub use model_runner::{
     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,

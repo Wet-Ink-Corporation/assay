@@ -1,5 +1,11 @@
 //! Integration tests for `assay-app`, compiled as one binary (TST-14).
 
+mod admit;
+mod admit_budget;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod admit_fakes;
+mod admit_pack;
+mod admit_slots;
 mod builtins;
 mod check;
 mod check_egress;
