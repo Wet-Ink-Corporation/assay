@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:assay:schema:ledger-lease:1",
+  "title": "assay.ledger-lease/1",
+  "description": "A review slot's lease (docs/architecture/06-operations.md §1, 03-contracts.md §6c): the message of the commit `refs/heads/slot-N` of the ledger repository points at, written by `admit` when it takes the slot (TTL 45 minutes) and deleted only by compare-and-set (`release`, or a reap once `expires_at` has passed). It is the whole message of the commit its ref points at, read back strictly: a message over 1024 bytes, or one that is not byte for byte what assay writes (optionally followed by one newline), is refused, and the lease is then neither reaped nor taken over. Unknown fields are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "run_uid",
+    "repo",
+    "pr",
+    "reserved_aeu",
+    "expires_at"
+  ],
+  "properties": {
+    "schema": {
+      "const": "assay.ledger-lease/1"
+    },
+    "run_uid": {
+      "$ref": "#/$defs/runUid"
+    },
+    "repo": {
+      "$ref": "#/$defs/repository"
+    },
+    "pr": {
+      "$ref": "#/$defs/id"
+    },
+    "reserved_aeu": {
+      "$ref": "#/$defs/aeu"
+    },
+    "expires_at": {
+      "description": "After this instant the lease may be reaped.",
+      "$ref": "#/$defs/time"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "runUid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo_id",
+        "run_id",
+        "run_attempt"
+      ],
+      "properties": {
+        "repo_id": {
+          "$ref": "#/$defs/id"
+        },
+        "run_id": {
+          "$ref": "#/$defs/id"
+        },
+        "run_attempt": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "repository": {
+      "description": "A GitHub `owner/name`; the name is not `.` or `..`.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$",
+      "not": {
+        "pattern": "/\\.{1,2}$"
+      }
+    },
+    "aeu": {
+      "description": "AEU in dollars as an exact decimal string, as `Aeu` displays it: no leading zero but `0`, at most six fraction digits, no trailing zero.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{0,5}[1-9])?$"
+    },
+    "time": {
+      "description": "A UTC instant to the millisecond, `YYYY-MM-DDTHH:MM:SS.mmmZ`.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  }
+}

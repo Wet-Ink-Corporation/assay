@@ -9,6 +9,8 @@
 mod base64;
 mod wire;
 
+pub(super) use base64::encode as encode_base64;
+
 use assay_app::{
     FileVersion, Ledger, LedgerFile, LedgerPath, MAX_LEDGER_FILE_BYTES, WriteCondition,
     WriteOutcome,
@@ -129,25 +131,9 @@ impl<T: Transport, S: Sleep> LedgerRepo<T, S> {
     }
 
     /// Checks that the token sees the ledger repository, so that a 404 for a file means the file
-    /// is absent. GitHub answers 404 for a private repository the token cannot read too, and
-    /// reading that as "no cost records" would let a misconfigured job spend unbudgeted
-    /// (wi-b5affa).
+    /// is absent.
     fn confirm_repository(&self) -> Result<(), ForgeError<T::Error>> {
-        let operation = Operation::ReadLedgerFile;
-        let root = api_path(operation, format!("repos/{}", self.repository))?;
-        let seen: RepositoryView = self.api.get(operation, &root)?;
-        let same = seen.full_name.split_once('/').is_some_and(|(owner, name)| {
-            owner.eq_ignore_ascii_case(self.repository.owner())
-                && name.eq_ignore_ascii_case(self.repository.name())
-        });
-        if same {
-            Ok(())
-        } else {
-            Err(ForgeError::Malformed {
-                operation,
-                detail: "the API answered for another repository",
-            })
-        }
+        confirm_repository(&self.api, &self.repository, Operation::ReadLedgerFile)
     }
 
     /// The base64 content of blob `sha`, which the contents listing gave as `size` bytes.
@@ -245,6 +231,31 @@ impl<T: Transport, S: Sleep> Ledger for LedgerRepo<T, S> {
             Sent::Conflict => Ok(WriteOutcome::Conflict),
             Sent::Unconfirmed => Err(LedgerRepoError::Unconfirmed { path: path.clone() }),
         }
+    }
+}
+
+/// Checks that `api`'s token sees `repository`, so that a 404 inside it means the file or ref is
+/// absent. GitHub answers 404 for a private repository the token cannot read too, and reading
+/// that as "no cost records" or "a free slot" would let a misconfigured job spend unbudgeted
+/// (wi-b5affa).
+pub(super) fn confirm_repository<T: Transport, S: Sleep>(
+    api: &Api<T, S>,
+    repository: &Repository,
+    operation: Operation,
+) -> Result<(), ForgeError<T::Error>> {
+    let root = api_path(operation, format!("repos/{repository}"))?;
+    let seen: RepositoryView = api.get(operation, &root)?;
+    let same = seen.full_name.split_once('/').is_some_and(|(owner, name)| {
+        owner.eq_ignore_ascii_case(repository.owner())
+            && name.eq_ignore_ascii_case(repository.name())
+    });
+    if same {
+        Ok(())
+    } else {
+        Err(ForgeError::Malformed {
+            operation,
+            detail: "the API answered for another repository",
+        })
     }
 }
 
