@@ -13,6 +13,7 @@ mod checks;
 mod comments;
 mod dto;
 mod error;
+mod gh;
 mod identity;
 mod ports;
 mod pulls;
@@ -26,6 +27,10 @@ use assay_app::{AppId, UserId};
 
 pub use api::{Api, MAX_LIST_ITEMS};
 pub use error::{ForgeError, Operation};
+pub use gh::{
+    GH_OUTPUT_CAP, GH_TIMEOUT, GhApi, GhCall, GhError, GhRunner, GhSetupError, GhToken,
+    InvalidToken,
+};
 pub use identity::MAX_COMMITS;
 pub use repository::{ParseRepositoryError, Repository};
 pub use token::{Access, InstallationId, InstallationToken, Permission, ScopeError, TokenScope};

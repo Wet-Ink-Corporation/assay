@@ -3,6 +3,8 @@
 mod backoff;
 mod checks;
 mod comments;
+#[cfg(unix)] // exit statuses built from raw wait statuses
+mod gh;
 mod identity;
 mod pulls;
 mod reads;
