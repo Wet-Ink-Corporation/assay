@@ -134,4 +134,4 @@ pub enum ConfigError {
 /// crate's API (ERR-04).
 #[derive(Debug, Error)]
 #[error(transparent)]
-pub struct TomlError(pub(super) toml::de::Error);
+pub struct TomlError(pub(crate) toml::de::Error);

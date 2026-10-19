@@ -4,6 +4,9 @@
 //! Commands so far: `assay self-gate <corpus-dir> <rubric-file>`, the `assay-self` exec gate
 //! (02 §7, `05` T16), `assay doctor <plugins-toml> <claude-program>`, the session checks of
 //! 03 §8 (#121), and `assay check --local`, the advisory check of a working tree (02 §6, #107).
+//! `assay doctor --repository <owner/name> --app <id> --ledger-app <id>` (#75) checks its
+//! arguments and then stops with exit 2: the live `gh` transport is #273, and
+//! [`assay_cli::run_prerequisites`] wires the repository checks of 05 §7 once that exists.
 //! `assay status [--json] [--pr <n>] [--full]` (#126) checks its arguments and
 //! then stops with exit 2: its GitHub adapter is #53's, and [`assay_cli::run_status`] wires it
 //! once that exists. `assay status [--json] --local` (#130) shows the local check's result.
@@ -19,7 +22,7 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::SystemTime;
 
-use assay_cli::{Format, StatusCommand};
+use assay_cli::{Format, PrerequisitesArgs, StatusCommand};
 use assay_domain::GateConclusion;
 
 /// Exit code of a usage error or a gate error (03 §2: 2 and above).
@@ -31,6 +34,15 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     };
     if command == "doctor" {
+        let mut args = args.peekable();
+        if PrerequisitesArgs::requested(args.peek()) {
+            return match PrerequisitesArgs::parse(args) {
+                Ok(_) => report(
+                    &"doctor --repository: the live gh transport it reads through is not built yet (#273)",
+                ),
+                Err(usage) => report(&usage),
+            };
+        }
         return run_doctor(args);
     }
     if command == "check" {
