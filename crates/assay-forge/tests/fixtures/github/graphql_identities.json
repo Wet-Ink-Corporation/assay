@@ -1,0 +1,27 @@
+{
+  "data": {
+    "repository": {
+      "c0": {
+        "oid": "70aa6d748be6f3884e85d294112f9addf83cee59",
+        "authors": {
+          "totalCount": 2,
+          "nodes": [
+            {"user": {"databaseId": 124330161}},
+            {"user": null}
+          ]
+        },
+        "committer": {"user": {"databaseId": 19864447}}
+      },
+      "c1": {
+        "oid": "ca42d86e668fbb18dab3ea4255fcd09518412f3b",
+        "authors": {
+          "totalCount": 1,
+          "nodes": [
+            {"user": null}
+          ]
+        },
+        "committer": {"user": null}
+      }
+    }
+  }
+}

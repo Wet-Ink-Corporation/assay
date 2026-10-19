@@ -16,6 +16,7 @@ mod doctor;
 mod eval;
 mod events;
 mod finding_text;
+mod forge;
 mod gate;
 mod golden;
 mod model_runner;
@@ -85,6 +86,10 @@ pub use eval::{
 };
 pub use events::{EventSink, NoEvents};
 pub use finding_text::{clip_chars, plain_name};
+pub use forge::{
+    Actor, CheckFound, CommitIdentity, CompareAndSetError, Forge, Reaction, ReactionContent,
+    ReactionSubject, Review, ReviewCommentId, ReviewState, TimelineEvent, TimelineKind, Upserted,
+};
 pub use gate::{
     BuildJob, GateDocument, GateError, GateJob, GateJobOutcome, GateJobReport, GateRun, GateRunner,
     Termination, account_for_required, run_gates,

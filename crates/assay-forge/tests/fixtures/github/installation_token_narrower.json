@@ -1,0 +1,18 @@
+{
+  "token": "ghs_fixture-not-a-token",
+  "expires_at": "2026-10-19T04:00:00Z",
+  "permissions": {
+    "checks": "write",
+    "metadata": "read"
+  },
+  "repository_selection": "selected",
+  "repositories": [
+    {
+      "id": 1413773798,
+      "node_id": "R_kgDOVER55g",
+      "name": "assay",
+      "full_name": "Wet-Ink-Corporation/assay",
+      "private": true
+    }
+  ]
+}
