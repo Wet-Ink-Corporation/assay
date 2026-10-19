@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:assay:schema:ledger-grant:1",
+  "title": "assay.ledger-grant/1",
+  "description": "A one-shot retry grant (docs/architecture/06-operations.md §1, 03-contracts.md §6c, R3-14): the message of the commit `refs/heads/retry/<repo_id>/<pr>/<head_sha>/<role>` points at, written by decide-only for `/assay retry <role>` and consumed by `admit` by compare-and-set. It has no expiry. `run_uid.repo_id`, `pr`, `head_sha` and `role` must be those of the ref's name. It is the whole message of the commit its ref points at, read back strictly: a message over 1024 bytes, or one that is not byte for byte what assay writes (optionally followed by one newline), is refused, and the lease is then neither reaped nor taken over. Unknown fields are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "run_uid",
+    "repo",
+    "pr",
+    "head_sha",
+    "role",
+    "at"
+  ],
+  "properties": {
+    "schema": {
+      "const": "assay.ledger-grant/1"
+    },
+    "run_uid": {
+      "$ref": "#/$defs/runUid"
+    },
+    "repo": {
+      "$ref": "#/$defs/repository"
+    },
+    "pr": {
+      "$ref": "#/$defs/id"
+    },
+    "head_sha": {
+      "$ref": "#/$defs/sha"
+    },
+    "role": {
+      "description": "The reviewer role whose cap the retry raises.",
+      "enum": [
+        "bugs",
+        "security",
+        "design",
+        "meta",
+        "combined",
+        "combined-micro"
+      ]
+    },
+    "at": {
+      "description": "When it was granted.",
+      "$ref": "#/$defs/time"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "runUid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo_id",
+        "run_id",
+        "run_attempt"
+      ],
+      "properties": {
+        "repo_id": {
+          "$ref": "#/$defs/id"
+        },
+        "run_id": {
+          "$ref": "#/$defs/id"
+        },
+        "run_attempt": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "repository": {
+      "description": "A GitHub `owner/name`; the name is not `.` or `..`.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$",
+      "not": {
+        "pattern": "/\\.{1,2}$"
+      }
+    },
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "time": {
+      "description": "A UTC instant to the millisecond, `YYYY-MM-DDTHH:MM:SS.mmmZ`.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  }
+}

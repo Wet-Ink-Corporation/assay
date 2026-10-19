@@ -18,6 +18,7 @@ mod fetch_by_digest;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod layering;
 mod layout;
+mod open;
 mod plan;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod pre_push;
