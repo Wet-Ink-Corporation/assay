@@ -10,7 +10,10 @@ use crate::forge::{Actor, CommitIdentity};
 use crate::status::UserId;
 
 /// The identities of a PR's range as clause (b) of the eligibility rule reads them.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// It has no `Default`: an empty value would turn clause (b) off, so the only constructor is
+/// [`RangeIdentities::of`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RangeIdentities {
     users: BTreeSet<UserId>,
     unattributed: bool,
@@ -23,7 +26,8 @@ impl RangeIdentities {
     /// push's `before`, the second an ancestor of the base, a tree equal to a conflict-free
     /// merge), which the caller finds (04 §5). A push record whose `after` is one of them is left
     /// out of clause (c) too. `web-flow` as committer is a GitHub user, so it never makes a commit
-    /// unattributed.
+    /// unattributed. A range with no counted commit counts as unattributed, so it leaves no
+    /// identity eligible (fail closed): a real PR range is never empty.
     #[must_use]
     pub fn of(commits: &[CommitIdentity], clean_merges: HashSet<CommitId>) -> Self {
         let mut users = BTreeSet::new();
@@ -42,8 +46,8 @@ impl RangeIdentities {
             }
         }
         Self {
+            unattributed: unattributed || users.is_empty(),
             users,
-            unattributed,
             clean_merges,
         }
     }

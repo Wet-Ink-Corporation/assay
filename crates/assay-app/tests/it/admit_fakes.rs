@@ -7,10 +7,11 @@ use std::num::NonZeroU64;
 use std::time::{Duration, SystemTime};
 
 use assay_app::{
-    AdmitFailure, AdmitPorts, AdmitRequest, Admitted, Carry, Clock, CommandComments, CommentId,
-    CommentNow, ContractValidator, CostKind, CostRecord, CostRole, DeferralRecord, EventSink,
-    Identities, LeaseRef, LedgerTime, PrState, RangeIdentities, RetryGrant, Role, RoleCost, Slot,
-    UserId, admit, append_cost, grant_retry, read_state, update_state,
+    Actor, AdmitFailure, AdmitPorts, AdmitRequest, Admitted, Carry, Clock, CommandComments,
+    CommentId, CommentNow, CommitId, CommitIdentity, ContractValidator, CostKind, CostRecord,
+    CostRole, DeferralRecord, EventSink, Identities, LeaseRef, LedgerTime, PrState,
+    RangeIdentities, RetryGrant, Role, RoleCost, Slot, UserId, admit, append_cost, grant_retry,
+    read_state, update_state,
 };
 use assay_domain::{Aeu, Event, RunUid, Tier};
 use serde_json::{Value, json};
@@ -268,7 +269,7 @@ impl World {
             },
             carry: Carry::FirstReview,
             suppress: None,
-            range: RangeIdentities::default(),
+            range: authors_range(),
         }
     }
 
@@ -417,4 +418,20 @@ impl OtherCost<'_> {
             at: at(self.when),
         }
     }
+}
+
+/// A range of one commit, authored and committed by the PR's author.
+pub(crate) fn authors_range() -> RangeIdentities {
+    let commit: CommitId = "a"
+        .repeat(40)
+        .parse()
+        .expect("forty hex digits are a commit id");
+    RangeIdentities::of(
+        &[CommitIdentity {
+            commit,
+            authors: vec![Actor::User(UserId(nz(AUTHOR)))],
+            committer: Actor::User(UserId(nz(AUTHOR))),
+        }],
+        std::collections::HashSet::new(),
+    )
 }

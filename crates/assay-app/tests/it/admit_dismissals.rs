@@ -247,6 +247,30 @@ fn a_range_commit_attributed_to_no_user_voids_every_dismissal() -> Result<(), Bo
 }
 
 #[test]
+fn an_empty_range_voids_every_dismissal() -> Result<(), Box<dyn Error>> {
+    for clean_merges in [HashSet::new(), HashSet::from([commit('b')?])] {
+        let mut world = everyone_privileged();
+        let only_merges = [CommitIdentity {
+            commit: commit('b')?,
+            authors: vec![Actor::User(UserId(nz(AUTHOR)))],
+            committer: Actor::User(UserId(nz(AUTHOR))),
+        }];
+        let commits: &[CommitIdentity] = if clean_merges.is_empty() {
+            &[]
+        } else {
+            &only_merges
+        };
+        world.range = RangeIdentities::of(commits, clean_merges);
+        recorded(&mut world, command(1, OWNER, &dismiss()))?;
+
+        let dismissals = dismissals_of(&mut world)?;
+
+        assert_eq!(dismissals, json!([]), "{} counted commits", commits.len());
+    }
+    Ok(())
+}
+
+#[test]
 fn a_clean_merge_from_the_base_disqualifies_neither_its_committer_nor_its_pusher()
 -> Result<(), Box<dyn Error>> {
     let merge = commit('c')?;
