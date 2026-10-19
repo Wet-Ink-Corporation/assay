@@ -2,7 +2,8 @@
 //! it spent, and the events and `decide` outcome that follow (04 §4 step 8, 03 §6).
 
 use assay_domain::{
-    Aeu, CallFailure, Disposition, EventPayload, Severity, SupportOutcome, VerifierVerdict,
+    Aeu, CallFailure, Disposition, EventPayload, Fingerprint, Severity, SupportOutcome,
+    VerifierVerdict,
 };
 
 use super::candidate::{ClaimRef, Slot};
@@ -31,6 +32,8 @@ pub enum VerifierStatus {
 pub struct VerifiedFinding {
     /// Which raised or carried finding this is.
     pub at: ClaimRef,
+    /// Its fingerprint, which its `verifier-rejected-downgraded` event names (#263).
+    pub fp: Fingerprint,
     /// Its severity as the verifier received it.
     pub raised: Severity,
     /// Its severity after verification: `minor` if refuted, one level down if unclear, at most
@@ -131,11 +134,9 @@ impl<E> Verification<E> {
             let judged = verdict.map(|verdict| EventPayload::FindingVerified { verdict });
             let downgraded = (verdict == Some(VerifierVerdict::Refuted)
                 && found.severity != found.raised)
-                // A verified finding names its claim, not its fingerprint, so this event carries
-                // no `fp` yet; the event schema leaves it optional for this code (03 §6).
                 .then_some(EventPayload::FindingDisposed {
                     code: Disposition::VerifierRejectedDowngraded,
-                    fp: None,
+                    fp: Some(found.fp),
                     from: Some(found.raised),
                     to: Some(found.severity),
                 });

@@ -20,7 +20,7 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 59] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 61] = [
     (
         Contract::Status,
         "unknown-field",
@@ -214,6 +214,17 @@ const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 59] = [
         "finding-disposed-ceiling-without-fp",
         Rejection::Violation("/data", "required"),
     ),
+    // #263: so do the coordinator's `duplicate` and the verifier's downgrade.
+    (
+        Contract::Event,
+        "finding-disposed-duplicate-without-fp",
+        Rejection::Violation("/data", "required"),
+    ),
+    (
+        Contract::Event,
+        "finding-disposed-downgraded-without-fp",
+        Rejection::Violation("/data", "required"),
+    ),
     (
         Contract::Findings,
         "unknown-field",
@@ -347,6 +358,24 @@ fn every_valid_fixture_reads_back_as_its_json() -> Result<(), Box<dyn Error>> {
                 "{contract} fixture {name} must be valid, got {read:?}"
             );
         }
+    }
+    Ok(())
+}
+
+/// #147: `data` stays an open object for the event kinds 03 §6 lists no fields for, so the
+/// schema accepts what the domain refuses (`assay-domain`'s `round_trip.rs`).
+#[test]
+fn the_event_schema_accepts_data_on_a_field_less_kind() -> Result<(), Box<dyn Error>> {
+    let validator = ContractValidator::new()?;
+    let accepted = fixtures(Contract::Event, Validity::DomainInvalid)?;
+
+    let names: Vec<&str> = accepted.keys().map(String::as_str).collect();
+
+    assert_eq!(names, ["run-requested-with-data"]);
+    for (name, bytes) in accepted {
+        let read = validator.read(Contract::Event, &bytes);
+
+        assert!(read.is_ok(), "event fixture {name}: {read:?}");
     }
     Ok(())
 }

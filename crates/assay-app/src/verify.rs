@@ -18,7 +18,7 @@ use std::num::NonZeroU8;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use assay_domain::{Aeu, CallFailure, Severity};
+use assay_domain::{Aeu, CallFailure, Fingerprint, Severity};
 
 pub use candidate::ClaimRef;
 pub use outcome::{Verification, VerifiedFinding, VerifierFailure, VerifierStatus};
@@ -237,12 +237,17 @@ fn unjudged_all<E>(
     Verification {
         findings: findings
             .iter()
-            .map(|found| unjudged(ClaimRef::Raised(found.at), found.finding.severity, tier))
+            .map(|found| {
+                let at = ClaimRef::Raised(found.at);
+                unjudged(at, found.fingerprint, found.finding.severity, tier)
+            })
             .collect(),
         carried: carried
             .iter()
             .enumerate()
-            .map(|(index, found)| unjudged(ClaimRef::Carried(index), found.severity(), tier))
+            .map(|(index, found)| {
+                unjudged(ClaimRef::Carried(index), found.fp(), found.severity(), tier)
+            })
             .collect(),
         failure: None,
         attempts: 0,
@@ -252,9 +257,15 @@ fn unjudged_all<E>(
     }
 }
 
-/// A finding before any call: a raised finding below `major` is not a candidate, nothing is in
-/// `micro`, and any other is a candidate past the cap until it is judged.
-fn unjudged(at: ClaimRef, raised: Severity, tier: VerifierTier) -> VerifiedFinding {
+/// The finding `at`, of fingerprint `fp`, before any call: a raised finding below `major` is not
+/// a candidate, nothing is in `micro`, and any other is a candidate past the cap until it is
+/// judged.
+fn unjudged(
+    at: ClaimRef,
+    fp: Fingerprint,
+    raised: Severity,
+    tier: VerifierTier,
+) -> VerifiedFinding {
     let status = match at {
         ClaimRef::Raised(_) if !is_candidate(raised) => VerifierStatus::NotCandidate,
         ClaimRef::Raised(_) | ClaimRef::Carried(_) if tier == VerifierTier::Micro => {
@@ -264,6 +275,7 @@ fn unjudged(at: ClaimRef, raised: Severity, tier: VerifierTier) -> VerifiedFindi
     };
     VerifiedFinding {
         at,
+        fp,
         raised,
         severity: raised,
         status,
