@@ -64,6 +64,24 @@ pub enum ForgeError<E> {
         /// The most items accepted.
         cap: usize,
     },
+    /// A response body is longer than [`MAX_RESPONSE_BYTES`](super::MAX_RESPONSE_BYTES); it is
+    /// refused unparsed (H-13).
+    #[error("{operation}: the response is over {cap} bytes")]
+    ResponseTooLarge {
+        /// The call.
+        operation: Operation,
+        /// The most bytes accepted.
+        cap: usize,
+    },
+    /// The request was refused before anything was sent: an argument it cannot be built from
+    /// safely, such as an empty marker or a path that is not a plain API path.
+    #[error("{operation}: refused before sending: {detail}")]
+    InvalidRequest {
+        /// The call.
+        operation: Operation,
+        /// What was wrong.
+        detail: &'static str,
+    },
     /// The App authored more than one check or comment where there must be at most one.
     #[error("{operation}: the App authored more than one match")]
     Ambiguous {

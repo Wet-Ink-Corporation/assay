@@ -2,6 +2,7 @@
 //! inline review comments; nobody else's comment ever counts, whatever it contains.
 
 use std::num::NonZeroU64;
+use std::time::Duration;
 
 use assay_app::{
     CommentForge, CommentId, Forge, InlineComment, SUMMARY_MARKER, SummaryComment, Upserted,
@@ -13,6 +14,7 @@ use serde_json::json;
 
 use super::recorded::{
     Recorded, Waits, first_write, fixture, fixture_json, github, head, id, json, path, pr, reply,
+    write_bodies,
 };
 
 /// PR 268's issue comments.
@@ -142,8 +144,135 @@ fn a_summary_that_landed_before_a_5xx_is_not_posted_again() {
 
     let created = github(&recorded, &waits).create_summary(pr(), &app_summary().body);
 
-    assert!(created.is_ok(), "{created:?}");
+    assert_eq!(created.expect("landed"), ());
     assert_eq!(recorded.writes().len(), 1, "one POST only");
+    assert_eq!(waits.taken(), [Duration::from_secs(1)]);
+}
+
+/// A summary body the recorded comments do not hold.
+fn new_summary() -> String {
+    format!("{SUMMARY_MARKER}\n### assay: success")
+}
+
+#[test]
+fn a_summary_the_probe_does_not_find_is_posted_again() {
+    let post = path("issues/268/comments");
+    let recorded = Recorded::default()
+        .then(Method::Post, &post, reply(502, &[], Vec::new()))
+        .ok(Method::Get, &listing(), fixture("issue_comments.json"))
+        .then(Method::Post, &post, reply(201, &[], json(&json!({}))));
+    let waits = Waits::default();
+
+    let created = github(&recorded, &waits).create_summary(pr(), &new_summary());
+
+    assert_eq!(created.expect("the second POST lands"), ());
+    let body = Some(json!({ "body": new_summary() }));
+    assert_eq!(write_bodies(&recorded), [body.clone(), body]);
+    assert_eq!(waits.taken(), [Duration::from_secs(1)]);
+    assert_eq!(recorded.unused(), 0, "POST, probe, POST");
+}
+
+#[test]
+fn a_summary_failing_four_times_with_probes_is_a_publish_error() {
+    let post = path("issues/268/comments");
+    let mut recorded = Recorded::default().then(Method::Post, &post, reply(502, &[], Vec::new()));
+    for _ in 0..3 {
+        recorded = recorded
+            .ok(Method::Get, &listing(), fixture("issue_comments.json"))
+            .then(Method::Post, &post, reply(502, &[], Vec::new()));
+    }
+    let waits = Waits::default();
+
+    let created = github(&recorded, &waits).create_summary(pr(), &new_summary());
+
+    assert!(
+        matches!(
+            created,
+            Err(ForgeError::Exhausted {
+                operation: Operation::CreateComment,
+                status: 502,
+                attempts: 4
+            })
+        ),
+        "{created:?}"
+    );
+    assert_eq!(write_bodies(&recorded).len(), 4, "four POSTs");
+    assert_eq!(
+        waits.taken(),
+        [1, 2, 4].map(Duration::from_secs),
+        "three backoffs"
+    );
+}
+
+#[test]
+fn an_inline_comment_the_probe_does_not_find_is_posted_again() {
+    let post = path("pulls/268/comments");
+    let recorded = Recorded::default()
+        .then(Method::Post, &post, reply(502, &[], Vec::new()))
+        .ok(
+            Method::Get,
+            &path("pulls/268/comments?per_page=100"),
+            fixture("review_comments.json"),
+        )
+        .then(Method::Post, &post, reply(201, &[], json(&json!({}))));
+    let waits = Waits::default();
+    let commit = head();
+    let comment = InlineComment {
+        commit_id: &commit,
+        path: "crates/assay-forge/src/github.rs",
+        line: id(14),
+        start_line: None,
+        side: Side::Right,
+        body: "new finding".to_owned(),
+    };
+
+    let created = github(&recorded, &waits).create_review_comment(pr(), &comment);
+
+    assert_eq!(created.expect("the second POST lands"), ());
+    let body = Some(json!({
+        "body": "new finding",
+        "commit_id": commit.as_str(),
+        "path": "crates/assay-forge/src/github.rs",
+        "line": 14,
+        "side": "RIGHT",
+    }));
+    assert_eq!(write_bodies(&recorded), [body.clone(), body]);
+    assert_eq!(waits.taken(), [Duration::from_secs(1)]);
+}
+
+#[test]
+fn an_empty_marker_is_refused_unasked() {
+    let recorded = Recorded::default();
+    let waits = Waits::default();
+    let forge = github(&recorded, &waits);
+
+    let found = forge.find_summary(pr(), "");
+    let upserted = forge.upsert_comment(pr(), "", "body");
+
+    assert!(
+        matches!(found, Err(ForgeError::InvalidRequest { detail, .. }) if detail == "the marker is empty"),
+        "{found:?}"
+    );
+    assert!(
+        matches!(upserted, Err(ForgeError::InvalidRequest { detail, .. }) if detail == "the marker is empty"),
+        "{upserted:?}"
+    );
+    assert_eq!(recorded.sent(), Vec::new(), "nothing sent");
+}
+
+#[test]
+fn a_body_without_its_marker_is_refused_unasked() {
+    let recorded = Recorded::default();
+    let waits = Waits::default();
+
+    let upserted =
+        github(&recorded, &waits).upsert_comment(pr(), SUMMARY_MARKER, "### assay: success");
+
+    assert!(
+        matches!(upserted, Err(ForgeError::InvalidRequest { detail, .. }) if detail == "the body does not carry the marker"),
+        "{upserted:?}"
+    );
+    assert_eq!(recorded.sent(), Vec::new(), "nothing sent");
 }
 
 #[test]

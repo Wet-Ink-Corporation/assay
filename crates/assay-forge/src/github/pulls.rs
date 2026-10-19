@@ -25,21 +25,32 @@ impl<T: Transport, S: Sleep> PullRequestState for GitHub<T, S> {
 
     fn current(&self, number: NonZeroU64) -> Result<CurrentPullRequest, Self::Error> {
         let operation = Operation::ReadPull;
-        let pull: PullDto = self
-            .api
-            .get(operation, &self.path(&format!("pulls/{number}")))?;
+        let path = self.path(operation, &format!("pulls/{number}"))?;
+        let pull: PullDto = self.api.get(operation, &path)?;
+        if pull.number != number.get() {
+            return Err(ForgeError::Malformed {
+                operation,
+                detail: "GitHub returned another PR",
+            });
+        }
         Ok(CurrentPullRequest {
             head_sha: dto::commit(operation, &pull.head.sha)?,
             base_ref: pull.base.branch,
         })
     }
 
+    /// The PRs whose head is `head` now. GitHub's listing also names PRs that merely contain
+    /// the commit, such as one stacked on it; those are not on the head and are left out.
     fn pulls_on_head(&self, head: &CommitId) -> Result<Vec<PullOnHead>, Self::Error> {
         let operation = Operation::ListPulls;
-        let path = self.path(&format!("commits/{head}/pulls?per_page={PER_PAGE}"));
+        let path = self.path(
+            operation,
+            &format!("commits/{head}/pulls?per_page={PER_PAGE}"),
+        )?;
         self.api
-            .list::<Vec<PullDto>>(operation, &path, None)?
+            .list::<Vec<PullDto>>(operation, path, None)?
             .into_iter()
+            .filter(|pull| pull.head.sha == head.as_str())
             .map(|pull| {
                 let open = match pull.state.as_str() {
                     "open" => true,
@@ -64,26 +75,31 @@ impl<T: Transport, S: Sleep> PullRequestState for GitHub<T, S> {
     /// a newer run has a higher run number.
     fn newer_run(&self, run: RunUid, head: &CommitId) -> Result<bool, Self::Error> {
         let operation = Operation::ListRuns;
-        let this: RunDto = self.api.get(
-            operation,
-            &self.path(&format!("actions/runs/{}", run.run_id)),
-        )?;
+        let path = self.path(operation, &format!("actions/runs/{}", run.run_id))?;
+        let this: RunDto = self.api.get(operation, &path)?;
         if this.id != run.run_id.get() {
             return Err(ForgeError::Malformed {
                 operation,
                 detail: "GitHub returned another run",
             });
         }
-        let path = self.path(&format!(
-            "actions/workflows/{}/runs?head_sha={head}&per_page={PER_PAGE}",
-            this.workflow_id
-        ));
-        let runs = self.api.list::<RunsPage>(operation, &path, None)?;
-        if runs.iter().any(|listed| listed.head_sha != head.as_str()) {
-            return Err(ForgeError::Malformed {
-                operation,
-                detail: "a listed run is on another head",
-            });
+        let path = self.path(
+            operation,
+            &format!(
+                "actions/workflows/{}/runs?head_sha={head}&per_page={PER_PAGE}",
+                this.workflow_id
+            ),
+        )?;
+        let runs = self.api.list::<RunsPage>(operation, path, None)?;
+        for listed in &runs {
+            let detail = if listed.workflow_id != this.workflow_id {
+                "a listed run is of another workflow"
+            } else if listed.head_sha != head.as_str() {
+                "a listed run is on another head"
+            } else {
+                continue;
+            };
+            return Err(ForgeError::Malformed { operation, detail });
         }
         Ok(runs
             .iter()

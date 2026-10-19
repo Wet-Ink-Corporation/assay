@@ -101,19 +101,19 @@ impl Transport for Recorded {
     fn send(&self, request: &Request<'_>) -> Result<Response, Unscripted> {
         self.sent.borrow_mut().push(Sent {
             method: request.method,
-            path: request.path.to_owned(),
+            path: request.path.as_str().to_owned(),
             body: request
                 .body
                 .map(|body| serde_json::from_slice(body).expect("request bodies are JSON")),
         });
         let mut script = self.script.borrow_mut();
         match script.pop_front() {
-            Some(next) if next.method == request.method && next.path == request.path => {
+            Some(next) if next.method == request.method && next.path == request.path.as_str() => {
                 Ok(next.response)
             }
             other => Err(Unscripted {
                 method: request.method,
-                path: request.path.to_owned(),
+                path: request.path.as_str().to_owned(),
                 expected: other.map_or_else(
                     || "nothing".to_owned(),
                     |next| format!("{:?} {}", next.method, next.path),
@@ -172,6 +172,15 @@ pub(crate) fn first_write(recorded: &Recorded) -> Option<serde_json::Value> {
         .into_iter()
         .next()
         .and_then(|sent| sent.body)
+}
+
+/// The bodies of every write sent, in order.
+pub(crate) fn write_bodies(recorded: &Recorded) -> Vec<Option<serde_json::Value>> {
+    recorded
+        .writes()
+        .into_iter()
+        .map(|sent| sent.body)
+        .collect()
 }
 
 /// `value` as a JSON body.

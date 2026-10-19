@@ -30,15 +30,14 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         name: Option<&CheckName>,
         stop_at: Option<usize>,
     ) -> Result<Vec<CheckRunDto>, ForgeError<T::Error>> {
-        let mut path = self.path(&format!(
-            "commits/{head}/check-runs?filter=all&per_page={PER_PAGE}"
-        ));
+        let operation = Operation::ListChecks;
+        let mut rest = format!("commits/{head}/check-runs?filter=all&per_page={PER_PAGE}");
         if let Some(name) = name {
-            path.push_str("&check_name=");
-            path.push_str(&percent_encode(name.as_str()));
+            rest.push_str("&check_name=");
+            rest.push_str(&percent_encode(name.as_str()));
         }
-        self.api
-            .list::<CheckRunsPage>(Operation::ListChecks, &path, stop_at)
+        let path = self.path(operation, &rest)?;
+        self.api.list::<CheckRunsPage>(operation, path, stop_at)
     }
 
     /// The App's check named `name` on `head`. Same-named checks of other apps are skipped.
@@ -70,10 +69,9 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
 
     /// Check `id` as GitHub has it now.
     fn read_check(&self, id: CheckRunId) -> Result<CheckRunDto, ForgeError<T::Error>> {
-        self.api.get(
-            Operation::ReadCheck,
-            &self.path(&format!("check-runs/{}", id.0)),
-        )
+        let operation = Operation::ReadCheck;
+        let path = self.path(operation, &format!("check-runs/{}", id.0))?;
+        self.api.get(operation, &path)
     }
 
     /// Overwrites check `id` with `update`; a PATCH replaces the same fields each time, so it is
@@ -85,7 +83,7 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
     ) -> Result<(), ForgeError<T::Error>> {
         let operation = Operation::UpdateCheck;
         let body = encode(operation, &check_body(update, None))?;
-        let path = self.path(&format!("check-runs/{}", id.0));
+        let path = self.path(operation, &format!("check-runs/{}", id.0))?;
         self.api
             .send(operation, Request::patch(&path, &body))
             .map(drop)
@@ -98,6 +96,13 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         expected: &str,
         update: &CheckUpdate,
     ) -> Result<(), CompareAndSetError<ForgeError<T::Error>>> {
+        // An empty stamp would match a check whose `external_id` was never set.
+        if expected.is_empty() {
+            return Err(CompareAndSetError::Forge(ForgeError::InvalidRequest {
+                operation: Operation::UpdateCheck,
+                detail: "the expected external_id is empty",
+            }));
+        }
         let current = self.read_check(id).map_err(CompareAndSetError::Forge)?;
         let app = dto::app(Operation::ReadCheck, current.app.as_ref())
             .map_err(CompareAndSetError::Forge)?;
@@ -147,7 +152,7 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         let CheckTarget { head, name } = target;
         let operation = Operation::CreateCheck;
         let body = encode(operation, &check_body(update, Some(target)))?;
-        let path = self.path("check-runs");
+        let path = self.path(operation, "check-runs")?;
         let request = Request::post(&path, &body);
         self.api.retrying(operation, |attempt| {
             let first = attempt == 0;

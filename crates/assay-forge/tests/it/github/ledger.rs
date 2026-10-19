@@ -10,11 +10,11 @@ use assay_app::{
     append_cost, read_costs,
 };
 use assay_domain::Aeu;
-use assay_forge::github::{ForgeError, LedgerRepoError, Method, Operation};
+use assay_forge::github::{ForgeError, LedgerRepoError, MAX_RESPONSE_BYTES, Method, Operation};
 use serde_json::{Value, json};
 
 use super::contents::{
-    ContentsApi, LEDGER_REPOSITORY, at, contents_path, ledger, october, reservation,
+    ContentsApi, LEDGER_REPOSITORY, at, contents_path, encode, ledger, october, reservation,
 };
 use super::recorded::{Recorded, Unscripted, Waits, fixture, fixture_json, json, reply};
 
@@ -110,6 +110,40 @@ fn a_file_over_one_megabyte_is_read_through_its_blob() {
             version: FileVersion::new(blob_sha),
             contents: fixture("ledger_line.jsonl"),
         }))
+    );
+}
+
+#[test]
+fn the_largest_ledger_file_reads_through_its_blob_within_the_response_cap() {
+    let contents = vec![b'x'; MAX_LEDGER_FILE_BYTES];
+    let encoded = encode(&contents);
+    let lines: Vec<&str> = encoded
+        .as_bytes()
+        .chunks(60)
+        .map(|line| std::str::from_utf8(line).expect("base64 is ASCII"))
+        .collect();
+    let mut listing = fixture_json("ledger_contents_none.json");
+    listing["size"] = json!(MAX_LEDGER_FILE_BYTES);
+    let mut blob = fixture_json("ledger_blob.json");
+    blob["size"] = json!(MAX_LEDGER_FILE_BYTES);
+    blob["content"] = json!(format!("{}\n", lines.join("\n")));
+    let blob = json(&blob);
+    assert!(blob.len() <= MAX_RESPONSE_BYTES, "{} bytes", blob.len());
+    let blob_sha = "8f9e2b0c41f6a2a7d1f0c9e3b5a4d6c7e8f90123";
+    let recorded = Recorded::default()
+        .ok(Method::Get, &contents_path(&october()), json(&listing))
+        .ok(
+            Method::Get,
+            &format!("repos/{LEDGER_REPOSITORY}/git/blobs/{blob_sha}"),
+            blob,
+        );
+    let waits = Waits::default();
+
+    let file = ledger(&recorded, &waits).read(&october());
+
+    assert_eq!(
+        file.ok().flatten().map(|file| file.contents),
+        Some(contents)
     );
 }
 

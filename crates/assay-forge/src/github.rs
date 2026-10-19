@@ -31,7 +31,10 @@ pub use identity::MAX_COMMITS;
 pub use ledger::{LedgerRepo, LedgerRepoError};
 pub use repository::{ParseRepositoryError, Repository};
 pub use token::{Access, InstallationId, InstallationToken, Permission, ScopeError, TokenScope};
-pub use transport::{Method, Request, Response, Sleep, ThreadSleep, Transport};
+pub use transport::{
+    ApiPath, InvalidPath, MAX_RESPONSE_BYTES, Method, Request, Response, Sleep, ThreadSleep,
+    Transport,
+};
 
 /// GitHub as one App sees one repository.
 #[derive(Debug)]
@@ -61,8 +64,16 @@ impl<T, S> GitHub<T, S> {
         }
     }
 
-    /// `repos/<owner>/<name>/<rest>`.
-    fn path(&self, rest: &str) -> String {
-        format!("repos/{}/{rest}", self.repository)
+    /// `repos/<owner>/<name>/<rest>`, for `operation`.
+    fn path<E>(&self, operation: Operation, rest: &str) -> Result<ApiPath, ForgeError<E>> {
+        api_path(operation, format!("repos/{}/{rest}", self.repository))
     }
+}
+
+/// `path` as an [`ApiPath`], refused for `operation` before anything is sent.
+fn api_path<E>(operation: Operation, path: String) -> Result<ApiPath, ForgeError<E>> {
+    ApiPath::new(path).map_err(|InvalidPath| ForgeError::InvalidRequest {
+        operation,
+        detail: "the path is not a plain API path",
+    })
 }

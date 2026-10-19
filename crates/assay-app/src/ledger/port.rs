@@ -7,9 +7,12 @@ use std::num::NonZeroU64;
 
 use super::time::LedgerMonth;
 
-/// The longest ledger file read or written, in bytes (8 MiB): about 20 000 cost records, a
+/// The longest ledger file read or written, in bytes (4 MiB): about 10 000 cost records, a
 /// month at far above the expected load. A longer file is refused unparsed (H-13).
-pub const MAX_LEDGER_FILE_BYTES: usize = 8 << 20;
+///
+/// It is half of [`MAX_DOCUMENT_BYTES`](crate::MAX_DOCUMENT_BYTES) so that the file's base64
+/// form, with GitHub's line breaks, fits in one API response under that cap.
+pub const MAX_LEDGER_FILE_BYTES: usize = 4 << 20;
 
 /// The longest line of a record stream, newline excluded, in bytes.
 pub const MAX_RECORD_BYTES: usize = 4096;

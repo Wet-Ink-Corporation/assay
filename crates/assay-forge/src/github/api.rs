@@ -6,7 +6,9 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 
 use super::error::{ForgeError, Operation};
-use super::transport::{Request, Response, Sleep, Transport};
+use super::transport::{
+    ApiPath, InvalidPath, MAX_RESPONSE_BYTES, Request, Response, Sleep, Transport,
+};
 
 /// Retries after the first attempt of a call that keeps failing with a retryable status.
 pub(crate) const RETRIES: u8 = 3;
@@ -139,7 +141,7 @@ impl<T: Transport, S: Sleep> Api<T, S> {
     pub(crate) fn get<D: DeserializeOwned>(
         &self,
         operation: Operation,
-        path: &str,
+        path: &ApiPath,
     ) -> Result<D, ForgeError<T::Error>> {
         let response = self.send(operation, Request::get(path))?;
         decode(operation, &response.body)
@@ -149,7 +151,7 @@ impl<T: Transport, S: Sleep> Api<T, S> {
     pub(crate) fn get_optional<D: DeserializeOwned>(
         &self,
         operation: Operation,
-        path: &str,
+        path: &ApiPath,
     ) -> Result<Option<D>, ForgeError<T::Error>> {
         match self.get(operation, path) {
             Ok(value) => Ok(Some(value)),
@@ -168,7 +170,7 @@ impl<T: Transport, S: Sleep> Api<T, S> {
     pub(crate) fn list<P: Page>(
         &self,
         operation: Operation,
-        path: &str,
+        path: ApiPath,
         stop_at: Option<usize>,
     ) -> Result<Vec<P::Item>, ForgeError<T::Error>> {
         let too_many = ForgeError::TooMany {
@@ -176,7 +178,7 @@ impl<T: Transport, S: Sleep> Api<T, S> {
             cap: MAX_LIST_ITEMS,
         };
         let mut items = Vec::new();
-        let mut next = Some(path.to_owned());
+        let mut next = Some(path);
         let mut pages = 0_usize;
         while let Some(path) = next.take() {
             if pages >= MAX_PAGES {
@@ -192,9 +194,9 @@ impl<T: Transport, S: Sleep> Api<T, S> {
                 break;
             }
             next = match response.header("link") {
-                Some(link) => next_page(link)
-                    .map_err(|detail| ForgeError::Malformed { operation, detail })?
-                    .map(str::to_owned),
+                Some(link) => {
+                    next_page(link).map_err(|detail| ForgeError::Malformed { operation, detail })?
+                }
                 None => None,
             };
         }
@@ -263,11 +265,18 @@ fn mentions_secondary_limit(body: &[u8]) -> bool {
         .any(|window| window.eq_ignore_ascii_case(NEEDLE))
 }
 
-/// Decodes `body` as `D`, refusing a repeated key anywhere.
+/// Decodes `body` as `D`, refusing a body over [`MAX_RESPONSE_BYTES`] unparsed and a repeated
+/// key anywhere.
 pub(crate) fn decode<D: DeserializeOwned, E>(
     operation: Operation,
     body: &[u8],
 ) -> Result<D, ForgeError<E>> {
+    if body.len() > MAX_RESPONSE_BYTES {
+        return Err(ForgeError::ResponseTooLarge {
+            operation,
+            cap: MAX_RESPONSE_BYTES,
+        });
+    }
     assay_app::parse_json_strict(body)
         .and_then(serde_json::from_value)
         .map_err(|source| ForgeError::Json { operation, source })
@@ -286,8 +295,8 @@ pub(crate) fn encode<E>(
 /// # Errors
 ///
 /// When the header is not a list of `<url>; params`, or the next target is not under
-/// [`API_ORIGIN`].
-fn next_page(link: &str) -> Result<Option<&str>, &'static str> {
+/// [`API_ORIGIN`] or not an [`ApiPath`] after it.
+fn next_page(link: &str) -> Result<Option<ApiPath>, &'static str> {
     const BAD: &str = "Link header is not a list of <url>; params";
     let mut rest = link;
     loop {
@@ -305,14 +314,9 @@ fn next_page(link: &str) -> Result<Option<&str>, &'static str> {
             let path = url
                 .strip_prefix(API_ORIGIN)
                 .ok_or("next page is not on api.github.com")?;
-            if path.is_empty()
-                || path
-                    .bytes()
-                    .any(|byte| byte.is_ascii_control() || byte == b' ')
-            {
-                return Err("next page has an unusable path");
-            }
-            return Ok(Some(path));
+            return ApiPath::new(path)
+                .map(Some)
+                .map_err(|InvalidPath| "next page is not an API path");
         }
         rest = tail;
     }
@@ -353,7 +357,12 @@ mod tests {
         let link = "<https://api.github.com/repositories/1/pulls?page=2>; rel=\"next\", \
                     <https://api.github.com/repositories/1/pulls?page=75>; rel=\"last\"";
 
-        assert_eq!(next_page(link), Ok(Some("repositories/1/pulls?page=2")));
+        assert_eq!(
+            next_page(link),
+            Ok(Some(
+                ApiPath::new("repositories/1/pulls?page=2").expect("a plain path")
+            ))
+        );
     }
 
     #[test]

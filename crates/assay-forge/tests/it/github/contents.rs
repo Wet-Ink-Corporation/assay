@@ -130,17 +130,18 @@ impl Transport for ContentsApi {
 
     fn send(&self, request: &Request<'_>) -> Result<Response, Unexpected> {
         let repository = format!("repos/{LEDGER_REPOSITORY}");
-        if request.method == Method::Get && request.path == repository {
+        let target = request.path.as_str();
+        if request.method == Method::Get && target == repository {
             return Ok(repository_view());
         }
         let prefix = format!("{repository}/contents/");
-        let Some(path) = request.path.strip_prefix(&prefix) else {
-            return Err(Unexpected::new(request.method, request.path));
+        let Some(path) = target.strip_prefix(&prefix) else {
+            return Err(Unexpected::new(request.method, target));
         };
         match (request.method, request.body) {
             (Method::Get, None) => Ok(self.get(path)),
             (Method::Put, Some(body)) => Ok(self.put(path, body)),
-            _ => Err(Unexpected::new(request.method, request.path)),
+            _ => Err(Unexpected::new(request.method, target)),
         }
     }
 }

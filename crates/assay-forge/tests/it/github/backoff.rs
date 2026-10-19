@@ -81,7 +81,10 @@ fn a_secondary_rate_limit_waits_as_long_as_github_asks() {
 
     let labels = github(&recorded, &waits).labels(pr());
 
-    assert!(labels.is_ok(), "{labels:?}");
+    assert_eq!(
+        labels.expect("the retry succeeds"),
+        ["assay:recheck", "bug"]
+    );
     assert_eq!(waits.taken(), seconds(&[30]));
 }
 
@@ -98,7 +101,10 @@ fn a_secondary_rate_limit_message_backs_off_without_retry_after() {
 
     let labels = github(&recorded, &waits).labels(pr());
 
-    assert!(labels.is_ok(), "{labels:?}");
+    assert_eq!(
+        labels.expect("the retry succeeds"),
+        ["assay:recheck", "bug"]
+    );
     assert_eq!(waits.taken(), seconds(&[1]));
 }
 

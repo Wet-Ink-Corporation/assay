@@ -18,9 +18,12 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         &self,
         number: NonZeroU64,
     ) -> Result<Vec<IssueCommentDto>, ForgeError<T::Error>> {
-        let path = self.path(&format!("issues/{number}/comments?per_page={PER_PAGE}"));
-        self.api
-            .list::<Vec<IssueCommentDto>>(Operation::ListComments, &path, None)
+        let operation = Operation::ListComments;
+        let path = self.path(
+            operation,
+            &format!("issues/{number}/comments?per_page={PER_PAGE}"),
+        )?;
+        self.api.list::<Vec<IssueCommentDto>>(operation, path, None)
     }
 
     /// Whether the App authored `comment`: through the App, as its `[bot]` user.
@@ -41,6 +44,7 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
     ///
     /// # Errors
     ///
+    /// [`ForgeError::InvalidRequest`] for an empty marker, which every comment contains;
     /// [`ForgeError::Ambiguous`] when the App has two; the listing's errors.
     pub(crate) fn find_comment(
         &self,
@@ -48,6 +52,12 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         marker: &str,
     ) -> Result<Option<SummaryComment>, ForgeError<T::Error>> {
         let operation = Operation::ListComments;
+        if marker.is_empty() {
+            return Err(ForgeError::InvalidRequest {
+                operation,
+                detail: "the marker is empty",
+            });
+        }
         let mut found = None;
         for comment in self.issue_comments(number)? {
             if !self.is_app_comment(&comment) {
@@ -76,7 +86,7 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
     ) -> Result<(), ForgeError<T::Error>> {
         let operation = Operation::CreateComment;
         let payload = encode(operation, &body_only(body))?;
-        let path = self.path(&format!("issues/{number}/comments"));
+        let path = self.path(operation, &format!("issues/{number}/comments"))?;
         self.api
             .post_once(operation, Request::post(&path, &payload), || {
                 Ok(self.issue_comments(number)?.iter().any(|comment| {
@@ -93,19 +103,30 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
     ) -> Result<(), ForgeError<T::Error>> {
         let operation = Operation::UpdateComment;
         let payload = encode(operation, &body_only(body))?;
-        let path = self.path(&format!("issues/comments/{}", id.0));
+        let path = self.path(operation, &format!("issues/comments/{}", id.0))?;
         self.api
             .send(operation, Request::patch(&path, &payload))
             .map(drop)
     }
 
     /// The App's comment with `marker` made to read `body`, writing only what changed.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError::InvalidRequest`] for an empty marker, or a body without it, which the
+    /// next call could not find again; [`GitHub::find_comment`]'s and the write's errors.
     pub(crate) fn upsert(
         &self,
         number: NonZeroU64,
         marker: &str,
         body: &str,
     ) -> Result<Upserted, ForgeError<T::Error>> {
+        if !marker.is_empty() && !body.contains(marker) {
+            return Err(ForgeError::InvalidRequest {
+                operation: Operation::CreateComment,
+                detail: "the body does not carry the marker",
+            });
+        }
         match self.find_comment(number, marker)? {
             None => self.post_comment(number, body).map(|()| Upserted::Created),
             Some(existing) if existing.body == body => Ok(Upserted::Unchanged),
@@ -120,9 +141,13 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         &self,
         number: NonZeroU64,
     ) -> Result<Vec<ReviewCommentDto>, ForgeError<T::Error>> {
-        let path = self.path(&format!("pulls/{number}/comments?per_page={PER_PAGE}"));
+        let operation = Operation::ListReviewComments;
+        let path = self.path(
+            operation,
+            &format!("pulls/{number}/comments?per_page={PER_PAGE}"),
+        )?;
         self.api
-            .list::<Vec<ReviewCommentDto>>(Operation::ListReviewComments, &path, None)
+            .list::<Vec<ReviewCommentDto>>(operation, path, None)
     }
 
     /// The bodies of the App's review comments on PR `number`.
@@ -147,7 +172,7 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
     ) -> Result<(), ForgeError<T::Error>> {
         let operation = Operation::CreateReviewComment;
         let payload = encode(operation, &review_comment_body(comment))?;
-        let path = self.path(&format!("pulls/{number}/comments"));
+        let path = self.path(operation, &format!("pulls/{number}/comments"))?;
         self.api
             .post_once(operation, Request::post(&path, &payload), || {
                 Ok(self.app_review_bodies(number)?.contains(&comment.body))

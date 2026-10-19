@@ -16,9 +16,10 @@ use assay_app::{
 use serde_json::{Map, Value};
 
 use super::api::{Api, Failed, encode, percent_encode};
+use super::api_path;
 use super::error::{ForgeError, Operation};
 use super::repository::Repository;
-use super::transport::{Request, Sleep, Transport};
+use super::transport::{ApiPath, Request, Sleep, Transport};
 use wire::{Blob, ContentsFile, RepositoryView};
 
 /// The ledger repository through the contents API.
@@ -63,15 +64,19 @@ impl<T: Transport, S: Sleep> LedgerRepo<T, S> {
         Self { api, repository }
     }
 
-    /// `repos/<owner>/<name>/<rest>`.
-    fn repo_path(&self, rest: &str) -> String {
-        format!("repos/{}/{rest}", self.repository)
+    /// `repos/<owner>/<name>/<rest>`, for `operation`.
+    fn repo_path<E>(&self, operation: Operation, rest: &str) -> Result<ApiPath, ForgeError<E>> {
+        api_path(operation, format!("repos/{}/{rest}", self.repository))
     }
 
     /// `repos/<owner>/<name>/contents/<path>`, each segment percent-encoded.
-    fn contents_path(&self, path: &LedgerPath) -> String {
+    fn contents_path<E>(
+        &self,
+        operation: Operation,
+        path: &LedgerPath,
+    ) -> Result<ApiPath, ForgeError<E>> {
         let segments: Vec<String> = path.as_str().split('/').map(percent_encode).collect();
-        self.repo_path(&format!("contents/{}", segments.join("/")))
+        self.repo_path(operation, &format!("contents/{}", segments.join("/")))
     }
 
     /// The file at `path`, its size checked before anything is decoded.
@@ -80,7 +85,7 @@ impl<T: Transport, S: Sleep> LedgerRepo<T, S> {
         let malformed = |detail| ForgeError::Malformed { operation, detail };
         let Some(file) = self
             .api
-            .get_optional::<ContentsFile>(operation, &self.contents_path(path))?
+            .get_optional::<ContentsFile>(operation, &self.contents_path(operation, path)?)?
         else {
             self.confirm_repository()?;
             return Ok(None);
@@ -111,7 +116,8 @@ impl<T: Transport, S: Sleep> LedgerRepo<T, S> {
     /// (wi-b5affa).
     fn confirm_repository(&self) -> Result<(), ForgeError<T::Error>> {
         let operation = Operation::ReadLedgerFile;
-        let seen: RepositoryView = self.api.get(operation, &self.repo_path_root())?;
+        let root = api_path(operation, format!("repos/{}", self.repository))?;
+        let seen: RepositoryView = self.api.get(operation, &root)?;
         if seen
             .full_name
             .eq_ignore_ascii_case(&self.repository.to_string())
@@ -125,17 +131,11 @@ impl<T: Transport, S: Sleep> LedgerRepo<T, S> {
         }
     }
 
-    /// `repos/<owner>/<name>`.
-    fn repo_path_root(&self) -> String {
-        format!("repos/{}", self.repository)
-    }
-
     /// The base64 content of blob `sha`, which the contents listing gave as `size` bytes.
     fn blob(&self, sha: &str, size: u64) -> Result<String, ForgeError<T::Error>> {
         let operation = Operation::ReadLedgerFile;
-        let blob: Blob = self
-            .api
-            .get(operation, &self.repo_path(&format!("git/blobs/{sha}")))?;
+        let target = self.repo_path(operation, &format!("git/blobs/{sha}"))?;
+        let blob: Blob = self.api.get(operation, &target)?;
         if blob.sha != sha || blob.size != size || blob.encoding != "base64" {
             return Err(ForgeError::Malformed {
                 operation,
@@ -193,7 +193,7 @@ impl<T: Transport, S: Sleep> Ledger for LedgerRepo<T, S> {
         }
         let operation = Operation::WriteLedgerFile;
         let body = encode(operation, &put_body(path, contents, condition))?;
-        let target = self.contents_path(path);
+        let target = self.contents_path(operation, path)?;
         let request = Request::put(&target, &body);
         let outcome = self.api.retrying(operation, |attempt| {
             if attempt > 0 {
