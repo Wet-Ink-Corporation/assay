@@ -41,7 +41,22 @@ fn the_current_head_and_base_are_read() {
 }
 
 #[test]
-fn every_pull_on_the_head_is_listed_with_its_state_and_base() {
+fn a_pull_answered_for_another_number_is_refused() {
+    let recorded = Recorded::default().ok(Method::Get, &path("pulls/267"), fixture("pull.json"));
+    let waits = Waits::default();
+
+    let current = github(&recorded, &waits).current(id(267));
+
+    assert!(
+        matches!(current, Err(ForgeError::Malformed { detail, .. }) if detail == "GitHub returned another PR"),
+        "{current:?}"
+    );
+}
+
+/// The PR stacked on #268 (fixture #271) has moved past the commit: GitHub lists it on the
+/// commit, but its head is another one, so it is not a PR on this head.
+#[test]
+fn every_pull_whose_head_is_the_commit_is_listed_with_its_state_and_base() {
     let recorded = Recorded::default().ok(
         Method::Get,
         &path(&format!("commits/{HEAD}/pulls?per_page=100")),
@@ -121,7 +136,28 @@ fn a_listed_run_on_another_head_is_refused() {
     let newer = github(&recorded, &waits).newer_run(run(), &head());
 
     assert!(
-        matches!(newer, Err(ForgeError::Malformed { .. })),
+        matches!(newer, Err(ForgeError::Malformed { detail, .. }) if detail == "a listed run is on another head"),
+        "{newer:?}"
+    );
+}
+
+#[test]
+fn a_listed_run_of_another_workflow_is_refused() {
+    let mut other = fixture_json("workflow_runs.json");
+    other["workflow_runs"][1]["workflow_id"] = serde_json::json!(999_999);
+    let recorded = Recorded::default()
+        .ok(
+            Method::Get,
+            &path("actions/runs/39168909542"),
+            fixture("run.json"),
+        )
+        .ok(Method::Get, &workflow_runs(), json(&other));
+    let waits = Waits::default();
+
+    let newer = github(&recorded, &waits).newer_run(run(), &head());
+
+    assert!(
+        matches!(newer, Err(ForgeError::Malformed { detail, .. }) if detail == "a listed run is of another workflow"),
         "{newer:?}"
     );
 }

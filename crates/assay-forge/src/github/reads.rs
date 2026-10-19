@@ -21,9 +21,12 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         number: NonZeroU64,
     ) -> Result<Vec<Review>, ForgeError<T::Error>> {
         let operation = Operation::ListReviews;
-        let path = self.path(&format!("pulls/{number}/reviews?per_page={PER_PAGE}"));
+        let path = self.path(
+            operation,
+            &format!("pulls/{number}/reviews?per_page={PER_PAGE}"),
+        )?;
         self.api
-            .list::<Vec<ReviewDto>>(operation, &path, None)?
+            .list::<Vec<ReviewDto>>(operation, path, None)?
             .into_iter()
             .map(|review| {
                 Ok(Review {
@@ -56,9 +59,12 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         number: NonZeroU64,
     ) -> Result<Vec<String>, ForgeError<T::Error>> {
         let operation = Operation::ListLabels;
-        let path = self.path(&format!("issues/{number}/labels?per_page={PER_PAGE}"));
+        let path = self.path(
+            operation,
+            &format!("issues/{number}/labels?per_page={PER_PAGE}"),
+        )?;
         self.api
-            .list::<Vec<LabelDto>>(operation, &path, None)?
+            .list::<Vec<LabelDto>>(operation, path, None)?
             .into_iter()
             .map(|label| label_name(operation, label))
             .collect()
@@ -74,9 +80,12 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
             ReactionSubject::IssueComment(id) => format!("issues/comments/{}", id.0),
             ReactionSubject::ReviewComment(id) => format!("pulls/comments/{}", id.0),
         };
-        let path = self.path(&format!("{comment}/reactions?per_page={PER_PAGE}"));
+        let path = self.path(
+            operation,
+            &format!("{comment}/reactions?per_page={PER_PAGE}"),
+        )?;
         self.api
-            .list::<Vec<ReactionDto>>(operation, &path, None)?
+            .list::<Vec<ReactionDto>>(operation, path, None)?
             .into_iter()
             .map(|reaction| {
                 Ok(Reaction {
@@ -94,9 +103,12 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         number: NonZeroU64,
     ) -> Result<Vec<TimelineEvent>, ForgeError<T::Error>> {
         let operation = Operation::ReadTimeline;
-        let path = self.path(&format!("issues/{number}/timeline?per_page={PER_PAGE}"));
+        let path = self.path(
+            operation,
+            &format!("issues/{number}/timeline?per_page={PER_PAGE}"),
+        )?;
         self.api
-            .list::<Vec<TimelineDto>>(operation, &path, None)?
+            .list::<Vec<TimelineDto>>(operation, path, None)?
             .into_iter()
             .map(|event| timeline_event(operation, event))
             .collect()

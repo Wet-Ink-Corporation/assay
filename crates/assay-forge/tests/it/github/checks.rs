@@ -1,16 +1,44 @@
 //! The App's check: found by (head, name) and app id, created when absent, and written by
 //! compare-and-set on its `external_id` (02 §5, T7).
 
+use std::time::Duration;
+
 use assay_app::{
     CheckConclusion, CheckFound, CheckName, CheckRun, CheckRunId, CheckState, CheckStatus,
-    CheckUpdate, CompareAndSetError, Forge, VerdictForge,
+    CheckUpdate, CommentForge, CompareAndSetError, Forge, VerdictForge,
 };
 use assay_forge::github::{ForgeError, Method, Operation};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::recorded::{
     HEAD, Recorded, Waits, first_write, fixture, fixture_json, github, head, id, json, path, reply,
+    write_bodies,
 };
+
+/// The PATCH body of [`decision`].
+fn decision_body() -> Value {
+    json!({
+        "status": "completed",
+        "conclusion": "failure",
+        "external_id": "0f".repeat(32),
+        "output": {
+            "title": "assay: failure (gate-error)",
+            "summary": "A gate failed.",
+            "text": "evidence: none",
+        },
+    })
+}
+
+/// The POST body creating the verdict check from [`pending`].
+fn pending_body() -> Value {
+    json!({
+        "name": "assay / verdict",
+        "head_sha": HEAD,
+        "status": "in_progress",
+        "external_id": "pending:39168909542:3",
+        "output": {"title": "assay: pending", "summary": "Review in progress.", "text": ""},
+    })
+}
 
 /// The verdict check's name on the default branch.
 fn verdict() -> CheckName {
@@ -165,19 +193,7 @@ fn an_update_overwrites_status_conclusion_output_and_external_id_without_annotat
         .update_check(app_check().id, &decision())
         .expect("updated");
 
-    assert_eq!(
-        first_write(&recorded),
-        Some(json!({
-            "status": "completed",
-            "conclusion": "failure",
-            "external_id": "0f".repeat(32),
-            "output": {
-                "title": "assay: failure (gate-error)",
-                "summary": "A gate failed.",
-                "text": "evidence: none",
-            },
-        }))
-    );
+    assert_eq!(first_write(&recorded), Some(decision_body()));
 }
 
 #[test]
@@ -250,8 +266,158 @@ fn a_compare_and_set_with_the_read_stamp_writes() {
         &decision(),
     );
 
-    assert!(written.is_ok(), "{written:?}");
-    assert_eq!(recorded.writes().len(), 1, "one PATCH");
+    assert_eq!(written.expect("written"), ());
+    assert_eq!(
+        write_bodies(&recorded),
+        [Some(decision_body())],
+        "one PATCH"
+    );
+}
+
+#[test]
+fn an_empty_expected_stamp_is_refused_unasked() {
+    let recorded = Recorded::default();
+    let waits = Waits::default();
+
+    let written = github(&recorded, &waits).update_check_if(app_check().id, "", &decision());
+
+    assert!(
+        matches!(
+            &written,
+            Err(CompareAndSetError::Forge(ForgeError::InvalidRequest { detail, .. }))
+                if *detail == "the expected external_id is empty"
+        ),
+        "{written:?}"
+    );
+    assert_eq!(recorded.sent(), Vec::new(), "nothing sent");
+}
+
+#[test]
+fn a_check_create_the_probe_does_not_find_is_posted_again() {
+    let recorded = Recorded::default()
+        .ok(
+            Method::Get,
+            &listing(),
+            fixture("check_runs_foreign_only.json"),
+        )
+        .then(
+            Method::Post,
+            &path("check-runs"),
+            reply(502, &[], Vec::new()),
+        )
+        .ok(
+            Method::Get,
+            &listing(),
+            fixture("check_runs_foreign_only.json"),
+        )
+        .then(
+            Method::Post,
+            &path("check-runs"),
+            reply(201, &[], fixture("check_run_app.json")),
+        );
+    let waits = Waits::default();
+
+    let found = github(&recorded, &waits).find_or_create_check(&head(), &verdict(), &pending());
+
+    assert_eq!(found.expect("created"), CheckFound::Created(app_check()));
+    assert_eq!(
+        write_bodies(&recorded),
+        [Some(pending_body()), Some(pending_body())]
+    );
+    assert_eq!(waits.taken(), [Duration::from_secs(1)]);
+}
+
+#[test]
+fn a_gate_check_the_probe_does_not_find_is_posted_again() {
+    let recorded = Recorded::default()
+        .then(
+            Method::Post,
+            &path("check-runs"),
+            reply(502, &[], Vec::new()),
+        )
+        .ok(
+            Method::Get,
+            &listing(),
+            fixture("check_runs_foreign_only.json"),
+        )
+        .then(
+            Method::Post,
+            &path("check-runs"),
+            reply(201, &[], fixture("check_run_app.json")),
+        );
+    let waits = Waits::default();
+
+    let created = github(&recorded, &waits).create_check(&head(), &verdict(), &pending());
+
+    assert_eq!(created.expect("created"), ());
+    assert_eq!(
+        write_bodies(&recorded),
+        [Some(pending_body()), Some(pending_body())]
+    );
+    assert_eq!(waits.taken(), [Duration::from_secs(1)]);
+}
+
+#[test]
+fn a_check_create_failing_four_times_with_probes_is_a_publish_error() {
+    let mut recorded = Recorded::default();
+    for _ in 0..4 {
+        recorded = recorded
+            .ok(
+                Method::Get,
+                &listing(),
+                fixture("check_runs_foreign_only.json"),
+            )
+            .then(
+                Method::Post,
+                &path("check-runs"),
+                reply(503, &[], Vec::new()),
+            );
+    }
+    let waits = Waits::default();
+
+    let found = github(&recorded, &waits).find_or_create_check(&head(), &verdict(), &pending());
+
+    assert!(
+        matches!(
+            found,
+            Err(ForgeError::Exhausted {
+                operation: Operation::CreateCheck,
+                status: 503,
+                attempts: 4
+            })
+        ),
+        "{found:?}"
+    );
+    assert_eq!(write_bodies(&recorded).len(), 4, "four POSTs");
+    assert_eq!(waits.taken(), [1, 2, 4].map(Duration::from_secs));
+}
+
+#[test]
+fn a_next_page_that_is_a_url_in_disguise_is_refused() {
+    for target in [
+        "https://api.github.com/https://evil.example/x",
+        "https://api.github.com/-X",
+        "https://api.github.com//evil.example/x",
+    ] {
+        let recorded = Recorded::default().then(
+            Method::Get,
+            &listing(),
+            reply(
+                200,
+                &[("Link", &format!("<{target}>; rel=\"next\""))],
+                fixture("check_runs_foreign_only.json"),
+            ),
+        );
+        let waits = Waits::default();
+
+        let found = github(&recorded, &waits).find_check(&head(), &verdict());
+
+        assert!(
+            matches!(found, Err(ForgeError::Malformed { detail, .. }) if detail == "next page is not an API path"),
+            "{target}: {found:?}"
+        );
+        assert_eq!(recorded.sent().len(), 1, "{target} is never requested");
+    }
 }
 
 #[test]
@@ -287,16 +453,7 @@ fn find_or_create_creates_the_apps_check_beside_another_apps() {
     let found = github(&recorded, &waits).find_or_create_check(&head(), &verdict(), &pending());
 
     assert_eq!(found.expect("created"), CheckFound::Created(app_check()));
-    assert_eq!(
-        first_write(&recorded),
-        Some(json!({
-            "name": "assay / verdict",
-            "head_sha": HEAD,
-            "status": "in_progress",
-            "external_id": "pending:39168909542:3",
-            "output": {"title": "assay: pending", "summary": "Review in progress.", "text": ""},
-        }))
-    );
+    assert_eq!(first_write(&recorded), Some(pending_body()));
 }
 
 #[test]

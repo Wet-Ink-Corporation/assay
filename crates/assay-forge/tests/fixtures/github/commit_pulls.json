@@ -78,5 +78,45 @@
     "created_at": "2026-10-18T21:40:50Z",
     "updated_at": "2026-10-19T01:18:05Z",
     "html_url": "https://github.com/Wet-Ink-Corporation/assay/pull/268"
+  },
+  {
+    "number": 271,
+    "state": "open",
+    "title": "Stacked on #268",
+    "user": {
+      "login": "Ryan-Britton",
+      "id": 124330161,
+      "node_id": "U_kgDOB2kgsQ",
+      "url": "https://api.github.com/users/Ryan-Britton",
+      "html_url": "https://github.com/Ryan-Britton",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "head": {
+      "label": "Wet-Ink-Corporation:claude/stacked",
+      "ref": "claude/stacked",
+      "sha": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4",
+      "repo": {
+        "id": 1413773798,
+        "name": "assay",
+        "full_name": "Wet-Ink-Corporation/assay",
+        "private": true
+      }
+    },
+    "base": {
+      "label": "Wet-Ink-Corporation:main",
+      "ref": "main",
+      "sha": "9a6a316e170701b5391bc981129b96283abb11f4",
+      "repo": {
+        "id": 1413773798,
+        "full_name": "Wet-Ink-Corporation/assay"
+      }
+    },
+    "draft": false,
+    "merged_at": "2026-10-19T01:18:03Z",
+    "created_at": "2026-10-18T21:40:50Z",
+    "updated_at": "2026-10-19T01:18:05Z",
+    "html_url": "https://github.com/Wet-Ink-Corporation/assay/pull/268"
   }
 ]

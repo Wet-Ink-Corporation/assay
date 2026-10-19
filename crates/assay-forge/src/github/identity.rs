@@ -7,11 +7,11 @@ use assay_app::{Actor, CommitId, CommitIdentity, UserId};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use super::GitHub;
 use super::api::{decode, encode};
 use super::dto;
 use super::error::{ForgeError, Operation};
 use super::transport::{Request, Sleep, Transport};
+use super::{GitHub, api_path};
 
 /// The most commits resolved in one call: the spec's `needs-split` bound (02 §4).
 pub const MAX_COMMITS: usize = 250;
@@ -81,10 +81,11 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
                 cap: MAX_COMMITS,
             });
         }
+        let path = api_path(operation, "graphql".to_owned())?;
         let mut identities = Vec::with_capacity(commits.len());
         for batch in commits.chunks(BATCH) {
             let body = encode(operation, &self.query(batch))?;
-            let response = self.api.send(operation, Request::post("graphql", &body))?;
+            let response = self.api.send(operation, Request::post(&path, &body))?;
             let parsed: GraphResponse = decode(operation, &response.body)?;
             identities.extend(answers(operation, batch, parsed)?);
         }

@@ -1,14 +1,18 @@
 //! The seam between the adapter and whatever carries a request to GitHub: `gh api` in
 //! production, recorded responses in tests.
 
+use std::fmt;
 use std::thread;
 use std::time::Duration;
 
 /// Sends one HTTP request to the GitHub API, authenticated as the transport was built.
 ///
 /// A transport neither retries nor follows pages; [`GitHub`](super::GitHub) does both. It must
-/// bound the response it reads (H-13) and report a non-2xx status as a [`Response`], not as an
-/// error: only a failure to get any response is [`Transport::Error`].
+/// bound what it waits for and reads (H-13): each request ends within a timeout the transport
+/// sets, an expired one being [`Transport::Error`], and it stops reading a body past
+/// [`MAX_RESPONSE_BYTES`] plus one byte, so that the adapter refuses it rather than buffering
+/// an unbounded answer. It reports a non-2xx status as a [`Response`], not as an error: only a
+/// failure to get any response is [`Transport::Error`].
 pub trait Transport {
     /// Why no response was received.
     type Error: std::error::Error + 'static;
@@ -29,14 +33,67 @@ impl<T: Transport + ?Sized> Transport for &T {
     }
 }
 
+/// The largest response body the adapter decodes: [`assay_app::MAX_DOCUMENT_BYTES`]. A larger
+/// one is refused unparsed as [`ForgeError::ResponseTooLarge`](super::ForgeError).
+pub const MAX_RESPONSE_BYTES: usize = assay_app::MAX_DOCUMENT_BYTES;
+
+/// A path and query relative to `https://api.github.com/`, already percent-encoded:
+/// `repos/acme/widgets/check-runs/1`.
+///
+/// Validated so that no path can leave the API or reach a transport's command line as a
+/// flag: it is not empty, has no leading `/` or `-`, no `://`, no `..` segment, and no
+/// control byte, space or backslash.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ApiPath(String);
+
+/// Why a path was refused as an [`ApiPath`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("not a plain path relative to the GitHub API")]
+pub struct InvalidPath;
+
+impl ApiPath {
+    /// `path`, when it is a plain relative API path.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidPath`] when it is empty, starts with `/` or `-`, contains `://` or a `..`
+    /// segment, or contains a control byte, a space or a backslash.
+    pub fn new(path: impl Into<String>) -> Result<Self, InvalidPath> {
+        let path = path.into();
+        let plain = path
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && byte != b'\\');
+        if !plain
+            || path.is_empty()
+            || path.starts_with(['/', '-'])
+            || path.contains("://")
+            || path.split(['/', '?', '#']).any(|segment| segment == "..")
+        {
+            return Err(InvalidPath);
+        }
+        Ok(Self(path))
+    }
+
+    /// The path as sent.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ApiPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// One request to the API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Request<'a> {
     /// The method.
     pub method: Method,
-    /// The path and query relative to `https://api.github.com/`, already percent-encoded, with
-    /// no leading slash: `repos/acme/widgets/check-runs/1`.
-    pub path: &'a str,
+    /// The path and query relative to `https://api.github.com/`.
+    pub path: &'a ApiPath,
     /// The JSON body, for a write or a GraphQL query.
     pub body: Option<&'a [u8]>,
 }
@@ -44,7 +101,7 @@ pub struct Request<'a> {
 impl<'a> Request<'a> {
     /// `GET path`.
     #[must_use]
-    pub const fn get(path: &'a str) -> Self {
+    pub const fn get(path: &'a ApiPath) -> Self {
         Self {
             method: Method::Get,
             path,
@@ -54,7 +111,7 @@ impl<'a> Request<'a> {
 
     /// `POST path` with `body`.
     #[must_use]
-    pub const fn post(path: &'a str, body: &'a [u8]) -> Self {
+    pub const fn post(path: &'a ApiPath, body: &'a [u8]) -> Self {
         Self {
             method: Method::Post,
             path,
@@ -64,7 +121,7 @@ impl<'a> Request<'a> {
 
     /// `PATCH path` with `body`.
     #[must_use]
-    pub const fn patch(path: &'a str, body: &'a [u8]) -> Self {
+    pub const fn patch(path: &'a ApiPath, body: &'a [u8]) -> Self {
         Self {
             method: Method::Patch,
             path,
@@ -155,5 +212,39 @@ mod tests {
 
         assert_eq!(response.header("retry-after"), Some("7"));
         assert_eq!(response.header("link"), None);
+    }
+
+    #[test]
+    fn an_api_path_is_relative_and_plain() {
+        let path = ApiPath::new("repos/acme/widgets/check-runs?check_name=a%20b&page=2")
+            .expect("a plain relative path");
+
+        assert_eq!(
+            path.as_str(),
+            "repos/acme/widgets/check-runs?check_name=a%20b&page=2"
+        );
+        assert_eq!(
+            ApiPath::new("graphql").map(|path| path.to_string()),
+            Ok("graphql".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_api_path_refuses_what_could_leave_the_api_or_become_a_flag() {
+        for text in [
+            "",
+            "/repos/acme/widgets",
+            "-X",
+            "--method=DELETE",
+            "https://evil.example/x",
+            "repos/https://evil.example",
+            "repos/acme widgets",
+            "repos/acme\nwidgets",
+            "repos/acme/../users",
+            "..",
+            "repos\\acme",
+        ] {
+            assert_eq!(ApiPath::new(text), Err(InvalidPath), "{text:?}");
+        }
     }
 }

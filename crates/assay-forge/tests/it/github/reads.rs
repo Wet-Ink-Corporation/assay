@@ -5,41 +5,87 @@ use assay_app::{
     CommentId, Forge, Reaction, ReactionContent, ReactionSubject, Review, ReviewCommentId,
     ReviewState, TimelineEvent, TimelineKind, Timestamp, UserId,
 };
-use assay_forge::github::{ForgeError, MAX_LIST_ITEMS, Method, Operation};
+use assay_forge::github::{ForgeError, MAX_LIST_ITEMS, MAX_RESPONSE_BYTES, Method, Operation};
 use serde_json::json;
 
 use super::recorded::{
     Recorded, Waits, fixture, github, head, id, json, owner, parent, path, pr, reply,
 };
 
-#[test]
-fn a_list_longer_than_the_cap_is_refused_not_cut() {
-    let page = |number: usize| {
-        path(&format!(
-            "issues/268/labels?per_page=100{}",
-            if number == 1 {
-                String::new()
-            } else {
-                format!("&page={number}")
-            }
-        ))
-    };
-    let labels: Vec<_> = (0..100)
+/// Page `number` of PR 268's labels.
+fn label_page(number: usize) -> String {
+    if number == 1 {
+        path("issues/268/labels?per_page=100")
+    } else {
+        path(&format!("issues/268/labels?per_page=100&page={number}"))
+    }
+}
+
+/// `pages` label pages of `per_page` labels each, every one linking to the next.
+fn label_pages(pages: usize, per_page: usize) -> Recorded {
+    let labels: Vec<_> = (0..per_page)
         .map(|index| json!({ "name": format!("label-{index}") }))
         .collect();
     let body = json(&json!(labels));
-    let pages = MAX_LIST_ITEMS / 100;
-    let recorded = (1..=pages).fold(Recorded::default(), |recorded, number| {
+    (1..=pages).fold(Recorded::default(), |recorded, number| {
         let next = format!(
             "<https://api.github.com/{}>; rel=\"next\"",
-            page(number + 1)
+            label_page(number + 1)
         );
+        // Each scripted page owns its body.
         recorded.then(
             Method::Get,
-            &page(number),
+            &label_page(number),
             reply(200, &[("Link", &next)], body.clone()),
         )
-    });
+    })
+}
+
+/// Whether `listed` is the label listing's `TooMany`.
+fn too_many(listed: &Result<Vec<String>, ForgeError<super::recorded::Unscripted>>) -> bool {
+    matches!(
+        listed,
+        Err(ForgeError::TooMany {
+            operation: Operation::ListLabels,
+            cap: MAX_LIST_ITEMS
+        })
+    )
+}
+
+#[test]
+fn a_list_longer_than_the_cap_is_refused_not_cut() {
+    let recorded = label_pages(3, 1001);
+    let waits = Waits::default();
+
+    let listed = github(&recorded, &waits).labels(pr());
+
+    assert!(too_many(&listed), "{listed:?}");
+    assert_eq!(
+        recorded.sent().len(),
+        3,
+        "refused on the page that passed the cap"
+    );
+}
+
+#[test]
+fn a_list_of_more_pages_than_the_cap_is_refused_however_short() {
+    let pages = MAX_LIST_ITEMS / 100;
+    let recorded = label_pages(pages, 1);
+    let waits = Waits::default();
+
+    let listed = github(&recorded, &waits).labels(pr());
+
+    assert!(too_many(&listed), "{listed:?}");
+    assert_eq!(recorded.sent().len(), pages, "page 31 is never read");
+}
+
+#[test]
+fn a_response_over_the_cap_is_refused() {
+    let recorded = Recorded::default().ok(
+        Method::Get,
+        &label_page(1),
+        vec![b' '; MAX_RESPONSE_BYTES + 1],
+    );
     let waits = Waits::default();
 
     let listed = github(&recorded, &waits).labels(pr());
@@ -47,14 +93,13 @@ fn a_list_longer_than_the_cap_is_refused_not_cut() {
     assert!(
         matches!(
             listed,
-            Err(ForgeError::TooMany {
+            Err(ForgeError::ResponseTooLarge {
                 operation: Operation::ListLabels,
-                cap: MAX_LIST_ITEMS
+                cap: MAX_RESPONSE_BYTES
             })
         ),
         "{listed:?}"
     );
-    assert_eq!(recorded.sent().len(), pages, "no page past the cap is read");
 }
 
 #[test]
