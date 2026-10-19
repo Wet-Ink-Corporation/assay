@@ -278,7 +278,8 @@ pub enum ProfileFailure<E> {
     /// The pinned CLI did not answer the production argv.
     #[error(
         "the pinned CLI did not answer the 03 §8 argv ({outcome}); if it refuses --restricted \
-         with --safe-mode, using --restricted with --settings alone is an owner decision"
+         with --safe-mode, 03 §8's fallback applies (--restricted with --settings alone): switch \
+         the pinned argv to it"
     )]
     ProfileRefused {
         /// How the call ended.

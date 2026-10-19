@@ -57,8 +57,14 @@ pub(crate) enum ProfileCliError {
     Scratch(io::Error),
     /// The preflight's working directory is unusable.
     Workdir(WorkdirError),
-    /// The canary could not be run, or no nonce could be drawn.
-    Profile(ProfileError<CanaryError, io::Error>),
+    /// The canary could not be run, or no nonce could be drawn; the preflight's empty directory
+    /// is still removed, and `left` says why it could not be.
+    Profile {
+        /// Why the checks could not be run.
+        error: ProfileError<CanaryError, io::Error>,
+        /// Why the preflight's empty directory could not be removed, if it could not.
+        left: Option<io::Error>,
+    },
 }
 
 impl fmt::Display for ProfileCliError {
@@ -74,7 +80,13 @@ impl fmt::Display for ProfileCliError {
                 write!(f, "the preflight's empty directory: {source}")
             }
             Self::Workdir(source) => write_chain(f, source),
-            Self::Profile(source) => write_chain(f, source),
+            Self::Profile { error, left } => {
+                write_chain(f, error)?;
+                match left {
+                    Some(left) => write!(f, "; and the preflight's empty directory: {left}"),
+                    None => Ok(()),
+                }
+            }
         }
     }
 }
@@ -115,12 +127,14 @@ pub(crate) fn run(
         allowlist: &assay.claude_cli_builtins,
         token: &scanned,
     };
-    let report =
-        verify_profile(variables.names, ports, &context).map_err(ProfileCliError::Profile)?;
-    Ok(ProfileOutcome {
-        report,
-        left: empty.close().err(),
-    })
+    let verdict = verify_profile(variables.names, ports, &context);
+    // The directory is removed whether or not the checks ran; a failure to remove it is reported
+    // beside the outcome, never instead of it.
+    let left = empty.close().err();
+    match verdict {
+        Ok(report) => Ok(ProfileOutcome { report, left }),
+        Err(error) => Err(ProfileCliError::Profile { error, left }),
+    }
 }
 
 /// Writes one line per check, then one per flag.

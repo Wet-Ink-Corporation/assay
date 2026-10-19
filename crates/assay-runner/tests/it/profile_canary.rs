@@ -4,15 +4,16 @@
 //! its flags (#84).
 
 use std::assert_matches;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 
 use assay_app::{
-    ArtifactNonce, EgressToken, FENCE_TARGET, ModelOutcome, NonceSource, PROFILE_SCHEMA,
-    ParseNonceError, PermissionDenial, PluginsConfig, ProfileCheck, ProfileContext, ProfileFailure,
-    ProfilePorts, ProfileProbe, ProfileReport, ProfileRun, ProfileWords, ReplyField, Structured,
-    verify_profile,
+    ArtifactNonce, EgressToken, FENCE_TARGET, HeadlessFlag, ModelOutcome, NonceSource,
+    PROFILE_SCHEMA, ParseNonceError, PermissionDenial, PluginsConfig, ProfileCheck, ProfileContext,
+    ProfileFailure, ProfilePorts, ProfileProbe, ProfileReport, ProfileRun, ProfileWords,
+    ReplyField, Structured, verify_profile,
 };
 use assay_runner::{
     CanaryError, ClaudeCanary, ClaudeHeadless, HeadlessEnv, HeadlessError, StatusError, Workdir,
@@ -350,12 +351,46 @@ fn runs_the_production_argv_with_hook_events_inside_the_sandbox() -> Result<(), 
         .collect();
     assert_eq!(argv, expected);
     assert_eq!(scene.record("cwd")?, format!("{}\n", path("cwd")));
-    let env = scene.record("env")?;
-    assert!(env.contains(&format!("HOME={}\n", path("home"))), "{env}");
-    assert!(
-        env.contains(&format!("CLAUDE_CODE_OAUTH_TOKEN={TOKEN}\n")),
-        "{env}"
-    );
+    // The shell adds PWD, SHLVL and `_` itself; nothing else may come from this process.
+    let env: BTreeMap<String, String> = scene
+        .record("env")?
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .filter(|(name, _)| !["PWD", "SHLVL", "_"].contains(name))
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect();
+    let expected_env = BTreeMap::from([
+        ("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), TOKEN.to_owned()),
+        (
+            "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB".to_owned(),
+            "1".to_owned(),
+        ),
+        ("HOME".to_owned(), path("home")),
+    ]);
+    assert_eq!(env, expected_env);
+    Ok(())
+}
+
+/// Every flag the report names is in the argv the canary ran, and every flag of that argv is
+/// named, so the flag lines cannot drift from the call.
+#[test]
+fn the_reported_flags_are_exactly_the_flags_of_the_argv() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new("")?;
+
+    scene.run()?;
+
+    let ran: BTreeSet<String> = scene
+        .record("argv")?
+        .split_terminator('\0')
+        .filter(|arg| arg.starts_with('-'))
+        .map(str::to_owned)
+        .collect();
+    let reported: BTreeSet<String> = HeadlessFlag::ALL
+        .iter()
+        .filter_map(|flag| flag.to_string().split(' ').next().map(str::to_owned))
+        .collect();
+    assert_eq!(reported, ran);
+    assert_eq!(reported.len(), HeadlessFlag::ALL.len(), "{reported:?}");
     Ok(())
 }
 

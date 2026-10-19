@@ -66,7 +66,8 @@ const TIMEOUT: Duration = Duration::from_secs(300);
 ///
 /// The argv is [`ClaudeHeadless`](super::ClaudeHeadless)'s, so the canary tests the flags
 /// production uses; only the working directory (planted, not empty) and `HOME` (the sandbox's)
-/// differ. The call runs with a 2-turn limit, a 0.25 AEU cap and a 300 s timeout.
+/// differ. Each call has a 0.25 AEU cap and a 300 s timeout; the mod canary's call has a 2-turn
+/// limit and the profile canary's (`ProfileProbe`) a 4-turn limit.
 #[derive(Debug)]
 pub struct ClaudeCanary<K> {
     program: PathBuf,
