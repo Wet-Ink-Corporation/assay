@@ -188,6 +188,14 @@ fn state_refused(contents: &str, problem: Corruption) {
 }
 
 #[test]
+fn a_state_document_written_as_an_array_is_refused() {
+    state_refused(
+        r#"["assay.ledger-state/1",42,7,null,null,[],null,[]]"#,
+        Corruption::Shape,
+    );
+}
+
+#[test]
 fn a_state_file_of_another_pr_is_refused() {
     state_refused(
         &full_document().replacen(r#""pr":7,"evidence""#, r#""pr":8,"evidence""#, 1),

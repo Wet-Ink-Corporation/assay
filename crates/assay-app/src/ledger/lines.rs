@@ -10,7 +10,8 @@ use crate::contract::parse_json_strict;
 pub(super) type Refusal = (usize, Corruption);
 
 /// The lines of `contents` with their numbers from 1, newlines removed. Empty contents hold no
-/// line; otherwise every line must be non-empty, within [`MAX_RECORD_BYTES`], and terminated.
+/// line; otherwise every line must be non-empty, within [`MAX_RECORD_BYTES`], terminated, and
+/// start with `{` and end with `}`: one object, with nothing around it, as the writer writes it.
 pub(super) fn lines(contents: &[u8]) -> Result<Vec<(usize, &[u8])>, Refusal> {
     let mut found = Vec::new();
     for (number, chunk) in (1_usize..).zip(contents.split_inclusive(|&byte| byte == b'\n')) {
@@ -25,16 +26,22 @@ pub(super) fn lines(contents: &[u8]) -> Result<Vec<(usize, &[u8])>, Refusal> {
         if line.is_empty() {
             return Err((number, Corruption::EmptyLine));
         }
+        if !(line.starts_with(b"{") && line.ends_with(b"}")) {
+            return Err((number, Corruption::Shape));
+        }
         found.push((number, line));
     }
     Ok(found)
 }
 
-/// `text` as `D`: one JSON value with no repeated key, of `D`'s shape.
+/// `text` as `D`: one JSON object with no repeated key, of `D`'s shape. Any other value is
+/// refused, since serde would also read a struct from an array of its fields in order.
 pub(super) fn parse<D: DeserializeOwned>(text: &[u8]) -> Result<D, Corruption> {
-    parse_json_strict(text)
-        .and_then(serde_json::from_value)
-        .map_err(|_shape| Corruption::Shape)
+    let value = parse_json_strict(text).map_err(|_shape| Corruption::Shape)?;
+    if !value.is_object() {
+        return Err(Corruption::Shape);
+    }
+    serde_json::from_value(value).map_err(|_shape| Corruption::Shape)
 }
 
 /// Checks a record's `schema` field against the contract id it must carry.

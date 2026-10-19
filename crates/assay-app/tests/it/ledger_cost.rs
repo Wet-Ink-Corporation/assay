@@ -188,6 +188,14 @@ fn a_cost_line_over_the_record_cap_is_refused() {
 }
 
 #[test]
+fn a_cost_line_that_is_not_exactly_one_object_is_refused() {
+    let line = cost_line(1, "reserved", "0.74", "2026-10-12T09:30:00.000Z");
+    let record = line.trim_end();
+    refused(&format!(" {record}\n"), 1, Corruption::Shape);
+    refused(&format!("{record} \n"), 1, Corruption::Shape);
+}
+
+#[test]
 fn a_cost_line_that_repeats_a_key_is_refused() {
     let line = cost_line(1, "reserved", "0.74", "2026-10-12T09:30:00.000Z");
     let repeated = line.replacen(r#""pr":7,"#, r#""pr":7,"pr":8,"#, 1);

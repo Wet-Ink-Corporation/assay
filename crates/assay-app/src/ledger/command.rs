@@ -10,10 +10,10 @@ use assay_domain::RunUid;
 use serde::{Deserialize, Serialize};
 
 use super::cas::{Next, append_line, read_file};
-use super::cost::{Appended, field};
 use super::error::{Corruption, LedgerReadError, LedgerWriteError};
 use super::lines::{Refusal, check_schema, lines, parse, to_line};
 use super::port::{Ledger, LedgerPath};
+use super::record::{Appended, field};
 use super::time::LedgerTime;
 use crate::config::Sha256Digest;
 use crate::publish::CommentId;
@@ -135,7 +135,7 @@ fn parse_commands(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommandLine<'a> {
-    schema: String,
+    schema: Cow<'static, str>,
     run_uid: RunUid,
     pr: NonZeroU64,
     comment_id: NonZeroU64,
@@ -149,7 +149,7 @@ struct CommandLine<'a> {
 impl<'a> From<&'a CommandRecord> for CommandLine<'a> {
     fn from(record: &'a CommandRecord) -> Self {
         Self {
-            schema: COMMAND_SCHEMA.to_owned(),
+            schema: Cow::Borrowed(COMMAND_SCHEMA),
             run_uid: record.run_uid,
             pr: record.pr,
             comment_id: record.comment_id.0,

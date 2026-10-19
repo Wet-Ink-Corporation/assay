@@ -14,6 +14,7 @@ use super::cas::{Next, append_line, read_file};
 use super::error::{Corruption, LedgerReadError, LedgerWriteError};
 use super::lines::{Refusal, check_schema, lines, parse, to_line};
 use super::port::{Ledger, LedgerPath};
+use super::record::{Appended, field, is_repository};
 use super::time::{LedgerMonth, LedgerTime};
 use crate::config::{CommitId, Sha256Digest};
 use crate::prompt_bundle::Role;
@@ -108,16 +109,6 @@ impl CostRole {
     fn from_code(code: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|role| role.code() == code)
     }
-}
-
-/// What an append of a keyed record did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Appended<R> {
-    /// The record was written.
-    Recorded,
-    /// A record with its key was already there, so nothing was written: this one, which may
-    /// differ from the one given (the first writer's wins, R3-16).
-    AlreadyRecorded(R),
 }
 
 /// Appends `record` to its month's cost file, unless a record with its `run_uid` and kind is
@@ -215,7 +206,7 @@ fn parse_cost(line: &[u8]) -> Result<CostRecord, Corruption> {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CostLine<'a> {
-    schema: String,
+    schema: Cow<'static, str>,
     run_uid: RunUid,
     run_key: String,
     repo: Cow<'a, str>,
@@ -240,7 +231,7 @@ struct RoleLine {
 impl<'a> From<&'a CostRecord> for CostLine<'a> {
     fn from(record: &'a CostRecord) -> Self {
         Self {
-            schema: COST_SCHEMA.to_owned(),
+            schema: Cow::Borrowed(COST_SCHEMA),
             run_uid: record.run_uid,
             run_key: record.run_key.to_string(),
             repo: Cow::Borrowed(&record.repo),
@@ -307,28 +298,4 @@ fn roles(lines: Vec<RoleLine>) -> Result<Vec<RoleCost>, Corruption> {
             Ok(RoleCost { role, aeu })
         })
         .collect()
-}
-
-/// `text` parsed as `T`, or the field named `name` is refused.
-pub(super) fn field<T: std::str::FromStr>(text: &str, name: &'static str) -> Result<T, Corruption> {
-    text.parse().map_err(|_value| Corruption::Field(name))
-}
-
-/// Whether `text` is a GitHub `owner/name`: an owner of 1 to 39 ASCII letters, digits and `-`,
-/// and a name of 1 to 100 ASCII letters, digits, `.`, `_` and `-`, other than `.` and `..`.
-pub(super) fn is_repository(text: &str) -> bool {
-    let Some((owner, name)) = text.split_once('/') else {
-        return false;
-    };
-    let owner_ok = (1..=39).contains(&owner.len())
-        && owner
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
-    let name_ok = (1..=100).contains(&name.len())
-        && name != "."
-        && name != ".."
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
-    owner_ok && name_ok
 }

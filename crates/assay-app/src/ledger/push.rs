@@ -10,10 +10,10 @@ use assay_domain::RunUid;
 use serde::{Deserialize, Serialize};
 
 use super::cas::{Next, append_line, read_file};
-use super::cost::field;
 use super::error::{Corruption, LedgerReadError, LedgerWriteError};
 use super::lines::{Refusal, check_schema, lines, parse, to_line};
 use super::port::{Ledger, LedgerPath};
+use super::record::field;
 use super::time::LedgerTime;
 use crate::config::CommitId;
 use crate::status::UserId;
@@ -167,7 +167,7 @@ fn parse_pushes(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PushLine {
-    schema: String,
+    schema: Cow<'static, str>,
     run_uid: RunUid,
     pr: NonZeroU64,
     seq: NonZeroU64,
@@ -182,7 +182,7 @@ impl From<&PushRecord> for PushLine {
     fn from(record: &PushRecord) -> Self {
         let push = &record.push;
         Self {
-            schema: PUSH_SCHEMA.to_owned(),
+            schema: Cow::Borrowed(PUSH_SCHEMA),
             run_uid: push.run_uid,
             pr: push.pr,
             seq: record.seq,

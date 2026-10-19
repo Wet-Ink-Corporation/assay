@@ -44,9 +44,14 @@ pub trait Ledger {
     /// absent, or at the version read. Otherwise nothing is written and the outcome is
     /// [`WriteOutcome::Conflict`].
     ///
+    /// The ledger operations re-apply their change after a conflict, so an implementation
+    /// returns `Conflict` only when it knows this write is not in the file. When it cannot tell
+    /// (an attempt went unanswered and the file has since moved), it returns an error.
+    ///
     /// # Errors
     ///
-    /// [`Self::Error`] when the ledger cannot be written; the file may or may not have changed.
+    /// [`Self::Error`] when the ledger cannot be written, or the write cannot be confirmed; the
+    /// file may or may not have changed.
     fn write(
         &self,
         path: &LedgerPath,

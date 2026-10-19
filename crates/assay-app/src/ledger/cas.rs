@@ -50,6 +50,11 @@ pub(super) fn read_file<L: Ledger>(
 ///
 /// `change` must derive everything it writes from the contents it is shown, so a retry applies
 /// the change to the file as it now is and no other writer's change is lost.
+///
+/// A conflict is retried at once, with no wait: the port has no clock or sleep, and each attempt
+/// is already a fresh read and a write. Under sustained contention the operation therefore ends
+/// in [`LedgerWriteError::Contended`] after at most [`MAX_CAS_ATTEMPTS`] reads and as many writes,
+/// rather than spacing its attempts out.
 pub(super) fn compare_and_set<L: Ledger, T>(
     ledger: &L,
     path: &LedgerPath,

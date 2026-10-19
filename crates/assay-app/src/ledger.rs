@@ -15,18 +15,20 @@ mod error;
 mod lines;
 mod port;
 mod push;
+mod record;
 mod state;
 mod time;
 
 pub use budget::{BUDGET_WINDOW, COOLDOWN_WINDOW, CostWindow, LeaseReservation, read_costs};
 pub use command::{CommandRecord, MAX_COMMAND_CHARS, append_command, read_commands};
-pub use cost::{Appended, CostKind, CostRecord, CostRole, RoleCost, append_cost};
+pub use cost::{CostKind, CostRecord, CostRole, RoleCost, append_cost};
 pub use error::{Corruption, LedgerReadError, LedgerWriteError};
 pub use port::{
     FileVersion, Ledger, LedgerFile, LedgerPath, MAX_CAS_ATTEMPTS, MAX_LEDGER_FILE_BYTES,
     MAX_RECORD_BYTES, WriteCondition, WriteOutcome,
 };
 pub use push::{PushAppended, PushDraft, PushRecord, append_push, read_pushes};
+pub use record::Appended;
 pub use state::{
     ActorCounter, DecisionPointer, DeferralRecord, MAX_STATE_ENTRIES, PrState, StateUpdate,
     read_state, update_state,

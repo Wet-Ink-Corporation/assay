@@ -45,6 +45,14 @@ pub enum LedgerRepoError<E> {
         /// Its length in bytes.
         size: u64,
     },
+    /// An attempt to write the file failed without an answer, and the file then moved on or a
+    /// resend was refused as stale: the write may have landed and been overwritten since, so
+    /// the file may or may not hold it. Never a conflict, which promises nothing was written.
+    #[error("ledger file {path} may or may not have been written")]
+    Unconfirmed {
+        /// The file.
+        path: LedgerPath,
+    },
 }
 
 /// What a read after a failed write shows.
@@ -53,8 +61,18 @@ enum Probe {
     Landed,
     /// The file is still as the write's condition says: it can be sent again.
     Unchanged,
-    /// The file is neither: another writer moved it.
+    /// The file is neither: the write did not land, or landed and was overwritten since.
     Moved,
+}
+
+/// How one attempt of a write ended.
+enum Sent {
+    /// The write landed.
+    Written,
+    /// The file was not at the condition's version, and no earlier attempt may have landed.
+    Conflict,
+    /// The file moved after an attempt that may have landed.
+    Unconfirmed,
 }
 
 impl<T: Transport, S: Sleep> LedgerRepo<T, S> {
@@ -118,10 +136,11 @@ impl<T: Transport, S: Sleep> LedgerRepo<T, S> {
         let operation = Operation::ReadLedgerFile;
         let root = api_path(operation, format!("repos/{}", self.repository))?;
         let seen: RepositoryView = self.api.get(operation, &root)?;
-        if seen
-            .full_name
-            .eq_ignore_ascii_case(&self.repository.to_string())
-        {
+        let same = seen.full_name.split_once('/').is_some_and(|(owner, name)| {
+            owner.eq_ignore_ascii_case(self.repository.owner())
+                && name.eq_ignore_ascii_case(self.repository.name())
+        });
+        if same {
             Ok(())
         } else {
             Err(ForgeError::Malformed {
@@ -155,7 +174,9 @@ impl<T: Transport, S: Sleep> LedgerRepo<T, S> {
         let file = match self.fetch(path) {
             Ok(file) => file,
             Err(LedgerRepoError::Forge(error)) => return Err(error),
-            Err(LedgerRepoError::TooLarge { .. }) => return Ok(Probe::Moved),
+            Err(LedgerRepoError::TooLarge { .. } | LedgerRepoError::Unconfirmed { .. }) => {
+                return Ok(Probe::Moved);
+            }
         };
         Ok(match (file, condition) {
             (Some(found), _) if found.contents == contents => Probe::Landed,
@@ -177,8 +198,13 @@ impl<T: Transport, S: Sleep> Ledger for LedgerRepo<T, S> {
 
     /// `PUT contents/<path>` with the version read as `sha` (none to create). GitHub's 409 is a
     /// conflict, and so is its 422 for a create over an existing file (`"sha" wasn't supplied`).
-    /// A retryable failure is retried only after a read shows the write did not land and the
-    /// file did not move, so a write is never applied twice.
+    ///
+    /// After a retryable failure the file is read first: holding the contents, the write landed;
+    /// still at the condition's version, it is sent again, and GitHub's check of the `sha` lets
+    /// at most one of the sends land. Once an attempt failed without an answer, a moved file or
+    /// a resend refused as stale is [`LedgerRepoError::Unconfirmed`], never
+    /// [`WriteOutcome::Conflict`]: the write may have landed and been overwritten, and a caller
+    /// that re-applied its change on a conflict would apply it twice.
     fn write(
         &self,
         path: &LedgerPath,
@@ -195,28 +221,40 @@ impl<T: Transport, S: Sleep> Ledger for LedgerRepo<T, S> {
         let body = encode(operation, &put_body(path, contents, condition))?;
         let target = self.contents_path(operation, path)?;
         let request = Request::put(&target, &body);
-        let outcome = self.api.retrying(operation, |attempt| {
-            if attempt > 0 {
+        let sent = self.api.retrying(operation, |attempt| {
+            let resend = attempt > 0;
+            if resend {
                 match self.probe(path, contents, condition)? {
-                    Probe::Landed => return Ok(WriteOutcome::Written),
-                    Probe::Moved => return Ok(WriteOutcome::Conflict),
+                    Probe::Landed => return Ok(Sent::Written),
+                    Probe::Moved => return Ok(Sent::Unconfirmed),
                     Probe::Unchanged => {}
                 }
             }
             match self.api.attempt(operation, &request) {
-                Ok(_response) => Ok(WriteOutcome::Written),
-                Err(Failed::Stop(ForgeError::Rejected { status: 409, .. })) => {
-                    Ok(WriteOutcome::Conflict)
-                }
-                Err(Failed::Stop(ForgeError::Rejected { status: 422, .. }))
-                    if *condition == WriteCondition::Absent =>
-                {
-                    Ok(WriteOutcome::Conflict)
-                }
+                Ok(_response) => Ok(Sent::Written),
+                Err(Failed::Stop(error)) if is_stale(&error, condition) => Ok(if resend {
+                    Sent::Unconfirmed
+                } else {
+                    Sent::Conflict
+                }),
                 Err(failed) => Err(failed),
             }
         })?;
-        Ok(outcome)
+        match sent {
+            Sent::Written => Ok(WriteOutcome::Written),
+            Sent::Conflict => Ok(WriteOutcome::Conflict),
+            Sent::Unconfirmed => Err(LedgerRepoError::Unconfirmed { path: path.clone() }),
+        }
+    }
+}
+
+/// Whether GitHub refused a write under `condition` because the file is not at its version:
+/// 409 for a stale `sha`, and 422 for a create over an existing file.
+fn is_stale<E>(error: &ForgeError<E>, condition: &WriteCondition) -> bool {
+    match error {
+        ForgeError::Rejected { status: 409, .. } => true,
+        ForgeError::Rejected { status: 422, .. } => *condition == WriteCondition::Absent,
+        _ => false,
     }
 }
 

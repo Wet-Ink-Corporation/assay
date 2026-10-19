@@ -105,6 +105,22 @@ fn a_lease_counts_unless_its_run_is_already_counted() -> Result<(), Box<dyn Erro
 }
 
 #[test]
+fn a_lease_counts_when_its_run_s_record_is_before_the_window() -> Result<(), Box<dyn Error>> {
+    let before = cost_line(1, "reserved", "2.3", "2026-10-11T09:59:59.999Z");
+    let ledger =
+        MemoryLedger::default().with_file(&month_of("2026-10-11T09:59:59.999Z"), before.as_bytes());
+    let leases = [LeaseReservation {
+        run_uid: run(1),
+        reserved_aeu: Aeu::from_micros(1_500_000),
+    }];
+
+    let window = read_costs(&ledger, at("2026-10-12T10:00:00.000Z"))?;
+
+    assert_eq!(window.day_spent(&leases), Aeu::from_micros(1_500_000));
+    Ok(())
+}
+
+#[test]
 fn admissions_are_the_pr_s_reservations_within_the_hour() -> Result<(), Box<dyn Error>> {
     let mut other_pr = cost(4, CostKind::Reserved, 1, "2026-10-12T09:50:00.000Z");
     other_pr.pr = id(8);

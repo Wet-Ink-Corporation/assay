@@ -9,10 +9,10 @@ use assay_domain::Tier;
 use serde::{Deserialize, Serialize};
 
 use super::cas::{Refused, Step, compare_and_set, read_file};
-use super::cost::{field, is_repository};
 use super::error::{Corruption, LedgerReadError, LedgerWriteError};
 use super::lines::{check_schema, parse, to_line};
 use super::port::{Ledger, LedgerPath};
+use super::record::{field, is_repository};
 use super::time::LedgerTime;
 use crate::config::{CommitId, Sha256Digest};
 use crate::publish::{EvidencePointer, EvidenceRecord, LlmEvidence};
@@ -169,7 +169,7 @@ fn parse_state(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StateDocument<'a> {
-    schema: String,
+    schema: Cow<'static, str>,
     repo_id: NonZeroU64,
     pr: NonZeroU64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -229,7 +229,7 @@ impl<'a> StateDocument<'a> {
     /// The document of `state` for PR `pr` of repository `repo_id`.
     fn new(repo_id: NonZeroU64, pr: NonZeroU64, state: &'a PrState) -> Self {
         Self {
-            schema: STATE_SCHEMA.to_owned(),
+            schema: Cow::Borrowed(STATE_SCHEMA),
             repo_id,
             pr,
             evidence: state.evidence.as_ref().map(|pointer| EvidenceLine {

@@ -414,8 +414,16 @@ fn a_failed_write_that_did_not_land_is_sent_again() {
     assert_eq!(recorded.writes().len(), 2);
 }
 
+/// `outcome` is `Unconfirmed` for `october()`: the write may or may not have landed.
+fn assert_unconfirmed(outcome: &Result<WriteOutcome, LedgerRepoError<Unscripted>>) {
+    assert!(
+        matches!(outcome, Err(LedgerRepoError::Unconfirmed { path }) if *path == october()),
+        "{outcome:?}"
+    );
+}
+
 #[test]
-fn a_failed_write_after_which_the_file_moved_is_a_conflict() {
+fn a_failed_write_after_which_the_file_moved_is_unconfirmed() {
     let mut moved = fixture_json("ledger_contents.json");
     moved["sha"] = json!("1acc419d4d6a9ce985db7be48c6349a0475975b5");
     let recorded = Recorded::default()
@@ -433,8 +441,69 @@ fn a_failed_write_after_which_the_file_moved_is_a_conflict() {
         &WriteCondition::At(FileVersion::new(SHA)),
     );
 
-    assert_eq!(outcome.ok(), Some(WriteOutcome::Conflict));
+    assert_unconfirmed(&outcome);
     assert_eq!(recorded.writes().len(), 1);
+}
+
+#[test]
+fn a_resend_refused_as_stale_after_a_failed_write_is_unconfirmed() {
+    let recorded = Recorded::default()
+        .then(
+            Method::Put,
+            &contents_path(&october()),
+            reply(502, &[], Vec::new()),
+        )
+        .ok(
+            Method::Get,
+            &contents_path(&october()),
+            fixture("ledger_contents.json"),
+        )
+        .then(
+            Method::Put,
+            &contents_path(&october()),
+            reply(409, &[], fixture("ledger_put_conflict.json")),
+        );
+    let waits = Waits::default();
+
+    let outcome = ledger(&recorded, &waits).write(
+        &october(),
+        b"foo",
+        &WriteCondition::At(FileVersion::new(SHA)),
+    );
+
+    assert_unconfirmed(&outcome);
+    assert_eq!(recorded.writes().len(), 2);
+}
+
+#[test]
+fn a_create_resend_refused_after_a_failed_write_is_unconfirmed() {
+    let recorded = Recorded::default()
+        .then(
+            Method::Put,
+            &contents_path(&october()),
+            reply(502, &[], Vec::new()),
+        )
+        .then(
+            Method::Get,
+            &contents_path(&october()),
+            reply(404, &[], br#"{"message":"Not Found"}"#.to_vec()),
+        )
+        .ok(
+            Method::Get,
+            &format!("repos/{LEDGER_REPOSITORY}"),
+            fixture("ledger_repository.json"),
+        )
+        .then(
+            Method::Put,
+            &contents_path(&october()),
+            reply(422, &[], fixture("ledger_put_no_sha.json")),
+        );
+    let waits = Waits::default();
+
+    let outcome = ledger(&recorded, &waits).write(&october(), b"foo", &WriteCondition::Absent);
+
+    assert_unconfirmed(&outcome);
+    assert_eq!(recorded.writes().len(), 2);
 }
 
 #[test]
