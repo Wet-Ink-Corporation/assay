@@ -204,7 +204,7 @@ impl ObjectRepo {
         let staging = Scope {
             work_tree: Some(worktree.root()),
             index: Some(&index),
-            user: None,
+            ..Scope::default()
         };
         self.run(Call {
             scope: staging,
@@ -262,7 +262,7 @@ impl ObjectRepo {
         let scope = Scope {
             work_tree: Some(dest),
             index: Some(&index),
-            user: None,
+            ..Scope::default()
         };
         self.run(Call {
             scope,

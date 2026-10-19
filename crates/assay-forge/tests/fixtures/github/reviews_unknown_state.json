@@ -1,0 +1,31 @@
+[
+  {
+    "id": 5565100718,
+    "node_id": "PRR_kwDOVER55s8AAAABS7Syrg",
+    "user": {
+      "login": "greptile-apps[bot]",
+      "id": 165735046,
+      "node_id": "BOT_kgDOCeDqhg",
+      "url": "https://api.github.com/users/greptile-apps%5Bbot%5D",
+      "html_url": "https://github.com/apps/greptile-apps",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "body": "`Ryan-Britton` has reached the 50-credit limit for trial accounts. To continue receiving code reviews, [upgrade your plan](https://app.greptile.com/review/github).",
+    "state": "ARCHIVED",
+    "html_url": "https://github.com/Wet-Ink-Corporation/assay/pull/268#pullrequestreview-5565100718",
+    "pull_request_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/pulls/268",
+    "author_association": "NONE",
+    "_links": {
+      "html": {
+        "href": "https://github.com/Wet-Ink-Corporation/assay/pull/268#pullrequestreview-5565100718"
+      },
+      "pull_request": {
+        "href": "https://api.github.com/repos/Wet-Ink-Corporation/assay/pulls/268"
+      }
+    },
+    "submitted_at": "2026-10-18T21:40:56Z",
+    "commit_id": "70aa6d748be6f3884e85d294112f9addf83cee59"
+  }
+]
