@@ -19,7 +19,9 @@ mod finding_text;
 mod forge;
 mod gate;
 mod golden;
+mod ledger;
 mod model_runner;
+mod open;
 mod plan;
 mod preflight;
 mod prompt_bundle;
@@ -101,9 +103,27 @@ pub use gate::{
     Termination, account_for_required, run_gates,
 };
 pub use golden::{CorpusEntry, CorpusEntryKind, GoldenReplay, SELF_GATE, replay_golden};
+pub use ledger::{
+    ActorCounter, Appended, BUDGET_WINDOW, COOLDOWN_WINDOW, CommandRecord, Consumed, Corruption,
+    CostKind, CostRecord, CostRole, CostWindow, DecisionPointer, DeferralRecord, FileVersion,
+    GrantKey, Granted, LOCK_TTL, LeaseError, LeaseRef, LeaseReservation, LeaseState, Ledger,
+    LedgerFile, LedgerMonth, LedgerPath, LedgerReadError, LedgerRefs, LedgerTime, LedgerWriteError,
+    LockAcquired, LockHold, LockLease, LockRequest, MAX_CAS_ATTEMPTS, MAX_COMMAND_CHARS,
+    MAX_LEASE_MESSAGE_BYTES, MAX_LEDGER_FILE_BYTES, MAX_RECORD_BYTES, MAX_REVIEW_TIMEOUT,
+    MAX_STATE_ENTRIES, ParseLedgerTimeError, PrState, PushAppended, PushDraft, PushKind,
+    PushRecord, RefCreation, RefDeletion, RefTip, Released, RetryGrant, RoleCost, SLOT_TTL, Slot,
+    SlotAcquired, SlotAcquisition, SlotHold, SlotLease, SlotRequest, SlotView, StateUpdate,
+    WriteCondition, WriteOutcome, acquire_lock, acquire_slot, append_command, append_cost,
+    append_push, consume_grant, grant_retry, read_commands, read_costs, read_pushes, read_slots,
+    read_state, reap_expired_slots, release_lock, release_slot, update_state,
+};
 pub use model_runner::{
     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
     PromptError, RateLimitObserved, RetryError, Structured, run_with_retry,
+};
+pub use open::{
+    MAX_LOCK_RETRIES, OpenClock, OpenError, OpenFailure, OpenOutcome, OpenPorts, OpenRequest,
+    OpenStep, OpenTrigger, Opened, PendingStamp, PushEvent, ReopenRefused, Stamped, open,
 };
 pub use plan::{
     ArtifactJob, ArtifactNonce, BaseConfigError, ChangedFiles, EntryKind, EvidenceKey,

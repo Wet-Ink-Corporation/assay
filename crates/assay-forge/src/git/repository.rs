@@ -366,6 +366,12 @@ impl ObjectRepo {
     pub(super) fn run(&self, call: Call<'_>) -> Result<Captured, GitError> {
         run_in(&self.git_dir, &self.environment, self.limits, call)
     }
+
+    /// Runs `call` in this repository within its timeout and the output cap, whatever its exit
+    /// status.
+    pub(super) fn run_to_exit(&self, call: Call<'_>) -> Result<Captured, GitError> {
+        run_to_exit(&self.git_dir, &self.environment, self.limits, call)
+    }
 }
 
 /// A call of `operation` with `args`, no stdin, no scope and `limits`' timeout.
@@ -383,6 +389,7 @@ pub(super) const fn call<'a>(
             work_tree: None,
             index: None,
             user: None,
+            header: None,
         },
     }
 }
@@ -390,6 +397,23 @@ pub(super) const fn call<'a>(
 /// Runs `call` against `git_dir` within its timeout and `limits`' output cap; a non-zero exit
 /// is an error.
 pub(super) fn run_in(
+    git_dir: &Path,
+    environment: &GitEnvironment,
+    limits: GitLimits,
+    call: Call<'_>,
+) -> Result<Captured, GitError> {
+    let operation = call.operation;
+    let captured = run_to_exit(git_dir, environment, limits, call)?;
+    if captured.status.success() {
+        Ok(captured)
+    } else {
+        Err(failed(operation, &captured))
+    }
+}
+
+/// Runs `call` against `git_dir` within its timeout and `limits`' output cap, whatever its exit
+/// status, for an operation whose failure output says why (a push's `--porcelain` report).
+pub(super) fn run_to_exit(
     git_dir: &Path,
     environment: &GitEnvironment,
     limits: GitLimits,
@@ -408,20 +432,20 @@ pub(super) fn run_in(
     };
     let mut command: Command = git_in(git_dir, scope, environment, operation);
     command.args(args);
-    let captured = process::run(command, input, process_limits, environment.killer())
-        .map_err(|source| GitError::Process { operation, source })?;
-    if captured.status.success() {
-        Ok(captured)
-    } else {
-        Err(GitError::Failed {
-            operation,
-            status: captured.status,
-            stderr: String::from_utf8_lossy(&captured.stderr)
-                .trim()
-                .chars()
-                .take(STDERR_EXCERPT_CHARS)
-                .collect(),
-        })
+    process::run(command, input, process_limits, environment.killer())
+        .map_err(|source| GitError::Process { operation, source })
+}
+
+/// [`GitError::Failed`] for `captured`, with an excerpt of its stderr.
+pub(super) fn failed(operation: GitOperation, captured: &Captured) -> GitError {
+    GitError::Failed {
+        operation,
+        status: captured.status,
+        stderr: String::from_utf8_lossy(&captured.stderr)
+            .trim()
+            .chars()
+            .take(STDERR_EXCERPT_CHARS)
+            .collect(),
     }
 }
 

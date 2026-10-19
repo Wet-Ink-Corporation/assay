@@ -1,0 +1,18 @@
+{
+  "type": "file",
+  "encoding": "none",
+  "size": 393,
+  "name": "2026-10.jsonl",
+  "path": "ledger/2026-10.jsonl",
+  "content": "",
+  "sha": "8f9e2b0c41f6a2a7d1f0c9e3b5a4d6c7e8f90123",
+  "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay-ledger/contents/ledger/2026-10.jsonl?ref=main",
+  "html_url": "https://github.com/Wet-Ink-Corporation/assay-ledger/blob/main/ledger/2026-10.jsonl",
+  "git_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay-ledger/git/blobs/8f9e2b0c41f6a2a7d1f0c9e3b5a4d6c7e8f90123",
+  "download_url": "https://raw.githubusercontent.com/Wet-Ink-Corporation/assay-ledger/main/ledger/2026-10.jsonl",
+  "_links": {
+    "git": "https://api.github.com/repos/Wet-Ink-Corporation/assay-ledger/git/blobs/8f9e2b0c41f6a2a7d1f0c9e3b5a4d6c7e8f90123",
+    "self": "https://api.github.com/repos/Wet-Ink-Corporation/assay-ledger/contents/ledger/2026-10.jsonl?ref=main",
+    "html": "https://github.com/Wet-Ink-Corporation/assay-ledger/blob/main/ledger/2026-10.jsonl"
+  }
+}

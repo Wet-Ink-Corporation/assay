@@ -8,13 +8,16 @@
 //! [`assay_app::StatusForge`], so it is tested with fakes until the GitHub adapter (#53) exists.
 //! [`run_prerequisites`] wires `assay doctor --repository` (#75) over any
 //! [`assay_app::PrerequisiteForge`], tested with fakes until the live transport (#273) exists.
+//! [`OpenCommand`] reads `assay open`'s run from the Actions environment and refuses a re-run.
 
+mod open;
 mod prerequisites;
 mod pull_request;
 mod revisions;
 mod status;
 mod supervisor;
 
+pub use open::{OpenCommand, OpenUsage, OpenVariables};
 pub use prerequisites::{
     PrerequisitesArgs, PrerequisitesRunError, PrerequisitesUsage, prerequisites_exit_code,
     run_prerequisites, write_prerequisites,

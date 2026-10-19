@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:assay:schema:ledger-cost:1",
+  "title": "assay.ledger-cost/1",
+  "description": "One line of a cost file `ledger/YYYY-MM.jsonl` in the ledger repository (docs/architecture/06-operations.md §1, 03-contracts.md §6c): a run's `reserved` record, written by `admit` at slot acquisition, or its `final` record, written by `release` or back-filled by the ledger reconcile. Keyed by `run_uid` and `kind`; `at` lies in the file's month. Unknown fields are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "run_uid", "run_key", "repo", "pr", "head_sha", "tier", "roles", "aeu", "kind",
+    "cancelled", "at"
+  ],
+  "properties": {
+    "schema": { "const": "assay.ledger-cost/1" },
+    "run_uid": { "$ref": "#/$defs/runUid" },
+    "run_key": { "$ref": "#/$defs/digest" },
+    "repo": { "$ref": "#/$defs/repository" },
+    "pr": { "$ref": "#/$defs/id" },
+    "head_sha": { "$ref": "#/$defs/sha" },
+    "tier": {
+      "description": "The tier the run spent at: only tiers with a model stage.",
+      "enum": ["full", "lite", "micro"]
+    },
+    "roles": {
+      "description": "What each model-calling stage spent, or was reserved; each stage at most once.",
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "aeu"],
+        "properties": {
+          "role": {
+            "enum": [
+              "bugs", "security", "design", "meta", "combined", "combined-micro", "coordinator",
+              "verifier"
+            ]
+          },
+          "aeu": { "$ref": "#/$defs/aeu" }
+        }
+      }
+    },
+    "aeu": { "$ref": "#/$defs/aeu" },
+    "kind": { "enum": ["reserved", "final"] },
+    "cancelled": {
+      "description": "A `final` record charged at the run cap: the review died, was cancelled, or was back-filled. Never true on a `reserved` record.",
+      "type": "boolean"
+    },
+    "at": { "$ref": "#/$defs/time" }
+  },
+  "if": { "properties": { "kind": { "const": "reserved" } } },
+  "then": { "properties": { "cancelled": { "const": false } } },
+  "$defs": {
+    "id": { "type": "integer", "minimum": 1 },
+    "runUid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_id", "run_id", "run_attempt"],
+      "properties": {
+        "repo_id": { "$ref": "#/$defs/id" },
+        "run_id": { "$ref": "#/$defs/id" },
+        "run_attempt": { "$ref": "#/$defs/id" }
+      }
+    },
+    "repository": {
+      "description": "A GitHub `owner/name`; the name is not `.` or `..`.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$",
+      "not": { "pattern": "/\\.{1,2}$" }
+    },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "aeu": {
+      "description": "AEU in dollars as an exact decimal string, as `Aeu` displays it: no leading zero but `0`, at most six fraction digits, no trailing zero.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{0,5}[1-9])?$"
+    },
+    "time": {
+      "description": "A UTC instant to the millisecond, `YYYY-MM-DDTHH:MM:SS.mmmZ`.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  }
+}
