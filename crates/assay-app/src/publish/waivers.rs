@@ -6,7 +6,8 @@ use std::collections::BTreeSet;
 use assay_domain::{Decision, DecisionInputs, Fingerprint, Rubric, WaiverRefusal, waiver_refusal};
 
 /// One line per fingerprint `inputs` asked to waive that `decision` did not, in input order:
-/// `<fp> by <who>: <why>`.
+/// `<fp> by <who>: <why>`, or `<fp>: <why>` for a waiver with no recorded owner. The first
+/// waiver of a fingerprint names who.
 pub(super) fn unapplied(
     rubric: &Rubric,
     inputs: &DecisionInputs,
@@ -33,7 +34,11 @@ pub(super) fn unapplied(
                 // Waivable, so only a waiver with no recorded actor is left unapplied.
                 None => "no eligible owner is recorded for it".to_owned(),
             };
-            format!("{} by {}: {why}", waiver.fp, waiver.by)
+            if waiver.by.is_empty() {
+                format!("{}: {why}", waiver.fp)
+            } else {
+                format!("{} by {}: {why}", waiver.fp, waiver.by)
+            }
         })
         .collect()
 }

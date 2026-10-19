@@ -201,7 +201,8 @@ impl AuthenticatedRun {
     }
 
     /// What a waiver of each gate fingerprint is bound to on this head (R3-13, #59): the
-    /// digests of the authentic gate documents of every gate carrying it, for
+    /// binding digests (canonical JSON without `source.run_key`, wi-bc5341) of the authentic
+    /// gate documents of every gate carrying it, for
     /// [`GitHubState::waivers_carried`](crate::GitHubState::waivers_carried).
     #[must_use]
     pub fn waiver_bindings(&self) -> WaiverBindings {
@@ -215,7 +216,7 @@ impl AuthenticatedRun {
                     ArtifactJob::GatesStatic | ArtifactJob::GatesLint | ArtifactJob::GatesTest
                 )
             })
-            .map(|document| (document.file.as_str(), &document.digest));
+            .map(|document| (document.file.as_str(), document.bytes.as_slice()));
         WaiverBindings::of(&self.gates, documents)
     }
 

@@ -3,42 +3,51 @@
 //!
 //! A waiver lives for the head it was posted on. It is carried to a later head only when the
 //! previous completed run's decision waived the same fingerprint and every gate document
-//! carrying it there has the same digest here (a waiver's binding is the set of digests of the
-//! documents of every gate carrying its fingerprint), and only through a waive record whose
+//! carrying it there has the same binding digest here, and only through a waive record whose
 //! comment still stands and whose actor is eligible on the new head (wi-b5affa). An override is
 //! never carried.
+//!
+//! A document's binding digest is the sha256 of its canonical JSON without the fields that name
+//! the run (wi-bc5341): every gate writes its own head's evidence key into `source.run_key`
+//! (03 §3), so whole-document digests never match across heads. `source.run_key` is the only
+//! such field of `assay.findings/1`: `schema`, `source.kind`, `source.name`, `source.version`
+//! (the gate's pin), `source.role`, `conclusion`, `findings` and `stats` describe what the gate
+//! found, not which run asked. Canonical means parsed strictly, object keys sorted, written
+//! compactly, so a change of key order or spacing does not matter and any change of content
+//! does.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use assay_domain::{Decision, EventPayload, Fingerprint, GateReport, ReasonCode, Waiver};
+use serde_json::{Map, Value};
 
 use super::commands::{CommandRecord, CommandStatus};
 use super::grammar::Command;
 use super::state::GitHubState;
 use crate::config::Sha256Digest;
+use crate::contract::parse_json_strict;
 
-/// What a waiver of each gate fingerprint of one head is bound to: the digests of the gate
-/// documents carrying it (R3-13).
+/// What a waiver of each gate fingerprint of one head is bound to: the binding digests of the
+/// gate documents carrying it (R3-13).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WaiverBindings {
     bound: BTreeMap<Fingerprint, BTreeSet<Sha256Digest>>,
 }
 
 impl WaiverBindings {
-    /// The bindings of `gates`, whose documents are `documents` as `(file, digest)` pairs.
+    /// The bindings of `gates`, whose documents are `documents` as `(file, bytes)` pairs.
     ///
-    /// A fingerprint is bound to the digests of every document named `<gate>.json`, in any
-    /// gates job, of every gate carrying it, so a gate run in two jobs binds both documents. A
-    /// fingerprint one of whose gates has no document is not bound at all, so it is never
-    /// carried. The bindings own their digests, which outlive the run or bundle they were read
-    /// from.
+    /// A fingerprint is bound to the binding digest of every document named
+    /// `<gate>.json`, in any gates job, of every gate carrying it, so a gate run in two jobs
+    /// binds both documents. A fingerprint one of whose gates has no document, or a document
+    /// that does not parse, is not bound at all, so it is never carried.
     pub(crate) fn of<'d>(
         gates: &[GateReport],
-        documents: impl IntoIterator<Item = (&'d str, &'d Sha256Digest)>,
+        documents: impl IntoIterator<Item = (&'d str, &'d [u8])>,
     ) -> Self {
-        let mut by_file: BTreeMap<&str, Vec<&Sha256Digest>> = BTreeMap::new();
-        for (file, digest) in documents {
-            by_file.entry(file).or_default().push(digest);
+        let mut by_file: BTreeMap<&str, Vec<Option<Sha256Digest>>> = BTreeMap::new();
+        for (file, bytes) in documents {
+            by_file.entry(file).or_default().push(binding_digest(bytes));
         }
         let mut bound: BTreeMap<Fingerprint, BTreeSet<Sha256Digest>> = BTreeMap::new();
         let mut unbound = BTreeSet::new();
@@ -46,13 +55,20 @@ impl WaiverBindings {
             let file = format!("{}.json", gate.name);
             let digests = by_file.get(file.as_str());
             for finding in &gate.findings {
-                match digests {
-                    Some(digests) => bound
-                        .entry(finding.fp)
-                        .or_default()
-                        .extend(digests.iter().map(|&digest| digest.clone())),
-                    None => {
-                        unbound.insert(finding.fp);
+                let Some(digests) = digests else {
+                    unbound.insert(finding.fp);
+                    continue;
+                };
+                let set = bound.entry(finding.fp).or_default();
+                for digest in digests {
+                    match digest {
+                        // Each fingerprint's set owns its copy: several share one document.
+                        Some(digest) => {
+                            set.insert(digest.clone());
+                        }
+                        None => {
+                            unbound.insert(finding.fp);
+                        }
                     }
                 }
             }
@@ -66,6 +82,35 @@ impl WaiverBindings {
     #[must_use]
     pub fn digests(&self, fp: Fingerprint) -> Option<&BTreeSet<Sha256Digest>> {
         self.bound.get(&fp)
+    }
+}
+
+/// The binding digest of a gate document: the sha256 of its canonical JSON with
+/// `source.run_key` removed (see the module docs), or `None` when it does not parse strictly.
+fn binding_digest(bytes: &[u8]) -> Option<Sha256Digest> {
+    let mut document = parse_json_strict(bytes).ok()?;
+    if let Some(source) = document.get_mut("source").and_then(Value::as_object_mut) {
+        source.remove("run_key");
+    }
+    let canonical = serde_json::to_vec(&sorted(document)).ok()?;
+    Some(Sha256Digest::of(&canonical))
+}
+
+/// `value` with every object's keys in sorted order, whatever order the map type keeps.
+fn sorted(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<(String, Value)> = map.into_iter().collect();
+            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key, sorted(value)))
+                    .collect::<Map<String, Value>>(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sorted).collect()),
+        scalar @ (Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_)) => scalar,
     }
 }
 

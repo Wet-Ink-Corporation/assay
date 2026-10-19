@@ -168,8 +168,8 @@ fn a_waiver_of_a_clippy_finding_is_refused_naming_its_gate_and_rule() -> Result<
     assert_eq!(
         refusal,
         Some(WaiverRefusal::NotWaivable {
-            gate: "temper".to_owned(),
-            rule: Some("clippy::unwrap_used".to_owned()),
+            gate: "temper",
+            rule: Some("clippy::unwrap_used"),
         })
     );
     Ok(())
@@ -188,8 +188,8 @@ fn a_waiver_shared_with_a_clippy_finding_is_refused_for_that_finding() -> Result
     assert_eq!(
         refusal,
         Some(WaiverRefusal::NotWaivable {
-            gate: "temper".to_owned(),
-            rule: Some("clippy::unwrap_used".to_owned()),
+            gate: "temper",
+            rule: Some("clippy::unwrap_used"),
         })
     );
     Ok(())
@@ -203,16 +203,14 @@ fn a_waiver_of_a_finding_with_no_rule_is_refused() -> Result<(), Box<dyn Error>>
         severity: Severity::Blocker,
     };
 
-    let refusal = waiver_refusal(
-        &rubric_v1()?,
-        &[temper(vec![finding])],
-        fp("00000000000000a1"),
-    );
+    let gates = [temper(vec![finding])];
+
+    let refusal = waiver_refusal(&rubric_v1()?, &gates, fp("00000000000000a1"));
 
     assert_eq!(
         refusal,
         Some(WaiverRefusal::NotWaivable {
-            gate: "temper".to_owned(),
+            gate: "temper",
             rule: None,
         })
     );

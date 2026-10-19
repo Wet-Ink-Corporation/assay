@@ -60,8 +60,8 @@ fn clearable(rubric: &Rubric, gates: &[GateReport], fp: Fingerprint) -> bool {
 }
 
 /// Why an owner's waiver of a fingerprint clears nothing (R-08(a), 04 §5 waive).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum WaiverRefusal {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WaiverRefusal<'g> {
     /// No gate finding of the decided head carries the fingerprint: it names a reviewer
     /// finding, a finding of another head, or nothing.
     NoGateFinding,
@@ -70,9 +70,9 @@ pub enum WaiverRefusal {
     /// such finding, in gate then finding order.
     NotWaivable {
         /// The gate (plugin) that reported it.
-        gate: String,
+        gate: &'g str,
         /// Its rule id, if it has one.
-        rule: Option<String>,
+        rule: Option<&'g str>,
     },
 }
 
@@ -80,13 +80,13 @@ pub enum WaiverRefusal {
 /// (given an actor): the same all-or-nothing predicate as `decide`'s waive and
 /// [`waivable_fingerprints`].
 ///
-/// The refusal is a new value that owns copies of the gate name and rule it reports.
+/// The refusal borrows the gate name and rule it reports from `gates`.
 #[must_use]
-pub fn waiver_refusal(
+pub fn waiver_refusal<'g>(
     rubric: &Rubric,
-    gates: &[GateReport],
+    gates: &'g [GateReport],
     fp: Fingerprint,
-) -> Option<WaiverRefusal> {
+) -> Option<WaiverRefusal<'g>> {
     let mut carriers = gates
         .iter()
         .flat_map(|gate| {
@@ -102,8 +102,8 @@ pub fn waiver_refusal(
     carriers
         .find(|(gate, finding)| !waivable(rubric, gate, finding))
         .map(|(gate, finding)| WaiverRefusal::NotWaivable {
-            gate: gate.name.clone(),
-            rule: finding.rule.clone(),
+            gate: gate.name.as_str(),
+            rule: finding.rule.as_deref(),
         })
 }
 

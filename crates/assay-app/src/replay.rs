@@ -283,9 +283,9 @@ struct BundleDocument {
 }
 
 impl Bundle {
-    /// Each gate document's file and recorded digest, in bundle order: what a waiver was bound
-    /// to on the bundle's head (#59).
-    pub(crate) fn gate_documents(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
+    /// Each gate document's file and bytes, as its job published them, in bundle order: what a
+    /// waiver was bound to on the bundle's head (#59).
+    pub(crate) fn gate_documents(&self) -> impl Iterator<Item = (&str, &[u8])> + '_ {
         self.documents
             .iter()
             .filter(|document| {
@@ -294,7 +294,7 @@ impl Bundle {
                     DocumentJob::GatesStatic | DocumentJob::GatesLint | DocumentJob::GatesTest
                 )
             })
-            .map(|document| (document.file.as_str(), document.sha256.as_str()))
+            .map(|document| (document.file.as_str(), document.text.as_bytes()))
     }
 }
 

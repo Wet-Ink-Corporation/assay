@@ -104,16 +104,16 @@ pub fn prior_carry<S: BundleSource>(
 ///
 /// Nothing when `carry` is not [`Carry::Kept`], with nothing fetched: a rebase or force-push
 /// carries no waiver, as it carries no finding. Otherwise the bundle is fetched and
-/// authenticated exactly as [`prior_carry`] does; its decision must read as
-/// `assay.decision/1` and each gate document's digest must parse. A waived fingerprint is bound
-/// to the digests of the bundle's gate documents of every gate carrying it, as
-/// [`AuthenticatedRun::waiver_bindings`](crate::AuthenticatedRun::waiver_bindings) binds this
-/// run's.
+/// authenticated exactly as [`prior_carry`] does, and its decision must read as
+/// `assay.decision/1`. A waived fingerprint is bound to the binding digests (canonical JSON
+/// without `source.run_key`, wi-bc5341) of the bundle's gate documents of every gate carrying
+/// it, as [`AuthenticatedRun::waiver_bindings`](crate::AuthenticatedRun::waiver_bindings) binds
+/// this run's.
 ///
 /// # Errors
 ///
 /// As [`prior_carry`], except [`PriorCarryError::Refused`], which this never returns; a
-/// decision or document digest that does not read is [`PriorCarryError::Shape`].
+/// decision that does not read is [`PriorCarryError::Shape`].
 pub fn prior_waivers<S: BundleSource>(
     carry: Carry,
     request: &PriorCarry<'_>,
@@ -124,26 +124,13 @@ pub fn prior_waivers<S: BundleSource>(
         Carry::FirstReview | Carry::Reset(_) => return Ok(PriorWaivers::default()),
     }
     let bundle = read_prior(request, source)?;
-    let decision = Decision::deserialize(&bundle.decision).map_err(unreadable)?;
-    let documents = bundle
-        .gate_documents()
-        .map(|(file, digest)| digest.parse().map(|digest: Sha256Digest| (file, digest)))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(unreadable)?;
-    let bindings = WaiverBindings::of(
-        &bundle.inputs.gates,
-        documents.iter().map(|(file, digest)| (*file, digest)),
-    );
+    let decision = Decision::deserialize(&bundle.decision)
+        .map_err(|_not_a_decision| PriorCarryError::Shape(BundleShape::Shape))?;
+    let bindings = WaiverBindings::of(&bundle.inputs.gates, bundle.gate_documents());
     Ok(PriorWaivers::new(
         decision.waived.iter().map(|waived| waived.fp),
         bindings,
     ))
-}
-
-/// A part of an authentic bundle that does not read as its contract says: the bundle's shape
-/// is refused, whatever the parser's own error said.
-fn unreadable<P, E>(_problem: P) -> PriorCarryError<E> {
-    PriorCarryError::Shape(BundleShape::Shape)
 }
 
 /// Fetches and authenticates the bundle `request.pointer` names: attempt 1 only, under

@@ -54,15 +54,28 @@ fn clippy_failure() -> Result<Run, Box<dyn Error>> {
     Run::of(&scenario)
 }
 
-/// The fingerprint of the lint temper gate's one finding.
-fn clippy_fp(run: &Run) -> Result<Fingerprint, Box<dyn Error>> {
+/// The scenario's run with its static temper gate failing on one `raised` finding, which an
+/// owner may waive.
+fn raised_failure() -> Result<Run, Box<dyn Error>> {
+    let mut scenario = Scenario::new()?;
+    let findings = json!([gate_finding("raised", "src/lib.rs", 1, "pub fn two() {}")]);
+    scenario.publish_gate(
+        (ArtifactJob::GatesStatic, "temper"),
+        GateConclusion::Fail,
+        gate_document("temper", "fail", &findings),
+    )?;
+    Run::of(&scenario)
+}
+
+/// The fingerprint of the run's first gate finding (its one finding).
+fn only_fp(run: &Run) -> Result<Fingerprint, Box<dyn Error>> {
     Ok(run
         .inputs
         .gates
         .iter()
         .flat_map(|gate| &gate.findings)
         .next()
-        .ok_or("the lint gate has a finding")?
+        .ok_or("the run has a gate finding")?
         .fp)
 }
 
@@ -280,7 +293,7 @@ fn an_applied_waiver_is_recorded_as_an_event() -> Result<(), Box<dyn Error>> {
 #[test]
 fn a_waiver_of_a_clippy_finding_is_refused_with_a_visible_reason() -> Result<(), Box<dyn Error>> {
     let mut run = clippy_failure()?;
-    let clippy = clippy_fp(&run)?;
+    let clippy = only_fp(&run)?;
     run.inputs.waivers = vec![Waiver {
         fp: clippy,
         by: "approver".to_owned(),
@@ -323,12 +336,70 @@ fn a_waiver_naming_no_gate_finding_is_refused_with_a_visible_reason() -> Result<
 }
 
 #[test]
-fn a_summary_with_every_waiver_applied_has_no_refusal_block() -> Result<(), Box<dyn Error>> {
-    let run = clippy_failure()?;
+fn two_waivers_of_one_refused_finding_are_listed_once() -> Result<(), Box<dyn Error>> {
+    let mut run = clippy_failure()?;
+    let clippy = only_fp(&run)?;
+    run.inputs.waivers = ["approver", "break-glass"]
+        .map(|by| Waiver {
+            fp: clippy,
+            by: by.to_owned(),
+        })
+        .to_vec();
     let world = stamped()?;
 
     written(run.publish(&world))?;
 
+    let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
+    assert_eq!(summary.matches(&clippy.to_string()).count(), 1, "{summary}");
+    assert!(
+        summary.contains(&format!("{clippy} by approver: ")),
+        "the first waiver names who: {summary}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_waiver_with_no_recorded_owner_is_listed_without_an_empty_name() -> Result<(), Box<dyn Error>> {
+    let mut run = raised_failure()?;
+    let raised = only_fp(&run)?;
+    run.inputs.waivers = vec![Waiver {
+        fp: raised,
+        by: String::new(),
+    }];
+    let world = stamped()?;
+
+    written(run.publish(&world))?;
+
+    let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
+    assert!(
+        summary.contains(&format!("{raised}: no eligible owner is recorded for it")),
+        "{summary}"
+    );
+    assert!(!summary.contains(" by :"), "{summary}");
+    Ok(())
+}
+
+#[test]
+fn a_summary_with_every_waiver_applied_has_no_refusal_block() -> Result<(), Box<dyn Error>> {
+    let mut run = raised_failure()?;
+    let raised = only_fp(&run)?;
+    run.inputs.waivers = vec![Waiver {
+        fp: raised,
+        by: "approver".to_owned(),
+    }];
+    let world = stamped()?;
+
+    written(run.publish(&world))?;
+
+    let decision = decide(&run.rubric, &run.inputs);
+    assert_eq!(
+        decision
+            .waived
+            .iter()
+            .map(|waived| waived.fp)
+            .collect::<Vec<_>>(),
+        [raised]
+    );
     let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
     assert!(!summary.contains("Waivers not applied"), "{summary}");
     Ok(())
