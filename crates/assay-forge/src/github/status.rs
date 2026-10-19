@@ -8,20 +8,21 @@ use assay_app::{
     StatusForge, UserId, Viewer,
 };
 
-use super::GitHub;
 use super::api::{PER_PAGE, percent_encode};
 use super::checks::check_status;
 use super::dto::{self, CheckRunDto, PullDto, ViewerDto};
 use super::error::{ForgeError, Operation};
 use super::transport::{Sleep, Transport};
+use super::{GitHub, api_path};
 
 impl<T: Transport, S: Sleep> StatusForge for GitHub<T, S> {
     type Error = ForgeError<T::Error>;
 
     fn pull(&self, number: NonZeroU64) -> Result<Option<PullView>, Self::Error> {
         let operation = Operation::ReadPull;
+        let path = self.path(operation, &format!("pulls/{number}"))?;
         self.api
-            .get_optional::<PullDto>(operation, &self.path(&format!("pulls/{number}")))?
+            .get_optional::<PullDto>(operation, &path)?
             .map(|pull| pull_view(operation, pull))
             .transpose()
     }
@@ -30,13 +31,16 @@ impl<T: Transport, S: Sleep> StatusForge for GitHub<T, S> {
     /// at `limit` is never cut before the filter.
     fn open_pulls(&self, branch: &str, limit: usize) -> Result<Vec<PullView>, Self::Error> {
         let operation = Operation::ListPulls;
-        let path = self.path(&format!(
-            "pulls?state=open&head={}:{}&per_page={PER_PAGE}",
-            self.repository.owner(),
-            percent_encode(branch)
-        ));
+        let path = self.path(
+            operation,
+            &format!(
+                "pulls?state=open&head={}:{}&per_page={PER_PAGE}",
+                self.repository.owner(),
+                percent_encode(branch)
+            ),
+        )?;
         let mut pulls = Vec::new();
-        for pull in self.api.list::<Vec<PullDto>>(operation, &path, None)? {
+        for pull in self.api.list::<Vec<PullDto>>(operation, path, None)? {
             let own = pull
                 .head
                 .repo
@@ -92,7 +96,9 @@ impl<T: Transport, S: Sleep> StatusForge for GitHub<T, S> {
 
     fn viewer(&self) -> Result<Viewer, Self::Error> {
         let operation = Operation::ReadViewer;
-        let viewer: ViewerDto = self.api.get(operation, "user")?;
+        let viewer: ViewerDto = self
+            .api
+            .get(operation, &api_path(operation, "user".to_owned())?)?;
         if viewer.login.is_empty() {
             return Err(ForgeError::Malformed {
                 operation,

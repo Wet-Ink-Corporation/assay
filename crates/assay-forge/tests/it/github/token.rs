@@ -76,6 +76,35 @@ fn a_token_over_every_repository_is_refused() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn a_token_whose_grant_differs_from_the_request_is_refused() -> Result<(), Box<dyn Error>> {
+    let two_repositories = TokenScope::new(
+        ["assay", "assay-ledger"],
+        [
+            (Permission::Checks, Access::Write),
+            (Permission::PullRequests, Access::Write),
+        ],
+    )?;
+    for (fixture_name, scope) in [
+        ("installation_token_extra_repository.json", decide_scope()?),
+        ("installation_token_other_repository.json", decide_scope()?),
+        ("installation_token.json", two_repositories),
+        ("installation_token_narrower.json", decide_scope()?),
+    ] {
+        let recorded = minting(fixture_name);
+        let waits = Waits::default();
+
+        let token = Api::new(&recorded, &waits)
+            .mint_installation_token(InstallationId(id(172_801_043)), &scope);
+
+        assert!(
+            matches!(token, Err(ForgeError::ScopeMismatch)),
+            "{fixture_name}: {token:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn a_token_never_shows_in_debug_output() -> Result<(), Box<dyn Error>> {
     let recorded = minting("installation_token.json");
     let waits = Waits::default();

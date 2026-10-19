@@ -192,14 +192,26 @@ impl fmt::Debug for InstallationToken {
     }
 }
 
-/// `POST /app/installations/{id}/access_tokens`'s response.
-#[derive(Debug, Deserialize)]
+/// `POST /app/installations/{id}/access_tokens`'s response. Its `Debug` never shows the token.
+#[derive(Deserialize)]
 struct TokenDto {
     token: String,
     expires_at: String,
     permissions: BTreeMap<String, String>,
     repository_selection: String,
     repositories: Vec<NamedRepository>,
+}
+
+impl fmt::Debug for TokenDto {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenDto")
+            .field("token", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .field("permissions", &self.permissions)
+            .field("repository_selection", &self.repository_selection)
+            .field("repositories", &self.repositories)
+            .finish()
+    }
 }
 
 /// A repository the token covers.
@@ -223,7 +235,10 @@ impl<T: Transport, S: Sleep> Api<T, S> {
     ) -> Result<InstallationToken, ForgeError<T::Error>> {
         let operation = Operation::MintToken;
         let body = encode(operation, &scope.body())?;
-        let path = format!("app/installations/{}/access_tokens", installation.0);
+        let path = super::api_path(
+            operation,
+            format!("app/installations/{}/access_tokens", installation.0),
+        )?;
         let response = self.send(operation, Request::post(&path, &body))?;
         let minted: TokenDto = decode(operation, &response.body)?;
         if minted.token.is_empty() || !minted.token.bytes().all(|byte| byte.is_ascii_graphic()) {
@@ -262,4 +277,25 @@ fn lowercase_sorted<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
     let mut names: Vec<String> = names.map(str::to_ascii_lowercase).collect();
     names.sort_unstable();
     names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wire_token_never_shows_in_debug_output() {
+        let minted = TokenDto {
+            token: "ghs_fixture-not-a-token".to_owned(),
+            expires_at: "2026-10-19T04:00:00Z".to_owned(),
+            permissions: BTreeMap::new(),
+            repository_selection: "selected".to_owned(),
+            repositories: Vec::new(),
+        };
+
+        let shown = format!("{minted:?}");
+
+        assert!(!shown.contains("ghs_"), "{shown}");
+        assert!(shown.contains("2026-10-19T04:00:00Z"), "{shown}");
+    }
 }
