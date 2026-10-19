@@ -69,9 +69,11 @@ struct EventWire {
     payload: EventPayload,
 }
 
-/// Why an event that matches every field's shape was refused.
+/// Why an event that matches every field's shape was refused. Crate-private: its only producer
+/// is the conversion from the private wire form, and serde reports it to the reader as text
+/// (#264).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum EventError {
+pub(crate) enum EventError {
     /// A `FindingDisposed` omits the fingerprint its code requires (#170).
     #[error("a `{}` disposition must name its finding's fingerprint", .code.code())]
     FingerprintMissing {

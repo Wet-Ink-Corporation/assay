@@ -24,6 +24,7 @@ pub use budget::{BUDGET_WINDOW, COOLDOWN_WINDOW, CostWindow, LeaseReservation, r
 pub use command::{CommandRecord, MAX_COMMAND_CHARS, append_command, read_commands};
 pub use cost::{CostKind, CostRecord, CostRole, RoleCost, append_cost};
 pub use error::{Corruption, LedgerReadError, LedgerWriteError};
+pub(crate) use lease::reap_expired_lock;
 pub use lease::{
     Consumed, GrantKey, Granted, LOCK_TTL, LeaseError, LeaseRef, LeaseState, LedgerRefs,
     LockAcquired, LockHold, LockLease, LockRequest, MAX_LEASE_MESSAGE_BYTES, MAX_REVIEW_TIMEOUT,

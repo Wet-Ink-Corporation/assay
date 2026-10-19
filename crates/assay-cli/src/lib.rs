@@ -2,19 +2,27 @@
 //! (ADR-07): what the binary lends one adapter from another.
 //!
 //! [`ForgeSupervisor`] lends `assay-forge`'s process-group supervisor to the gate adapters and
-//! to `ClaudeHeadless` (wi-603c63). [`ForgeRevisions`] lends forge's object-only repository to
-//! the temper adapter as the PR's base and head files, and [`ForgePullRequest`] lends it to the
+//! to `ClaudeHeadless` (wi-603c63), and runs the `gh api` calls of forge's GitHub transport
+//! (#273). [`ForgeRevisions`] lends forge's object-only repository to the temper adapter as
+//! the PR's base and head files, and [`ForgePullRequest`] lends it to the
 //! `plan` use case as the PR's objects. [`run_status`] wires `assay status` (#126) over any
 //! [`assay_app::StatusForge`], so it is tested with fakes until the GitHub adapter (#53) exists.
+//! [`run_prerequisites`] wires `assay doctor --repository` (#75) over any
+//! [`assay_app::PrerequisiteForge`], tested with fakes until the live transport (#273) exists.
 //! [`OpenCommand`] reads `assay open`'s run from the Actions environment and refuses a re-run.
 
 mod open;
+mod prerequisites;
 mod pull_request;
 mod revisions;
 mod status;
 mod supervisor;
 
 pub use open::{OpenCommand, OpenUsage, OpenVariables};
+pub use prerequisites::{
+    PrerequisitesArgs, PrerequisitesRunError, PrerequisitesUsage, prerequisites_exit_code,
+    run_prerequisites, write_prerequisites,
+};
 pub use pull_request::{ForgeObjectsError, ForgePullRequest};
 pub use revisions::ForgeRevisions;
 pub use status::{

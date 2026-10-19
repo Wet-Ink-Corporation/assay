@@ -1,12 +1,24 @@
-//! Properties over generated findings: determinism, relocation onto matching lines only, and
-//! that every finding ends kept or dropped exactly once.
+//! Properties over generated findings: determinism, relocation onto matching lines only, that
+//! every finding ends kept or dropped exactly once, and that every event validation emits
+//! passes the read rule (#264).
 
-use assay_app::{FindingRef, Validated};
-use assay_domain::{Disposition, Side, normalise};
+use assay_app::{FindingRef, Role, SuppressRules, Validated};
+use assay_domain::{Disposition, Finding, Side, normalise};
 use proptest::prelude::*;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::fixture::{LIB_AT_BASE, LIB_AT_HEAD, Run, RunError, document, finding_with};
+use crate::support::read_back;
+
+/// A base `suppress` rule that matches every finding.
+struct SuppressAll;
+
+impl SuppressRules for SuppressAll {
+    fn suppresses(&self, _finding: &Finding, _file_at_head: &str) -> bool {
+        true
+    }
+}
 
 /// Dispositions that drop a finding; the others keep it.
 const DROPPING: [Disposition; 7] = [
@@ -122,6 +134,32 @@ proptest! {
                 kept,
                 dropped
             );
+        }
+    }
+
+    /// Whatever the role's ceiling, a gate reporting the first finding, and a suppress rule or
+    /// not, every `FindingDisposed` validation emits reads back as an event: no code that
+    /// requires a fingerprint is written without one (#264).
+    #[test]
+    fn every_event_validation_emits_passes_the_read_rule(
+        findings in prop::collection::vec(generated_finding(), 0..8),
+        role in prop::sample::select(Role::ALL.to_vec()),
+        gate_reports_first in any::<bool>(),
+        suppressed in any::<bool>(),
+    ) {
+        let mut run = Run::default();
+        if gate_reports_first && let Some(first) = findings.first() {
+            run.gate_findings.push(Finding::deserialize(first)?);
+        }
+        if suppressed {
+            run.suppress = &SuppressAll;
+        }
+
+        let validated = run.validate_as(role, &[document(&findings)])?;
+
+        for payload in validated.events() {
+            let read = read_back(payload);
+            prop_assert!(read.is_ok(), "an emitted event is refused on read: {:?}", read);
         }
     }
 }

@@ -1,0 +1,12 @@
+[
+  {
+    "ref": "refs/heads/lock-1413773798-70aa6d748be6f3884e85d294112f9addf83cee59",
+    "node_id": "REF_kwDOQXl2eNoAQ3JlZnMvaGVhZHMvbG9jay0xNDEzNzczNzk4",
+    "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay-ledger/git/refs/heads/lock-1413773798-70aa6d748be6f3884e85d294112f9addf83cee59",
+    "object": {
+      "sha": "6d1f4a0b9c8e7d6f5a4b3c2d1e0f9a8b7c6d5e4f",
+      "type": "commit",
+      "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay-ledger/git/commits/6d1f4a0b9c8e7d6f5a4b3c2d1e0f9a8b7c6d5e4f"
+    }
+  }
+]

@@ -276,5 +276,6 @@ const fn conclusion_code(conclusion: CheckConclusion) -> &'static str {
         CheckConclusion::Success => "success",
         CheckConclusion::Failure => "failure",
         CheckConclusion::Neutral => "neutral",
+        CheckConclusion::Cancelled => "cancelled",
     }
 }
