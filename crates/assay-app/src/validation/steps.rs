@@ -92,12 +92,7 @@ impl<'s, 'c> Run<'s, 'c> {
         };
         match steps.apply(finding) {
             Ok(kept) => self.validated.findings.push(kept),
-            Err(code) => {
-                let fp = steps.fp;
-                self.validated
-                    .transitions
-                    .push(Transition::of(at, code, fp));
-            }
+            Err(code) => steps.record(code),
         }
     }
 

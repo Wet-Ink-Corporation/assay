@@ -6,7 +6,7 @@ use std::num::NonZeroU64;
 use serde::{Deserialize, Serialize};
 
 use crate::fingerprint::Anchor;
-use crate::severity::{Marker, Severity};
+use crate::severity::{Marker, Provenance, Severity};
 use crate::vocabulary::closed_enum;
 
 closed_enum! {
@@ -159,7 +159,12 @@ impl Finding {
     /// `pre_existing` flag.
     #[must_use]
     pub const fn marker(&self) -> Marker {
-        Marker::of(self.severity, self.pre_existing)
+        let provenance = if self.pre_existing {
+            Provenance::PreExisting
+        } else {
+            Provenance::Introduced
+        };
+        Marker::of(self.severity, provenance)
     }
 
     /// Where this finding sits for its fingerprint and the dismissal match: its class and

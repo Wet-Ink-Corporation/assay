@@ -93,7 +93,8 @@ fn a_valid_answer_reads_into_positions_of_groups_duplicates_and_noise() {
             groups: vec![vec![member(0, false)], vec![member(2, true)]],
             duplicates: vec![Merged {
                 index: index(1),
-                into: index(0)
+                into: index(0),
+                fp: "0000000000000002".parse().expect("16 hex digits")
             }],
         })
     );
