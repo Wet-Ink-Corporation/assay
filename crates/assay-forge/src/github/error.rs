@@ -128,6 +128,10 @@ pub enum Operation {
     ListRuns,
     /// Reading the authenticated user.
     ReadViewer,
+    /// Reading a file of the ledger repository.
+    ReadLedgerFile,
+    /// Writing a file of the ledger repository.
+    WriteLedgerFile,
 }
 
 impl fmt::Display for Operation {
@@ -152,6 +156,8 @@ impl fmt::Display for Operation {
             Self::ListPulls => "list pull requests",
             Self::ListRuns => "list workflow runs",
             Self::ReadViewer => "read viewer",
+            Self::ReadLedgerFile => "read ledger file",
+            Self::WriteLedgerFile => "write ledger file",
         })
     }
 }

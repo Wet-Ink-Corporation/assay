@@ -19,6 +19,7 @@ mod finding_text;
 mod forge;
 mod gate;
 mod golden;
+mod ledger;
 mod model_runner;
 mod plan;
 mod preflight;
@@ -95,6 +96,15 @@ pub use gate::{
     Termination, account_for_required, run_gates,
 };
 pub use golden::{CorpusEntry, CorpusEntryKind, GoldenReplay, SELF_GATE, replay_golden};
+pub use ledger::{
+    ActorCounter, Appended, BUDGET_WINDOW, COOLDOWN_WINDOW, CommandRecord, Corruption, CostKind,
+    CostRecord, CostRole, CostWindow, DecisionPointer, DeferralRecord, FileVersion,
+    LeaseReservation, Ledger, LedgerFile, LedgerMonth, LedgerPath, LedgerReadError, LedgerTime,
+    LedgerWriteError, MAX_CAS_ATTEMPTS, MAX_COMMAND_CHARS, MAX_LEDGER_FILE_BYTES, MAX_RECORD_BYTES,
+    MAX_STATE_ENTRIES, ParseLedgerTimeError, PrState, PushAppended, PushDraft, PushRecord,
+    RoleCost, StateUpdate, WriteCondition, WriteOutcome, append_command, append_cost, append_push,
+    read_commands, read_costs, read_pushes, read_state, update_state,
+};
 pub use model_runner::{
     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
     PromptError, RateLimitObserved, RetryError, Structured, run_with_retry,

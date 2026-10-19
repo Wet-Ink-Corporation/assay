@@ -3,7 +3,10 @@
 mod backoff;
 mod checks;
 mod comments;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod contents;
 mod identity;
+mod ledger;
 mod pulls;
 mod reads;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns

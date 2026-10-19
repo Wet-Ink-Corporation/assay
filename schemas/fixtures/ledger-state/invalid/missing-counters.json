@@ -1,0 +1,12 @@
+{
+  "schema": "assay.ledger-state/1",
+  "repo_id": 42,
+  "pr": 7,
+  "evidence": { "run_id": 7001, "run_attempt": 1, "sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" },
+  "decision": { "run_id": 7004, "sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" },
+  "evidence_records": [
+    { "evidence_key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bundle_sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "llm": "complete", "tier": "full" },
+    { "evidence_key": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "bundle_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "llm": "skipped(draft)", "tier": "lite" }
+  ],
+  "deferral": { "repo": "acme/widgets", "pr": 7, "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "count": 1, "resets_at": "2026-10-12T14:00:00.000Z", "flag": false }
+}

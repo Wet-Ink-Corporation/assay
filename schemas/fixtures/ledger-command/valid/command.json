@@ -1,0 +1,11 @@
+{
+  "schema": "assay.ledger-command/1",
+  "run_uid": { "repo_id": 42, "run_id": 7003, "run_attempt": 1 },
+  "pr": 7,
+  "comment_id": 900001,
+  "actor_id": 1001,
+  "command": "/assay recheck",
+  "body_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "created_at": "2026-10-12T09:29:58.000Z",
+  "at": "2026-10-12T09:30:00.000Z"
+}
