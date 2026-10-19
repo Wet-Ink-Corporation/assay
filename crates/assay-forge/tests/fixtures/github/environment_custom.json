@@ -1,0 +1,9 @@
+{
+  "id": 161088068,
+  "node_id": "MDExOkVudmlyb25tZW50MTYxMDg4MDY4",
+  "name": "assay-publish",
+  "created_at": "2026-10-11T19:46:42Z",
+  "updated_at": "2026-10-11T19:46:42Z",
+  "protection_rules": [],
+  "deployment_branch_policy": { "protected_branches": false, "custom_branch_policies": true }
+}

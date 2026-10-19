@@ -146,6 +146,38 @@ pub enum Operation {
     ListRuns,
     /// Reading the authenticated user.
     ReadViewer,
+    /// Reading the repository.
+    ReadRepository,
+    /// Reading a file or directory.
+    ReadContents,
+    /// Listing the rulesets.
+    ListRulesets,
+    /// Reading one ruleset.
+    ReadRuleset,
+    /// Reading the rules in force on a branch.
+    ReadBranchRules,
+    /// Reading an environment.
+    ReadEnvironment,
+    /// Listing an environment's deployment branch policies.
+    ListBranchPolicies,
+    /// Reading the Actions token's rights.
+    ReadWorkflowPermissions,
+    /// Listing collaborators.
+    ListCollaborators,
+    /// Reading a user by id.
+    ReadUser,
+    /// Reading a user's permission.
+    ReadPermission,
+    /// Reading a file of the ledger repository.
+    ReadLedgerFile,
+    /// Writing a file of the ledger repository.
+    WriteLedgerFile,
+    /// Reading a lease ref of the ledger repository and its commit.
+    ReadLedgerRef,
+    /// Creating a lease ref of the ledger repository at a new commit.
+    CreateLedgerRef,
+    /// Listing the publish lock refs of the ledger repository.
+    ListLedgerRefs,
 }
 
 impl fmt::Display for Operation {
@@ -170,6 +202,22 @@ impl fmt::Display for Operation {
             Self::ListPulls => "list pull requests",
             Self::ListRuns => "list workflow runs",
             Self::ReadViewer => "read viewer",
+            Self::ReadRepository => "read repository",
+            Self::ReadContents => "read contents",
+            Self::ListRulesets => "list rulesets",
+            Self::ReadRuleset => "read ruleset",
+            Self::ReadBranchRules => "read branch rules",
+            Self::ReadEnvironment => "read environment",
+            Self::ListBranchPolicies => "list deployment branch policies",
+            Self::ReadWorkflowPermissions => "read workflow permissions",
+            Self::ListCollaborators => "list collaborators",
+            Self::ReadUser => "read user",
+            Self::ReadPermission => "read permission",
+            Self::ReadLedgerFile => "read ledger file",
+            Self::WriteLedgerFile => "write ledger file",
+            Self::ReadLedgerRef => "read ledger ref",
+            Self::CreateLedgerRef => "create ledger ref",
+            Self::ListLedgerRefs => "list ledger refs",
         })
     }
 }

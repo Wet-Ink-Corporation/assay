@@ -28,15 +28,15 @@ use std::num::NonZeroU64;
 
 pub use self::approvals::IgnoredApproval;
 pub use self::commands::{
-    CommandRecord, CommandRejected, CommentAction, CommentEvent, IssueComment, MAX_COMMAND_RECORDS,
-    Recorded, VoidCause,
+    CommandRejected, CommentAction, CommentEvent, IssueComment, MAX_COMMAND_RECORDS, Recorded,
+    SnapshotCommand, VoidCause,
 };
 use self::commands::{JudgedCommand, applicability, void_cause};
 pub use self::error::{SnapshotStep, StateError};
 pub use self::grammar::{AckedSet, Command, MAX_COMMAND_REASON_CHARS, Parsed, parse_command};
 pub use self::ports::{CommandComments, LedgerRecords, SnapshotLedger};
-use self::pushes::push_clock;
-pub use self::pushes::{MAX_PUSH_RECORDS, PushKind, PushRecord, PushTrigger, push_record};
+pub use self::pushes::MAX_PUSH_RECORDS;
+use self::pushes::{push_clock, pushed};
 pub use self::range::{
     MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, RangeCommit, RangeListing, RangeObjects,
     TreeId, WEB_FLOW,
@@ -50,6 +50,7 @@ pub use self::timestamp::{InvalidTimestamp, Timestamp};
 pub use self::waive::{PriorWaivers, WaiverBindings, waiver_events};
 use crate::config::{CommitId, EligibilityLists};
 use crate::forge::Forge;
+use crate::ledger::PushRecord;
 use crate::status::UserId;
 
 /// What the snapshot is taken of.
@@ -124,8 +125,9 @@ where
     };
     let senders = pushes
         .iter()
-        .filter(|record| record.kind == PushKind::Push && !is_merge_push(&merges, record))
-        .map(|record| record.sender)
+        .filter_map(pushed)
+        .filter(|push| !is_merge_push(&merges, push))
+        .map(|push| push.sender)
         .collect();
     let rule = Rule {
         // The snapshot keeps the lists it judged by, for the bundle (R3-02).
@@ -227,12 +229,9 @@ fn is_clean_merge<G: RangeObjects>(
     }
 }
 
-/// Whether `record` pushed a clean merge from base onto its first parent.
-fn is_merge_push(merges: &BTreeMap<CommitId, CommitId>, record: &PushRecord) -> bool {
-    record
-        .before
-        .as_ref()
-        .is_some_and(|before| merges.get(&record.after) == Some(before))
+/// Whether `push` pushed a clean merge from base onto its first parent.
+fn is_merge_push(merges: &BTreeMap<CommitId, CommitId>, push: &pushes::Pushed<'_>) -> bool {
+    merges.get(push.after) == Some(push.before)
 }
 
 /// Every command record of the PR, judged: void when its comment no longer stands, else as it

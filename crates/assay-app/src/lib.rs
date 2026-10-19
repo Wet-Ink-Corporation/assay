@@ -20,7 +20,9 @@ mod finding_text;
 mod forge;
 mod gate;
 mod golden;
+mod ledger;
 mod model_runner;
+mod open;
 mod plan;
 mod preflight;
 mod prompt_bundle;
@@ -35,8 +37,14 @@ mod tiering;
 
 pub use calendar::{CalendarDate, CalendarDateError};
 pub use doctor::{
-    CanaryProbe, CanaryRun, CanaryToken, Check, CheckFailure, CheckResult, DoctorError,
-    DoctorReport, EXPIRY_WARNING_DAYS, ExpiryWarning, doctor, token_expiry_warning,
+    AGENTS_PATH, Access, AppliedRule, BaseError, BranchPolicy, BypassActor, CanaryProbe, CanaryRun,
+    CanaryToken, Check, CheckFailure, CheckResult, Collaborator, Conditions, DeploymentBranches,
+    DirectoryEntry, DoctorError, DoctorReport, EXPIRY_WARNING_DAYS, Enforcement, EntryType,
+    ExpiryWarning, Holding, IdentityListError, IdentityLists, MAX_LISTED, OWNERS_PATH,
+    PLUGINS_PATH, PolicyKind, Prerequisite, PrerequisiteApps, PrerequisiteBase,
+    PrerequisiteFailure, PrerequisiteForge, PrerequisiteReport, PrerequisiteResult, RequiredCheck,
+    RequiredChecks, Rule, Ruleset, RulesetId, RulesetTarget, WorkflowError, WorkflowPermissions,
+    YamlError, YamlRefusal, doctor, prerequisites, read_base, token_expiry_warning,
 };
 pub use preflight::{
     AuthProof, CliProbe, CliStatus, FIRST_PARTY_PROVIDER, OAUTH_TOKEN_METHOD, PreflightFailed,
@@ -79,13 +87,12 @@ pub use decide::{
     StateStep, TierDegrade, Unreadable, UpstreamJob, authenticate,
 };
 pub use eligibility::{
-    AckedSet, Command, CommandComments, CommandRecord, CommandRejected, CommentAction,
-    CommentEvent, CommitRange, GitHubState, IgnoredApproval, Ineligible, InvalidTimestamp,
-    IssueComment, LedgerRecords, MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_PUSH_RECORDS,
-    MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, Parsed, PriorWaivers, PushKind, PushRecord,
-    PushTrigger, RangeCommit, RangeListing, RangeObjects, Recorded, SnapshotLedger, SnapshotStep,
-    StateError, StatePorts, StateRequest, Timestamp, TreeId, VoidCause, WEB_FLOW, WaiverBindings,
-    github_state, parse_command, push_record, waiver_events,
+    AckedSet, Command, CommandComments, CommandRejected, CommentAction, CommentEvent, CommitRange,
+    GitHubState, IgnoredApproval, Ineligible, InvalidTimestamp, IssueComment, LedgerRecords,
+    MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_PUSH_RECORDS, MAX_RANGE_COMMITS, MergeTree,
+    ParseTreeIdError, Parsed, PriorWaivers, RangeCommit, RangeListing, RangeObjects, Recorded,
+    SnapshotCommand, SnapshotLedger, SnapshotStep, StateError, StatePorts, StateRequest, Timestamp,
+    TreeId, VoidCause, WEB_FLOW, WaiverBindings, github_state, parse_command, waiver_events,
 };
 pub use eval::{
     Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,
@@ -106,9 +113,27 @@ pub use gate::{
     Termination, account_for_required, run_gates,
 };
 pub use golden::{CorpusEntry, CorpusEntryKind, GoldenReplay, SELF_GATE, replay_golden};
+pub use ledger::{
+    ActorCounter, Appended, BUDGET_WINDOW, COOLDOWN_WINDOW, CommandRecord, Consumed, Corruption,
+    CostKind, CostRecord, CostRole, CostWindow, DecisionPointer, DeferralRecord, FileVersion,
+    GrantKey, Granted, LOCK_TTL, LeaseError, LeaseRef, LeaseReservation, LeaseState, Ledger,
+    LedgerFile, LedgerMonth, LedgerPath, LedgerReadError, LedgerRefs, LedgerTime, LedgerWriteError,
+    LockAcquired, LockHold, LockLease, LockRequest, MAX_CAS_ATTEMPTS, MAX_COMMAND_CHARS,
+    MAX_LEASE_MESSAGE_BYTES, MAX_LEDGER_FILE_BYTES, MAX_RECORD_BYTES, MAX_REVIEW_TIMEOUT,
+    MAX_STATE_ENTRIES, ParseLedgerTimeError, PrState, PushAppended, PushDraft, PushKind,
+    PushRecord, RefCreation, RefDeletion, RefTip, Released, RetryGrant, RoleCost, SLOT_TTL, Slot,
+    SlotAcquired, SlotAcquisition, SlotHold, SlotLease, SlotRequest, SlotView, StateUpdate,
+    WriteCondition, WriteOutcome, acquire_lock, acquire_slot, append_command, append_cost,
+    append_push, consume_grant, grant_retry, read_commands, read_costs, read_pushes, read_slots,
+    read_state, reap_expired_slots, release_lock, release_slot, update_state,
+};
 pub use model_runner::{
     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
     PromptError, RateLimitObserved, RetryError, Structured, run_with_retry,
+};
+pub use open::{
+    MAX_LOCK_RETRIES, OpenClock, OpenError, OpenFailure, OpenOutcome, OpenPorts, OpenRequest,
+    OpenStep, OpenTrigger, Opened, PendingStamp, PushEvent, ReopenRefused, Stamped, open,
 };
 pub use plan::{
     ArtifactJob, ArtifactNonce, BaseConfigError, ChangedFiles, EntryKind, EvidenceKey,
@@ -174,4 +199,17 @@ pub use verify::{
     VERDICT_SCHEMA, VERIFIER_CAP, VERIFIER_MAX_TURNS, VerdictReason, VerdictRefusal, VerdictTally,
     Verification, VerifiedFinding, VerifierFailure, VerifierStatus, VerifierTier, VerifyRequest,
     verify,
+};
+
+mod reconcile;
+pub use reconcile::{
+    ChecksReconcileError, ChecksReconcileRequest, ChecksReconciled, ClosedCheck, Closure,
+    LLM_PENDING_LABEL, LedgerReconcileError, LedgerReconcileRequest, LedgerReconciled, Listing,
+    LockListing, LostLock, MAX_HEAD_CHECKS, MAX_OPEN_PULLS, MAX_PUBLISH_LOCKS,
+    MAX_SUPERSEDED_HEADS, OpenPull, PullHead, ReconcileCheck, ReconcileForge, ReconcilePorts,
+    RunProgress, STUCK_AFTER, Skip, SkippedCheck, StampedRun, reconcile_checks, reconcile_ledger,
+};
+mod weigh_in;
+pub use weigh_in::{
+    BlockingItem, Checkpoint, MAX_OPEN_BYTES, MAX_OPEN_ITEMS, OpenItemsError, checkpoint,
 };

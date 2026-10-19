@@ -3,8 +3,8 @@
 
 use std::num::NonZeroU64;
 
-use super::commands::{CommandRecord, IssueComment};
-use super::pushes::PushRecord;
+use super::commands::{IssueComment, SnapshotCommand};
+use crate::ledger::PushRecord;
 use crate::publish::CommentId;
 
 /// The ledger's per-PR records the eligibility rule reads (02 §5): `pushes/<repo_id>/<pr>.jsonl`
@@ -35,7 +35,7 @@ pub trait SnapshotLedger {
         &self,
         number: NonZeroU64,
         max: usize,
-    ) -> Result<LedgerRecords<CommandRecord>, Self::Error>;
+    ) -> Result<LedgerRecords<SnapshotCommand>, Self::Error>;
 }
 
 /// What [`SnapshotLedger`] listed for a PR.

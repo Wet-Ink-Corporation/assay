@@ -76,6 +76,13 @@ impl CalendarDate {
         self.days
     }
 
+    /// The day `days` after 1970-01-01, or 9999-12-31 for a later count.
+    pub(crate) const fn from_days_saturating(days: u32) -> Self {
+        Self {
+            days: if days > LAST_DAY { LAST_DAY } else { days },
+        }
+    }
+
     /// The year and the month (1 to 12) the day falls in.
     pub(crate) const fn year_month(self) -> (u32, u32) {
         let (year, month, _day) = civil_from_days(self.days);

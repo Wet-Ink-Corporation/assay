@@ -128,6 +128,16 @@ impl<'a> Request<'a> {
             body: Some(body),
         }
     }
+
+    /// `PUT path` with `body`.
+    #[must_use]
+    pub const fn put(path: &'a ApiPath, body: &'a [u8]) -> Self {
+        Self {
+            method: Method::Put,
+            path,
+            body: Some(body),
+        }
+    }
 }
 
 /// An HTTP method the adapter uses.
@@ -139,6 +149,8 @@ pub enum Method {
     Post,
     /// `PATCH`.
     Patch,
+    /// `PUT`: a ledger file write through the contents API.
+    Put,
 }
 
 impl Method {
@@ -149,6 +161,7 @@ impl Method {
             Self::Get => "GET",
             Self::Post => "POST",
             Self::Patch => "PATCH",
+            Self::Put => "PUT",
         }
     }
 }

@@ -5,8 +5,8 @@
 use std::num::NonZeroU64;
 
 use assay_app::{
-    AckedSet, Command, CommandRecord, CommandRejected, CommentAction, CommentEvent, CommentId,
-    Ineligible, Parsed, Recorded, ReviewState, Sha256Digest, VoidCause, parse_command,
+    AckedSet, Command, CommandRejected, CommentAction, CommentEvent, CommentId, Ineligible, Parsed,
+    Recorded, ReviewState, Sha256Digest, SnapshotCommand, VoidCause, parse_command,
 };
 use assay_domain::{OverrideScope, RequiredRole};
 
@@ -119,7 +119,7 @@ fn an_eligible_waive_is_recorded_with_its_head_and_body_hash() -> Outcome {
 
     assert_eq!(
         recorded,
-        Recorded::Record(CommandRecord {
+        Recorded::Record(SnapshotCommand {
             comment_id: CommentId(NonZeroU64::new(40).ok_or("forty")?),
             actor: user(APPROVER),
             created_at: at(5),

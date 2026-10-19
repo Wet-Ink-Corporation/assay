@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:assay:schema:ledger-state:1",
+  "title": "assay.ledger-state/1",
+  "description": "A PR's authoritative state, `state/<repo_id>/<pr>.json` in the ledger repository (docs/architecture/06-operations.md §1, 02-architecture.md §5, ADR-23, 03-contracts.md §6c), changed only by compare-and-set on the file. `repo_id` and `pr` are the file's; absent parts are omitted. Evidence keys and actors are each listed at most once, which a schema cannot express and the reader enforces. Unknown fields are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "repo_id", "pr", "evidence_records", "actor_counters"],
+  "properties": {
+    "schema": { "const": "assay.ledger-state/1" },
+    "repo_id": { "$ref": "#/$defs/id" },
+    "pr": { "$ref": "#/$defs/id" },
+    "evidence": {
+      "description": "The evidence pointer `decide` wrote (R3-08).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "run_attempt", "sha256"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/id" },
+        "run_attempt": { "$ref": "#/$defs/id" },
+        "sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "decision": {
+      "description": "The decision pointer decide-only wrote for its own bundle (R3-08).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "sha256"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/id" },
+        "sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "evidence_records": {
+      "description": "The evidence records `{evidence_key, bundle_sha256, llm, tier}` of 02 §5, one per evidence key.",
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["evidence_key", "bundle_sha256", "llm", "tier"],
+        "properties": {
+          "evidence_key": { "$ref": "#/$defs/digest" },
+          "bundle_sha256": { "$ref": "#/$defs/digest" },
+          "llm": { "enum": ["complete", "skipped(draft)", "deferred", "degraded"] },
+          "tier": { "enum": ["needs-split", "trivial", "full", "lite", "micro"] }
+        }
+      }
+    },
+    "deferral": {
+      "description": "The deferral record `{repo, pr, head, count, resets_at, flag}` of 06 §1; `count` is the requeue counter, `resets_at` is omitted when no rate-limit event gave one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "pr", "head", "count", "flag"],
+      "properties": {
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$",
+          "not": { "pattern": "/\\.{1,2}$" }
+        },
+        "pr": { "$ref": "#/$defs/id" },
+        "head": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "count": { "$ref": "#/$defs/count" },
+        "resets_at": { "$ref": "#/$defs/time" },
+        "flag": { "type": "boolean" }
+      }
+    },
+    "actor_counters": {
+      "description": "decide-only's per-actor command counters, one per actor.",
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["actor_id", "count"],
+        "properties": {
+          "actor_id": { "$ref": "#/$defs/id" },
+          "count": { "$ref": "#/$defs/count" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "integer", "minimum": 1 },
+    "count": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "time": {
+      "description": "A UTC instant to the millisecond, `YYYY-MM-DDTHH:MM:SS.mmmZ`.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  }
+}

@@ -6,7 +6,7 @@
 //! `None` for that part rather than a guess (wi-b5affa): a title holding a blank line splits its
 //! paragraph and is not read, and neither is the rest after it.
 
-use assay_domain::{Class, Confidence, FindingKind, Fingerprint, Marker, Severity};
+use assay_domain::{Class, Confidence, FindingKind, Fingerprint, Marker, Provenance, Severity};
 
 use super::posted_fingerprint;
 
@@ -54,13 +54,13 @@ fn read_class(header: &str) -> Option<Class> {
         fields.next()?,
         fields.next()?,
     );
-    let pre_existing = match (fields.next(), fields.next()) {
-        (None, _) => false,
-        (Some("pre-existing"), None) => true,
+    let provenance = match (fields.next(), fields.next()) {
+        (None, _) => Provenance::Introduced,
+        (Some("pre-existing"), None) => Provenance::PreExisting,
         (Some(_), _) => return None,
     };
     let lead_written = Severity::ALL.into_iter().any(|severity| {
-        lead.strip_prefix(Marker::of(severity, pre_existing).as_str())
+        lead.strip_prefix(Marker::of(severity, provenance).as_str())
             .and_then(|rest| rest.strip_prefix(" **"))
             .and_then(|rest| rest.strip_suffix("**"))
             == Some(severity.code())

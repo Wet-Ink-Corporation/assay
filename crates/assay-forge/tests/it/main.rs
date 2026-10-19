@@ -8,6 +8,7 @@ mod history;
 #[cfg(unix)] // symlinks in fixtures
 mod manifest_copy;
 mod patch;
+mod push;
 mod range;
 mod repository;
 mod single_constructor;

@@ -6,14 +6,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
 use assay_app::{
-    Actor, CheckFound, CheckName, CheckRunId, CheckUpdate, CommandComments, CommandRecord,
-    CommentAction, CommentEvent, CommentId, CommitId, CommitIdentity, CompareAndSetError,
-    EligibilityLists, Forge, GitHubState, IssueComment, LedgerRecords, MergeTree, PushKind,
+    Actor, CheckFound, CheckName, CheckRunId, CheckUpdate, CommandComments, CommentAction,
+    CommentEvent, CommentId, CommitId, CommitIdentity, CompareAndSetError, EligibilityLists, Forge,
+    GitHubState, IssueComment, LedgerRecords, LedgerTime, MergeTree, PushDraft, PushKind,
     PushRecord, RangeCommit, RangeListing, RangeObjects, Reaction, ReactionSubject, Review,
-    ReviewState, Sha256Digest, SnapshotLedger, SnapshotStep, StateError, StatePorts, StateRequest,
-    TimelineEvent, Timestamp, TreeId, Upserted, UserId, github_state,
+    ReviewState, Sha256Digest, SnapshotCommand, SnapshotLedger, SnapshotStep, StateError,
+    StatePorts, StateRequest, TimelineEvent, Timestamp, TreeId, Upserted, UserId, github_state,
 };
-use assay_domain::Fingerprint;
+use assay_domain::{Fingerprint, RunUid};
 
 /// The break-glass owner (in `owners`).
 pub(crate) const OWNER: u64 = 1001;
@@ -130,15 +130,32 @@ pub(crate) fn created(comment: IssueComment) -> CommentEvent {
     }
 }
 
-/// The record of a push (not forced) of `(before, after)` by `sender` at `minute`.
-fn pushed((before, after): (char, char), sender: u64, minute: u32) -> PushRecord {
+/// [`at`]`(minute)` as the ledger writes it.
+fn ledger_at(minute: u32) -> LedgerTime {
+    format!("2026-10-13T09:{minute:02}:00.000Z")
+        .parse()
+        .expect("a fixed time parses")
+}
+
+/// Push record number `seq` of PR 7, its run's only one: `kind` onto `after`, `by` its sender
+/// at a minute.
+fn push_record(seq: usize, kind: PushKind, after: char, by: (u64, u32)) -> PushRecord {
+    let (sender, minute) = by;
+    let seq = NonZeroU64::new(u64::try_from(seq).expect("few pushes")).expect("seq starts at one");
     PushRecord {
-        kind: PushKind::Push,
-        before: Some(sha(before)),
-        after: sha(after),
-        sender: user(sender),
-        forced: false,
-        at: at(minute),
+        seq,
+        push: PushDraft {
+            run_uid: RunUid {
+                repo_id: NonZeroU64::new(42).expect("forty-two is not zero"),
+                run_id: seq,
+                run_attempt: NonZeroU64::MIN,
+            },
+            pr: NonZeroU64::new(7).expect("seven is not zero"),
+            kind,
+            after: sha(after),
+            sender_id: user(sender),
+            at: ledger_at(minute),
+        },
     }
 }
 
@@ -170,7 +187,7 @@ pub(crate) struct World {
     pub(crate) ancestry: BTreeSet<(CommitId, CommitId)>,
     pub(crate) pushes: Vec<PushRecord>,
     pub(crate) reviews: Vec<Review>,
-    pub(crate) commands: Vec<CommandRecord>,
+    pub(crate) commands: Vec<SnapshotCommand>,
     pub(crate) comments: BTreeMap<CommentId, IssueComment>,
     pub(crate) lists: EligibilityLists,
     /// The port call that fails, if any.
@@ -191,11 +208,10 @@ impl World {
 
     /// Like [`World::opened_by`], with commit `first` as the PR's one commit.
     pub(crate) fn opened_at(author: u64, first: char) -> Self {
-        let head = sha(first);
         let mut world = Self {
             number: NonZeroU64::new(7).expect("seven is not zero"),
             author: user(author),
-            head: head.clone(),
+            head: sha(first),
             range: RangeListing::Listed(Vec::new()),
             identities: BTreeMap::new(),
             trees: BTreeMap::new(),
@@ -212,14 +228,9 @@ impl World {
             asked: RefCell::new(Vec::new()),
         };
         world.commit(first, &[BASE], By::user(author));
-        world.pushes.push(PushRecord {
-            kind: PushKind::Opener,
-            before: None,
-            after: head,
-            sender: user(author),
-            forced: false,
-            at: at(0),
-        });
+        world
+            .pushes
+            .push(push_record(1, PushKind::Opener, first, (author, 0)));
         world
     }
 
@@ -254,15 +265,23 @@ impl World {
 
     /// A push of `(before, after)` by `sender` at `minute`.
     pub(crate) fn push(&mut self, step: (char, char), sender: u64, minute: u32) {
-        self.pushes.push(pushed(step, sender, minute));
+        self.pushed(step, false, (sender, minute));
     }
 
     /// A force-push of `(before, after)` by `sender` at `minute`.
     pub(crate) fn force_push(&mut self, step: (char, char), sender: u64, minute: u32) {
-        self.pushes.push(PushRecord {
-            forced: true,
-            ..pushed(step, sender, minute)
-        });
+        self.pushed(step, true, (sender, minute));
+    }
+
+    /// The PR's next push record: a push of `(before, after)`, `forced` or not, `by` its sender
+    /// at a minute.
+    fn pushed(&mut self, (before, after): (char, char), forced: bool, by: (u64, u32)) {
+        let kind = PushKind::Push {
+            before: sha(before),
+            forced,
+        };
+        let seq = self.pushes.len() + 1;
+        self.pushes.push(push_record(seq, kind, after, by));
     }
 
     /// A review by `reviewer` on `(commit, minute)`: of `commit`, submitted at `minute`; ids
@@ -416,7 +435,7 @@ impl SnapshotLedger for World {
         &self,
         _number: NonZeroU64,
         max: usize,
-    ) -> Result<LedgerRecords<CommandRecord>, Self::Error> {
+    ) -> Result<LedgerRecords<SnapshotCommand>, Self::Error> {
         self.ledger_list(SnapshotStep::CommandRecords, &self.commands, max)
     }
 }

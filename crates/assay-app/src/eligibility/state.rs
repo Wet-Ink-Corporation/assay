@@ -7,15 +7,15 @@ use assay_domain::{Authorship, Override, OwnerApproval, Readiness, Waiver};
 
 use super::approvals::{Approval, ApprovalStatus, IgnoredApproval};
 use super::commands::{
-    CommandRecord, CommandRejected, CommandStatus, CommentEvent, JudgedCommand, Recorded,
+    CommandRejected, CommandStatus, CommentEvent, JudgedCommand, Recorded, SnapshotCommand,
     VoidCause, record,
 };
 use super::grammar::Command;
-use super::pushes::PushRecord;
 use super::rule::{Ineligible, Rule};
 use super::timestamp::Timestamp;
 use crate::config::{CommitId, EligibilityLists};
 use crate::decide::Snapshot;
+use crate::ledger::PushRecord;
 use crate::status::UserId;
 
 /// Whether the range fits the eligibility rule's cap (R3-22).
@@ -168,13 +168,13 @@ impl GitHubState {
     }
 
     /// The valid dismissals of the PR, for the context pack.
-    pub fn dismissals(&self) -> impl Iterator<Item = &CommandRecord> + '_ {
+    pub fn dismissals(&self) -> impl Iterator<Item = &SnapshotCommand> + '_ {
         self.valid()
             .filter(|record| matches!(record.command, Command::Dismiss { .. }))
     }
 
     /// The command records whose comments no longer stand, for `CommandVoided` events.
-    pub fn voided(&self) -> impl Iterator<Item = (&CommandRecord, VoidCause)> + '_ {
+    pub fn voided(&self) -> impl Iterator<Item = (&SnapshotCommand, VoidCause)> + '_ {
         self.commands
             .iter()
             .filter_map(|judged| match judged.status {
@@ -184,7 +184,7 @@ impl GitHubState {
     }
 
     /// The records that apply to this decision.
-    fn valid(&self) -> impl Iterator<Item = &CommandRecord> + '_ {
+    fn valid(&self) -> impl Iterator<Item = &SnapshotCommand> + '_ {
         self.commands
             .iter()
             .filter(|judged| judged.status == CommandStatus::Valid)
@@ -192,7 +192,7 @@ impl GitHubState {
     }
 
     /// The latest valid override record of this head, by `(created_at, comment_id)`.
-    pub(super) fn latest_override(&self) -> Option<&CommandRecord> {
+    pub(super) fn latest_override(&self) -> Option<&SnapshotCommand> {
         self.valid()
             .filter(|record| matches!(record.command, Command::Override { .. }))
             .max_by_key(|record| (record.created_at, record.comment_id))

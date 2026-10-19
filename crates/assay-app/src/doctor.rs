@@ -8,6 +8,7 @@
 //! Every check fails closed: a check that cannot see what it needs (an unreadable init, a call
 //! that did not answer, a canary that planted nothing) fails rather than passes.
 
+mod prerequisites;
 mod token_expiry;
 
 use std::fmt;
@@ -22,6 +23,15 @@ use crate::session_init::{
     AllowlistDrift, InitReadError, InitUnclean, SessionInit, allowlist_drift, check_init,
 };
 
+pub use prerequisites::{
+    AGENTS_PATH, Access, AppliedRule, BaseError, BranchPolicy, BypassActor, Collaborator,
+    Conditions, DeploymentBranches, DirectoryEntry, Enforcement, EntryType, Holding,
+    IdentityListError, IdentityLists, MAX_LISTED, OWNERS_PATH, PLUGINS_PATH, PolicyKind,
+    Prerequisite, PrerequisiteApps, PrerequisiteBase, PrerequisiteFailure, PrerequisiteForge,
+    PrerequisiteReport, PrerequisiteResult, RequiredCheck, RequiredChecks, Rule, Ruleset,
+    RulesetId, RulesetTarget, WorkflowError, WorkflowPermissions, YamlError, YamlRefusal,
+    prerequisites, read_base,
+};
 pub use token_expiry::{EXPIRY_WARNING_DAYS, ExpiryWarning, token_expiry_warning};
 
 /// The fixed first part of every canary word.

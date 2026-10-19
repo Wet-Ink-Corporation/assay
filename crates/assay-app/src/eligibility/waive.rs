@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use assay_domain::{Decision, EventPayload, Fingerprint, GateReport, ReasonCode, Waiver};
 use serde_json::{Map, Value};
 
-use super::commands::{CommandRecord, CommandStatus};
+use super::commands::{CommandStatus, SnapshotCommand};
 use super::grammar::Command;
 use super::state::GitHubState;
 use crate::config::Sha256Digest;
@@ -203,7 +203,7 @@ impl GitHubState {
 
     /// The earliest waive record of `fp` posted on another head whose comment still stands
     /// and whose actor is eligible on this head.
-    fn standing_waive(&self, fp: Fingerprint) -> Option<&CommandRecord> {
+    fn standing_waive(&self, fp: Fingerprint) -> Option<&SnapshotCommand> {
         self.commands
             .iter()
             .filter(|judged| judged.status == CommandStatus::OtherHead)
