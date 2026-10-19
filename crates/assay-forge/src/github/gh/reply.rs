@@ -11,13 +11,22 @@ use crate::github::Response;
 /// The most bytes the status line, the headers and the blank line after them may take.
 pub(super) const MAX_HEAD_BYTES: usize = 64 * 1024;
 
-/// The response `output` describes.
+/// The response `output` describes; its body is `output`'s own buffer, not a copy.
 ///
 /// # Errors
 ///
 /// What is wrong with it, when it is not exactly the shape above or its head is longer than
 /// [`MAX_HEAD_BYTES`].
-pub(super) fn parse(output: &[u8]) -> Result<Response, &'static str> {
+pub(super) fn parse(mut output: Vec<u8>) -> Result<Response, &'static str> {
+    let (mut response, head) = read_head(&output)?;
+    output.drain(..head);
+    response.body = output;
+    Ok(response)
+}
+
+/// The response's status and headers, with no body yet, and the length of the head (through
+/// its blank line).
+fn read_head(output: &[u8]) -> Result<(Response, usize), &'static str> {
     let (status_line, mut rest) = split_line(output, b"\n").ok_or("no status line")?;
     let status = status(status_line)?;
     let mut headers = Vec::new();
@@ -29,15 +38,15 @@ pub(super) fn parse(output: &[u8]) -> Result<Response, &'static str> {
             return Err("the head is longer than its cap");
         }
         if line.is_empty() {
-            break;
+            let response = Response {
+                status,
+                headers,
+                body: Vec::new(),
+            };
+            return Ok((response, head));
         }
         headers.push(header(line)?);
     }
-    Ok(Response {
-        status,
-        headers,
-        body: rest.to_vec(),
-    })
 }
 
 /// The line before the first `end`, and what follows `end`.
@@ -94,6 +103,11 @@ fn header(line: &[u8]) -> Result<(String, String), &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`super::parse`] of a copy of `output`.
+    fn parse(output: &[u8]) -> Result<Response, &'static str> {
+        super::parse(output.to_vec())
+    }
 
     fn response(status: u16, headers: &[(&str, &str)], body: &[u8]) -> Response {
         Response {

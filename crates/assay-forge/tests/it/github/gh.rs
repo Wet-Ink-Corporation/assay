@@ -4,7 +4,7 @@
 
 use std::cell::RefCell;
 use std::error::Error;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
@@ -13,8 +13,8 @@ use std::process::ExitStatus;
 use std::time::Duration;
 
 use assay_forge::github::{
-    ApiPath, GH_OUTPUT_CAP, GhApi, GhCall, GhError, GhRunner, GhSetupError, GhToken, InvalidPath,
-    InvalidToken, MAX_RESPONSE_BYTES, Request, Response, Transport,
+    ApiPath, GH_OUTPUT_CAP, GhApi, GhCall, GhEnvironment, GhError, GhRunner, GhSetupError, GhToken,
+    InvalidPath, InvalidToken, Request, Response, Transport,
 };
 use assay_forge::process::{Captured, Limits, ProcessError};
 
@@ -29,6 +29,7 @@ struct Ran {
     cwd_mode: u32,
     stdin: Vec<u8>,
     limits: Limits,
+    debug: String,
 }
 
 /// A runner that records each call and answers with what the test scripted.
@@ -71,6 +72,7 @@ impl GhRunner for FakeGh {
             cwd_mode: fs::metadata(call.cwd).map_or(0, |meta| meta.permissions().mode() & 0o777),
             stdin: call.stdin.to_vec(),
             limits: call.limits,
+            debug: format!("{call:?}"),
         });
         self.answer
             .borrow_mut()
@@ -86,7 +88,12 @@ const TIMEOUT: Duration = Duration::from_secs(7);
 const OK: &[u8] = b"HTTP/2.0 200 OK\nX-Ratelimit-Remaining: 9\r\n\r\n[]";
 
 fn api(fake: &FakeGh) -> Result<GhApi<&FakeGh>, Box<dyn Error>> {
-    Ok(GhApi::new(fake, GH, GhToken::new("ghs_secret")?, TIMEOUT)?)
+    api_in(fake, GhEnvironment::default())
+}
+
+/// The transport over `fake` with `environment` passed on.
+fn api_in(fake: &FakeGh, environment: GhEnvironment) -> Result<GhApi<&FakeGh>, Box<dyn Error>> {
+    Ok(GhApi::new(fake, GH, GhToken::new("ghs_secret")?, environment)?.with_timeout(TIMEOUT))
 }
 
 fn path(text: &str) -> Result<ApiPath, InvalidPath> {
@@ -155,8 +162,67 @@ fn a_read_runs_gh_api_with_exactly_its_arguments_and_environment() -> TestResult
 }
 
 #[test]
-fn the_output_cap_lets_a_body_one_byte_over_the_response_cap_through() {
-    const { assert!(GH_OUTPUT_CAP > MAX_RESPONSE_BYTES + 1) };
+fn a_calls_debug_shows_no_variable_value() -> TestResult {
+    let fake = FakeGh::exiting(0, OK, b"");
+    let environment = GhEnvironment::from_vars([(
+        OsString::from("HTTPS_PROXY"),
+        OsString::from("http://user:proxy-password@proxy:3128"),
+    )]);
+
+    api_in(&fake, environment)?.send(&Request::get(&path("rate_limit")?))?;
+
+    let ran = fake.ran.borrow();
+    let debug = &ran.first().ok_or("one run")?.debug;
+    assert!(!debug.contains("ghs_secret"), "{debug}");
+    assert!(!debug.contains("proxy-password"), "{debug}");
+    assert!(debug.contains("GH_TOKEN"), "names are shown: {debug}");
+    Ok(())
+}
+
+#[test]
+fn only_the_proxy_and_certificate_variables_pass_through() -> TestResult {
+    let fake = FakeGh::exiting(0, OK, b"");
+    let variables = [
+        ("HOME", "/root"),
+        ("PATH", "/usr/bin"),
+        ("no_proxy", "localhost"),
+        ("GH_TOKEN", "ghs_inherited"),
+        ("GH_HOST", "evil.example"),
+        ("GH_ENTERPRISE_TOKEN", "ghe_inherited"),
+        ("SSL_CERT_FILE", "/etc/ssl/ca.pem"),
+        ("HTTPS_PROXY", "http://proxy:3128"),
+        ("GIT_DIR", "/elsewhere"),
+    ];
+    let environment = GhEnvironment::from_vars(
+        variables
+            .iter()
+            .map(|&(name, value)| (OsString::from(name), OsString::from(value))),
+    );
+
+    api_in(&fake, environment)?.send(&Request::get(&path("rate_limit")?))?;
+
+    let ran = fake.ran.borrow();
+    let ran = ran.first().ok_or("one run")?;
+    let pairs: Vec<(&str, &OsStr)> = ran
+        .env
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_os_str()))
+        .collect();
+    assert_eq!(
+        pairs,
+        [
+            ("GH_TOKEN", OsStr::new("ghs_secret")),
+            ("GH_HOST", OsStr::new("github.com")),
+            ("GH_PROMPT_DISABLED", OsStr::new("1")),
+            ("NO_COLOR", OsStr::new("1")),
+            ("GH_NO_UPDATE_NOTIFIER", OsStr::new("1")),
+            ("GH_CONFIG_DIR", ran.cwd.as_os_str()),
+            ("HTTPS_PROXY", OsStr::new("http://proxy:3128")),
+            ("no_proxy", OsStr::new("localhost")),
+            ("SSL_CERT_FILE", OsStr::new("/etc/ssl/ca.pem")),
+        ]
+    );
+    Ok(())
 }
 
 #[test]
@@ -273,6 +339,25 @@ fn a_failure_without_a_response_keeps_a_bounded_excerpt_of_stderr() -> TestResul
 }
 
 #[test]
+fn the_stderr_excerpt_never_holds_the_token() -> TestResult {
+    // Once early, and once across the excerpt's end.
+    let mut stderr = b"bad token ghs_secret\n".to_vec();
+    stderr.resize(505, b'x');
+    stderr.extend_from_slice(b"ghs_secret and more");
+    let fake = FakeGh::exiting(1, b"", &stderr);
+
+    let sent = get(&fake, "rate_limit")?;
+
+    let Err(GhError::NoResponse { stderr, .. }) = sent else {
+        return Err(format!("NoResponse expected, got {sent:?}").into());
+    };
+    assert!(stderr.starts_with("bad token <redacted>\n"), "{stderr}");
+    assert!(!stderr.contains("ghs_"), "{stderr}");
+    assert!(stderr.len() <= 512);
+    Ok(())
+}
+
+#[test]
 fn output_that_is_not_an_included_response_is_malformed() -> TestResult {
     let fake = FakeGh::exiting(0, b"[]", b"");
 
@@ -299,7 +384,15 @@ fn a_runner_failure_is_a_transport_error() -> TestResult {
 fn a_path_gh_would_fill_in_is_refused_before_gh_runs() -> TestResult {
     let fake = FakeGh::exiting(0, OK, b"");
 
-    for text in ["repos/{owner}/{repo}/labels", "repos/o/r}"] {
+    for text in [
+        "repos/{owner}/{repo}/labels",
+        "repos/o/r}",
+        "repos/:owner/:repo/labels",
+        "repos/o/r/branches/:branch",
+        "repos/o/r/pulls?head=:owner",
+        "repos/o/:repo",
+        "repos/o/x:branch.y",
+    ] {
         let sent = get(&fake, text)?;
 
         assert!(
@@ -312,10 +405,31 @@ fn a_path_gh_would_fill_in_is_refused_before_gh_runs() -> TestResult {
 }
 
 #[test]
+fn a_colon_word_gh_does_not_fill_in_is_sent() -> TestResult {
+    for text in [
+        "repos/o/r/labels/:owners",
+        "search/issues?q=repo:o/r",
+        "repos/o/r/:repo_x",
+    ] {
+        let fake = FakeGh::exiting(0, OK, b"");
+
+        let response = get(&fake, text)??;
+
+        assert_eq!(response.status, 200, "{text}");
+    }
+    Ok(())
+}
+
+#[test]
 fn gh_must_be_named_by_an_absolute_path() -> TestResult {
     let fake = FakeGh::exiting(0, OK, b"");
 
-    let built = GhApi::new(&fake, "gh", GhToken::new("ghs_secret")?, TIMEOUT);
+    let built = GhApi::new(
+        &fake,
+        "gh",
+        GhToken::new("ghs_secret")?,
+        GhEnvironment::default(),
+    );
 
     assert!(
         matches!(built, Err(GhSetupError::RelativeProgram(ref program)) if program == Path::new("gh")),
@@ -344,6 +458,21 @@ fn closing_removes_the_scratch_configuration() -> TestResult {
     assert!(config.is_dir());
 
     transport.close()?;
+
+    assert!(!config.exists());
+    Ok(())
+}
+
+#[test]
+fn dropping_the_transport_also_removes_the_scratch_configuration() -> TestResult {
+    let fake = FakeGh::exiting(0, OK, b"");
+    let transport = api(&fake)?;
+    transport.send(&Request::get(&path("rate_limit")?))?;
+    // Owned: the path outlives the borrow of the runs.
+    let config = fake.ran.borrow().first().ok_or("one run")?.cwd.clone();
+    assert!(config.is_dir());
+
+    drop(transport);
 
     assert!(!config.exists());
     Ok(())

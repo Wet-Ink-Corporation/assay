@@ -11,8 +11,8 @@ use std::time::Duration;
 use assay_app::{AppId, Forge, UserId};
 use assay_cli::ForgeSupervisor;
 use assay_forge::github::{
-    Api, ApiPath, AppIdentity, GH_TIMEOUT, GhApi, GhError, GhToken, GitHub, Request, ThreadSleep,
-    Transport,
+    Api, ApiPath, AppIdentity, ForgeError, GH_TIMEOUT, GhApi, GhEnvironment, GhError, GhToken,
+    GitHub, MAX_RESPONSE_BYTES, Operation, Request, ThreadSleep, Transport,
 };
 use assay_forge::process::{GroupKiller, ProcessError};
 use tempfile::TempDir;
@@ -33,15 +33,20 @@ impl FakeGh {
         Ok(Self { dir, program })
     }
 
-    /// The transport over this `gh`, with `timeout` per request.
+    /// The transport over this `gh`, with `timeout` per request and nothing inherited.
     fn transport(&self, timeout: Duration) -> Result<GhApi<ForgeSupervisor>, Box<dyn Error>> {
+        self.transport_in(timeout, GhEnvironment::default())
+    }
+
+    /// The transport over this `gh`, passing on `environment`.
+    fn transport_in(
+        &self,
+        timeout: Duration,
+        environment: GhEnvironment,
+    ) -> Result<GhApi<ForgeSupervisor>, Box<dyn Error>> {
         let supervisor = ForgeSupervisor::new(GroupKiller::system()?);
-        Ok(GhApi::new(
-            supervisor,
-            &self.program,
-            GhToken::new("ghs_test")?,
-            timeout,
-        )?)
+        let token = GhToken::new("ghs_test")?;
+        Ok(GhApi::new(supervisor, &self.program, token, environment)?.with_timeout(timeout))
     }
 
     /// A file the script wrote beside itself.
@@ -61,6 +66,14 @@ impl FakeGh {
     }
 }
 
+/// What gh would inherit from a process whose environment is `vars`.
+fn inheriting(vars: &[(&str, &str)]) -> GhEnvironment {
+    GhEnvironment::from_vars(
+        vars.iter()
+            .map(|&(name, value)| (name.into(), value.into())),
+    )
+}
+
 #[test]
 #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
 fn gh_runs_with_exactly_the_call_forge_built() -> Result<(), Box<dyn Error>> {
@@ -72,7 +85,8 @@ pwd -P > "$dir/cwd"
 printf 'HTTP/2.0 201 Created\nX-Test: yes\r\n\r\n{"id":1}'
 "#,
     )?;
-    let transport = gh.transport(GH_TIMEOUT)?;
+    let environment = inheriting(&[("HOME", "/root"), ("SSL_CERT_DIR", "/etc/ssl/certs")]);
+    let transport = gh.transport_in(GH_TIMEOUT, environment)?;
     let path = ApiPath::new("repos/o/r/check-runs")?;
 
     let response = transport.send(&Request::post(&path, br#"{"name":"assay"}"#))?;
@@ -102,19 +116,20 @@ printf 'HTTP/2.0 201 Created\nX-Test: yes\r\n\r\n{"id":1}'
     assert_eq!(gh.record("stdin")?, r#"{"name":"assay"}"#);
     let env = gh.env()?;
     let config = env.get("GH_CONFIG_DIR").ok_or("GH_CONFIG_DIR is set")?;
-    assert_eq!(
-        env.keys().map(String::as_str).collect::<Vec<_>>(),
-        [
-            "GH_CONFIG_DIR",
-            "GH_HOST",
-            "GH_NO_UPDATE_NOTIFIER",
-            "GH_PROMPT_DISABLED",
-            "GH_TOKEN",
-            "NO_COLOR",
-        ]
+    let expected = [
+        ("GH_CONFIG_DIR", config.as_str()),
+        ("GH_HOST", "github.com"),
+        ("GH_NO_UPDATE_NOTIFIER", "1"),
+        ("GH_PROMPT_DISABLED", "1"),
+        ("GH_TOKEN", "ghs_test"),
+        ("NO_COLOR", "1"),
+        ("SSL_CERT_DIR", "/etc/ssl/certs"),
+    ];
+    assert!(
+        env.iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .eq(expected)
     );
-    assert_eq!(env.get("GH_TOKEN").map(String::as_str), Some("ghs_test"));
-    assert_eq!(env.get("GH_HOST").map(String::as_str), Some("github.com"));
     assert_eq!(
         gh.record("cwd")?,
         format!("{}\n", fs::canonicalize(config)?.display())
@@ -166,6 +181,41 @@ fn a_gh_that_hangs_is_stopped_at_its_timeout() -> Result<(), Box<dyn Error>> {
     assert!(
         matches!(sent, Err(GhError::Run(ProcessError::TimedOut))),
         "{sent:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+fn a_body_one_byte_over_the_response_cap_reaches_the_adapter_and_is_refused()
+-> Result<(), Box<dyn Error>> {
+    let over = MAX_RESPONSE_BYTES
+        .checked_add(1)
+        .ok_or("the cap plus one fits")?;
+    let gh = FakeGh::new(&format!(
+        "printf 'HTTP/2.0 200 OK\\n\\r\\n'\nexec /usr/bin/head -c {over} /dev/zero\n"
+    ))?;
+    let identity = AppIdentity {
+        app: AppId(NonZeroU64::new(1).ok_or("non-zero")?),
+        bot: UserId(NonZeroU64::new(2).ok_or("non-zero")?),
+    };
+    let github = GitHub::new(
+        Api::new(gh.transport(GH_TIMEOUT)?, ThreadSleep),
+        "o/r".parse()?,
+        identity,
+    );
+
+    let listed = github.labels(NonZeroU64::new(7).ok_or("non-zero")?);
+
+    assert!(
+        matches!(
+            listed,
+            Err(ForgeError::ResponseTooLarge {
+                operation: Operation::ListLabels,
+                cap: MAX_RESPONSE_BYTES,
+            })
+        ),
+        "{listed:?}"
     );
     Ok(())
 }

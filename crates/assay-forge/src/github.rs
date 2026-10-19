@@ -28,8 +28,8 @@ use assay_app::{AppId, UserId};
 pub use api::{Api, MAX_LIST_ITEMS};
 pub use error::{ForgeError, Operation};
 pub use gh::{
-    GH_OUTPUT_CAP, GH_TIMEOUT, GhApi, GhCall, GhError, GhRunner, GhSetupError, GhToken,
-    InvalidToken,
+    GH_OUTPUT_CAP, GH_TIMEOUT, GhApi, GhCall, GhEnvironment, GhError, GhRunner, GhSetupError,
+    GhToken, InvalidToken,
 };
 pub use identity::MAX_COMMITS;
 pub use repository::{ParseRepositoryError, Repository};
