@@ -158,6 +158,41 @@ fn a_two_way_judgment_item_blocking_nothing_is_not_reported() -> Result<(), Box<
 }
 
 #[test]
+fn a_re_triage_to_two_way_judgment_settles_a_one_way_item() -> Result<(), Box<dyn Error>> {
+    let head = head_with(&[
+        raised("wi-aa4c3b", T0, None),
+        triaged("wi-aa4c3b", T1, Some("one-way"), Some("authority")),
+        triaged("wi-aa4c3b", T2, Some("two-way"), Some("judgment")),
+    ]);
+
+    let seen = head.seen()?;
+
+    assert_eq!(seen, (PASS, Vec::new()));
+    Ok(())
+}
+
+#[test]
+fn a_second_raise_that_blocks_decides_blocks_and_where_it_is_reported() -> Result<(), Box<dyn Error>>
+{
+    let head = head_with(&[
+        raised("wi-aa4c3b", T0, None),
+        triaged("wi-aa4c3b", T1, Some("two-way"), Some("judgment")),
+        raised("wi-aa4c3b", T2, Some("merge")),
+        triaged(
+            "wi-aa4c3b",
+            "2026-10-11T06:00:03Z",
+            Some("two-way"),
+            Some("judgment"),
+        ),
+    ]);
+
+    let seen = head.seen()?;
+
+    assert_eq!(seen, (NEUTRAL, vec![at(BLOCKING, 3, Severity::Major)]));
+    Ok(())
+}
+
+#[test]
 fn a_null_or_absent_triaged_door_or_authority_is_pending_triage() -> Result<(), Box<dyn Error>> {
     let mut absent = triaged("wi-aa4c3b", T1, Some("one-way"), None);
     if let Some(object) = absent.as_object_mut() {
@@ -358,6 +393,34 @@ fn only_regular_jsonl_files_directly_in_the_journal_directory_are_read()
 }
 
 #[test]
+fn a_ledger_ancestor_that_is_not_a_directory_is_refused() -> Result<(), Box<dyn Error>> {
+    let cases = [
+        (".kb", EntryKind::File),
+        (".kb", EntryKind::Symlink),
+        (".kb/_ledger", EntryKind::Symlink),
+        (".kb/_ledger", EntryKind::Submodule),
+        (".kb/_intake", EntryKind::Symlink),
+        (DECISIONS, EntryKind::File),
+    ];
+    for (path, kind) in cases {
+        let mut head = Head::default();
+        head.entry(path, kind, "elsewhere");
+
+        let seen = head.seen()?;
+
+        assert_eq!(
+            seen,
+            (
+                NEUTRAL,
+                vec![(UNREADABLE.to_owned(), path.to_owned(), 1, Severity::Minor)]
+            ),
+            "{path} {kind:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn a_journal_directory_that_is_a_file_is_refused() -> Result<(), Box<dyn Error>> {
     let mut head = Head::default();
     head.file(JOURNALS, "");
@@ -401,6 +464,24 @@ fn an_atom_not_exactly_in_the_documented_form_is_refused() -> Result<(), Box<dyn
         (
             NEUTRAL,
             vec![(UNREADABLE.to_owned(), bad, 1, Severity::Minor)]
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn a_symlinked_atom_is_refused() -> Result<(), Box<dyn Error>> {
+    let mut head = Head::default();
+    let linked = format!("{DECISIONS}/wi-aa4c3b-ship.md");
+    head.entry(&linked, EntryKind::Symlink, "../../elsewhere.md");
+
+    let seen = head.seen()?;
+
+    assert_eq!(
+        seen,
+        (
+            NEUTRAL,
+            vec![(UNREADABLE.to_owned(), linked, 1, Severity::Minor)]
         )
     );
     Ok(())
@@ -628,7 +709,7 @@ fn refuses_another_adapter_and_any_job_but_gates_static() -> Result<(), Box<dyn 
 #[test]
 fn a_listing_or_read_failure_is_an_error_never_a_pass() -> Result<(), Box<dyn Error>> {
     let mut listing = Head::default();
-    listing.revisions.failing = Some(DECISIONS.to_owned());
+    listing.revisions.failing = Some(".kb".to_owned());
     let mut reading = head_with(&[raised("wi-aa4c3b", T0, None)]);
     reading.revisions.failing_read = Some(JOURNAL.to_owned());
 
@@ -636,7 +717,7 @@ fn a_listing_or_read_failure_is_an_error_never_a_pass() -> Result<(), Box<dyn Er
     let read = reading.run(false, "weigh-in", GateJob::Static)?;
 
     assert!(
-        matches!(listed, Err(WeighInError::Revision { path, .. }) if path == DECISIONS),
+        matches!(listed, Err(WeighInError::Revision { path: ".kb", .. })),
         "{listed:?}"
     );
     assert!(

@@ -35,9 +35,13 @@ use crate::revision::{EntryKind, Revision, RevisionFiles, TreeEntry};
 const JOURNALS: &str = ".kb/_ledger/journal";
 /// The decision atom directory.
 const DECISIONS: &str = ".kb/_intake/decisions";
-/// How [`WeighInError::Revision`] names the batch read, and where a ledger past the limits is
-/// reported.
+/// The directory listed once for both (and how [`WeighInError::Revision`] names the listing and
+/// the batch read, and where a ledger past the limits is reported).
 const LEDGER: &str = ".kb";
+/// `.kb` and every directory on the way to [`JOURNALS`] and [`DECISIONS`]. A tree entry at one
+/// of them (a file, symlink or submodule) hides everything below it, so it is refused rather
+/// than read as an empty ledger (wi-b5affa).
+const DIRECTORIES: [&str; 5] = [LEDGER, ".kb/_ledger", ".kb/_intake", JOURNALS, DECISIONS];
 /// Most journal and atom files read.
 const MAX_LEDGER_FILES: usize = 10_000;
 /// Most bytes of journals and atoms read, by listed size, before anything is read.
@@ -130,11 +134,19 @@ impl<R: RevisionFiles> GateRunner for WeighInAdapter<R> {
 impl<R: RevisionFiles> WeighInAdapter<R> {
     /// The head's journals and atoms, read and folded into the document's findings.
     fn warnings(&self) -> Result<Vec<Finding>, WeighInError<R::Error>> {
-        let journal_entries = self.list(JOURNALS)?;
-        let atom_entries = self.list(DECISIONS)?;
-        let mut refused = Vec::new();
-        let mut wanted = select(JOURNALS, &journal_entries, Kind::Journal, &mut refused);
-        wanted.extend(select(DECISIONS, &atom_entries, Kind::Atom, &mut refused));
+        let entries = self.list()?;
+        let mut refused: Vec<Refused<'_>> = entries
+            .iter()
+            .filter(|entry| DIRECTORIES.contains(&entry.path.as_str()))
+            .map(|entry| Refused {
+                path: &entry.path,
+                line: None,
+                why: "is not a directory (a file, symlink or submodule), so nothing below it \
+                      was read",
+            })
+            .collect();
+        let mut wanted = select(JOURNALS, &entries, Kind::Journal, &mut refused);
+        wanted.extend(select(DECISIONS, &entries, Kind::Atom, &mut refused));
         if !within_limits(&wanted) {
             refused.push(Refused {
                 path: LEDGER,
@@ -177,17 +189,21 @@ impl<R: RevisionFiles> WeighInAdapter<R> {
         }
     }
 
-    /// The head's entries at or under `dir`.
-    fn list(&self, dir: &'static str) -> Result<Vec<TreeEntry>, WeighInError<R::Error>> {
+    /// The head's entries at or under `.kb`, in one listing: an entry at `.kb` itself or at any
+    /// directory on the way to the journals or atoms is one that is not a directory.
+    fn list(&self) -> Result<Vec<TreeEntry>, WeighInError<R::Error>> {
         self.revisions
-            .list(Revision::Head, Some(dir))
-            .map_err(|source| WeighInError::Revision { path: dir, source })
+            .list(Revision::Head, Some(LEDGER))
+            .map_err(|source| WeighInError::Revision {
+                path: LEDGER,
+                source,
+            })
     }
 }
 
 /// The regular files directly under `dir` in `entries` whose name ends in the suffix of
-/// `kind`, tagged with it. Such a name that is a symlink or a submodule, and `dir` itself when
-/// it is not a directory, go to `refused`; anything else is not Weigh-In's and is skipped.
+/// `kind`, tagged with it. Such a name that is a symlink or a submodule goes to `refused`;
+/// anything else is not Weigh-In's and is skipped.
 fn select<'a>(
     dir: &str,
     entries: &'a [TreeEntry],
@@ -205,13 +221,6 @@ fn select<'a>(
             .strip_prefix(dir)
             .and_then(|rest| rest.strip_prefix('/'))
         else {
-            if path == dir {
-                refused.push(Refused {
-                    path,
-                    line: None,
-                    why: "is not a directory",
-                });
-            }
             continue;
         };
         if name.contains('/') || !name.ends_with(suffix) {

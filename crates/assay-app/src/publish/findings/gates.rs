@@ -62,10 +62,12 @@ fn update(name: &GateName, gate: &GateReport, decision_key: &str) -> CheckUpdate
 }
 
 /// What a non-required Weigh-In gate's summary opens with (04 §9: until D-WI, "the summary
-/// says so"). Its name is reserved for `builtin:weigh-in`, which runs only non-required.
-const WEIGH_IN_EXPERIMENTAL: &str = "Experimental: reports only and never fails. Until \
-     Weigh-In ships `ci-check` (D-WI, #44), G2 is enforced by CP1 (`assay check --local`) and \
-     by convention.";
+/// says so"). Its name is reserved for `builtin:weigh-in`, which runs only non-required. It
+/// holds on every outcome: an errored or skipped gate's check is a failure, but never because
+/// of its findings.
+const WEIGH_IN_EXPERIMENTAL: &str = "Experimental: this gate reports only, and its findings \
+     never fail it. Until Weigh-In ships `ci-check` (D-WI, #44), G2 is enforced by CP1 \
+     (`assay check --local`) and by convention.";
 
 /// The gate's error or skip, its finding counts and its findings, each in a fenced block; a
 /// non-required Weigh-In gate's opens with [`WEIGH_IN_EXPERIMENTAL`].
@@ -131,15 +133,31 @@ mod tests {
         }
     }
 
+    /// The note, which must hold whatever the gate's outcome.
+    const NOTE: &str = "Experimental: this gate reports only, and its findings never fail it. \
+         Until Weigh-In ships `ci-check` (D-WI, #44), G2 is enforced by CP1 \
+         (`assay check --local`) and by convention.";
+
     #[test]
     fn a_non_required_weigh_in_summary_says_g2_is_enforced_by_cp1_until_d_wi() {
         let text = summary(&report("weigh-in", false));
 
+        assert!(text.starts_with(NOTE), "{text}");
+    }
+
+    #[test]
+    fn an_errored_weigh_in_summary_opens_with_the_note_then_the_error() {
+        let errored = GateReport {
+            outcome: GateOutcome::Error {
+                detail: "not-run".to_owned(),
+            },
+            ..report("weigh-in", false)
+        };
+
+        let text = summary(&errored);
+
         assert!(
-            text.starts_with(
-                "Experimental: reports only and never fails. Until Weigh-In ships `ci-check` \
-                 (D-WI, #44), G2 is enforced by CP1 (`assay check --local`) and by convention."
-            ),
+            text.starts_with(&format!("{NOTE}\n\nThe gate errored:")),
             "{text}"
         );
     }

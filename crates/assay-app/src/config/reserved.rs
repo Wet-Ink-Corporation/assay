@@ -1,5 +1,6 @@
 //! The built-in adapters: the one table of their `adapter` values and the plugin names reserved
-//! for them, so the parser cannot accept a built-in whose name is not reserved.
+//! for them, so every built-in the parser accepts has a reserved name and no other adapter can
+//! take it. A built-in plugin may still be declared under another name (03 §1).
 
 use super::error::ConfigError;
 

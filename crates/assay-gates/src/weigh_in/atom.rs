@@ -60,10 +60,9 @@ pub(super) fn item(name: &str, bytes: &[u8]) -> Result<Option<ItemId>, AtomFault
         if found.is_some() {
             return Err(AtomFault::Twice);
         }
-        let id = serde_json::from_str::<String>(value.trim())
-            .ok()
-            .and_then(ItemId::new)
-            .ok_or(AtomFault::NotAnId)?;
+        let text =
+            serde_json::from_str::<String>(value.trim()).map_err(|_json| AtomFault::NotAnId)?;
+        let id = ItemId::new(text).ok_or(AtomFault::NotAnId)?;
         found = Some(id);
     }
     Err(AtomFault::Unclosed)
