@@ -1,4 +1,7 @@
 //! Access to the schemas, golden fixtures and the in-tree specification.
+//!
+//! Twin of `crates/assay-app/tests/it/support.rs`, which reads the same fixtures for the schema
+//! checks; the domain cannot depend on the app, so the fixture walk is written in both.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -93,6 +96,12 @@ pub(crate) fn valid_fixtures(contract: &str) -> io::Result<BTreeMap<String, Vec<
 /// Every invalid golden fixture of `contract`, by file stem.
 pub(crate) fn invalid_fixtures(contract: &str) -> io::Result<BTreeMap<String, Vec<u8>>> {
     fixtures(contract, "invalid")
+}
+
+/// Every golden fixture of `contract` that its schema accepts and the domain refuses, by file
+/// stem (`schemas/README.md`).
+pub(crate) fn domain_invalid_fixtures(contract: &str) -> io::Result<BTreeMap<String, Vec<u8>>> {
+    fixtures(contract, "domain-invalid")
 }
 
 /// Inputs that pass every rule: a `lite` PR into a protected `main`, one required gate that

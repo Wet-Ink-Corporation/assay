@@ -168,6 +168,7 @@ fn a_recorded_confirmation_keeps_the_major() -> Result<(), Box<dyn Error>> {
 #[test]
 fn a_recorded_refutation_downgrades_to_minor_with_the_reason() -> Result<(), Box<dyn Error>> {
     let verification = verify_with(&["verifier_refuted"])?;
+    let validated_fp = validated_major()?.first().map(|found| found.fingerprint);
 
     assert_eq!(
         judged(&verification),
@@ -186,7 +187,7 @@ fn a_recorded_refutation_downgrades_to_minor_with_the_reason() -> Result<(), Box
             },
             EventPayload::FindingDisposed {
                 code: Disposition::VerifierRejectedDowngraded,
-                fp: None,
+                fp: validated_fp,
                 from: Some(Severity::Major),
                 to: Some(Severity::Minor),
             },

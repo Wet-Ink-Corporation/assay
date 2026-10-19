@@ -53,7 +53,11 @@ pub(super) fn distinct(findings: &[ValidFinding]) -> Distinct {
             .filter(|&keeper| keeper != index)
             .filter(|&keeper| findings.get(keeper).is_some_and(|k| may_absorb(k, found)));
         match into {
-            Some(into) => merged.push(Merged { index, into }),
+            Some(into) => merged.push(Merged {
+                index,
+                into,
+                fp: found.fingerprint,
+            }),
             None => kept.push(index),
         }
     }

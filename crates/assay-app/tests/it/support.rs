@@ -1,13 +1,18 @@
-//! Access to the schemas and golden fixtures under the repository's `schemas/` directory.
+//! Access to the schemas and golden fixtures under the repository's `schemas/` directory, and
+//! to the domain's event read rule.
+//!
+//! Twin of `crates/assay-domain/tests/it/support.rs`, which reads the same fixtures for the
+//! domain types; the domain cannot depend on the app, so the fixture walk is written in both.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::io;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use assay_app::Contract;
-use assay_domain::Rubric;
+use assay_domain::{Event, EventPayload, EventSchema, Rubric, RunUid};
 use serde_json::Value;
 
 /// Whether a fixture must pass or fail its schema.
@@ -15,6 +20,8 @@ use serde_json::Value;
 pub(crate) enum Validity {
     Valid,
     Invalid,
+    /// Passes its schema, but the domain type refuses it (`schemas/README.md`, #147).
+    DomainInvalid,
 }
 
 pub(crate) fn schemas_dir() -> PathBuf {
@@ -39,6 +46,7 @@ pub(crate) fn fixtures(
     let sub = match validity {
         Validity::Valid => "valid",
         Validity::Invalid => "invalid",
+        Validity::DomainInvalid => "domain-invalid",
     };
     let dir = schemas_dir()
         .join("fixtures")
@@ -57,6 +65,27 @@ pub(crate) fn fixtures(
         }
     }
     Ok(found)
+}
+
+/// `payload` in an `assay.event/1` envelope, written and read back as an [`Event`]: the read
+/// rule a stream's reader applies, which refuses a `FindingDisposed` that omits the
+/// fingerprint its code requires (#170, #264).
+pub(crate) fn read_back(payload: EventPayload) -> Result<Event, serde_json::Error> {
+    let event = Event {
+        schema: EventSchema::V1,
+        job: "review".to_owned(),
+        idx: 0,
+        ts: "2026-10-19T00:00:00Z".to_owned(),
+        run_key: "run-42-1".to_owned(),
+        run_uid: RunUid {
+            repo_id: NonZeroU64::MIN,
+            run_id: NonZeroU64::MIN,
+            run_attempt: NonZeroU64::MIN,
+        },
+        stage: "S4".to_owned(),
+        payload,
+    };
+    serde_json::from_slice(&serde_json::to_vec(&event)?)
 }
 
 /// `rubric/v1.toml`, parsed.

@@ -44,8 +44,8 @@ pub use decision::{
 pub use dismissal::{Dismissal, DismissalMatch};
 pub use disposition::Disposition;
 pub use event::{
-    BuiltinSet, Event, EventError, EventKind, EventPayload, EventSchema, FeedbackSignal, GateRun,
-    Preflight, RateLimitStatus, SpecialistRun, VerifierVerdict, VoidReason,
+    BuiltinSet, Event, EventKind, EventPayload, EventSchema, FeedbackSignal, GateRun, Preflight,
+    RateLimitStatus, SpecialistRun, VerifierVerdict, VoidReason,
 };
 pub use finding::{Caller, Class, Confidence, Finding, FindingKind, IntroducedBy, Side};
 pub use findings::{FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind, Stats};
@@ -54,7 +54,7 @@ pub use normalise::normalise;
 pub use reason::ReasonCode;
 pub use rubric::{Rubric, RubricError};
 pub use run_uid::RunUid;
-pub use severity::{Marker, Severity};
+pub use severity::{Marker, Provenance, Severity};
 pub use tier::{PrClass, Tier};
 pub use tiering::{
     BaselineChange, ChangeSet, ExecCause, ExecRoot, FileChange, FileKind, FilteredStats, Glob,
