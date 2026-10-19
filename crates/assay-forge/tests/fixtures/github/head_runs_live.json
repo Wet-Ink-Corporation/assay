@@ -1,0 +1,20 @@
+{
+  "total_count": 1,
+  "workflow_runs": [
+    {
+      "id": 39276656667,
+      "name": "rust",
+      "path": ".github/workflows/rust.yml",
+      "event": "pull_request",
+      "status": "in_progress",
+      "conclusion": null,
+      "head_branch": "claude/project-thread-awyud2",
+      "head_sha": "00cacbbedc7aca477c6a470abca4e5e394174db6",
+      "workflow_id": 381056875,
+      "run_number": 288,
+      "run_attempt": 1,
+      "created_at": "2026-10-19T15:17:20Z",
+      "updated_at": "2026-10-19T15:17:25Z"
+    }
+  ]
+}

@@ -8,8 +8,8 @@
 use std::error::Error;
 
 use assay_app::{
-    CommitId, LeaseRef, LedgerRefs, MAX_LEASE_MESSAGE_BYTES, RefCreation, RefDeletion, RefTip,
-    Released, Slot, release_slot,
+    CommitId, LeaseRef, LedgerRefs, LockListing, MAX_LEASE_MESSAGE_BYTES, RefCreation, RefDeletion,
+    RefTip, Released, Slot, release_slot,
 };
 use assay_forge::git::{GitEnvironment, GitLimits, ObjectRepo, PushRemote};
 use assay_forge::github::{
@@ -458,5 +458,57 @@ fn the_ledger_remote_is_its_https_url_with_the_token_kept_out_of_sight()
         "{shown}"
     );
     assert!(!shown.contains(token.secret()), "{shown}");
+    Ok(())
+}
+
+/// The listing of the publish locks, from GitHub's documented `matching-refs` schema.
+fn locks_path() -> String {
+    path("git/matching-refs/heads/lock-?per_page=100")
+}
+
+#[test]
+fn the_publish_locks_are_listed_by_name() -> Result<(), Box<dyn Error>> {
+    let recorded = Recorded::default().then(
+        Method::Get,
+        &locks_path(),
+        reply(200, &[], fixture("ledger_lock_refs.json")),
+    );
+    let waits = Waits::default();
+    let mut scratch = Scratch::new()?;
+
+    let names = scratch.refs(&recorded, &waits)?.publish_locks(10)?;
+
+    assert_eq!(
+        names,
+        ["refs/heads/lock-1413773798-70aa6d748be6f3884e85d294112f9addf83cee59"]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_listed_ref_outside_the_locks_is_refused() -> Result<(), Box<dyn Error>> {
+    let mut listed = fixture_json("ledger_lock_refs.json");
+    let first = listed
+        .get_mut(0)
+        .and_then(|found| found.get_mut("ref"))
+        .ok_or("the fixture lists a ref")?;
+    *first = json!("refs/heads/slot-0");
+    let recorded =
+        Recorded::default().then(Method::Get, &locks_path(), reply(200, &[], json(&listed)));
+    let waits = Waits::default();
+    let mut scratch = Scratch::new()?;
+
+    let names = scratch.refs(&recorded, &waits)?.publish_locks(10);
+
+    assert!(
+        matches!(
+            names,
+            Err(LedgerRefsError::Forge(ForgeError::Malformed {
+                operation: Operation::ListLedgerRefs,
+                ..
+            }))
+        ),
+        "{names:?}"
+    );
     Ok(())
 }

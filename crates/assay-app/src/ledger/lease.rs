@@ -29,3 +29,5 @@ pub use slot::{
     SlotView, acquire_slot, read_slots, reap_expired_slots, release_slot,
 };
 pub use take::{LeaseState, Released};
+
+pub(crate) use lock::reap_expired_lock;

@@ -32,6 +32,7 @@ pub(crate) struct CheckRunDto {
     pub(crate) external_id: Option<String>,
     pub(crate) status: String,
     pub(crate) conclusion: Option<String>,
+    pub(crate) started_at: Option<String>,
     pub(crate) output: OutputDto,
     pub(crate) app: Option<AppDto>,
     pub(crate) html_url: Option<String>,

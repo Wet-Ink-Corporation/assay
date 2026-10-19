@@ -7,10 +7,13 @@
 //! `assay status [--json] [--pr <n>] [--full]` (#126) checks its arguments and
 //! then stops with exit 2: its GitHub adapter is #53's, and [`assay_cli::run_status`] wires it
 //! once that exists. `assay status [--json] --local` (#130) shows the local check's result.
-//! With no arguments it exits successfully without doing anything.
+//! `assay reconcile [--ledger]` (#73) refuses any run attempt but the first (R3-05), then stops
+//! with exit 2 until the live GitHub transport (#273) exists. With no arguments it exits
+//! successfully without doing anything.
 
 mod check;
 mod doctor;
+mod reconcile;
 mod self_gate;
 mod status_local;
 
@@ -43,6 +46,12 @@ fn main() -> ExitCode {
                 report(&"status: the GitHub adapter it reads through is not built yet (#53)")
             }
             Err(usage) => report(&usage),
+        };
+    }
+    if command == "reconcile" {
+        return match reconcile::prepare(args, env::var_os(reconcile::RUN_ATTEMPT)) {
+            Ok(sweep) => report(&reconcile::ReconcileRefused::NotBuilt(sweep)),
+            Err(refused) => report(&refused),
         };
     }
     if command != "self-gate" {

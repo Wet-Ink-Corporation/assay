@@ -19,6 +19,7 @@ mod layout;
 mod plan;
 #[cfg(unix)] // process groups, through forge's git
 mod pull_request;
+mod reconcile;
 mod release_workflow;
 #[cfg(unix)] // process groups, through `ForgeSupervisor`
 mod self_gate;
