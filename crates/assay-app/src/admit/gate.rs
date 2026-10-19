@@ -11,7 +11,7 @@ use super::document::Planned;
 use crate::decide::TierDegrade;
 use crate::ledger::{GrantKey, LeaseError, LedgerRefs, PrState, pending_grant};
 use crate::prompt_bundle::Role;
-use crate::publish::{EvidenceRecord, LlmEvidence};
+use crate::publish::LlmEvidence;
 
 /// The roles a `lite` run requires (04 §3).
 const LITE_ROLES: [RequiredRole; 1] = [RequiredRole::Combined];
@@ -53,12 +53,12 @@ pub(super) struct GateInputs<'a> {
     pub(super) admissions: usize,
 }
 
-/// The ledger's complete evidence record for the plan's evidence key at a tier at least the
-/// plan's, if one exists: a draft, deferred or degraded record never stands in for an LLM review
-/// (R3-17).
-pub(super) fn reusable<'s>(state: &'s PrState, planned: &Planned) -> Option<&'s EvidenceRecord> {
+/// Where the state's evidence records hold the complete record for the plan's evidence key at a
+/// tier at least the plan's, if one exists: a draft, deferred or degraded record never stands in
+/// for an LLM review (R3-17).
+pub(super) fn reusable(state: &PrState, planned: &Planned) -> Option<usize> {
     let needed = rank(planned.tier)?;
-    state.evidence_records.iter().find(|record| {
+    state.evidence_records.iter().position(|record| {
         record.evidence_key == planned.run_key.as_str()
             && record.llm == LlmEvidence::Complete
             && rank(record.tier).is_some_and(|reviewed| reviewed >= needed)

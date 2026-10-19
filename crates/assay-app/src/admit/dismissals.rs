@@ -1,8 +1,9 @@
 //! The owner-valid dismissals of the context pack (04 §6, 05 T21, R3-02, R3-13): read from the
 //! ledger's command records only, never from comment text. A record counts when its command is
-//! exactly `/assay dismiss <fp> <reason>`, its actor is a privileged identity who is neither an
-//! agent, the PR's author nor one of its pushers, and its comment still stands as recorded: not
-//! deleted, never edited, its body hashing to the record's `body_sha256`.
+//! exactly `/assay dismiss <fp> <reason>`, its actor is eligible under 04 §5 (a privileged
+//! identity who is no agent, not the PR's author, no author or committer of its range and not one
+//! of its pushers), and its comment still stands as recorded: created when recorded, not deleted,
+//! never edited, its body hashing to the record's `body_sha256`.
 
 use std::collections::BTreeSet;
 use std::num::NonZeroU64;
@@ -11,6 +12,7 @@ use assay_domain::Fingerprint;
 use serde::Serialize;
 
 use super::comments::CommandComments;
+use super::range::RangeIdentities;
 use crate::config::Sha256Digest;
 use crate::ledger::CommandRecord;
 use crate::status::{Identities, UserId};
@@ -38,17 +40,24 @@ pub(super) struct Eligible<'a> {
     pub(super) identities: &'a Identities,
     /// The PR's author.
     pub(super) author: UserId,
+    /// The authors and committers of the PR's range.
+    pub(super) range: &'a RangeIdentities,
     /// Everyone who pushed to the PR, from its push records.
     pub(super) pushers: &'a BTreeSet<UserId>,
 }
 
 impl Eligible<'_> {
-    /// Whether `actor`'s dismissal suppresses: a privileged identity that is no agent, not the
-    /// author and not a pusher (a self-dismiss is feedback only, 04 §6).
+    /// Whether `actor`'s dismissal suppresses: the eligibility rule of 04 §5 (a self-dismiss is
+    /// feedback only, 04 §6). A privileged identity that is no agent, not (a) the author, not (b)
+    /// an author or committer of the range, and not (c) a pusher. A range commit attributed to no
+    /// GitHub user counts as authored by every owner; the base lists name owners and approvers
+    /// together, so then no identity is eligible (fail closed).
     fn admits(&self, actor: UserId) -> bool {
         self.identities.privileged.contains(&actor)
             && !self.identities.agents.contains(&actor)
             && actor != self.author
+            && !self.range.made(actor)
+            && !self.range.has_unattributed()
             && !self.pushers.contains(&actor)
     }
 }

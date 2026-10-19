@@ -11,6 +11,7 @@ use super::document::PlanDocument;
 use super::events::EventFailure;
 use crate::events::EventSink;
 use crate::ledger::{LeaseError, Ledger, LedgerReadError, LedgerRefs, LedgerWriteError, SlotHold};
+use crate::prompt_bundle::Role;
 use crate::replay::BundleSource;
 use crate::rereview::PriorCarryError;
 
@@ -67,8 +68,13 @@ pub enum AdmitError<L, R, B, C, S> {
     AfterSlot(Box<AfterSlot<L, R, S>>),
 }
 
-/// A failure once a slot was taken. The slot was released by compare-and-set unless `release`
-/// holds why it was not; then the lease expires with its TTL and is reaped.
+/// A failure once a slot was taken.
+///
+/// The slot was released by compare-and-set unless `release` holds why it was not; then the
+/// lease expires with its TTL and is reaped. A `reserved` record
+/// already written stays in the ledger and counts against the budget until reconcile settles it
+/// (06 §1); a retry grant already consumed (`consumed`) is gone, and only a fresh
+/// `/assay retry` grants the role again.
 #[derive(Debug, Error)]
 #[error("admit failed holding slot {}", hold.slot)]
 pub struct AfterSlot<L, R, S> {
@@ -76,6 +82,8 @@ pub struct AfterSlot<L, R, S> {
     pub hold: SlotHold,
     /// Why the slot could not be released, if it could not.
     pub release: Option<LeaseError<R>>,
+    /// The role whose retry grant this run consumed before the failure, if any.
+    pub consumed: Option<Role>,
     /// What failed.
     #[source]
     pub cause: Unwound<L, R, S>,
@@ -88,6 +96,16 @@ pub(super) type UnwoundOf<L, R, S> =
 /// What failed after the slot was taken.
 #[derive(Debug, Error)]
 pub enum Unwound<L, R, S> {
+    /// The cost records could not be read again once the slot was held.
+    #[error("the ledger could not be read again once the slot was held")]
+    Costs(#[source] LedgerReadError<L>),
+    /// The slots could not be read again once the slot was held.
+    #[error("the slots could not be read again once the slot was held")]
+    Slots(#[source] LeaseError<R>),
+    /// The budget read again once the slot was held deferred the run, and the slot could not be
+    /// released (`release` says why); no deferral record was written.
+    #[error("the budget deferred the run once the slot was held")]
+    Deferred,
     /// The `reserved` record could not be written; it may or may not have landed.
     #[error("the reserved record could not be written")]
     Reserve(#[source] LedgerWriteError<L>),

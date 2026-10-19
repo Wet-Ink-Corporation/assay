@@ -41,6 +41,16 @@ pub enum PlanDocument {
     /// A field is not in the form `admit` reads.
     #[error("field {0} of the plan's run description is not in the form admit reads")]
     Field(&'static str),
+    /// The document, or the `budget` added to it, does not convert to or from JSON in the form
+    /// `admit` reads and writes.
+    #[error("part {part} of the run description does not convert as admit needs")]
+    Json {
+        /// `run` for the plan's fields, `budget` for what `admit` adds.
+        part: &'static str,
+        /// What serde reported.
+        #[source]
+        source: serde_json::Error,
+    },
     /// A run that is not a draft schedules other roles than its tier requires.
     #[error("the plan's roles are not the roles its tier requires")]
     Roles,
@@ -97,7 +107,10 @@ impl Planned {
         let value = validator
             .read(Contract::Run, bytes)
             .map_err(PlanDocument::Refused)?;
-        let fields = Fields::deserialize(&value).map_err(|_shape| PlanDocument::Field("run"))?;
+        let fields = Fields::deserialize(&value).map_err(|source| PlanDocument::Json {
+            part: "run",
+            source,
+        })?;
         let Value::Object(document) = value else {
             return Err(PlanDocument::Field("run"));
         };
@@ -147,10 +160,13 @@ impl Planned {
             );
         }
         let wire = BudgetWire::of(budget)?;
-        let budget = serde_json::to_value(wire).map_err(|_shape| PlanDocument::Field("budget"))?;
+        let as_json = |source| PlanDocument::Json {
+            part: "budget",
+            source,
+        };
+        let budget = serde_json::to_value(wire).map_err(as_json)?;
         document.insert("budget".to_owned(), budget);
-        let json =
-            serde_json::to_vec_pretty(&document).map_err(|_shape| PlanDocument::Field("budget"))?;
+        let json = serde_json::to_vec_pretty(&document).map_err(as_json)?;
         validator
             .read(Contract::Run, &json)
             .map_err(PlanDocument::Written)?;

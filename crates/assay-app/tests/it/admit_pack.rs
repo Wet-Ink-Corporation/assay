@@ -1,32 +1,25 @@
-//! `admit`'s context pack (04 §1 S1a, §3, §6, 05 T21, 03 §6d): the base suppress text, the
-//! owner-valid dismissals from the ledger's command records, and the prior findings from the
-//! previous run's bundle, with its digest; and the plan documents `admit` refuses.
+//! `admit`'s context pack (04 §1 S1a, §3, 03 §6d): the base suppress text and the prior findings
+//! from the previous run's bundle, with the pack's digest and schema; and the plan documents
+//! `admit` refuses. The dismissals are `admit_dismissals.rs`'.
 
 use std::assert_matches;
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    AdmitError, Carry, CarryReset, CarrySet, CommandRecord, CommentId, CommentNow, EvidencePointer,
-    LedgerPath, MAX_SUPPRESS_BYTES, PlanDocument, PriorCarryError, PushDraft, PushKind,
-    Sha256Digest, UserId, append_command, append_push,
+    AdmitError, Carry, CarryReset, CarrySet, EvidencePointer, LedgerPath, MAX_SUPPRESS_BYTES,
+    PlanDocument, PriorCarryError, Sha256Digest,
 };
 use assay_domain::{RunUid, Severity};
 use serde_json::{Value, json};
 
-use crate::admit_fakes::{AGENT, AUTHOR, NOW, OWNER, PR, REPO_ID, World, at, nz, plan, this_run};
+use crate::admit_fakes::{NOW, REPO_ID, World, at, nz, plan, this_run};
 use crate::publish_support::{Run, stamped};
 use crate::replay_fakes::{FakeBundles, Stored};
 use crate::support::{schema, schemas_dir};
 use crate::verify_fakes::carried;
-
-/// A privileged identity who pushed to the PR.
-const PUSHER: u64 = 503;
-
-/// The fingerprint every dismissal names.
-const FP: &str = "0123456789abcdef";
 
 /// The pack `admit` built, parsed.
 fn pack_of(world: &mut World) -> Result<Value, Box<dyn Error>> {
@@ -64,13 +57,45 @@ fn after_a_run(carry: Carry, pointer: EvidencePointer, stored: Stored) -> World 
     .with_state(|state| state.evidence = Some(pointer))
 }
 
-/// Where `document` breaks `schemas/context-pack-1.schema.json`, as instance paths.
-fn violations(document: &Value) -> Result<Vec<String>, Box<dyn Error>> {
+/// Where `document` breaks `schemas/context-pack-1.schema.json`: instance path and keyword.
+fn violations(document: &Value) -> Result<Vec<(String, String)>, Box<dyn Error>> {
     let validator = jsonschema::validator_for(&schema("context-pack-1")?)?;
     Ok(validator
         .iter_errors(document)
-        .map(|error| error.instance_path().as_str().to_owned())
+        .map(|error| {
+            (
+                error.instance_path().as_str().to_owned(),
+                error.kind().keyword().to_owned(),
+            )
+        })
         .collect())
+}
+
+/// Each invalid fixture by file stem, with the one violation it must raise.
+const INVALID: [(&str, &str, &str); 4] = [
+    ("missing-suppress", "", "required"),
+    ("prior-unknown-field", "/prior/0", "additionalProperties"),
+    ("unknown-field", "", "additionalProperties"),
+    ("uppercase-dismissed-fp", "/dismissals/0/fp", "pattern"),
+];
+
+/// The fixtures under `schemas/fixtures/context-pack/<validity>/`, by file stem.
+fn fixtures(validity: &str) -> Result<BTreeMap<String, Value>, Box<dyn Error>> {
+    let dir = schemas_dir()
+        .join("fixtures")
+        .join("context-pack")
+        .join(validity);
+    let mut found = BTreeMap::new();
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or("a fixture name")?
+            .to_owned();
+        found.insert(stem, serde_json::from_slice(&fs::read(&path)?)?);
+    }
+    Ok(found)
 }
 
 #[test]
@@ -111,7 +136,7 @@ fn the_pack_is_the_contract_and_its_digest_is_its_sha256() -> Result<(), Box<dyn
     let pack = admitted.pack().ok_or("no pack")?;
     assert_eq!(pack.digest(), &Sha256Digest::of(pack.json()));
     let document: Value = serde_json::from_slice(pack.json())?;
-    assert_eq!(violations(&document)?, Vec::<String>::new());
+    assert_eq!(violations(&document)?, []);
     assert_eq!(
         (&document["schema"], &document["run_uid"]["run_id"]),
         (&json!("assay.context-pack/1"), &json!(9))
@@ -120,160 +145,34 @@ fn the_pack_is_the_contract_and_its_digest_is_its_sha256() -> Result<(), Box<dyn
 }
 
 #[test]
-fn the_context_pack_fixtures_pass_or_fail_their_schema() -> Result<(), Box<dyn Error>> {
-    for (validity, expected_valid) in [("valid", true), ("invalid", false)] {
-        let dir = schemas_dir()
-            .join("fixtures")
-            .join("context-pack")
-            .join(validity);
-        let mut seen = 0_usize;
-        for entry in fs::read_dir(dir)? {
-            let path = entry?.path();
-            let document: Value = serde_json::from_slice(&fs::read(&path)?)?;
-            assert_eq!(
-                violations(&document)?.is_empty(),
-                expected_valid,
-                "{}",
-                path.display()
-            );
-            seen += 1;
-        }
-        assert!(seen > 0, "no {validity} fixture");
-    }
-    Ok(())
-}
+fn every_valid_context_pack_fixture_passes_its_schema() -> Result<(), Box<dyn Error>> {
+    let valid = fixtures("valid")?;
 
-/// A comment `id` by `actor` saying `body`, recorded by decide-only, and as GitHub shows it now.
-fn command(id: u64, actor: u64, body: &str) -> (CommandRecord, CommentNow) {
-    let created = at("2026-10-19T10:00:00.000Z");
-    let record = CommandRecord {
-        run_uid: RunUid {
-            repo_id: nz(REPO_ID),
-            run_id: nz(100 + id),
-            run_attempt: nz(1),
-        },
-        pr: nz(PR),
-        comment_id: CommentId(nz(id)),
-        actor_id: UserId(nz(actor)),
-        command: body.to_owned(),
-        body_sha256: Sha256Digest::of(body.as_bytes()),
-        created_at: created,
-        at: at("2026-10-19T10:00:05.000Z"),
-    };
-    let now = CommentNow {
-        created_at: created,
-        updated_at: created,
-        body: body.to_owned(),
-    };
-    (record, now)
-}
-
-/// The ledger and comment store hold `dismiss` from the owner (comment 1) and from each identity
-/// or comment state that voids it: the author (2), an agent (3), an edit (4), a deletion (5), a
-/// changed body (6) and a pusher (7); and the owner's `/assay recheck` (8). Every one of them is
-/// a privileged identity. The owner's opener record does not make the owner a pusher.
-fn dismissals_of_every_kind(world: &mut World, dismiss: &str) -> Result<(), Box<dyn Error>> {
-    world.identities.privileged =
-        BTreeSet::from([OWNER, AUTHOR, AGENT, PUSHER].map(|id| UserId(nz(id))));
-    append_push(
-        &world.ledger,
-        &PushDraft {
-            run_uid: RunUid {
-                run_id: nz(5),
-                ..this_run(1)
-            },
-            pr: nz(PR),
-            kind: PushKind::Opener,
-            after: "a".repeat(40).parse()?,
-            sender_id: UserId(nz(OWNER)),
-            at: at("2026-10-19T08:00:00.000Z"),
-        },
-    )?;
-    append_push(
-        &world.ledger,
-        &PushDraft {
-            run_uid: this_run(1),
-            pr: nz(PR),
-            kind: PushKind::Push {
-                before: "a".repeat(40).parse()?,
-                forced: false,
-            },
-            after: "b".repeat(40).parse()?,
-            sender_id: UserId(nz(PUSHER)),
-            at: at("2026-10-19T09:00:00.000Z"),
-        },
-    )?;
-    let cases = [
-        command(1, OWNER, dismiss),
-        command(2, AUTHOR, dismiss),
-        command(3, AGENT, dismiss),
-        command(4, OWNER, dismiss),
-        command(5, OWNER, dismiss),
-        command(6, OWNER, dismiss),
-        command(7, PUSHER, dismiss),
-        command(8, OWNER, "/assay recheck"),
-    ];
-    for (record, mut now) in cases {
-        append_command(&world.ledger, &record)?;
-        match record.comment_id.0.get() {
-            // Edited after it was recorded.
-            4 => now.updated_at = at("2026-10-19T10:30:00.000Z"),
-            // Deleted.
-            5 => continue,
-            // Its body no longer hashes to the record.
-            6 => now.body = format!("{dismiss}."),
-            _ => {}
-        }
-        world
-            .comments
-            .comments
-            .insert(record.comment_id.0.get(), now);
+    assert!(!valid.is_empty(), "no valid fixture");
+    for (stem, document) in valid {
+        assert_eq!(violations(&document)?, [], "{stem}");
     }
     Ok(())
 }
 
 #[test]
-fn only_an_eligible_owners_standing_dismissal_enters_the_pack() -> Result<(), Box<dyn Error>> {
-    let dismiss = format!("/assay dismiss {FP} intended: the caller bounds it");
-    let mut world = World::new();
-    dismissals_of_every_kind(&mut world, &dismiss)?;
-
-    let pack = pack_of(&mut world)?;
+fn each_invalid_context_pack_fixture_breaks_its_schema_where_it_says() -> Result<(), Box<dyn Error>>
+{
+    let invalid = fixtures("invalid")?;
 
     assert_eq!(
-        pack["dismissals"],
-        json!([{
-            "comment_id": 1,
-            "actor_id": OWNER,
-            "fp": FP,
-            "reason": "intended: the caller bounds it",
-        }])
+        invalid.keys().map(String::as_str).collect::<Vec<_>>(),
+        INVALID.map(|(stem, _, _)| stem),
+        "every invalid fixture has an entry, and every entry a fixture"
     );
-    assert_eq!(
-        world
-            .comments
-            .asked
-            .borrow()
-            .iter()
-            .map(|id| id.0.get())
-            .collect::<Vec<_>>(),
-        [1, 4, 5, 6],
-        "only eligible dismiss commands are looked up"
-    );
-    Ok(())
-}
-
-#[test]
-fn a_comment_store_that_cannot_be_read_fails_admit_before_the_slot() -> Result<(), Box<dyn Error>> {
-    let mut world = World::new();
-    let (record, _) = command(1, OWNER, &format!("/assay dismiss {FP} intended"));
-    append_command(&world.ledger, &record)?;
-    world.comments.down = true;
-
-    let failed = world.admit(&plan("lite"));
-
-    assert_matches!(failed, Err(AdmitError::Comments(_)));
-    assert_eq!(world.refs_held(), Vec::<String>::new());
+    for (stem, pointer, keyword) in INVALID {
+        let document = invalid.get(stem).ok_or(stem)?;
+        assert_eq!(
+            violations(document)?,
+            [(pointer.to_owned(), keyword.to_owned())],
+            "{stem}"
+        );
+    }
     Ok(())
 }
 

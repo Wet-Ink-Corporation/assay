@@ -2,6 +2,7 @@
 
 mod admit;
 mod admit_budget;
+mod admit_dismissals;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod admit_fakes;
 mod admit_pack;

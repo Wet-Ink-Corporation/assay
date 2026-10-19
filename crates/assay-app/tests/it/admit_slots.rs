@@ -4,15 +4,18 @@
 
 use std::assert_matches;
 use std::error::Error;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use assay_app::{
-    Admission, AdmitError, AfterSlot, Deferred, LedgerPath, LedgerWriteError, Role, Spend, Unwound,
+    Admission, AdmitError, AfterSlot, CostKind, Deferred, LedgerPath, LedgerWriteError, Role,
+    Spend, Unwound, append_cost, read_costs,
 };
 use assay_domain::{Aeu, EventPayload, RunUid};
 use serde_json::{Value, json};
 
-use crate::admit_fakes::{NOW, World, at, grant_ref, nz, plan};
+use crate::admit_fakes::{NOW, OtherCost, RecordedEvents, World, at, grant_ref, nz, plan};
 use crate::lease_fakes::{Before, MemoryRefs};
 use crate::ledger_fakes::MemoryLedger;
 
@@ -206,10 +209,164 @@ fn a_failure_after_the_slot_is_taken_releases_it() {
         *failed,
         AfterSlot {
             release: None,
+            consumed: None,
             cause: Unwound::Reserve(LedgerWriteError::Contended { .. }),
             ..
         }
     );
     assert_eq!(failed.hold.slot.index(), 0);
     assert_eq!(world.refs_held(), Vec::<String>::new());
+}
+
+#[test]
+fn a_failure_after_the_grant_was_consumed_names_the_grant() -> Result<(), Box<dyn Error>> {
+    let mut world = World {
+        events: RecordedEvents {
+            refusing: Some("Admitted"),
+            ..RecordedEvents::default()
+        },
+        ..World::new()
+    }
+    .granting(Role::Combined);
+
+    let failed = world.admit(&plan("lite"));
+
+    let Err(AdmitError::AfterSlot(failed)) = failed else {
+        return Err(format!("expected a failure after the slot, got {failed:?}").into());
+    };
+    assert_matches!(
+        *failed,
+        AfterSlot {
+            release: None,
+            consumed: Some(Role::Combined),
+            cause: Unwound::Events(_),
+            ..
+        }
+    );
+    assert_eq!(
+        world.refs_held(),
+        Vec::<String>::new(),
+        "slot and grant gone"
+    );
+    let costs = read_costs(&world.ledger, at(NOW))?;
+    assert_eq!(
+        costs
+            .records()
+            .iter()
+            .map(|record| record.kind)
+            .collect::<Vec<_>>(),
+        [CostKind::Reserved],
+        "the reserved record stays until reconcile"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_reservation_made_during_the_wait_defers_the_run_once_it_holds_a_slot()
+-> Result<(), Box<dyn Error>> {
+    let month = at(NOW).month();
+    let earlier = OtherCost {
+        run_id: 70,
+        pr: 99,
+        kind: CostKind::Final,
+        micros: 33_000_000,
+        when: "2026-10-19T11:00:00.000Z",
+    }
+    .record();
+    let during_the_wait = OtherCost {
+        run_id: 71,
+        pr: 98,
+        kind: CostKind::Reserved,
+        micros: 5_000_000,
+        when: "2026-10-19T12:00:20.000Z",
+    }
+    .record();
+    let scratch = MemoryLedger::default();
+    append_cost(&scratch, &earlier)?;
+    append_cost(&scratch, &during_the_wait)?;
+    let costs = LedgerPath::costs(month);
+    let both = scratch
+        .file(&costs)
+        .ok_or("the scratch ledger holds both")?;
+    // Slot-0's holder finishes during the first wait, and another run reserves meanwhile.
+    let trigger = Arc::new(AtomicBool::new(false));
+    let landed = Arc::clone(&trigger);
+    let refs = MemoryRefs::default()
+        .rival(Before::Create, |_store| {})
+        .rival(Before::Create, |_store| {})
+        .rival(Before::Create, move |store| {
+            store.remove("refs/heads/slot-0");
+            landed.store(true, Ordering::Relaxed);
+        });
+    let mut world = World {
+        ledger: MemoryLedger::default().staging(trigger, &costs, &both),
+        refs,
+        ..World::new()
+    }
+    .spending(&[earlier])
+    .holding_slot(0, 60, "2026-10-19T13:00:00.000Z")
+    .holding_slot(1, 61, "2026-10-19T13:00:00.000Z");
+
+    let admitted = world.admit(&plan("lite"))?;
+
+    // Before the wait: 33 + two leases of 2.3 + 0.74 fits. At the slot: 33 + 5 + 2.3 + 0.74 not.
+    assert_eq!(admitted.admission(), &Admission::Deferred(Deferred::Budget));
+    assert_eq!(world.clock.sleeps, [Duration::from_secs(30)]);
+    assert_eq!(
+        world.refs_held(),
+        ["refs/heads/slot-1"],
+        "our slot is released"
+    );
+    assert_eq!(world.ledger.file(&costs), Some(both), "nothing reserved");
+    assert_eq!(
+        world.events.kinds(),
+        ["SlotReleased", "BudgetDeferred", "LedgerWritten"]
+    );
+    assert!(world.deferral().is_some(), "the deferral record is written");
+    Ok(())
+}
+
+#[test]
+fn without_a_reservation_during_the_wait_the_run_spends() -> Result<(), Box<dyn Error>> {
+    let refs = MemoryRefs::default()
+        .rival(Before::Create, |_store| {})
+        .rival(Before::Create, |_store| {})
+        .rival(Before::Create, |store| store.remove("refs/heads/slot-0"));
+    let mut world = World {
+        refs,
+        ..World::new()
+    }
+    .spending(&[OtherCost {
+        run_id: 70,
+        pr: 99,
+        kind: CostKind::Final,
+        micros: 33_000_000,
+        when: "2026-10-19T11:00:00.000Z",
+    }
+    .record()])
+    .holding_slot(0, 60, "2026-10-19T13:00:00.000Z")
+    .holding_slot(1, 61, "2026-10-19T13:00:00.000Z");
+
+    let admitted = world.admit(&plan("lite"))?;
+
+    assert_eq!(spend(admitted.admission())?.hold.slot.index(), 0);
+    Ok(())
+}
+
+#[test]
+fn the_read_at_the_slot_leaves_out_the_runs_own_lease() -> Result<(), Box<dyn Error>> {
+    // 39 + 0.74 fits; counting the run's own lease as well (39 + 0.74 + 0.74) would not.
+    let mut world = World::new().spending(&[OtherCost {
+        run_id: 70,
+        pr: 99,
+        kind: CostKind::Final,
+        micros: 39_000_000,
+        when: "2026-10-19T11:00:00.000Z",
+    }
+    .record()]);
+
+    let admitted = world.admit(&plan("lite"))?;
+
+    assert_eq!(spend(admitted.admission())?.hold.slot.index(), 0);
+    Ok(())
 }

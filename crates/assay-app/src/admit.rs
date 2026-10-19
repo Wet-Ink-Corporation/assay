@@ -24,6 +24,7 @@ mod events;
 mod gate;
 mod outcome;
 mod pack;
+mod range;
 mod slot;
 mod spend;
 
@@ -45,17 +46,18 @@ use self::gate::{Gate, GateInputs, gate, reusable};
 pub use self::outcome::{Admission, Admitted, Budget, Deferred, Spend};
 pub use self::pack::{ContextPack, MAX_SUPPRESS_BYTES};
 use self::pack::{PackParts, pack};
+pub use self::range::RangeIdentities;
 pub use self::slot::{SLOT_POLL, SLOT_POLLS};
 use self::slot::{SlotFailure, take_slot};
-use self::spend::Admittable;
+use self::spend::Holding;
 use crate::clock::Clock;
 use crate::contract::ContractValidator;
 use crate::decide::TierDegrade;
 use crate::events::EventSink;
 use crate::ledger::{
-    DeferralRecord, Ledger, LedgerRefs, LedgerTime, ParseLedgerTimeError, PrState, PushKind,
-    SlotRequest, SlotView, StateUpdate, read_commands, read_costs, read_pushes, read_slots,
-    read_state, update_state,
+    DeferralRecord, LeaseError, Ledger, LedgerReadError, LedgerRefs, LedgerTime,
+    ParseLedgerTimeError, PrState, PushKind, SlotRequest, SlotView, StateUpdate, read_commands,
+    read_costs, read_pushes, read_slots, read_state, update_state,
 };
 use crate::publish::EvidenceRecord;
 use crate::replay::BundleSource;
@@ -92,6 +94,8 @@ pub struct AdmitRequest<'a> {
     pub identities: &'a Identities,
     /// The PR's author, from the triggering event.
     pub author: UserId,
+    /// The authors and committers of the PR's range (04 §5 clause (b)).
+    pub range: &'a RangeIdentities,
     /// The base `.assay/suppress.toml` text read at the pinned base, if the file exists; carried
     /// in the pack as it is.
     pub suppress: Option<&'a str>,
@@ -171,6 +175,22 @@ struct LedgerView {
     admissions: usize,
 }
 
+/// What the budget gate reads from the ledger.
+struct BudgetView {
+    /// The AEU spent or reserved in the last 24 hours, this run's own lease aside.
+    spent: Aeu,
+    /// The PR's `reserved` records in the last hour.
+    admissions: usize,
+}
+
+/// Why the budget could not be read.
+enum BudgetRead<L, R> {
+    /// The cost records.
+    Costs(LedgerReadError<L>),
+    /// The slots.
+    Slots(LeaseError<R>),
+}
+
 /// One admission in progress: the ports, the request and the plan.
 struct Run<'p, 'r, L, R, B, C, K, S> {
     ledger: &'p L,
@@ -200,10 +220,9 @@ where
 
     /// Everything after the plan was read, for a run whose LLM stage spends at `tier`.
     fn admit(mut self, tier: SpendTier) -> Result<Admitted, AdmitFailure<L, R, B, C, S>> {
-        let view = self.read()?;
-        if let Some(record) = reusable(&view.state, &self.planned) {
-            // The outcome and the run description keep the record.
-            let record = record.clone();
+        let mut view = self.read()?;
+        if let Some(index) = reusable(&view.state, &self.planned) {
+            let record = view.state.evidence_records.swap_remove(index);
             return self.reused(record, view.spent);
         }
         let inputs = GateInputs {
@@ -235,12 +254,13 @@ where
                 self.deferred(Deferred::SlotBusy, view.spent)
             }
             Some(hold) => {
-                let admittable = Admittable {
-                    priced,
+                let holding = Holding {
+                    hold,
+                    reaped: taken.reaped,
+                    tier,
                     pack,
-                    spent: view.spent,
                 };
-                self.spend(hold, &taken.reaped, admittable)
+                self.after_slot(holding)
             }
         }
     }
@@ -250,13 +270,32 @@ where
         let now = clock_time(&*self.clock).map_err(|_range| AdmitError::Clock)?;
         let (repo_id, pr) = (self.repo_id(), self.planned.pr);
         let state = read_state(self.ledger, repo_id, pr).map_err(AdmitError::LedgerRead)?;
-        let costs = read_costs(self.ledger, now).map_err(AdmitError::LedgerRead)?;
-        let slots = read_slots(self.refs, now).map_err(AdmitError::Lease)?;
-        let leases: Vec<_> = slots.iter().map(SlotView::reservation).collect();
+        let budget = self.read_budget(now).map_err(|failure| match failure {
+            BudgetRead::Costs(error) => AdmitError::LedgerRead(error),
+            BudgetRead::Slots(error) => AdmitError::Lease(error),
+        })?;
         Ok(LedgerView {
             state,
+            spent: budget.spent,
+            admissions: budget.admissions,
+        })
+    }
+
+    /// The day's spend and the PR's admissions in the hour at `now`, from the cost records and
+    /// the slots' leases; a lease of this run is left out, since its reservation is the one being
+    /// decided.
+    fn read_budget(&self, now: LedgerTime) -> Result<BudgetView, BudgetRead<L::Error, R::Error>> {
+        let run_uid = self.request.run_uid;
+        let costs = read_costs(self.ledger, now).map_err(BudgetRead::Costs)?;
+        let slots = read_slots(self.refs, now).map_err(BudgetRead::Slots)?;
+        let leases: Vec<_> = slots
+            .iter()
+            .map(SlotView::reservation)
+            .filter(|lease| lease.run_uid != run_uid)
+            .collect();
+        Ok(BudgetView {
             spent: costs.day_spent(&leases),
-            admissions: costs.admissions(repo_id, pr),
+            admissions: costs.admissions(run_uid.repo_id, self.planned.pr),
         })
     }
 
@@ -326,17 +365,21 @@ where
             return Err(AdmitError::SuppressTooLarge { size: text.len() });
         }
         let (repo_id, pr) = (self.repo_id(), self.planned.pr);
-        // An opener record's sender opened the PR and is not a pusher (03 §6c).
+        // An opener record's sender opened the PR and is not a pusher (03 §6c), and a push of a
+        // clean merge from the base does not count (04 §5).
+        let range = request.range;
         let pushers: BTreeSet<UserId> = read_pushes(self.ledger, repo_id, pr)
             .map_err(AdmitError::LedgerRead)?
             .into_iter()
             .filter(|record| matches!(record.push.kind, PushKind::Push { .. }))
+            .filter(|record| !range.is_clean_merge(&record.push.after))
             .map(|record| record.push.sender_id)
             .collect();
         let records = read_commands(self.ledger, repo_id, pr).map_err(AdmitError::LedgerRead)?;
         let eligible = Eligible {
             identities: request.identities,
             author: request.author,
+            range,
             pushers: &pushers,
         };
         let dismissals =

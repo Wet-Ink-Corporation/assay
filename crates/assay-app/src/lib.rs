@@ -39,8 +39,8 @@ mod tiering;
 pub use admit::{
     ADMISSIONS_PER_HOUR, Admission, AdmitError, AdmitFailure, AdmitPorts, AdmitRequest, Admitted,
     AfterSlot, Budget, CommandComments, CommentNow, ContextPack, DAY_CAP, Deferred,
-    MAX_COMMENT_BYTES, MAX_DISMISSALS, MAX_SUPPRESS_BYTES, PlanDocument, SLOT_POLL, SLOT_POLLS,
-    Spend, Unwound, admit,
+    MAX_COMMENT_BYTES, MAX_DISMISSALS, MAX_SUPPRESS_BYTES, PlanDocument, RangeIdentities,
+    SLOT_POLL, SLOT_POLLS, Spend, Unwound, admit,
 };
 pub use calendar::{CalendarDate, CalendarDateError};
 pub use clock::Clock;

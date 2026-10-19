@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime};
 use assay_app::{
     AdmitFailure, AdmitPorts, AdmitRequest, Admitted, Carry, Clock, CommandComments, CommentId,
     CommentNow, ContractValidator, CostKind, CostRecord, CostRole, DeferralRecord, EventSink,
-    Identities, LeaseRef, LedgerTime, PrState, RetryGrant, Role, RoleCost, Slot, UserId, admit,
-    append_cost, grant_retry, read_state, update_state,
+    Identities, LeaseRef, LedgerTime, PrState, RangeIdentities, RetryGrant, Role, RoleCost, Slot,
+    UserId, admit, append_cost, grant_retry, read_state, update_state,
 };
 use assay_domain::{Aeu, Event, RunUid, Tier};
 use serde_json::{Value, json};
@@ -201,6 +201,8 @@ impl CommandComments for FakeComments {
 #[derive(Debug, Default)]
 pub(crate) struct RecordedEvents {
     pub(crate) events: Vec<Event>,
+    /// The kind code the sink refuses, if any.
+    pub(crate) refusing: Option<&'static str>,
 }
 
 impl RecordedEvents {
@@ -221,6 +223,9 @@ impl EventSink for RecordedEvents {
     }
 
     fn append(&mut self, event: &Event) -> Result<(), FakeError> {
+        if self.refusing == Some(event.payload.kind().code()) {
+            return Err(FakeError);
+        }
         // The sink keeps its own copy of what it was given.
         self.events.push(event.clone());
         Ok(())
@@ -242,6 +247,7 @@ pub(crate) struct World {
     pub(crate) identities: Identities,
     pub(crate) carry: Carry,
     pub(crate) suppress: Option<String>,
+    pub(crate) range: RangeIdentities,
     pub(crate) validator: ContractValidator,
 }
 
@@ -262,6 +268,7 @@ impl World {
             },
             carry: Carry::FirstReview,
             suppress: None,
+            range: RangeIdentities::default(),
         }
     }
 
@@ -282,6 +289,7 @@ impl World {
             carry: self.carry,
             identities: &self.identities,
             author: UserId(nz(AUTHOR)),
+            range: &self.range,
             suppress: self.suppress.as_deref(),
         };
         let ports = AdmitPorts {
