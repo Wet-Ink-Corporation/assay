@@ -137,12 +137,15 @@
             "additionalProperties": false,
             "required": ["review", "reviewer", "submitted_at", "status"],
             "properties": {
-              "review": { "$ref": "#/$defs/userId" },
+              "review": { "$ref": "#/$defs/positiveId" },
               "reviewer": { "$ref": "#/$defs/userId" },
               "submitted_at": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
               "status": { "enum": ["counted", "before-push", "no-push-clock", "unsubmitted", "ineligible"] },
               "reason": { "$ref": "#/$defs/ineligible" }
-            }
+            },
+            "if": { "properties": { "status": { "const": "ineligible" } } },
+            "then": { "required": ["reason"] },
+            "else": { "not": { "required": ["reason"] } }
           }
         },
         "commands": {
@@ -154,7 +157,7 @@
             "additionalProperties": false,
             "required": ["comment_id", "actor_id", "created_at", "head_sha", "body_sha256", "command", "args", "status"],
             "properties": {
-              "comment_id": { "$ref": "#/$defs/userId" },
+              "comment_id": { "$ref": "#/$defs/positiveId" },
               "actor_id": { "$ref": "#/$defs/userId" },
               "created_at": { "$ref": "#/$defs/timestamp" },
               "head_sha": { "$ref": "#/$defs/commit" },
@@ -165,14 +168,32 @@
               "reason": {
                 "anyOf": [{ "enum": ["deleted", "edited", "hash", "author", "app"] }, { "$ref": "#/$defs/ineligible" }]
               }
-            }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "status": { "const": "void" } } },
+                "then": {
+                  "required": ["reason"],
+                  "properties": { "reason": { "enum": ["deleted", "edited", "hash", "author", "app"] } }
+                }
+              },
+              {
+                "if": { "properties": { "status": { "const": "ineligible" } } },
+                "then": { "required": ["reason"], "properties": { "reason": { "$ref": "#/$defs/ineligible" } } }
+              },
+              {
+                "if": { "properties": { "status": { "enum": ["valid", "other-head", "before-push-clock"] } } },
+                "then": { "not": { "required": ["reason"] } }
+              }
+            ]
           }
         }
       }
     }
   },
   "$defs": {
-    "userId": { "description": "A positive numeric GitHub id.", "type": "integer", "minimum": 1 },
+    "userId": { "description": "A positive numeric GitHub user id.", "type": "integer", "minimum": 1 },
+    "positiveId": { "description": "A positive numeric GitHub object id (a review or a comment).", "type": "integer", "minimum": 1 },
     "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "timestamp": {
       "type": "string",

@@ -12,6 +12,7 @@
 
 mod approvals;
 mod commands;
+mod error;
 mod grammar;
 mod ports;
 mod pushes;
@@ -24,16 +25,15 @@ mod timestamp;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
-use thiserror::Error;
-
 pub use self::approvals::IgnoredApproval;
 pub use self::commands::{
     CommandRecord, CommandRejected, CommentAction, CommentEvent, IssueComment, MAX_COMMAND_RECORDS,
     Recorded, VoidCause,
 };
 use self::commands::{JudgedCommand, applicability, void_cause};
+pub use self::error::{SnapshotStep, StateError};
 pub use self::grammar::{AckedSet, Command, MAX_COMMAND_REASON_CHARS, Parsed, parse_command};
-pub use self::ports::{CommandComments, SnapshotLedger};
+pub use self::ports::{CommandComments, LedgerRecords, SnapshotLedger};
 use self::pushes::push_clock;
 pub use self::pushes::{MAX_PUSH_RECORDS, PushKind, PushRecord, PushTrigger, push_record};
 pub use self::range::{
@@ -48,7 +48,6 @@ pub use self::state::{CommitRange, GitHubState};
 pub use self::timestamp::{InvalidTimestamp, Timestamp};
 use crate::config::{CommitId, EligibilityLists};
 use crate::forge::Forge;
-use crate::publish::CommentId;
 use crate::status::UserId;
 
 /// What the snapshot is taken of.
@@ -78,38 +77,6 @@ pub struct StatePorts<'p, F, G, L, C> {
     pub ledger: &'p L,
     /// The comments behind command records.
     pub comments: &'p C,
-}
-
-/// Why no snapshot could be taken. `decide` then fails closed.
-#[derive(Debug, Error)]
-pub enum StateError<F, G, L, C> {
-    /// GitHub's reviews or commit identities could not be read.
-    #[error("could not read reviews or commit identities from GitHub")]
-    Forge(#[source] F),
-    /// git could not list or merge the range.
-    #[error("could not read the PR range from git")]
-    Range(#[source] G),
-    /// The ledger could not be read.
-    #[error("could not read the PR's ledger records")]
-    Ledger(#[source] L),
-    /// A command's comment could not be re-fetched.
-    #[error("could not re-fetch a command's comment")]
-    Comments(#[source] C),
-    /// The ledger holds more than [`MAX_PUSH_RECORDS`] push records for the PR.
-    #[error("the PR has more than {MAX_PUSH_RECORDS} push records")]
-    TooManyPushRecords,
-    /// The ledger holds more than [`MAX_COMMAND_RECORDS`] command records for the PR.
-    #[error("the PR has more than {MAX_COMMAND_RECORDS} command records")]
-    TooManyCommandRecords,
-    /// Two command records name one comment.
-    #[error("two command records name comment {}", comment.0)]
-    RepeatedCommand {
-        /// The comment.
-        comment: CommentId,
-    },
-    /// GitHub's commit identities do not answer the range commit for commit, in order.
-    #[error("GitHub's commit identities do not match the PR range")]
-    IdentityMismatch,
 }
 
 /// The error of [`github_state`] for these ports.
@@ -144,11 +111,10 @@ where
 {
     let pushes = ports
         .ledger
-        .push_records(request.number)
-        .map_err(StateError::Ledger)?;
-    if pushes.len() > MAX_PUSH_RECORDS {
-        return Err(StateError::TooManyPushRecords);
-    }
+        .push_records(request.number, MAX_PUSH_RECORDS)
+        .map_err(StateError::ledger(SnapshotStep::PushRecords))?
+        .within(MAX_PUSH_RECORDS)
+        .ok_or(StateError::TooManyPushRecords)?;
     let ReadRange { facts, merges } = read_range(ports, request, &pushes)?;
     let commits = match facts {
         RangeFacts::TooLarge => CommitRange::NeedsSplit,
@@ -170,7 +136,7 @@ where
     let reviews = ports
         .forge
         .reviews(request.number)
-        .map_err(StateError::Forge)?;
+        .map_err(StateError::forge(SnapshotStep::Reviews))?;
     let approvals = approvals::approvals(&reviews, request.head_sha, clock, &rule);
     let commands = judge_commands(ports, request, clock, &rule)?;
     Ok(GitHubState {
@@ -207,7 +173,7 @@ where
     let listing = ports
         .objects
         .range(request.base_sha, request.head_sha, MAX_RANGE_COMMITS)
-        .map_err(StateError::Range)?;
+        .map_err(StateError::range(SnapshotStep::RangeList))?;
     let commits = match listing {
         RangeListing::Listed(commits) if commits.len() <= MAX_RANGE_COMMITS => commits,
         RangeListing::Listed(_) | RangeListing::TooMany => {
@@ -219,7 +185,9 @@ where
     };
     let mut merges = BTreeMap::new();
     for candidate in merge_candidates(&commits, pushes) {
-        if is_clean_merge(ports.objects, request.base_sha, candidate).map_err(StateError::Range)? {
+        if is_clean_merge(ports.objects, request.base_sha, candidate)
+            .map_err(StateError::range(SnapshotStep::MergeCheck))?
+        {
             // The map outlives `commits`' borrow: it keys the push records' exemption.
             merges.insert(candidate.commit.clone(), candidate.ours.clone());
         }
@@ -229,7 +197,7 @@ where
     let identities = ports
         .forge
         .commit_identities(&ids)
-        .map_err(StateError::Forge)?;
+        .map_err(StateError::forge(SnapshotStep::Identities))?;
     let attribution = attribute(&commits, &identities, &merges)
         .map_err(|_mismatch| StateError::IdentityMismatch)?;
     Ok(ReadRange {
@@ -281,11 +249,10 @@ where
 {
     let records = ports
         .ledger
-        .command_records(request.number)
-        .map_err(StateError::Ledger)?;
-    if records.len() > MAX_COMMAND_RECORDS {
-        return Err(StateError::TooManyCommandRecords);
-    }
+        .command_records(request.number, MAX_COMMAND_RECORDS)
+        .map_err(StateError::ledger(SnapshotStep::CommandRecords))?
+        .within(MAX_COMMAND_RECORDS)
+        .ok_or(StateError::TooManyCommandRecords)?;
     let mut seen = BTreeSet::new();
     let mut judged = Vec::with_capacity(records.len());
     for record in records {

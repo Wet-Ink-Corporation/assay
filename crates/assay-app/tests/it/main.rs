@@ -22,6 +22,7 @@ mod eligibility_commands;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod eligibility_fakes;
 mod eligibility_lists;
+mod eligibility_refusals;
 mod eval_compare;
 mod eval_corpus;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns

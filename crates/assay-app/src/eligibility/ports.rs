@@ -13,19 +13,49 @@ pub trait SnapshotLedger {
     /// Why the ledger could not be read.
     type Error: std::error::Error;
 
-    /// Every push record of PR `number`, in append order.
+    /// Every push record of PR `number`, in append order, or [`LedgerRecords::TooMany`] when
+    /// there are more than `max`. An adapter reads at most `max + 1` records to tell (H-13).
     ///
     /// # Errors
     ///
     /// [`Self::Error`] when the records cannot be read or one does not parse.
-    fn push_records(&self, number: NonZeroU64) -> Result<Vec<PushRecord>, Self::Error>;
+    fn push_records(
+        &self,
+        number: NonZeroU64,
+        max: usize,
+    ) -> Result<LedgerRecords<PushRecord>, Self::Error>;
 
-    /// Every command record of PR `number`, in append order.
+    /// Every command record of PR `number`, in append order, or [`LedgerRecords::TooMany`] when
+    /// there are more than `max`. An adapter reads at most `max + 1` records to tell (H-13).
     ///
     /// # Errors
     ///
     /// [`Self::Error`] when the records cannot be read or one does not parse.
-    fn command_records(&self, number: NonZeroU64) -> Result<Vec<CommandRecord>, Self::Error>;
+    fn command_records(
+        &self,
+        number: NonZeroU64,
+        max: usize,
+    ) -> Result<LedgerRecords<CommandRecord>, Self::Error>;
+}
+
+/// What [`SnapshotLedger`] listed for a PR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LedgerRecords<T> {
+    /// Every record, in append order.
+    Listed(Vec<T>),
+    /// More records than the cap.
+    TooMany,
+}
+
+impl<T> LedgerRecords<T> {
+    /// The records when there are at most `max` of them; an adapter that listed more anyway
+    /// is read as having said so.
+    pub(crate) fn within(self, max: usize) -> Option<Vec<T>> {
+        match self {
+            Self::Listed(records) if records.len() <= max => Some(records),
+            Self::Listed(_) | Self::TooMany => None,
+        }
+    }
 }
 
 /// Issue comments re-fetched to check command records (`GET /issues/comments/{id}`).

@@ -1,15 +1,17 @@
 //! A fake PR world for the eligibility rule: its git range, GitHub's reviews and commit
 //! identities, the ledger's push and command records, and the comments behind the commands.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
 use assay_app::{
     Actor, CheckFound, CheckName, CheckRunId, CheckUpdate, CommandComments, CommandRecord,
-    CommentId, CommitId, CommitIdentity, CompareAndSetError, EligibilityLists, Forge, GitHubState,
-    IssueComment, MergeTree, PushKind, PushRecord, RangeCommit, RangeListing, RangeObjects,
-    Reaction, ReactionSubject, Review, ReviewState, Sha256Digest, SnapshotLedger, StateError,
-    StatePorts, StateRequest, TimelineEvent, Timestamp, TreeId, Upserted, UserId, github_state,
+    CommentAction, CommentEvent, CommentId, CommitId, CommitIdentity, CompareAndSetError,
+    EligibilityLists, Forge, GitHubState, IssueComment, LedgerRecords, MergeTree, PushKind,
+    PushRecord, RangeCommit, RangeListing, RangeObjects, Reaction, ReactionSubject, Review,
+    ReviewState, Sha256Digest, SnapshotLedger, SnapshotStep, StateError, StatePorts, StateRequest,
+    TimelineEvent, Timestamp, TreeId, Upserted, UserId, github_state,
 };
 use assay_domain::Fingerprint;
 
@@ -65,7 +67,7 @@ pub(crate) fn lists() -> EligibilityLists {
 }
 
 /// The base commit and the base's tip.
-pub(crate) const BASE: char = 'b';
+pub(crate) const BASE: char = '0';
 /// The PR's first commit.
 pub(crate) const FIRST: char = '1';
 
@@ -120,6 +122,14 @@ pub(crate) fn comment(id: u64, author: u64, minute: u32, body: &str) -> IssueCom
     }
 }
 
+/// The `created` event of `comment`.
+pub(crate) fn created(comment: IssueComment) -> CommentEvent {
+    CommentEvent {
+        action: CommentAction::Created,
+        comment,
+    }
+}
+
 /// The record of a push (not forced) of `(before, after)` by `sender` at `minute`.
 fn pushed((before, after): (char, char), sender: u64, minute: u32) -> PushRecord {
     PushRecord {
@@ -141,6 +151,9 @@ pub(crate) enum FakeError {
     /// A commit the fake does not hold.
     #[error("no such object")]
     NoSuchObject,
+    /// The call a test made fail.
+    #[error("{0:?} failed")]
+    Injected(SnapshotStep),
 }
 
 /// The PR as the fakes see it.
@@ -160,12 +173,25 @@ pub(crate) struct World {
     pub(crate) commands: Vec<CommandRecord>,
     pub(crate) comments: BTreeMap<CommentId, IssueComment>,
     pub(crate) lists: EligibilityLists,
+    /// The port call that fails, if any.
+    pub(crate) fail: Option<SnapshotStep>,
+    /// What `commit_identities` answers instead of looking the commits up.
+    pub(crate) identities_answer: Option<Vec<CommitIdentity>>,
+    /// Whether the ledger lists every record whatever the cap (an adapter defect).
+    pub(crate) overfull_ledger: bool,
+    /// The caps the ledger was asked for, in call order.
+    pub(crate) asked: RefCell<Vec<(SnapshotStep, usize)>>,
 }
 
 impl World {
     /// A one-commit PR by `author`, who authored and committed it and opened the PR at minute 0.
     pub(crate) fn opened_by(author: u64) -> Self {
-        let head = sha(FIRST);
+        Self::opened_at(author, FIRST)
+    }
+
+    /// Like [`World::opened_by`], with commit `first` as the PR's one commit.
+    pub(crate) fn opened_at(author: u64, first: char) -> Self {
+        let head = sha(first);
         let mut world = Self {
             number: NonZeroU64::new(7).expect("seven is not zero"),
             author: user(author),
@@ -180,8 +206,12 @@ impl World {
             commands: Vec::new(),
             comments: BTreeMap::new(),
             lists: lists(),
+            fail: None,
+            identities_answer: None,
+            overfull_ledger: false,
+            asked: RefCell::new(Vec::new()),
         };
-        world.commit(FIRST, &[BASE], By::user(author));
+        world.commit(first, &[BASE], By::user(author));
         world.pushes.push(PushRecord {
             kind: PushKind::Opener,
             before: None,
@@ -303,6 +333,10 @@ impl Forge for World {
     }
 
     fn commit_identities(&self, commits: &[CommitId]) -> Result<Vec<CommitIdentity>, Self::Error> {
+        self.failing(SnapshotStep::Identities)?;
+        if let Some(answer) = &self.identities_answer {
+            return Ok(answer.clone());
+        }
         commits
             .iter()
             .map(|commit| {
@@ -315,6 +349,7 @@ impl Forge for World {
     }
 
     fn reviews(&self, _number: NonZeroU64) -> Result<Vec<Review>, Self::Error> {
+        self.failing(SnapshotStep::Reviews)?;
         Ok(self.reviews.clone())
     }
 
@@ -340,10 +375,12 @@ impl RangeObjects for World {
         _head: &CommitId,
         _max: usize,
     ) -> Result<RangeListing, Self::Error> {
+        self.failing(SnapshotStep::RangeList)?;
         Ok(self.range.clone())
     }
 
     fn tree(&self, commit: &CommitId) -> Result<TreeId, Self::Error> {
+        self.failing(SnapshotStep::MergeCheck)?;
         self.trees
             .get(commit)
             .cloned()
@@ -351,6 +388,7 @@ impl RangeObjects for World {
     }
 
     fn merge_tree(&self, ours: &CommitId, theirs: &CommitId) -> Result<MergeTree, Self::Error> {
+        self.failing(SnapshotStep::MergeCheck)?;
         self.merges
             .get(&(ours.clone(), theirs.clone()))
             .cloned()
@@ -358,6 +396,7 @@ impl RangeObjects for World {
     }
 
     fn is_ancestor(&self, ancestor: &CommitId, of: &CommitId) -> Result<bool, Self::Error> {
+        self.failing(SnapshotStep::MergeCheck)?;
         Ok(ancestor == of || self.ancestry.contains(&(ancestor.clone(), of.clone())))
     }
 }
@@ -365,12 +404,45 @@ impl RangeObjects for World {
 impl SnapshotLedger for World {
     type Error = FakeError;
 
-    fn push_records(&self, _number: NonZeroU64) -> Result<Vec<PushRecord>, Self::Error> {
-        Ok(self.pushes.clone())
+    fn push_records(
+        &self,
+        _number: NonZeroU64,
+        max: usize,
+    ) -> Result<LedgerRecords<PushRecord>, Self::Error> {
+        self.ledger_list(SnapshotStep::PushRecords, &self.pushes, max)
     }
 
-    fn command_records(&self, _number: NonZeroU64) -> Result<Vec<CommandRecord>, Self::Error> {
-        Ok(self.commands.clone())
+    fn command_records(
+        &self,
+        _number: NonZeroU64,
+        max: usize,
+    ) -> Result<LedgerRecords<CommandRecord>, Self::Error> {
+        self.ledger_list(SnapshotStep::CommandRecords, &self.commands, max)
+    }
+}
+
+impl World {
+    /// [`FakeError::Injected`] when the test made `step` fail.
+    fn failing(&self, step: SnapshotStep) -> Result<(), FakeError> {
+        match self.fail {
+            Some(failing) if failing == step => Err(FakeError::Injected(step)),
+            Some(_) | None => Ok(()),
+        }
+    }
+
+    /// `records` as an adapter that reads one past `max` lists them, noting the cap asked for.
+    fn ledger_list<T: Clone>(
+        &self,
+        step: SnapshotStep,
+        records: &[T],
+        max: usize,
+    ) -> Result<LedgerRecords<T>, FakeError> {
+        self.asked.borrow_mut().push((step, max));
+        self.failing(step)?;
+        if records.len() > max && !self.overfull_ledger {
+            return Ok(LedgerRecords::TooMany);
+        }
+        Ok(LedgerRecords::Listed(records.to_vec()))
     }
 }
 

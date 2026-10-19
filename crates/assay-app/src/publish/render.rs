@@ -36,7 +36,8 @@ pub(super) struct Facts<'a> {
     pub(super) degraded: &'a [DegradedRole],
     pub(super) cost: Aeu,
     pub(super) reasons_digest: String,
-    /// Each approval ignored for timing, `approval at T ignored: before push at T′` (04 §5).
+    /// Each eligible reviewer's approval ignored for timing,
+    /// `approval at T ignored: before push at T′ (reviewer <id>)` (04 §5).
     pub(super) ignored_approvals: &'a [IgnoredApproval],
 }
 

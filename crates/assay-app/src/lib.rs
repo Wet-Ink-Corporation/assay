@@ -81,10 +81,11 @@ pub use decide::{
 pub use eligibility::{
     AckedSet, Command, CommandComments, CommandRecord, CommandRejected, CommentAction,
     CommentEvent, CommitRange, GitHubState, IgnoredApproval, Ineligible, InvalidTimestamp,
-    IssueComment, MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_PUSH_RECORDS,
+    IssueComment, LedgerRecords, MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_PUSH_RECORDS,
     MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, Parsed, PushKind, PushRecord, PushTrigger,
-    RangeCommit, RangeListing, RangeObjects, Recorded, SnapshotLedger, StateError, StatePorts,
-    StateRequest, Timestamp, TreeId, VoidCause, WEB_FLOW, github_state, parse_command, push_record,
+    RangeCommit, RangeListing, RangeObjects, Recorded, SnapshotLedger, SnapshotStep, StateError,
+    StatePorts, StateRequest, Timestamp, TreeId, VoidCause, WEB_FLOW, github_state, parse_command,
+    push_record,
 };
 pub use eval::{
     Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,

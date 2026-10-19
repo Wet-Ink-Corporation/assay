@@ -6,24 +6,16 @@ use std::num::NonZeroU64;
 
 use assay_app::{
     AckedSet, Command, CommandRecord, CommandRejected, CommentAction, CommentEvent, CommentId,
-    Ineligible, IssueComment, Parsed, Recorded, ReviewState, Sha256Digest, VoidCause,
-    parse_command,
+    Ineligible, Parsed, Recorded, ReviewState, Sha256Digest, VoidCause, parse_command,
 };
 use assay_domain::{OverrideScope, RequiredRole};
 
 use crate::eligibility_fakes::{
-    APPROVER, By, CONTRIBUTOR, DAILY, DIGEST, FIRST, OWNER, World, at, comment, digest, fp, sha,
-    user,
+    APPROVER, By, CONTRIBUTOR, DAILY, DIGEST, FIRST, OWNER, World, at, comment, created, digest,
+    fp, sha, user,
 };
 
 type Outcome = Result<(), Box<dyn std::error::Error>>;
-
-fn created(comment: IssueComment) -> CommentEvent {
-    CommentEvent {
-        action: CommentAction::Created,
-        comment,
-    }
-}
 
 #[test]
 fn every_command_of_the_grammar_parses() {

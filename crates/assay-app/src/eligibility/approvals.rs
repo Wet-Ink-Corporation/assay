@@ -26,12 +26,12 @@ pub struct IgnoredApproval {
 }
 
 impl fmt::Display for IgnoredApproval {
-    /// The summary's line: `approval at T ignored: before push at T′`.
+    /// The summary's line: `approval at T ignored: before push at T′ (reviewer <id>)`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "approval at {} ignored: before push at {}",
-            self.at, self.push_at
+            "approval at {} ignored: before push at {} (reviewer {})",
+            self.at, self.push_at, self.reviewer.0
         )
     }
 }
@@ -112,20 +112,21 @@ pub(crate) fn approvals(
         .collect()
 }
 
-/// The status of an approval submitted at `submitted` by `reviewer`.
+/// The status of an approval submitted at `submitted` by `reviewer`. Eligibility comes first,
+/// so only an eligible reviewer's approval is ever reported as ignored for timing.
 fn judge(
     submitted: Option<Timestamp>,
     clock: Option<Timestamp>,
     rule: &Rule,
     reviewer: UserId,
 ) -> ApprovalStatus {
+    if let Err(why) = rule.judge(reviewer) {
+        return ApprovalStatus::Ineligible(why);
+    }
     match (submitted, clock) {
         (None, _) => ApprovalStatus::Unsubmitted,
         (Some(_), None) => ApprovalStatus::NoPushClock,
         (Some(at), Some(clock)) if at <= clock => ApprovalStatus::BeforePush(clock),
-        (Some(_), Some(_)) => match rule.judge(reviewer) {
-            Ok(()) => ApprovalStatus::Counted,
-            Err(why) => ApprovalStatus::Ineligible(why),
-        },
+        (Some(_), Some(_)) => ApprovalStatus::Counted,
     }
 }

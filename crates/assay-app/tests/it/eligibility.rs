@@ -148,8 +148,32 @@ fn an_approval_before_the_push_clock_is_ignored_and_reported() -> Outcome {
     assert_eq!(first.reviewer, user(APPROVER));
     assert_eq!(
         first.to_string(),
-        "approval at 2026-10-13T09:04:00Z ignored: before push at 2026-10-13T09:05:00Z"
+        "approval at 2026-10-13T09:04:00Z ignored: before push at 2026-10-13T09:05:00Z \
+         (reviewer 1002)"
     );
+    Ok(())
+}
+
+/// #58 review F4: eligibility is judged before timing, so an ineligible reviewer's early
+/// approval (a maintainer, the author, someone on no list) is never reported as one ignored for
+/// timing.
+#[test]
+fn an_ineligible_reviewer_s_early_approval_is_not_reported_as_ignored() -> Outcome {
+    for reviewer in [DAILY, CONTRIBUTOR, 3000] {
+        let mut world = World::opened_by(CONTRIBUTOR);
+        world.commit('2', &[FIRST], By::user(CONTRIBUTOR));
+        world.review(reviewer, ReviewState::Approved, ('2', 4));
+        world.push((FIRST, '2'), CONTRIBUTOR, 5);
+        world.head('2');
+
+        let state = world.state()?;
+
+        assert_eq!(
+            state.ignored_approvals().count(),
+            0,
+            "reviewer {reviewer} was reported as ignored for timing"
+        );
+    }
     Ok(())
 }
 
@@ -456,6 +480,10 @@ fn a_non_push_event_never_records_a_push() {
     }
 }
 
+/// #58 review F6: the clock is the latest push *onto the head*, so a later run that adds no
+/// record naming the head (a re-run, a requeue, a push record of another commit) leaves an
+/// approval that postdates the head's push counted. A clock read as the latest record of any
+/// commit would drop it.
 #[test]
 fn a_rerun_or_requeue_does_not_move_the_push_clock() -> Outcome {
     let mut world = World::opened_by(CONTRIBUTOR);
@@ -465,9 +493,11 @@ fn a_rerun_or_requeue_does_not_move_the_push_clock() -> Outcome {
     for trigger in [PushTrigger::Rerun, PushTrigger::Requeue] {
         world.pushes.extend(push_record(trigger));
     }
+    world.push((FIRST, '2'), CONTRIBUTOR, 8);
     let after = world.state()?;
 
-    assert_eq!(after.push_clock(), before.push_clock());
+    assert_eq!(before.push_clock(), Some(at(0)));
+    assert_eq!(after.push_clock(), Some(at(0)));
     assert_eq!(after.owner_approval(), OwnerApproval::Approved);
     Ok(())
 }

@@ -218,6 +218,9 @@ pub enum PublishError<F, L> {
     /// The decision inputs were built over another run's evidence.
     #[error("the decision inputs' evidence key is not the run's")]
     EvidenceKey,
+    /// The GitHub state snapshot was taken of another head than the run's.
+    #[error("the GitHub state snapshot is not of the run's head")]
+    SnapshotHead,
     /// The App's check for the head does not exist: `open` creates it, never `decide`.
     #[error("there is no verdict check for the head")]
     CheckMissing,
@@ -277,7 +280,7 @@ pub type PublishOutcome<F, L, B> =
 /// # Errors
 ///
 /// [`PublishError`] when the inputs do not fit together ([`PublishError::DecisionKey`],
-/// [`PublishError::EvidenceKey`]), there is no check to write, the lock cannot be taken, or a
+/// [`PublishError::EvidenceKey`], [`PublishError::SnapshotHead`]), there is no check to write, the lock cannot be taken, or a
 /// forge call fails. A stale writer yields ([`Published::Yielded`]); that is not an error.
 pub fn publish<F: VerdictForge, L: PublishLedger, B: BundleStore>(
     publication: &Publication<'_>,
@@ -296,6 +299,9 @@ pub fn publish<F: VerdictForge, L: PublishLedger, B: BundleStore>(
             }
             if inputs.evidence_key != decided.run.run_key().to_string() {
                 return Err(PublishError::EvidenceKey);
+            }
+            if decided.github.head() != &target.pull_request.head_sha {
+                return Err(PublishError::SnapshotHead);
             }
             let decision = assay_domain::decide(decided.rubric, inputs);
             write::write(

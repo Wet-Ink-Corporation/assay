@@ -26,6 +26,8 @@ pub(crate) const STAMP: &str = "pending:7:3";
 pub(crate) const NAME: &str = "assay / verdict";
 /// The repository's default branch.
 pub(crate) const DEFAULT_BRANCH: &str = "main";
+/// The digit of the scenario's head (`plan_fakes::HEAD`), for `eligibility_fakes::sha`.
+pub(crate) const HEAD_COMMIT: char = 'b';
 
 /// What `publish` returns over the fake.
 pub(crate) type Outcome =
@@ -43,8 +45,8 @@ pub(crate) struct Run {
     pub(crate) carry: CarrySet,
     /// What the run spent, shown in the summary but not part of the bundle.
     pub(crate) cost: Aeu,
-    /// The GitHub state snapshot: a contributor's one-commit PR nobody approved, unless a test
-    /// replaces it.
+    /// The GitHub state snapshot of the run's head: a contributor's one-commit PR nobody
+    /// approved, unless a test replaces it.
     pub(crate) github: GitHubState,
 }
 
@@ -66,7 +68,7 @@ impl Run {
             events: Vec::new(),
             carry: CarrySet::default(),
             cost: Aeu::from_micros(740_000),
-            github: World::opened_by(CONTRIBUTOR).state()?,
+            github: World::opened_at(CONTRIBUTOR, HEAD_COMMIT).state()?,
         })
     }
 

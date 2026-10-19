@@ -40,6 +40,12 @@ pub struct GitHubState {
 }
 
 impl GitHubState {
+    /// The head the snapshot was taken of.
+    #[must_use]
+    pub const fn head(&self) -> &CommitId {
+        &self.head
+    }
+
     /// `owner_approved(head)`: some eligible reviewer's standing approval of the head postdates
     /// the push clock.
     #[must_use]
