@@ -193,3 +193,7 @@ pub use reconcile::{
     MAX_SUPERSEDED_HEADS, OpenPull, PullHead, ReconcileCheck, ReconcileForge, ReconcilePorts,
     RunProgress, STUCK_AFTER, Skip, SkippedCheck, StampedRun, reconcile_checks, reconcile_ledger,
 };
+mod weigh_in;
+pub use weigh_in::{
+    BlockingItem, Checkpoint, MAX_OPEN_BYTES, MAX_OPEN_ITEMS, OpenItemsError, checkpoint,
+};

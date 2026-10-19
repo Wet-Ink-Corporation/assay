@@ -98,36 +98,54 @@ impl Scene {
     }
 
     /// `assay check <args>` from `cwd`, with only `HOME` and `path` as `PATH`.
-    fn run(
+    pub(crate) fn run(
         &self,
         cwd: &Path,
         path: Option<OsString>,
         args: &[&str],
     ) -> Result<Outcome, Box<dyn Error>> {
-        self.assay(cwd, path, &[&["check"], args].concat())
+        let vars: Vec<(&str, OsString)> = path.map(|path| ("PATH", path)).into_iter().collect();
+        self.assay(cwd, &[&["check"], args].concat(), &vars)
+    }
+
+    /// `assay <args>` from the working tree, with `HOME`, `PATH` and `vars`.
+    pub(crate) fn assay_with(
+        &self,
+        args: &[&str],
+        vars: &[(&str, &Path)],
+    ) -> Result<Outcome, Box<dyn Error>> {
+        let vars: Vec<(&str, OsString)> = env::var_os("PATH")
+            .map(|path| ("PATH", path))
+            .into_iter()
+            .chain(vars.iter().map(|(name, value)| (*name, value.into())))
+            .collect();
+        self.assay(&self.path("work"), args, &vars)
+    }
+
+    /// `assay check <args>` from the working tree, with `HOME`, `PATH` and `vars`.
+    pub(crate) fn check_with(
+        &self,
+        args: &[&str],
+        vars: &[(&str, &Path)],
+    ) -> Result<Outcome, Box<dyn Error>> {
+        self.assay_with(&[&["check"], args].concat(), vars)
     }
 
     /// `assay status <args>` from the working tree, with only `HOME` and `PATH`.
     pub(crate) fn status(&self, args: &[&str]) -> Result<Outcome, Box<dyn Error>> {
-        self.assay(
-            &self.path("work"),
-            env::var_os("PATH"),
-            &[&["status"], args].concat(),
-        )
+        self.assay_with(&[&["status"], args].concat(), &[])
     }
 
-    /// `assay <args>` from `cwd`, with only `HOME` and `path` as `PATH`.
+    /// `assay <args>` from `cwd`, with only `HOME` and `vars`.
     fn assay(
         &self,
         cwd: &Path,
-        path: Option<OsString>,
         args: &[&str],
+        vars: &[(&str, OsString)],
     ) -> Result<Outcome, Box<dyn Error>> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_assay"));
         command.env_clear().current_dir(cwd).args(args);
-        if let Some(path) = path {
-            command.env("PATH", path);
-        }
+        command.envs(vars.iter().map(|(name, value)| (name, value)));
         let output = command.env("HOME", self.path("home")).output()?;
         Ok(Outcome {
             code: output.status.code(),
@@ -435,7 +453,7 @@ pub(crate) fn write(root: &Path, path: &str, contents: &str) -> Result<(), Box<d
     Ok(())
 }
 
-fn plain_git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+pub(crate) fn plain_git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
     plain_git_env(cwd, args, "")
 }
 

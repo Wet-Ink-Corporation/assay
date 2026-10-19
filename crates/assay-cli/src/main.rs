@@ -4,6 +4,8 @@
 //! Commands so far: `assay self-gate <corpus-dir> <rubric-file>`, the `assay-self` exec gate
 //! (02 §7, `05` T16), `assay doctor <plugins-toml> <claude-program>`, the session checks of
 //! 03 §8 (#121), and `assay check --local`, the advisory check of a working tree (02 §6, #107).
+//! `assay pre-push` (#108) runs that check's CP1 alone, the Weigh-In checkpoint the pre-push
+//! hook in `plugin/hooks/` calls (04 §9).
 //! `assay status [--json] [--pr <n>] [--full]` (#126) checks its arguments and
 //! then stops with exit 2: its GitHub adapter is #53's, and [`assay_cli::run_status`] wires it
 //! once that exists. `assay status [--json] --local` (#130) shows the local check's result.
@@ -40,6 +42,9 @@ fn main() -> ExitCode {
     }
     if command == "check" {
         return run_check(args);
+    }
+    if command == "pre-push" {
+        return run_pre_push(args);
     }
     if command == "open" {
         return run_open(args);
@@ -137,6 +142,31 @@ fn run_check(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+/// `assay pre-push`: exit 0 when no Weigh-In item blocks the push (pending ones only warn, and
+/// a CP1 that did not run says so), 1 when one does, 2 when CP1 cannot run.
+fn run_pre_push(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = check::CheckVariables {
+        tree: tree_variables(),
+        vars: env::vars_os().collect(),
+    };
+    let weigh_in = match check::pre_push(args, variables) {
+        Ok(weigh_in) => weigh_in,
+        Err(error) => return report(&error),
+    };
+    let mut out = io::stdout().lock();
+    let written = out
+        .write_all(weigh_in.render().as_bytes())
+        .and_then(|()| out.flush());
+    if let Err(error) = written {
+        return report(&error);
+    }
+    if weigh_in.blocks_push() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
