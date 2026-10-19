@@ -24,9 +24,9 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 use super::transport::{MAX_RESPONSE_BYTES, Request, Response, Transport};
-use crate::process::{Captured, Limits, ProcessError};
+use crate::process::{Captured, DirectoryCap, Limits, ProcessError};
 
-pub(crate) use download::Downloaded;
+pub(crate) use download::{Downloaded, Wanted};
 pub use download::{GH_DOWNLOAD_TIMEOUT, GhDownloadError};
 pub use environment::GhEnvironment;
 
@@ -84,11 +84,11 @@ impl fmt::Debug for GhToken {
     }
 }
 
-/// One `gh api` process, as [`GhApi`] decided it.
+/// One `gh` process (`gh api`, `gh run download`), as [`GhApi`] decided it.
 ///
 /// Run `program` with exactly `args`, `env` (nothing inherited), `cwd` and `stdin`, under
-/// `limits`. Its `Debug` shows the variables' names, never their values (the token, a proxy's
-/// credentials).
+/// `limits`, and kill it once the tree under `directory` passes its cap. Its `Debug` shows the
+/// variables' names, never their values (the token, a proxy's credentials).
 #[derive(Clone, Copy)]
 pub struct GhCall<'a> {
     /// The absolute path of gh.
@@ -103,6 +103,10 @@ pub struct GhCall<'a> {
     pub stdin: &'a [u8],
     /// Its timeout and output cap.
     pub limits: Limits,
+    /// What it may write under the directory it extracts into (`gh run download`), or `None`
+    /// when it writes no files (`gh api`). Run it with
+    /// [`process::run_capped`](crate::process::run_capped).
+    pub directory: Option<DirectoryCap<'a>>,
 }
 
 impl fmt::Debug for GhCall<'_> {
@@ -115,20 +119,21 @@ impl fmt::Debug for GhCall<'_> {
             .field("cwd", &self.cwd)
             .field("stdin_bytes", &self.stdin.len())
             .field("limits", &self.limits)
+            .field("directory", &self.directory)
             .finish()
     }
 }
 
 /// Runs a [`GhCall`] in its own process group within its limits, the group killed and shown
-/// gone on a timeout or an over-cap output (H-13).
+/// gone on a timeout, an over-cap output or a tree past its [`GhCall::directory`] cap (H-13).
 pub trait GhRunner {
     /// Runs `call` and returns how gh exited and what it wrote.
     ///
     /// # Errors
     ///
-    /// [`ProcessError`] when gh could not be started or observed, ran past its timeout or
-    /// wrote past its cap; [`ProcessError::Kill`] means its group may still run (abort the
-    /// job).
+    /// [`ProcessError`] when gh could not be started or observed, ran past its timeout, wrote
+    /// past its output cap or past its directory cap ([`ProcessError::DirectoryTooLarge`]);
+    /// [`ProcessError::Kill`] means its group may still run (abort the job).
     fn run(&self, call: &GhCall<'_>) -> Result<Captured, ProcessError>;
 }
 
@@ -304,6 +309,7 @@ impl<R: GhRunner> Transport for GhApi<R> {
                 timeout: self.timeout,
                 max_output_bytes: GH_OUTPUT_CAP,
             },
+            directory: None,
         };
         let captured = self.runner.run(&call).map_err(GhError::Run)?;
         read(captured, path == "graphql", &self.token)

@@ -11,8 +11,8 @@ use std::process::Command;
 
 use assay_app::{
     AppId, BundleSource, CheckView, CommitId, Contract, ContractValidator, Detail, FetchedAt,
-    Identities, PullView, ReviewCommentView, StatusForge, StatusPorts, StatusRepository,
-    StoredBundle, UserId, Viewer,
+    Identities, PullSelector, PullView, ReviewCommentView, StatusForge, StatusPorts,
+    StatusRepository, StoredBundle, UserId, Viewer,
 };
 use assay_cli::{
     Format, StatusArgs, StatusCommand, StatusContext, StatusRunError, StatusUsage, run_status,
@@ -184,7 +184,10 @@ fn run(words: &[&str], branch: &str, out: impl Write) -> Result<Outcome, Box<dyn
     let context = StatusContext {
         repository: &repository,
         app: AppId(NonZeroU64::new(424_242).ok_or("not zero")?),
-        branch,
+        // As the binary chooses: `--pr`'s number, else the branch's open PR.
+        pull: parsed
+            .pr
+            .map_or(PullSelector::Branch(branch), PullSelector::Number),
         local_head: Some(&local),
         rubric: &rubric,
         identities: &identities,

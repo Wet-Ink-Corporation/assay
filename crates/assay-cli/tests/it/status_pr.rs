@@ -49,24 +49,10 @@ impl Scene {
         let head = plain_git(&work, &["rev-parse", "HEAD"])?.trim().to_owned();
         fs::create_dir(root.path().join("home"))?;
         fs::create_dir(root.path().join("bin"))?;
-        let pull = json!({
-            "number": 42, "state": "open",
-            "head": {"sha": head, "ref": "feature/status", "repo": {"full_name": REPO}},
-            "base": {"ref": "main"},
-        });
         let responses = vec![
             (
                 format!("repos/{REPO}"),
                 json!({"id": REPO_ID, "full_name": REPO, "default_branch": "main"}),
-            ),
-            // The same PR answers both reads; each answer owns its copy.
-            (format!("repos/{REPO}/pulls/42"), pull.clone()),
-            (
-                format!(
-                    "repos/{REPO}/pulls?state=open&head=Wet-Ink-Corporation:feature%2Fstatus\
-                     &per_page=100"
-                ),
-                json!([pull]),
             ),
             (
                 format!("repos/{REPO}/commits/{head}/check-runs?filter=all&per_page=100"),
@@ -74,15 +60,44 @@ impl Scene {
             ),
             ("user".to_owned(), json!({"id": 3, "login": "someone"})),
         ];
-        Ok(Self {
+        let mut scene = Self {
             root,
             head,
             responses,
-        })
+        };
+        scene.pull_into("main");
+        Ok(scene)
     }
 
     fn path(&self, name: &str) -> PathBuf {
         self.root.path().join(name)
+    }
+
+    /// PR 42, from `feature/status` into `base`, answering both the read by number and the
+    /// branch's open PRs.
+    fn pull_into(&mut self, base: &str) {
+        let pull = json!({
+            "number": 42, "state": "open",
+            "head": {"sha": self.head, "ref": "feature/status", "repo": {"full_name": REPO}},
+            "base": {"ref": base},
+        });
+        let open = format!(
+            "repos/{REPO}/pulls?state=open&head=Wet-Ink-Corporation:feature%2Fstatus&per_page=100"
+        );
+        self.answer(&open, json!([pull]));
+        self.answer(&format!("repos/{REPO}/pulls/42"), pull);
+    }
+
+    /// `refs/remotes/origin/<branch>`: `origin/main` with `.assay/owners` set to `owners`.
+    fn fetched_base(&self, branch: &str, owners: &str) -> Result<(), Box<dyn Error>> {
+        let work = self.path("work");
+        plain_git(&work, &["checkout", "--quiet", "--detach", "origin/main"])?;
+        write(&work, ".assay/owners", owners)?;
+        plain_git(&work, &["commit", "--quiet", "--all", "-m", branch])?;
+        let reference = format!("refs/remotes/origin/{branch}");
+        plain_git(&work, &["update-ref", &reference, "HEAD"])?;
+        plain_git(&work, &["checkout", "--quiet", "feature/status"])?;
+        Ok(())
     }
 
     /// Answers `path` with `body`, replacing any answer it had.
@@ -269,11 +284,12 @@ fn a_bundle_that_does_not_hash_to_its_pointer_is_refused_after_its_download()
 #[test]
 fn each_missing_or_invalid_variable_is_named_before_gh_runs() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new(OWNERS)?;
+    // Each invalid value is distinctive, so its absence from the message is meaningful.
     let cases = [
-        ("ASSAY_GITHUB_TOKEN", ""),
-        ("ASSAY_VERDICT_APP_ID", "0"),
+        ("ASSAY_GITHUB_TOKEN", "ghs_not a-token"),
+        ("ASSAY_VERDICT_APP_ID", "00"),
         ("ASSAY_VERDICT_APP_ID", "+5"),
-        ("ASSAY_VERDICT_BOT_ID", "x"),
+        ("ASSAY_VERDICT_BOT_ID", "bot-id-x77"),
     ];
 
     for (name, value) in cases {
@@ -288,6 +304,11 @@ fn each_missing_or_invalid_variable_is_named_before_gh_runs() -> Result<(), Box<
             assert!(
                 outcome.stderr.contains(name),
                 "{value:?}: {}",
+                outcome.stderr
+            );
+            assert!(
+                !outcome.stderr.contains(value),
+                "{value:?} is shown: {}",
                 outcome.stderr
             );
         }
@@ -342,20 +363,33 @@ fn base_owners_that_do_not_parse_stop_the_status() -> Result<(), Box<dyn Error>>
 }
 
 #[test]
-fn a_default_branch_never_fetched_is_named() -> Result<(), Box<dyn Error>> {
+fn a_pr_base_never_fetched_is_named() -> Result<(), Box<dyn Error>> {
     let mut scene = Scene::new(OWNERS)?;
-    scene.answer(
-        &format!("repos/{REPO}"),
-        json!({"id": REPO_ID, "full_name": REPO, "default_branch": "trunk"}),
-    );
+    scene.pull_into("release");
 
     let outcome = scene.status(&["--json", "--pr", "42"], &VARIABLES)?;
 
     assert_eq!((outcome.code, outcome.stdout.as_str()), (Some(2), ""));
     assert!(
-        outcome.stderr.contains("refs/remotes/origin/trunk"),
+        outcome.stderr.contains("refs/remotes/origin/release"),
         "{}",
         outcome.stderr
     );
+    Ok(())
+}
+
+#[test]
+fn the_lists_are_read_at_the_prs_base_not_the_default_branch() -> Result<(), Box<dyn Error>> {
+    // The default branch's owners would stop the status; the PR's base's are read.
+    let mut scene = Scene::new("owners = \"11\"\n")?;
+    scene.fetched_base("release", OWNERS)?;
+    scene.pull_into("release");
+
+    let into_release = scene.status(&["--json", "--pr", "42"], &VARIABLES)?;
+    scene.pull_into("main");
+    let into_main = scene.status(&["--json", "--pr", "42"], &VARIABLES)?;
+
+    assert_eq!(into_release.code, Some(0), "{into_release:?}");
+    assert_eq!(into_main.code, Some(2), "{into_main:?}");
     Ok(())
 }

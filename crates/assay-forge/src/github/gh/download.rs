@@ -1,7 +1,8 @@
 //! `gh run download` (#273, wi-6b26d6): one workflow-run artifact, downloaded and extracted by
 //! gh into a fresh scratch directory inside the transport's own, so no assay code ever unpacks
 //! the zip. It runs as `gh api` does: through the [`GhRunner`], with exactly the transport's
-//! environment and working directory, under its own deadline and output cap.
+//! environment and working directory, under its own deadline and output cap, and killed once
+//! the directory it extracts into passes a byte and entry cap ([`DirectoryCap`]).
 
 use std::fs;
 use std::io;
@@ -15,7 +16,7 @@ use tempfile::TempDir;
 
 use super::{GhApi, GhCall, GhRunner, excerpt};
 use crate::github::Repository;
-use crate::process::{Limits, ProcessError};
+use crate::process::{DirectoryCap, Limits, ProcessError};
 
 /// A download's deadline, from start until gh's process group is killed: long enough for the
 /// largest bundle (96 MiB) on a slow link, and bounded (H-13).
@@ -24,6 +25,10 @@ pub const GH_DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(2);
 /// The most bytes `gh run download` may write on stdout, and separately on stderr: it prints
 /// nothing but an error.
 const DOWNLOAD_OUTPUT_CAP: usize = 64 << 10;
+
+/// The most entries a download directory may hold at any depth before gh is killed. The decide
+/// artifact holds one file; the rest is room for gh's own temporary files.
+const MAX_DOWNLOAD_ENTRIES: usize = 16;
 
 /// Why `gh run download` left nothing to read.
 #[derive(Debug, thiserror::Error)]
@@ -64,22 +69,39 @@ impl Downloaded {
     }
 }
 
+/// The artifact a download asks for.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Wanted<'a> {
+    /// The run it belongs to.
+    pub(crate) run_id: NonZeroU64,
+    /// Its exact name, passed to gh as is: the caller has checked it is the one it wants.
+    pub(crate) name: &'a str,
+    /// The most bytes its extracted files may hold together.
+    pub(crate) max_bytes: u64,
+}
+
 impl<R: GhRunner> GhApi<R> {
-    /// Downloads artifact `name` of run `run_id` of `repository` with `gh run download`, which
-    /// extracts its one artifact straight into a new mode-0700 directory under the transport's
-    /// scratch directory. `name` is passed as is: the caller has checked it is exactly the
-    /// artifact it wants.
+    /// Downloads the `wanted` artifact of `repository` with `gh run download`, which extracts
+    /// it straight into a new mode-0700 directory under the transport's scratch directory. gh
+    /// is killed once the directory holds more than `wanted.max_bytes` in its files or more
+    /// than [`MAX_DOWNLOAD_ENTRIES`] entries, so a zip bomb cannot fill the disk (the overshoot
+    /// is what gh writes in one poll interval).
     ///
     /// # Errors
     ///
     /// [`GhDownloadError`] when the directory cannot be made, gh cannot run within its limits
-    /// or gh exits with a failure. The directory is removed on every error.
+    /// (`Run(ProcessError::DirectoryTooLarge)` past the directory cap) or gh exits with a
+    /// failure. The directory is removed on every error.
     pub(crate) fn download(
         &self,
         repository: &Repository,
-        run_id: NonZeroU64,
-        name: &str,
+        wanted: Wanted<'_>,
     ) -> Result<Downloaded, GhDownloadError> {
+        let Wanted {
+            run_id,
+            name,
+            max_bytes,
+        } = wanted;
         let dir = tempfile::Builder::new()
             .prefix("download-")
             .permissions(fs::Permissions::from_mode(0o700))
@@ -107,6 +129,11 @@ impl<R: GhRunner> GhApi<R> {
                 timeout: GH_DOWNLOAD_TIMEOUT,
                 max_output_bytes: DOWNLOAD_OUTPUT_CAP,
             },
+            directory: Some(DirectoryCap {
+                dir: dir.path(),
+                max_bytes,
+                max_entries: MAX_DOWNLOAD_ENTRIES,
+            }),
         };
         let captured = self.runner.run(&call).map_err(GhDownloadError::Run)?;
         if !captured.status.success() {

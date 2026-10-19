@@ -164,8 +164,9 @@ pub struct StatusContext<'a> {
     pub repository: &'a StatusRepository,
     /// The `assay-verdict` App's id.
     pub app: AppId,
-    /// The local checkout's current branch, used without `--pr`.
-    pub branch: &'a str,
+    /// The PR, chosen once by the composition root: `--pr`'s number, the open PR of the
+    /// checkout's branch without it, or one it already read ([`assay_app::read_pull`]).
+    pub pull: PullSelector<'a>,
     /// The local checkout's HEAD, if any.
     pub local_head: Option<&'a CommitId>,
     /// The rubric.
@@ -205,8 +206,8 @@ impl<E: std::error::Error + 'static> std::error::Error for StatusRunError<E> {
     }
 }
 
-/// Reads the status `args` and `context` ask for through `ports` and writes it to `out` (pass
-/// `&mut out` to keep the writer).
+/// Reads the status of the PR `context` names, in `args`' detail, through `ports` and writes
+/// it to `out` in `args`' format (pass `&mut out` to keep the writer).
 ///
 /// # Errors
 ///
@@ -221,9 +222,7 @@ pub fn run<F: StatusForge, B: BundleSource>(
     let request = StatusRequest {
         repository: context.repository,
         app: context.app,
-        pull: args
-            .pr
-            .map_or(PullSelector::Branch(context.branch), PullSelector::Number),
+        pull: context.pull,
         local_head: context.local_head,
         detail: args.detail,
         rubric: context.rubric,

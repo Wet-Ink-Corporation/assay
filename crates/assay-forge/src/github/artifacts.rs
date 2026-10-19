@@ -4,8 +4,9 @@
 //! The run's artifacts are listed through the API, and exactly one may be named like the decide
 //! job's (`assay-decide-*`, compared without ASCII case); it must be exactly
 //! `assay-decide-<nonce>` and listed for the pointer's run of this repository. It is downloaded
-//! with `gh run download`, which extracts it into a scratch directory, and the one file in it is
-//! read under the limit. The sha256 against the pointer, the run inside the bundle and its shape
+//! with `gh run download`, which extracts it into a scratch directory and is killed once that
+//! directory holds more than the limit (an extraction past it is [`StoredBundle::TooLarge`]),
+//! and the one file in it is read under the limit. The sha256 against the pointer, the run inside the bundle and its shape
 //! are `assay-app`'s checks; this adapter refuses anything ambiguous before them (wi-b5affa).
 
 use std::fs::{self, File};
@@ -19,8 +20,9 @@ use serde::Deserialize;
 use super::GitHub;
 use super::api::{PER_PAGE, Page};
 use super::error::{ForgeError, Operation};
-use super::gh::{Downloaded, GhApi, GhDownloadError, GhError, GhRunner};
+use super::gh::{Downloaded, GhApi, GhDownloadError, GhError, GhRunner, Wanted};
 use super::transport::Sleep;
+use crate::process::ProcessError;
 
 /// What the decide job's artifact name starts with (`plan` names it `assay-decide-<nonce>`);
 /// matched without ASCII case and without the `-`, so a look-alike is counted, not skipped.
@@ -135,11 +137,20 @@ impl<R: GhRunner, S: Sleep> BundleSource for GitHub<GhApi<R>, S> {
         if artifact.size_in_bytes > zip_room {
             return Ok(StoredBundle::TooLarge);
         }
-        let downloaded = self
-            .api
-            .transport()
-            .download(&self.repository, run.run_id, &artifact.name)
-            .map_err(BundleFetchError::Download)?;
+        // The one file may hold `limit` bytes: an extraction past that is killed (the zip is
+        // GitHub's listing's size, but what it unpacks to is the artifact's own claim).
+        let wanted = Wanted {
+            run_id: run.run_id,
+            name: &artifact.name,
+            max_bytes: u64::try_from(limit).unwrap_or(u64::MAX),
+        };
+        let downloaded = match self.api.transport().download(&self.repository, wanted) {
+            Ok(downloaded) => downloaded,
+            Err(GhDownloadError::Run(ProcessError::DirectoryTooLarge)) => {
+                return Ok(StoredBundle::TooLarge);
+            }
+            Err(error) => return Err(BundleFetchError::Download(error)),
+        };
         let read = read_download(downloaded.path(), file, limit);
         close(downloaded, read)
     }

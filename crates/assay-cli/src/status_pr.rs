@@ -7,9 +7,11 @@
 //! verdict check points at through `gh run download` (wi-6b26d6), both under the shared
 //! process-group supervisor. The verdict App and its bot user are named by number in
 //! `ASSAY_VERDICT_APP_ID` and `ASSAY_VERDICT_BOT_ID`. The base P10 identity lists are read from
-//! `.assay/owners` and `.assay/agents` at `refs/remotes/origin/<default branch>`, through a
-//! scratch object repository that borrows the checkout's objects (the checkout is never
-//! written). Anything that does not read exactly stops the status (wi-b5affa).
+//! `.assay/owners` and `.assay/agents` at `refs/remotes/origin/<the PR's base>`, as CI reads
+//! base config at the PR's base (03 §1), through a scratch object repository that borrows the
+//! checkout's objects (the checkout is never written); the PR is read once, before them, and
+//! the status reports that read. Anything that does not read exactly stops the status
+//! (wi-b5affa).
 
 use std::ffi::OsString;
 use std::fmt;
@@ -19,8 +21,8 @@ use std::time::SystemTime;
 
 use assay_app::{
     AppId, BaseIdentitiesError, CalendarDateError, CommitId, ContractSchemaError,
-    ContractValidator, FetchedAt, ParseCommitIdError, RubricError, StatusFailure, StatusPorts,
-    UserId, base_identities, read_rubric,
+    ContractValidator, FetchedAt, ParseCommitIdError, PullSelector, RubricError, StatusFailure,
+    StatusPorts, UserId, base_identities, read_pull, read_rubric,
 };
 use assay_cli::{
     ForgeObjectsError, ForgePullRequest, ForgeSupervisor, StatusArgs, StatusContext,
@@ -97,9 +99,11 @@ pub(crate) enum PullStatusCliError {
     Gh(GhSetupError),
     /// The repository could not be read from GitHub.
     Repository(ForgeError<GhError>),
-    /// GitHub names a default branch that is not a plain branch name.
-    DefaultBranch(String),
-    /// `refs/remotes/origin/<default branch>` names no commit.
+    /// The PR could not be read, or not found exactly once.
+    Pull(StatusFailure<LiveGitHub, LiveGitHub>),
+    /// The PR's base is not a plain branch name.
+    BaseRef(String),
+    /// `refs/remotes/origin/<the PR's base>` names no commit.
     NoBase(String),
     /// The base identity lists were refused.
     Identities(BaseIdentitiesError<ForgeObjectsError>),
@@ -147,14 +151,19 @@ impl fmt::Display for PullStatusCliError {
                 f.write_str("could not read the repository: ")?;
                 write_chain(f, source)
             }
-            Self::DefaultBranch(name) => write!(
+            Self::Pull(source) => {
+                f.write_str("no status: ")?;
+                write_chain(f, source)
+            }
+            Self::BaseRef(name) => write!(
                 f,
-                "GitHub names the default branch {name:?}, which is not a plain branch name"
+                "the PR's base {name:?} is not a plain branch name, so its owner and agent \
+                 lists are not read"
             ),
             Self::NoBase(name) => write!(
                 f,
-                "refs/remotes/origin/{name}, the default branch, is not a commit: fetch it (the \
-                 owner and agent lists are read there)"
+                "refs/remotes/origin/{name}, the PR's base, is not a commit: fetch it (the owner \
+                 and agent lists are read there)"
             ),
             Self::Identities(source) => write_chain(f, source),
             Self::Rubric(source) => write_chain(f, source),
@@ -221,14 +230,16 @@ pub(crate) fn run(
     let repository = Repository::from_remote_url(&url)
         .map_err(|_not_github| PullStatusCliError::OriginNotGitHub)?;
     let head = worktree.resolve("HEAD").map_err(PullStatusCliError::Git)?;
-    let branch = match args.pr {
-        Some(_) => None,
-        None => Some(
-            worktree
-                .branch()
-                .map_err(PullStatusCliError::Git)?
-                .ok_or(PullStatusCliError::Detached)?,
-        ),
+    // The branch is read only when it names the PR.
+    let branch;
+    let pull = if let Some(number) = args.pr {
+        PullSelector::Number(number)
+    } else {
+        branch = worktree
+            .branch()
+            .map_err(PullStatusCliError::Git)?
+            .ok_or(PullStatusCliError::Detached)?;
+        PullSelector::Branch(&branch)
     };
     let supervisor = ForgeSupervisor::new(killer);
     let gh =
@@ -248,7 +259,7 @@ pub(crate) fn run(
         worktree: &worktree,
         git,
         head: &head,
-        branch: branch.as_deref(),
+        pull,
     };
     let status = read(args, (&github, identity.app), &scratch, checkout);
     Ok(Ended {
@@ -263,13 +274,14 @@ struct Checkout<'a> {
     worktree: &'a WorkingTree,
     git: GitEnvironment,
     head: &'a CommitSha,
-    /// The branch, read only without `--pr`.
-    branch: Option<&'a str>,
+    /// The PR: `--pr`'s number, or the checkout branch's open PR.
+    pull: PullSelector<'a>,
 }
 
-/// The status of the PR `args` name, read through `github` as the App `app` publishes it, with
-/// the base identity lists read from a snapshot repository in `scratch` that borrows the
-/// checkout's objects.
+/// The status of the PR `checkout` names, read through `github` as the App `app` publishes
+/// it, with the base identity lists read at `refs/remotes/origin/<the PR's base>` (what CI
+/// reads them at, 03 §1) from a snapshot repository in `scratch` that borrows the checkout's
+/// objects. The PR is read once, and the status reports that read.
 fn read(
     args: &StatusArgs,
     (github, app): (&LiveGitHub, AppId),
@@ -279,10 +291,11 @@ fn read(
     let repository = github
         .status_repository()
         .map_err(PullStatusCliError::Repository)?;
-    if !is_branch_name(&repository.default_branch) {
-        return Err(PullStatusCliError::DefaultBranch(repository.default_branch));
+    let pull = read_pull(checkout.pull, github).map_err(PullStatusCliError::Pull)?;
+    if !is_branch_name(&pull.base_ref) {
+        return Err(PullStatusCliError::BaseRef(pull.base_ref));
     }
-    let base = base_commit(checkout.worktree, &repository.default_branch)?;
+    let base = base_commit(checkout.worktree, &pull.base_ref)?;
     let (repo, _snapshot) = scratch
         .snapshot(checkout.worktree, checkout.head, checkout.git)
         .map_err(PullStatusCliError::Tree)?;
@@ -296,9 +309,7 @@ fn read(
     let context = StatusContext {
         repository: &repository,
         app,
-        // With `--pr` the PR is chosen by number and the request reads no branch, so the
-        // empty name stands for one never read.
-        branch: checkout.branch.unwrap_or_default(),
+        pull: PullSelector::Read(&pull),
         local_head: Some(&local_head),
         rubric: &rubric,
         identities: &identities,

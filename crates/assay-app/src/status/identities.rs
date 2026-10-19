@@ -9,8 +9,10 @@ use thiserror::Error;
 
 use super::{Identities, UserId};
 use crate::config::{CommitId, IdentitiesConfigError, parse_agents, parse_owners};
-use crate::plan::{EntryKind, PullRequestObjects};
+use crate::plan::{EntryKind, PullRequestObjects, TreeEntry};
 
+/// The base config directory, which holds the lists.
+const CONFIG_DIR: &str = ".assay";
 /// The owners, approvers and maintainers.
 const OWNERS: &str = ".assay/owners";
 /// The agent identities.
@@ -26,7 +28,14 @@ pub enum BaseIdentitiesError<E> {
     /// The base could not be listed or a list read.
     #[error("could not read the base identity lists")]
     Objects(#[source] E),
-    /// A list is a symlink, submodule, executable or directory.
+    /// `.assay` is a symlink or submodule, which is never followed.
+    #[error("{path} in the base is not a directory")]
+    NotADirectory {
+        /// The directory's path.
+        path: &'static str,
+    },
+    /// A list is a symlink, submodule or directory (an executable file is read like any
+    /// other).
     #[error("{path} in the base is not a regular file")]
     NotARegularFile {
         /// The list's path.
@@ -74,8 +83,9 @@ pub enum BaseIdentitiesError<E> {
 ///
 /// # Errors
 ///
-/// [`BaseIdentitiesError`] when the base cannot be read, a list is not a regular UTF-8 file of
-/// at most [`MAX_IDENTITY_FILE_BYTES`] that parses exactly, or an agent is privileged.
+/// [`BaseIdentitiesError`] when the base cannot be read, `.assay` is a symlink or submodule, a
+/// list is not a regular UTF-8 file of at most [`MAX_IDENTITY_FILE_BYTES`] that parses
+/// exactly, or an agent is privileged.
 ///
 /// # Examples
 ///
@@ -105,14 +115,22 @@ pub fn base_identities<O: PullRequestObjects>(
     objects: &O,
     base: &CommitId,
 ) -> Result<Identities, BaseIdentitiesError<O::Error>> {
-    let privileged = match read_list(objects, base, OWNERS)? {
+    // `.assay` itself first, as `plan` reads base config: a symlink or submodule there lists
+    // as one entry, and the lists under it must not read as absent.
+    let entries = objects
+        .list(base, Some(CONFIG_DIR))
+        .map_err(BaseIdentitiesError::Objects)?;
+    if entries.iter().any(|entry| entry.path == CONFIG_DIR) {
+        return Err(BaseIdentitiesError::NotADirectory { path: CONFIG_DIR });
+    }
+    let privileged = match read_list(objects, &entries, OWNERS)? {
         Some(text) => parse_owners(&text).map_err(|source| BaseIdentitiesError::Config {
             path: OWNERS,
             source,
         })?,
         None => BTreeSet::new(),
     };
-    let agents = match read_list(objects, base, AGENTS)? {
+    let agents = match read_list(objects, &entries, AGENTS)? {
         Some(text) => parse_agents(&text).map_err(|source| BaseIdentitiesError::Config {
             path: AGENTS,
             source,
@@ -125,18 +143,25 @@ pub fn base_identities<O: PullRequestObjects>(
     Ok(Identities { privileged, agents })
 }
 
-/// The text of the list at `path` in `base`, or `None` when the base has nothing there.
+/// The text of the list at `path` among the base's `.assay` `entries`, or `None` when the base
+/// has nothing there.
 fn read_list<O: PullRequestObjects>(
     objects: &O,
-    base: &CommitId,
+    entries: &[TreeEntry],
     path: &'static str,
 ) -> Result<Option<String>, BaseIdentitiesError<O::Error>> {
-    let entries = objects
-        .list(base, Some(path))
-        .map_err(BaseIdentitiesError::Objects)?;
-    let entry = match entries.as_slice() {
+    let at_or_under: Vec<&TreeEntry> = entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .path
+                .strip_prefix(path)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
+        .collect();
+    let entry = match at_or_under.as_slice() {
         [] => return Ok(None),
-        [entry] if entry.path == path && entry.kind == EntryKind::File => entry,
+        [entry] if entry.path == path && entry.kind == EntryKind::File => *entry,
         // A directory lists what is under it; a symlink or submodule is not followed.
         _ => return Err(BaseIdentitiesError::NotARegularFile { path }),
     };

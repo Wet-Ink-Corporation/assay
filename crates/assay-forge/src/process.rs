@@ -1,7 +1,8 @@
 //! Bounded child processes: a wall-clock deadline, capped output, a process group that is
 //! killed rather than left behind, and a child that is always waited on (H-13).
 //!
-//! [`run`] supervises one child under [`Limits`]; [`GroupKiller::kill_group`] kills a process
+//! [`run`] supervises one child under [`Limits`], and [`run_capped`] also caps what it writes
+//! under one directory ([`DirectoryCap`]); [`GroupKiller::kill_group`] kills a process
 //! group that another supervisor started. The git layer uses both, and `assay-cli` lends them
 //! to the gate and model-runner adapters, which may not depend on this crate (wi-603c63).
 //!
@@ -35,6 +36,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+
+mod directory;
+
+pub use directory::DirectoryCap;
 
 /// How often a running child, its output and its group are polled. Short against any timeout
 /// we configure, long enough that polling costs nothing measurable.
@@ -94,6 +99,10 @@ pub enum ProcessError {
     /// The child wrote more than the cap on stdout or stderr and was killed.
     #[error("the process wrote more output than allowed")]
     OutputTooLarge,
+    /// The child wrote more bytes or entries under its [`DirectoryCap`] than allowed; a child
+    /// still running was killed with its group.
+    #[error("the process wrote more into its directory than allowed")]
+    DirectoryTooLarge,
     /// Polling the child or reading `/proc` failed.
     #[error("could not observe the process")]
     Io(#[source] io::Error),
@@ -297,15 +306,47 @@ impl GroupKiller {
 /// [`ProcessError::TimeoutTooLong`], [`ProcessError::Spool`] and [`ProcessError::Spawn`] when
 /// the child could not be started, and [`ProcessError::Io`] when it could not be observed.
 pub fn run(
-    mut command: Command,
+    command: Command,
     input: &[u8],
     limits: Limits,
     killer: &GroupKiller,
 ) -> Result<Captured, ProcessError> {
+    let bounds = Bounds {
+        limits,
+        directory: None,
+    };
+    run_capped(command, input, bounds, killer)
+}
+
+/// [`Limits`], and optionally a cap on what the child writes under one directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bounds<'a> {
+    /// The timeout and output cap.
+    pub limits: Limits,
+    /// What the child may write under one directory, if it writes files at all.
+    pub directory: Option<DirectoryCap<'a>>,
+}
+
+/// [`run`], with what the child writes under `bounds.directory` capped as well.
+///
+/// On every poll, and once more after the group is gone, the tree is measured
+/// ([`DirectoryCap`]), and past its cap the group is killed. The overshoot is bounded by what
+/// the child writes in one poll interval (5 ms) and while its group is killed.
+///
+/// # Errors
+/// As [`run`], and [`ProcessError::DirectoryTooLarge`] when the tree passed its cap (the group
+/// killed and shown gone if it was still running); [`ProcessError::Io`] also when the tree
+/// cannot be measured.
+pub fn run_capped(
+    mut command: Command,
+    input: &[u8],
+    bounds: Bounds<'_>,
+    killer: &GroupKiller,
+) -> Result<Captured, ProcessError> {
     let deadline = Instant::now()
-        .checked_add(limits.timeout)
+        .checked_add(bounds.limits.timeout)
         .ok_or(ProcessError::TimeoutTooLong)?;
-    let cap = limits.max_output_bytes;
+    let cap = bounds.limits.max_output_bytes;
     let stdout = tempfile::tempfile().map_err(ProcessError::Spool)?;
     let stderr = tempfile::tempfile().map_err(ProcessError::Spool)?;
     command
@@ -317,7 +358,7 @@ pub fn run(
     // Closes this process's copies of the child's ends.
     drop(command);
 
-    let outcome = supervise(&mut child, [&stdout, &stderr], cap, deadline)
+    let outcome = supervise(&mut child, [&stdout, &stderr], bounds, deadline)
         .map_err(|interrupted| terminate(&mut child, interrupted, killer, group_alive));
     let reaped = child.wait();
     let status = match (outcome, reaped) {
@@ -360,16 +401,21 @@ struct Interrupted {
     leader_reaped: bool,
 }
 
-/// Polls until the child has exited and its group is empty, the output passes `cap`, or
-/// `deadline` passes.
+/// Polls until the child has exited and its group is empty, an output passes its cap, the tree
+/// under the directory cap passes it, or `deadline` passes.
 fn supervise(
     child: &mut Child,
     outputs: [&File; 2],
-    cap: usize,
+    bounds: Bounds<'_>,
     deadline: Instant,
 ) -> Result<ExitStatus, Interrupted> {
     let group = child.id();
-    let limit = u64::try_from(cap).unwrap_or(u64::MAX);
+    let limit = u64::try_from(bounds.limits.max_output_bytes).unwrap_or(u64::MAX);
+    let over_directory = || {
+        bounds
+            .directory
+            .map_or(Ok(false), |directory| directory.exceeded())
+    };
     let mut exited = None;
     let polled = poll_until(deadline, || {
         for output in outputs {
@@ -377,11 +423,22 @@ fn supervise(
                 return Ok(Some(Err(ProcessError::OutputTooLarge)));
             }
         }
+        if over_directory()? {
+            return Ok(Some(Err(ProcessError::DirectoryTooLarge)));
+        }
         if exited.is_none() {
             exited = child.try_wait()?;
         }
         match exited {
-            Some(status) if !group_alive(group)? => Ok(Some(Ok(status))),
+            // Nothing in the group can write any more: one last look at the directory, so a
+            // write between the check above and the exit is not missed.
+            Some(status) if !group_alive(group)? => {
+                if over_directory()? {
+                    Ok(Some(Err(ProcessError::DirectoryTooLarge)))
+                } else {
+                    Ok(Some(Ok(status)))
+                }
+            }
             _ => Ok(None),
         }
     });
@@ -750,6 +807,70 @@ mod tests {
         assert!(
             matches!(result, Err(ProcessError::OutputTooLarge)),
             "unbounded output must be cut off, got {result:?}"
+        );
+    }
+
+    /// `sh -c <body> sh <dir>`: `body` sees the directory as `$1`.
+    fn writing_into(dir: &Path, body: &str) -> Command {
+        let mut sh = Command::new("sh");
+        sh.arg("-c").arg(body).arg("sh").arg(dir);
+        sh
+    }
+
+    /// [`GENEROUS`], and at most `max_bytes` and `max_entries` under `dir`.
+    fn capped(dir: &Path, max_bytes: u64, max_entries: usize) -> Bounds<'_> {
+        Bounds {
+            limits: GENEROUS,
+            directory: Some(DirectoryCap {
+                dir,
+                max_bytes,
+                max_entries,
+            }),
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+    fn kills_a_child_that_writes_past_its_directory_cap() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let endless = writing_into(dir.path(), "exec cat /dev/zero > \"$1/blob\"");
+
+        let result = run_capped(endless, b"", capped(dir.path(), 1024, 8), &system_killer());
+
+        assert!(
+            matches!(result, Err(ProcessError::DirectoryTooLarge)),
+            "an endless write must be cut off, got {result:?}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+    fn kills_a_child_that_writes_too_many_entries() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let endless = writing_into(
+            dir.path(),
+            "i=0; while :; do : > \"$1/f$i\"; i=$((i + 1)); done",
+        );
+
+        let result = run_capped(endless, b"", capped(dir.path(), 1024, 8), &system_killer());
+
+        assert!(
+            matches!(result, Err(ProcessError::DirectoryTooLarge)),
+            "endless files must be cut off, got {result:?}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+    fn a_child_that_writes_exactly_its_directory_cap_completes() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let writer = writing_into(dir.path(), "printf abc > \"$1/x\"");
+
+        let result = run_capped(writer, b"", capped(dir.path(), 3, 1), &system_killer());
+
+        assert!(
+            result.is_ok_and(|captured| captured.status.success()),
+            "a write within the cap completes"
         );
     }
 

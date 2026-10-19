@@ -8,7 +8,7 @@ use std::error::Error;
 use std::fs;
 use std::io;
 use std::num::NonZeroU64;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -42,8 +42,12 @@ struct ScriptedGh {
     extract: Extract,
     exit: i32,
     stderr: Vec<u8>,
+    /// Whether the supervisor stops the download past its directory cap after `extract`.
+    killed: bool,
     calls: RefCell<Vec<Vec<String>>>,
     limits: RefCell<Vec<Limits>>,
+    /// Each download's directory cap: its bytes and entries.
+    caps: RefCell<Vec<(u64, usize)>>,
     dirs: RefCell<Vec<PathBuf>>,
 }
 
@@ -56,9 +60,19 @@ impl ScriptedGh {
             extract,
             exit: 0,
             stderr: Vec::new(),
+            killed: false,
             calls: RefCell::new(Vec::new()),
             limits: RefCell::new(Vec::new()),
+            caps: RefCell::new(Vec::new()),
             dirs: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// The same gh, stopped by the supervisor past its directory cap after extracting.
+    fn killed(self) -> Self {
+        Self {
+            killed: true,
+            ..self
         }
     }
 
@@ -88,9 +102,12 @@ impl GhRunner for ScriptedGh {
         let args: Vec<String> = call.args.iter().map(|&arg| arg.to_owned()).collect();
         let api = args.first().is_some_and(|first| first == "api");
         if !api {
-            self.extract_into(&args);
+            self.extract_into(call, &args);
         }
         self.calls.borrow_mut().push(args);
+        if !api && self.killed {
+            return Err(ProcessError::DirectoryTooLarge);
+        }
         // The test owns these bytes and hands gh's "output" over as a copy each run.
         let (stdout, exit, stderr) = if api {
             (self.listing.clone(), 0, Vec::new())
@@ -106,8 +123,9 @@ impl GhRunner for ScriptedGh {
 }
 
 impl ScriptedGh {
-    /// Runs the extraction on the `--dir` of `args`, which must exist and be empty.
-    fn extract_into(&self, args: &[String]) {
+    /// Runs the extraction on the `--dir` of `args`, which must exist, be empty, be mode 0700
+    /// and be the directory `call` caps; the call's output cap must be 64 KiB.
+    fn extract_into(&self, call: &GhCall<'_>, args: &[String]) {
         let dir = args
             .iter()
             .position(|arg| arg == "--dir")
@@ -120,6 +138,14 @@ impl ScriptedGh {
             0,
             "and is empty"
         );
+        let mode = fs::metadata(&dir).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "only this user may read the download");
+        assert_eq!(call.limits.max_output_bytes, 64 << 10);
+        let cap = call.directory.expect("a download is capped");
+        assert_eq!(cap.dir, dir, "the cap watches the download's directory");
+        self.caps
+            .borrow_mut()
+            .push((cap.max_bytes, cap.max_entries));
         (self.extract)(&dir).expect("the fake extracts");
         self.dirs.borrow_mut().push(dir);
     }
@@ -251,7 +277,28 @@ fn the_decide_artifact_s_bundle_is_downloaded_read_and_its_directory_removed()
         gh.limits.borrow().last().map(|limits| limits.timeout),
         Some(GH_DOWNLOAD_TIMEOUT)
     );
+    assert_eq!(*gh.caps.borrow(), [(1 << 20, 16)]);
     assert!(!dir.exists(), "the download's directory is removed");
+    Ok(())
+}
+
+#[test]
+fn a_download_stopped_past_its_directory_cap_is_too_large_and_removed() -> Result<(), Box<dyn Error>>
+{
+    let gh = ScriptedGh::new(
+        &[decide(300)],
+        writes(&[(BUNDLE_FILE, b"{\"schema\":\"assay.run-inputs/1\"}")]),
+    )
+    .killed();
+
+    let fetched = fetch(&gh, BUNDLE_FILE, 8)?;
+
+    assert_eq!(fetched?, StoredBundle::TooLarge);
+    assert_eq!(*gh.caps.borrow(), [(8, 16)]);
+    assert!(
+        gh.dirs.borrow().iter().all(|dir| !dir.exists()),
+        "the download's directory is removed"
+    );
     Ok(())
 }
 

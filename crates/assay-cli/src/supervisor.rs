@@ -6,7 +6,7 @@ use std::process::Command;
 
 use assay_app::Termination;
 use assay_forge::github::{GhCall, GhRunner};
-use assay_forge::process::{self, Captured, GroupKiller, Limits, ProcessError};
+use assay_forge::process::{self, Bounds, Captured, GroupKiller, Limits, ProcessError};
 use assay_gates::{CaptureSupervisor, CapturedRun, ProcessSpec, Supervisor};
 use assay_runner::GroupKill;
 
@@ -94,13 +94,14 @@ impl CaptureSupervisor for ForgeSupervisor {
 }
 
 impl GhRunner for ForgeSupervisor {
-    /// Runs `call` under [`process::run`] with exactly its environment, working directory,
-    /// stdin and limits.
+    /// Runs `call` under [`process::run_capped`] with exactly its environment, working
+    /// directory, stdin, limits and directory cap.
     ///
     /// # Errors
     ///
-    /// The [`ProcessError`] of [`process::run`]: a timeout or an over-cap output once the
-    /// group is shown gone, [`ProcessError::Kill`] when it could not be (abort the job).
+    /// The [`ProcessError`] of [`process::run_capped`]: a timeout, an over-cap output or a
+    /// directory past its cap once the group is shown gone, [`ProcessError::Kill`] when it
+    /// could not be (abort the job).
     fn run(&self, call: &GhCall<'_>) -> Result<Captured, ProcessError> {
         let mut command = Command::new(call.program);
         command
@@ -108,7 +109,11 @@ impl GhRunner for ForgeSupervisor {
             .current_dir(call.cwd)
             .env_clear()
             .envs(call.env.iter().copied());
-        process::run(command, call.stdin, call.limits, &self.killer)
+        let bounds = Bounds {
+            limits: call.limits,
+            directory: call.directory,
+        };
+        process::run_capped(command, call.stdin, bounds, &self.killer)
     }
 }
 

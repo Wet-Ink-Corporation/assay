@@ -243,6 +243,57 @@ fn a_gh_that_writes_past_the_cap_is_stopped() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Repository `o/r` (id 5) over `gh`, as the artifact store.
+fn bundle_store(
+    gh: &FakeGh,
+    environment: GhEnvironment,
+) -> Result<GitHub<GhApi<ForgeSupervisor>, ThreadSleep>, Box<dyn Error>> {
+    let identity = AppIdentity {
+        app: AppId(NonZeroU64::new(1).ok_or("non-zero")?),
+        bot: UserId(NonZeroU64::new(2).ok_or("non-zero")?),
+    };
+    Ok(GitHub::new(
+        Api::new(gh.transport_in(GH_TIMEOUT, environment)?, ThreadSleep),
+        "o/r".parse()?,
+        identity,
+    ))
+}
+
+/// Run 7 of repository 5, first attempt.
+fn run_seven() -> Result<RunUid, Box<dyn Error>> {
+    Ok(RunUid {
+        repo_id: NonZeroU64::new(5).ok_or("non-zero")?,
+        run_id: NonZeroU64::new(7).ok_or("non-zero")?,
+        run_attempt: NonZeroU64::MIN,
+    })
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+fn an_extraction_past_the_limit_is_killed_and_too_large() -> Result<(), Box<dyn Error>> {
+    // Without the directory cap this gh writes until its 2 min deadline.
+    let gh = FakeGh::new(
+        r#"if [ "$1" = run ]; then
+  while [ $# -gt 0 ]; do
+    if [ "$1" = --dir ]; then dest="$2"; fi
+    shift
+  done
+  printf '%s' "$dest" > "$dir/dest"
+  exec /bin/cat /dev/zero > "$dest/run-inputs.json"
+fi
+printf 'HTTP/2.0 200 OK\n\r\n{"total_count":1,"artifacts":[{"name":"assay-decide-0123456789abcdef0123456789abcdef","size_in_bytes":40,"expired":false,"workflow_run":{"id":7,"repository_id":5}}]}'
+"#,
+    )?;
+    let github = bundle_store(&gh, GhEnvironment::default())?;
+
+    let fetched = github.fetch(run_seven()?, "run-inputs.json", 1024)?;
+
+    assert_eq!(fetched, StoredBundle::TooLarge);
+    assert!(!Path::new(&gh.record("dest")?).exists());
+    github.into_api().into_transport().close()?;
+    Ok(())
+}
+
 #[test]
 #[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
 fn a_bundle_is_downloaded_through_gh_with_the_api_calls_environment() -> Result<(), Box<dyn Error>>
@@ -264,22 +315,9 @@ printf 'HTTP/2.0 200 OK\n\r\n{"total_count":1,"artifacts":[{"name":"assay-decide
 "#,
     )?;
     let environment = inheriting(&[("HTTPS_PROXY", "http://proxy.invalid:3128")]);
-    let identity = AppIdentity {
-        app: AppId(NonZeroU64::new(1).ok_or("non-zero")?),
-        bot: UserId(NonZeroU64::new(2).ok_or("non-zero")?),
-    };
-    let github = GitHub::new(
-        Api::new(gh.transport_in(GH_TIMEOUT, environment)?, ThreadSleep),
-        "o/r".parse()?,
-        identity,
-    );
-    let run = RunUid {
-        repo_id: NonZeroU64::new(5).ok_or("non-zero")?,
-        run_id: NonZeroU64::new(7).ok_or("non-zero")?,
-        run_attempt: NonZeroU64::MIN,
-    };
+    let github = bundle_store(&gh, environment)?;
 
-    let fetched = github.fetch(run, "run-inputs.json", 1024)?;
+    let fetched = github.fetch(run_seven()?, "run-inputs.json", 1024)?;
 
     assert_eq!(fetched, StoredBundle::Found(br#"{"bundle":1}"#.to_vec()));
     let env = gh.env()?;

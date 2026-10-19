@@ -225,6 +225,28 @@ fn a_list_that_is_not_a_regular_file_is_refused() {
 }
 
 #[test]
+fn a_config_directory_that_is_a_symlink_or_submodule_is_refused() {
+    let mut symlink = FakePr::new();
+    symlink.remove(BASE, ".assay/plugins.toml");
+    symlink.symlink(BASE, ".assay", b"elsewhere");
+    let mut submodule = FakePr::new();
+    submodule.remove(BASE, ".assay/plugins.toml");
+    submodule.submodule(BASE, ".assay");
+
+    for pr in [symlink, submodule] {
+        let refused = base_identities(&pr, &base());
+
+        assert!(
+            matches!(
+                refused,
+                Err(BaseIdentitiesError::NotADirectory { path: ".assay" })
+            ),
+            "{refused:?}"
+        );
+    }
+}
+
+#[test]
 fn a_list_over_the_cap_is_refused_unread_and_one_at_it_is_read() {
     let text = "approvers = [{ id = 12, login = \"approver\" }]\n";
     let mut at = FakePr::new();

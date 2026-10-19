@@ -167,7 +167,7 @@ pub use status::{
     MAX_IDENTITY_FILE_BYTES, MAX_REASONS, ObservedConclusion, PullSelector, PullView,
     ReviewCommentView, StatusError, StatusFailure, StatusForge, StatusPorts, StatusReport,
     StatusRepository, StatusRequest, StatusStep, StatusUnreadable, StoredLocalReport, UserId,
-    Viewer, base_identities, is_tree_id, local_status, status,
+    Viewer, base_identities, is_tree_id, local_status, read_pull, status,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};
