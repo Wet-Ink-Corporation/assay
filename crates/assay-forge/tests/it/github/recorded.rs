@@ -6,7 +6,10 @@
 //! viewer), trimmed of URL noise; the `assay-verdict` App has not published yet, so its checks
 //! and comments are recorded ones re-attributed to App 5371952 and its bot user. GraphQL,
 //! token, label, reaction and review-comment bodies follow GitHub's documented schema, since
-//! GraphQL and writes cannot be recorded here.
+//! GraphQL and writes cannot be recorded here. For doctor's prerequisites (#75) the repository,
+//! its rulesets and the `.github/workflows` contents are recorded; branch rules, environments,
+//! branch policies, workflow permissions, collaborators, users and permissions follow the
+//! documented schema, since they need admin rights or settings this repository lacks.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;

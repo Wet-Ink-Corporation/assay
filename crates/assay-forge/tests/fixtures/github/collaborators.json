@@ -1,0 +1,18 @@
+[
+  {
+    "login": "Ryan-Britton",
+    "id": 124330161,
+    "type": "User",
+    "site_admin": false,
+    "permissions": { "admin": true, "maintain": true, "push": true, "triage": true, "pull": true },
+    "role_name": "admin"
+  },
+  {
+    "login": "assay-break-glass",
+    "id": 1001,
+    "type": "User",
+    "site_admin": false,
+    "permissions": { "admin": false, "maintain": false, "push": true, "triage": true, "pull": true },
+    "role_name": "release-manager"
+  }
+]

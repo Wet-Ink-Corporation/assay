@@ -1,0 +1,5 @@
+{
+  "id": 161088070,
+  "name": "assay-review",
+  "deployment_branch_policy": { "protected_branches": true, "custom_branch_policies": false }
+}

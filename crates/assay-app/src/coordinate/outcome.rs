@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use assay_domain::{Aeu, CallFailure, Disposition, EventPayload, SupportOutcome};
+use assay_domain::{Aeu, CallFailure, Disposition, EventPayload, Fingerprint, SupportOutcome};
 
 use super::answer::CoordinationRefusal;
 use crate::model_runner::RateLimitObserved;
@@ -48,6 +48,9 @@ pub struct Merged {
     pub index: usize,
     /// The position of the kept finding it duplicates.
     pub into: usize,
+    /// Its own fingerprint (not the keeper's, which a coordinator merge may not share), which
+    /// its `duplicate` event names (#263).
+    pub fp: Fingerprint,
 }
 
 /// Who grouped the findings.
@@ -128,14 +131,15 @@ impl<E> Coordination<E> {
     /// then `CoordinatorFinished` when the coordinator's answer was used, or a `StageDegraded`
     /// for the coordinator when it failed.
     pub fn events(&self) -> impl Iterator<Item = EventPayload> + '_ {
-        // A merge names positions, not fingerprints, so its event carries no `fp` yet; the
-        // event schema leaves `fp` optional for `duplicate` (03 §6).
-        let merged = self.merged.iter().map(|_| EventPayload::FindingDisposed {
-            code: Disposition::Duplicate,
-            fp: None,
-            from: None,
-            to: None,
-        });
+        let merged = self
+            .merged
+            .iter()
+            .map(|merge| EventPayload::FindingDisposed {
+                code: Disposition::Duplicate,
+                fp: Some(merge.fp),
+                from: None,
+                to: None,
+            });
         let finished = (self.merged_by == MergedBy::Coordinator)
             .then_some(EventPayload::CoordinatorFinished {});
         let degraded = self

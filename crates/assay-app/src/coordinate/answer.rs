@@ -262,6 +262,7 @@ impl<'f> Reader<'_, 'f> {
                 return Ok(Merged {
                     index: copy.index,
                     into: keeper.index,
+                    fp: found.fingerprint,
                 });
             };
         Err(refusal)

@@ -1,0 +1,7 @@
+{
+  "name": "assay",
+  "version": "0.1.0",
+  "description": "assay's local side: /assay:check (the advisory check of the working tree, with the Weigh-In checkpoint CP1), /assay:replay and /assay:report, and the pre-push helper in hooks/pre-push.",
+  "author": { "name": "Wet Ink Corporation" },
+  "homepage": "https://github.com/Wet-Ink-Corporation/assay"
+}

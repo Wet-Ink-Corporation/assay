@@ -37,8 +37,14 @@ mod tiering;
 
 pub use calendar::{CalendarDate, CalendarDateError};
 pub use doctor::{
-    CanaryProbe, CanaryRun, CanaryToken, Check, CheckFailure, CheckResult, DoctorError,
-    DoctorReport, EXPIRY_WARNING_DAYS, ExpiryWarning, doctor, token_expiry_warning,
+    AGENTS_PATH, Access, AppliedRule, BaseError, BranchPolicy, BypassActor, CanaryProbe, CanaryRun,
+    CanaryToken, Check, CheckFailure, CheckResult, Collaborator, Conditions, DeploymentBranches,
+    DirectoryEntry, DoctorError, DoctorReport, EXPIRY_WARNING_DAYS, Enforcement, EntryType,
+    ExpiryWarning, Holding, IdentityListError, IdentityLists, MAX_LISTED, OWNERS_PATH,
+    PLUGINS_PATH, PolicyKind, Prerequisite, PrerequisiteApps, PrerequisiteBase,
+    PrerequisiteFailure, PrerequisiteForge, PrerequisiteReport, PrerequisiteResult, RequiredCheck,
+    RequiredChecks, Rule, Ruleset, RulesetId, RulesetTarget, WorkflowError, WorkflowPermissions,
+    YamlError, YamlRefusal, doctor, prerequisites, read_base, token_expiry_warning,
 };
 pub use preflight::{
     AuthProof, CliProbe, CliStatus, FIRST_PARTY_PROVIDER, OAUTH_TOKEN_METHOD, PreflightFailed,
@@ -193,4 +199,17 @@ pub use verify::{
     VERDICT_SCHEMA, VERIFIER_CAP, VERIFIER_MAX_TURNS, VerdictReason, VerdictRefusal, VerdictTally,
     Verification, VerifiedFinding, VerifierFailure, VerifierStatus, VerifierTier, VerifyRequest,
     verify,
+};
+
+mod reconcile;
+pub use reconcile::{
+    ChecksReconcileError, ChecksReconcileRequest, ChecksReconciled, ClosedCheck, Closure,
+    LLM_PENDING_LABEL, LedgerReconcileError, LedgerReconcileRequest, LedgerReconciled, Listing,
+    LockListing, LostLock, MAX_HEAD_CHECKS, MAX_OPEN_PULLS, MAX_PUBLISH_LOCKS,
+    MAX_SUPERSEDED_HEADS, OpenPull, PullHead, ReconcileCheck, ReconcileForge, ReconcilePorts,
+    RunProgress, STUCK_AFTER, Skip, SkippedCheck, StampedRun, reconcile_checks, reconcile_ledger,
+};
+mod weigh_in;
+pub use weigh_in::{
+    BlockingItem, Checkpoint, MAX_OPEN_BYTES, MAX_OPEN_ITEMS, OpenItemsError, checkpoint,
 };
