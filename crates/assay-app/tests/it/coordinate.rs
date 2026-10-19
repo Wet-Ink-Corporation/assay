@@ -12,17 +12,25 @@ use assay_app::{
     ModelOutcome, Placement, PromptBundle, ValidFinding, coordinate, merge_mechanically,
 };
 use assay_domain::{
-    Aeu, CallFailure, Confidence, Disposition, EventPayload, Severity, SupportOutcome,
+    Aeu, CallFailure, Confidence, Disposition, Event, EventPayload, Fingerprint, Severity,
+    SupportOutcome,
 };
 use serde_json::{Value, json};
 
+use crate::support::read_back;
 use crate::verify_fakes::{Scripted, Unreachable, bundle, finding, output};
 
-/// A finding of `severity` with its own fingerprint `fp`, titled `finding <fp>`.
-fn distinct(fp: u64, severity: Severity) -> Result<ValidFinding, Box<dyn Error>> {
+/// The fingerprint numbered `n`: `n` as 16 hex digits.
+fn fp(n: u64) -> Result<Fingerprint, Box<dyn Error>> {
+    Ok(format!("{n:016x}").parse()?)
+}
+
+/// A finding of `severity` with its own fingerprint, [`fp`] of `fp_number`, titled
+/// `finding <fp_number>`.
+fn distinct(fp_number: u64, severity: Severity) -> Result<ValidFinding, Box<dyn Error>> {
     let mut found = finding(0, severity)?;
-    found.fingerprint = format!("{fp:016x}").parse()?;
-    found.finding.title = format!("finding {fp}");
+    found.fingerprint = fp(fp_number)?;
+    found.finding.title = format!("finding {fp_number}");
     found.finding.confidence = None;
     Ok(found)
 }
@@ -141,7 +149,14 @@ fn an_accepted_answer_groups_merges_and_ranks_the_findings() -> Result<(), Box<d
         ]
     );
     assert_eq!(accounted(&coordination), [0, 1, 2, 3]);
-    assert_eq!(coordination.merged, [Merged { index: 3, into: 0 }]);
+    assert_eq!(
+        coordination.merged,
+        [Merged {
+            index: 3,
+            into: 0,
+            fp: fp(4)?
+        }]
+    );
     assert_eq!(
         (coordination.merged_by, coordination.outcome()),
         (MergedBy::Coordinator, SupportOutcome::Completed)
@@ -151,7 +166,7 @@ fn an_accepted_answer_groups_merges_and_ranks_the_findings() -> Result<(), Box<d
         [
             EventPayload::FindingDisposed {
                 code: Disposition::Duplicate,
-                fp: None,
+                fp: Some(fp(4)?),
                 from: None,
                 to: None
             },
@@ -211,7 +226,14 @@ fn findings_of_one_fingerprint_are_merged_before_the_call() -> Result<(), Box<dy
         .filter_map(|found| found["title"].as_str())
         .collect();
     assert_eq!(titles, ["finding 2", "finding 1"]);
-    assert_eq!(coordination.merged, [Merged { index: 0, into: 2 }]);
+    assert_eq!(
+        coordination.merged,
+        [Merged {
+            index: 0,
+            into: 2,
+            fp: fp(1)?
+        }]
+    );
     assert_eq!(
         ranking(&coordination),
         [(1, "g1".to_owned()), (2, "g2".to_owned())]
@@ -238,7 +260,18 @@ fn a_finding_merged_before_the_call_follows_its_keeper_into_the_coordinators_mer
 
     assert_eq!(
         coordination.merged,
-        [Merged { index: 0, into: 1 }, Merged { index: 2, into: 1 }]
+        [
+            Merged {
+                index: 0,
+                into: 1,
+                fp: fp(1)?
+            },
+            Merged {
+                index: 2,
+                into: 1,
+                fp: fp(1)?
+            }
+        ]
     );
     assert_eq!(ranking(&coordination), [(1, "g1".to_owned())]);
     assert_eq!(accounted(&coordination), [0, 1, 2]);
@@ -491,7 +524,8 @@ fn one_finding_more_than_a_call_takes_is_coordinated_when_two_share_a_fingerprin
         coordination.merged,
         [Merged {
             index: MAX_COORDINATED_FINDINGS,
-            into: 0
+            into: 0,
+            fp: fp(1)?
         }]
     );
     let all: Vec<usize> = (0..=MAX_COORDINATED_FINDINGS).collect();
@@ -542,7 +576,18 @@ fn the_mechanical_merge_keeps_the_most_severe_copy_and_never_hides_a_new_finding
 
     assert_eq!(
         coordination.merged,
-        [Merged { index: 0, into: 1 }, Merged { index: 2, into: 1 }]
+        [
+            Merged {
+                index: 0,
+                into: 1,
+                fp: fp(1)?
+            },
+            Merged {
+                index: 2,
+                into: 1,
+                fp: fp(1)?
+            }
+        ]
     );
     assert_eq!(
         ranking(&coordination),
@@ -552,6 +597,44 @@ fn the_mechanical_merge_keeps_the_most_severe_copy_and_never_hides_a_new_finding
             (4, "g3".to_owned())
         ]
     );
+    Ok(())
+}
+
+/// #264: a `duplicate` the coordinator or the mechanical merge records passes the read rule
+/// that requires its fingerprint.
+#[test]
+fn every_duplicate_event_passes_the_read_rule() -> Result<(), Box<dyn Error>> {
+    let mut findings = findings(&[Severity::Minor, Severity::Minor])?;
+    findings.push(distinct(1, Severity::Nit)?);
+    let runner = Scripted::answering([(
+        output(json!({
+            "groups": [{"findings": [1], "duplicates": [{"id": 0, "of": 1}]}],
+            "noise": []
+        })),
+        10_000,
+    )]);
+    let coordinated = run(&runner, &findings)?;
+    let mechanical = merge_mechanically::<Unreachable>(&findings);
+
+    let read: Vec<Event> = coordinated
+        .events()
+        .chain(mechanical.events())
+        .map(read_back)
+        .collect::<Result<_, _>>()?;
+
+    let duplicates = read
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.payload,
+                EventPayload::FindingDisposed {
+                    code: Disposition::Duplicate,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(duplicates, 3, "two coordinated merges, one mechanical");
     Ok(())
 }
 
@@ -568,7 +651,7 @@ fn merging_mechanically_needs_no_coordinator_and_records_each_duplicate()
         coordination.events().collect::<Vec<_>>(),
         [EventPayload::FindingDisposed {
             code: Disposition::Duplicate,
-            fp: None,
+            fp: Some(fp(1)?),
             from: None,
             to: None
         }]
