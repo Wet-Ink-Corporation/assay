@@ -2,6 +2,7 @@
 //! verdict check holds `refs/heads/lock-<repo_id>-<head_sha>` across read, decide and write.
 
 use std::borrow::Cow;
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use assay_domain::RunUid;
@@ -10,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use super::document::{line_of, to_message};
 use super::error::LeaseError;
 use super::name::LeaseRef;
-use super::refs::LedgerRefs;
-use super::take::{Attempt, Expiring, Released, take};
+use super::refs::{LedgerRefs, RefTip};
+use super::take::{Attempt, Expiring, LeaseState, Released, take};
 use crate::config::CommitId;
 use crate::ledger::lines::{Newline, check_canonical, check_schema, parse};
 use crate::ledger::record::{field, is_repository};
@@ -94,7 +95,7 @@ pub fn acquire_lock<R: LedgerRefs>(
     };
     let name = lock_ref(&lease);
     let message = write_lock(&lease).map_err(|problem| LeaseError::Invalid { problem })?;
-    let read = |message: &str| read_lock(message, &lease);
+    let read = |message: &str| read_lock(message, LockKey::of(&lease));
     let attempt = Attempt {
         name: &name,
         message: &message,
@@ -127,6 +128,40 @@ pub fn release_lock<R: LedgerRefs>(
         .map_err(LeaseError::Refs)
 }
 
+/// Reaps the publish lock of `head` in repository `repo_id` when its lease expired before `now`,
+/// by compare-and-set on the commit read: a lock taken again after the read is never deleted
+/// (the ledger-side reconcile's backstop, 06 §4, F21). Returns the lease this call deleted.
+///
+/// # Errors
+///
+/// [`LeaseError::Corrupt`] when the lock's lease cannot be read or names another lock (it is not
+/// reaped), and [`LeaseError::Refs`] when the ref cannot be read or deleted.
+pub(crate) fn reap_expired_lock<R: LedgerRefs>(
+    refs: &R,
+    repo_id: NonZeroU64,
+    head: &CommitId,
+    now: LedgerTime,
+) -> Result<Option<LockLease>, LeaseError<R::Error>> {
+    let name = LeaseRef::publish_lock(repo_id, head);
+    let Some(RefTip { commit, message }) = refs.read(&name).map_err(LeaseError::Refs)? else {
+        return Ok(None);
+    };
+    let lease =
+        read_lock(&message, LockKey { repo_id, head }).map_err(|problem| LeaseError::Corrupt {
+            name: name.clone(),
+            problem,
+        })?;
+    if LeaseState::at(lease.expires_at, now) == LeaseState::Live {
+        return Ok(None);
+    }
+    Ok(
+        match Released::from(refs.delete_if(&name, &commit).map_err(LeaseError::Refs)?) {
+            Released::Released => Some(lease),
+            Released::NotHeld => None,
+        },
+    )
+}
+
 impl Expiring for LockLease {
     fn expires_at(&self) -> LedgerTime {
         self.expires_at
@@ -145,17 +180,33 @@ fn lock_ref(lease: &LockLease) -> LeaseRef {
 /// The commit message of `lease`, refused when its own reader would refuse it.
 fn write_lock(lease: &LockLease) -> Result<String, Corruption> {
     let message = to_message(&LockLine::from(lease))?;
-    read_lock(&message, lease)?;
+    read_lock(&message, LockKey::of(lease))?;
     Ok(message)
 }
 
+/// Which lock a lease must be for: its ref's repository id and head.
+#[derive(Clone, Copy)]
+struct LockKey<'a> {
+    repo_id: NonZeroU64,
+    head: &'a CommitId,
+}
+
+impl<'a> LockKey<'a> {
+    const fn of(lease: &'a LockLease) -> Self {
+        Self {
+            repo_id: lease.run_uid.repo_id,
+            head: &lease.head_sha,
+        }
+    }
+}
+
 /// The lock lease a commit message carries, exactly as assay writes it, refused unless it is
-/// for the same lock as `ours` (repository id and head).
-fn read_lock(message: &str, ours: &LockLease) -> Result<LockLease, Corruption> {
+/// for the lock `key` names (repository id and head).
+fn read_lock(message: &str, key: LockKey<'_>) -> Result<LockLease, Corruption> {
     let line = line_of(message)?;
     let lease = LockLease::try_from(parse::<LockLine<'_>>(line)?)?;
     check_canonical(line, &LockLine::from(&lease), Newline::Stripped)?;
-    if lease.run_uid.repo_id != ours.run_uid.repo_id || lease.head_sha != ours.head_sha {
+    if lease.run_uid.repo_id != key.repo_id || lease.head_sha != *key.head {
         return Err(Corruption::WrongRef);
     }
     Ok(lease)

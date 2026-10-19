@@ -8,6 +8,7 @@
 //! --force-with-lease=<ref>:<commit> <ledger> :<ref>`: REST `DELETE /git/refs` has no
 //! precondition and is never sent. Everything about the leases is `assay-app`'s.
 
+mod locks;
 mod wire;
 
 use assay_app::{

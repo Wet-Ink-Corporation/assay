@@ -4,15 +4,23 @@
 //! Commands so far: `assay self-gate <corpus-dir> <rubric-file>`, the `assay-self` exec gate
 //! (02 §7, `05` T16), `assay doctor <plugins-toml> <claude-program>`, the session checks of
 //! 03 §8 (#121), and `assay check --local`, the advisory check of a working tree (02 §6, #107).
+//! `assay pre-push` (#108) runs that check's CP1 alone, the Weigh-In checkpoint the pre-push
+//! hook in `plugin/hooks/` calls (04 §9).
+//! `assay doctor --repository <owner/name> --app <id> --ledger-app <id>` (#75) checks its
+//! arguments and then stops with exit 2: [`assay_cli::run_prerequisites`] runs the repository
+//! checks of 05 §7, but the binary does not wire it to the live `gh` transport (#273) yet.
 //! `assay status [--json] [--pr <n>] [--full]` (#126, #273) shows a PR's status, read live
 //! through `gh` with `ASSAY_GITHUB_TOKEN`, from a checkout whose `origin` is on github.com.
 //! `assay status [--json] --local` (#130) shows the local check's result.
 //! `assay open` (#54) reads its run from the Actions environment, refuses a re-run, and then
 //! stops with exit 2: the live transport it writes through is #273's.
-//! With no arguments it exits successfully without doing anything.
+//! `assay reconcile [--ledger]` (#73) refuses any run attempt but the first (R3-05), then stops
+//! with exit 2 until the live GitHub transport (#273) exists. With no arguments it exits
+//! successfully without doing anything.
 
 mod check;
 mod doctor;
+mod reconcile;
 mod self_gate;
 mod status_local;
 mod status_pr;
@@ -22,7 +30,7 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::SystemTime;
 
-use assay_cli::{Format, OpenCommand, OpenVariables, StatusArgs, StatusCommand};
+use assay_cli::{Format, OpenCommand, OpenVariables, PrerequisitesArgs, StatusArgs, StatusCommand};
 use assay_domain::GateConclusion;
 use assay_forge::github::GhEnvironment;
 
@@ -35,10 +43,22 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     };
     if command == "doctor" {
+        let mut args = args.peekable();
+        if PrerequisitesArgs::requested(args.peek()) {
+            return match PrerequisitesArgs::parse(args) {
+                Ok(_) => report(
+                    &"doctor --repository: the live gh transport it reads through is not built yet (#273)",
+                ),
+                Err(usage) => report(&usage),
+            };
+        }
         return run_doctor(args);
     }
     if command == "check" {
         return run_check(args);
+    }
+    if command == "pre-push" {
+        return run_pre_push(args);
     }
     if command == "open" {
         return run_open(args);
@@ -48,6 +68,12 @@ fn main() -> ExitCode {
             Ok(StatusCommand::Local(format)) => run_local_status(format),
             Ok(StatusCommand::Pull(args)) => run_pull_status(&args),
             Err(usage) => report(&usage),
+        };
+    }
+    if command == "reconcile" {
+        return match reconcile::prepare(args, env::var_os(reconcile::RUN_ATTEMPT)) {
+            Ok(sweep) => report(&reconcile::ReconcileRefused::NotBuilt(sweep)),
+            Err(refused) => report(&refused),
         };
     }
     if command != "self-gate" {
@@ -128,6 +154,31 @@ fn run_check(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+/// `assay pre-push`: exit 0 when no Weigh-In item blocks the push (pending ones only warn, and
+/// a CP1 that did not run says so), 1 when one does, 2 when CP1 cannot run.
+fn run_pre_push(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = check::CheckVariables {
+        tree: tree_variables(),
+        vars: env::vars_os().collect(),
+    };
+    let weigh_in = match check::pre_push(args, variables) {
+        Ok(weigh_in) => weigh_in,
+        Err(error) => return report(&error),
+    };
+    let mut out = io::stdout().lock();
+    let written = out
+        .write_all(weigh_in.render().as_bytes())
+        .and_then(|()| out.flush());
+    if let Err(error) = written {
+        return report(&error);
+    }
+    if weigh_in.blocks_push() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 

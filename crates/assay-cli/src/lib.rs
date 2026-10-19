@@ -7,16 +7,23 @@
 //! the temper adapter as the PR's base and head files, and [`ForgePullRequest`] lends it to the
 //! `plan` use case as the PR's objects. [`run_status`] wires `assay status` (#126) over any
 //! [`assay_app::StatusForge`], so it is tested with fakes; the binary runs it over forge's
-//! `GitHub` through `gh` (#273).
+//! `GitHub` through `gh` (#273). [`run_prerequisites`] wires `assay doctor --repository` (#75)
+//! over any [`assay_app::PrerequisiteForge`], tested with fakes; the binary does not run it
+//! over the live transport yet.
 //! [`OpenCommand`] reads `assay open`'s run from the Actions environment and refuses a re-run.
 
 mod open;
+mod prerequisites;
 mod pull_request;
 mod revisions;
 mod status;
 mod supervisor;
 
 pub use open::{OpenCommand, OpenUsage, OpenVariables};
+pub use prerequisites::{
+    PrerequisitesArgs, PrerequisitesRunError, PrerequisitesUsage, prerequisites_exit_code,
+    run_prerequisites, write_prerequisites,
+};
 pub use pull_request::{ForgeObjectsError, ForgePullRequest};
 pub use revisions::ForgeRevisions;
 pub use status::{

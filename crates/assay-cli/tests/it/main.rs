@@ -8,7 +8,11 @@ mod check;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod check_local_events;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod check_weigh_in;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod doctor;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod doctor_prerequisites;
 #[cfg(unix)] // process groups and Unix file modes
 mod exec_surface;
 #[cfg(unix)] // drives a bash script and sets Unix file modes
@@ -20,8 +24,11 @@ mod layering;
 mod layout;
 mod open;
 mod plan;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod pre_push;
 #[cfg(unix)] // process groups, through forge's git
 mod pull_request;
+mod reconcile;
 mod release_workflow;
 #[cfg(unix)] // process groups, through `ForgeSupervisor`
 mod self_gate;

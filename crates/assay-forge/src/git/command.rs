@@ -95,8 +95,6 @@ pub enum GitOperation {
     /// `git config --null --get-all`: every value of one setting in a developer's repository
     /// config alone (`assay status` reads `remote.origin.url`).
     ConfigValue,
-    /// `git symbolic-ref --quiet`: the branch a developer's `HEAD` is on, if any.
-    SymbolicRef,
     /// `git push --porcelain` of one ref to an https remote (the ledger's lease refs, 06 §1),
     /// with no redirect followed.
     Push,
@@ -143,7 +141,6 @@ impl GitOperation {
             Self::ConfigBool => &["config", "--null", "--bool", "--get"],
             Self::ListIndex => &["ls-files", "-t", "-z"],
             Self::ConfigValue => &["config", "--null", "--get-all"],
-            Self::SymbolicRef => &["symbolic-ref", "--quiet"],
             Self::Push | Self::PushLocal => &[
                 "push",
                 "--porcelain",
@@ -223,7 +220,6 @@ impl fmt::Display for GitOperation {
             Self::CheckoutIndex => "checkout-index",
             Self::ConfigPath | Self::ConfigBool | Self::ConfigValue => "config",
             Self::ListIndex => "ls-files",
-            Self::SymbolicRef => "symbolic-ref",
         };
         f.write_str(name)
     }
@@ -413,7 +409,7 @@ mod tests {
     use crate::process::{Limits, run};
 
     /// Every operation.
-    const ALL: [GitOperation; 24] = [
+    const ALL: [GitOperation; 23] = [
         GitOperation::Init,
         GitOperation::Fetch,
         GitOperation::VerifyCommit,
@@ -435,7 +431,6 @@ mod tests {
         GitOperation::ConfigBool,
         GitOperation::ListIndex,
         GitOperation::ConfigValue,
-        GitOperation::SymbolicRef,
         GitOperation::Push,
         GitOperation::PushLocal,
     ];
@@ -745,7 +740,7 @@ mod tests {
     ];
 
     /// Each operation's subcommand and fixed flags, in [`ALL`]'s order.
-    const LEADING: [(GitOperation, &[&str]); 24] = [
+    const LEADING: [(GitOperation, &[&str]); 23] = [
         (GitOperation::Init, &["init", "--bare", "--quiet"]),
         (
             GitOperation::Fetch,
@@ -802,7 +797,6 @@ mod tests {
             GitOperation::ConfigValue,
             &["config", "--null", "--get-all"],
         ),
-        (GitOperation::SymbolicRef, &["symbolic-ref", "--quiet"]),
         (GitOperation::Push, PUSH_ARGS),
         (GitOperation::PushLocal, PUSH_ARGS),
     ];

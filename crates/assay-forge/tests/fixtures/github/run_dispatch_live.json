@@ -1,0 +1,20 @@
+{
+  "id": 39282503375,
+  "name": "assay",
+  "node_id": "WFR_kwLOVER55s8AAAAJJWtuzw",
+  "head_branch": "main",
+  "head_sha": "069d160013b6722752800a56e9f4623977f5440c",
+  "path": ".github/workflows/assay.yml",
+  "display_title": "assay",
+  "run_number": 291,
+  "event": "workflow_dispatch",
+  "status": "in_progress",
+  "conclusion": null,
+  "workflow_id": 381056875,
+  "check_suite_id": 106447790447,
+  "created_at": "2026-10-19T16:03:33Z",
+  "updated_at": "2026-10-19T16:04:02Z",
+  "run_attempt": 1,
+  "run_started_at": "2026-10-19T16:03:33Z",
+  "html_url": "https://github.com/Wet-Ink-Corporation/assay/actions/runs/39282503375"
+}

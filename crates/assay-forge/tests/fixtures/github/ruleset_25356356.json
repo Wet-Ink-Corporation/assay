@@ -1,0 +1,29 @@
+{
+  "id": 25356356,
+  "name": "assay-push",
+  "target": "push",
+  "source_type": "Repository",
+  "source": "Wet-Ink-Corporation/assay",
+  "enforcement": "evaluate",
+  "conditions": null,
+  "rules": [
+    {
+      "type": "file_path_restriction",
+      "parameters": {
+        "restricted_file_paths": [
+          ".github/workflows/**",
+          ".assay/**",
+          ".claude/**",
+          "CODEOWNERS",
+          ".gitattributes"
+        ],
+        "ignored_file_paths": []
+      }
+    }
+  ],
+  "node_id": "RRS_lACqUmVwb3NpdG9yec5URHnmzgGC6EQ",
+  "created_at": "2026-10-18T19:48:33.715Z",
+  "updated_at": "2026-10-18T19:48:33.725Z",
+  "bypass_actors": [],
+  "current_user_can_bypass": "never"
+}
