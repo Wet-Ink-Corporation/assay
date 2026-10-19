@@ -156,6 +156,19 @@ fn a_verdict_ruleset_with_a_bypass_actor_fails() {
 }
 
 #[test]
+fn a_verdict_ruleset_that_is_not_active_fails() {
+    let (mut repository, ledger) = healthy();
+    repository.rulesets[0].enforcement = Enforcement::Evaluate;
+
+    assert_fails(
+        &repository,
+        Some(&ledger),
+        Prerequisite::VerdictRuleset,
+        |failure| matches!(failure, Failure::NotActive { ruleset } if ruleset.0.get() == 10),
+    );
+}
+
+#[test]
 fn a_rule_from_a_ruleset_the_list_does_not_hold_fails() {
     let (mut repository, ledger) = healthy();
     repository.branch_rules.insert(
@@ -244,6 +257,43 @@ fn an_installed_workflow_triggered_from_the_merge_commit_fails() {
             if path == ".github/workflows/assay-feedback.yml" && event == "pull_request_review")
         },
     );
+}
+
+#[test]
+fn an_installed_workflow_triggered_by_an_event_outside_the_allowlist_fails() {
+    for event in [
+        "workflow_call",
+        "merge_group",
+        "pull_request_targets",
+        "Push",
+    ] {
+        let (mut repository, ledger) = healthy();
+        let text = format!(
+            "on: [schedule, {event}]\njobs:\n  a:\n    if: github.run_attempt == 1\n    runs-on: x\n"
+        );
+        repository.workflow("assay-extra.yml", &text);
+
+        assert_fails(
+            &repository,
+            Some(&ledger),
+            Prerequisite::MergeCommitTrigger,
+            |failure| {
+                matches!(failure, Failure::MergeCommitTrigger { path, event: found }
+                if path == ".github/workflows/assay-extra.yml" && found == event)
+            },
+        );
+    }
+}
+
+#[test]
+fn every_allowlisted_event_passes() {
+    let (mut repository, ledger) = healthy();
+    let text = "on: [pull_request_target, issue_comment, schedule, workflow_dispatch]\njobs:\n  a:\n    if: github.run_attempt == 1\n    runs-on: x\n";
+    repository.workflow("assay-extra.yml", text);
+
+    let report = report(&repository, Some(&ledger));
+
+    assert!(report.passed(), "{report:#?}");
 }
 
 #[test]
@@ -734,19 +784,19 @@ fn the_identity_lists_are_read_by_id() {
     .expect("the lists are valid");
 
     assert_eq!(
-        lists.owners.iter().copied().collect::<Vec<_>>(),
+        lists.owners().iter().copied().collect::<Vec<_>>(),
         vec![user(OWNER)]
     );
     assert_eq!(
-        lists.approvers.iter().copied().collect::<Vec<_>>(),
+        lists.approvers().iter().copied().collect::<Vec<_>>(),
         vec![user(APPROVER)]
     );
     assert_eq!(
-        lists.maintainers.iter().copied().collect::<Vec<_>>(),
+        lists.maintainers().iter().copied().collect::<Vec<_>>(),
         vec![user(DAILY)]
     );
     assert_eq!(
-        lists.agents.iter().copied().collect::<Vec<_>>(),
+        lists.agents().iter().copied().collect::<Vec<_>>(),
         vec![user(DAILY)]
     );
 }

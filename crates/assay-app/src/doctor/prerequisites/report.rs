@@ -91,6 +91,14 @@ pub enum PrerequisiteFailure<E> {
     /// What the check reads could not be read, so it is not shown to hold.
     #[error("GitHub could not be read")]
     Unreadable(#[source] E),
+    /// A read several checks share failed; its cause is reported under the first of them.
+    #[error(
+        "{what} could not be read (the cause is reported under the first check that reads them)"
+    )]
+    AlreadyReported {
+        /// What could not be read.
+        what: &'static str,
+    },
     /// The default branch is not in `protected_bases`, so no verdict is published for it.
     #[error("the default branch {branch:?} is not in protected_bases")]
     DefaultNotProtected {
@@ -123,6 +131,12 @@ pub enum PrerequisiteFailure<E> {
         ruleset: RulesetId,
         /// Its first bypass actor.
         actor: BypassActor,
+    },
+    /// The ruleset requiring the verdict is not actively enforced.
+    #[error("ruleset {ruleset} is not active")]
+    NotActive {
+        /// The ruleset.
+        ruleset: RulesetId,
     },
     /// A rule in force names a ruleset the repository's list does not hold.
     #[error("ruleset {ruleset} is not among the repository's rulesets")]
@@ -187,8 +201,11 @@ pub enum PrerequisiteFailure<E> {
         #[source]
         source: WorkflowError,
     },
-    /// An installed workflow runs from the PR merge commit.
-    #[error("{path:?} is triggered by {event:?}, which runs the PR merge commit's file")]
+    /// An installed workflow is triggered by an event outside the allowlist of events that
+    /// run the default branch's workflow file (T20).
+    #[error(
+        "{path:?} is triggered by {event:?}, which is not an event that runs the default branch's workflow file"
+    )]
     MergeCommitTrigger {
         /// Its path.
         path: String,

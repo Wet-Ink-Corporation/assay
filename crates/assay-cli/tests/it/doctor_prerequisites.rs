@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::num::NonZeroU64;
-use std::process::Command;
+use std::process::{Command, ExitCode};
 
 use assay_app::{
     Access, AppId, AppliedRule, BranchPolicy, BypassActor, Collaborator, Conditions,
@@ -15,8 +15,8 @@ use assay_app::{
     UserId, WorkflowPermissions,
 };
 use assay_cli::{
-    PrerequisitesArgs, PrerequisitesRunError, PrerequisitesUsage, run_prerequisites,
-    write_prerequisites,
+    PrerequisitesArgs, PrerequisitesRunError, PrerequisitesUsage, prerequisites_exit_code,
+    run_prerequisites, write_prerequisites,
 };
 
 const SHA: &str = "3d3c42e5aac5ba805825da76410c181273ba90b1";
@@ -313,6 +313,19 @@ fn a_failed_prerequisite_writes_its_reason_and_fails() {
         out.contains("\nFAIL approver: no approver is listed in .assay/owners (H-13)\n"),
         "{out}"
     );
+}
+
+#[test]
+fn the_exit_code_is_0_when_every_prerequisite_holds_and_1_when_one_fails() {
+    let ledger = |_: &str| Ok::<_, Refused>(Fake::ledger());
+    let mut failing = Fake::repository();
+    failing.agent_access = Some(Access::Admin);
+
+    let passing = run_prerequisites(&Fake::repository(), ledger, apps()).expect("readable");
+    let failed = run_prerequisites(&failing, ledger, apps()).expect("readable");
+
+    assert_eq!(prerequisites_exit_code(&passing), ExitCode::SUCCESS);
+    assert_eq!(prerequisites_exit_code(&failed), ExitCode::FAILURE);
 }
 
 #[test]

@@ -16,8 +16,8 @@ mod status;
 mod supervisor;
 
 pub use prerequisites::{
-    PrerequisitesArgs, PrerequisitesRunError, PrerequisitesUsage, run_prerequisites,
-    write_prerequisites,
+    PrerequisitesArgs, PrerequisitesRunError, PrerequisitesUsage, prerequisites_exit_code,
+    run_prerequisites, write_prerequisites,
 };
 pub use pull_request::{ForgeObjectsError, ForgePullRequest};
 pub use revisions::ForgeRevisions;

@@ -20,14 +20,36 @@ pub const MAX_LISTED: usize = 256;
 /// The identity lists, by numeric GitHub user id.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IdentityLists {
+    pub(super) owners: BTreeSet<UserId>,
+    pub(super) approvers: BTreeSet<UserId>,
+    pub(super) maintainers: BTreeSet<UserId>,
+    pub(super) agents: BTreeSet<UserId>,
+}
+
+impl IdentityLists {
     /// `owners`: privileged accounts, such as the break-glass account.
-    pub owners: BTreeSet<UserId>,
+    #[must_use]
+    pub const fn owners(&self) -> &BTreeSet<UserId> {
+        &self.owners
+    }
+
     /// `approvers`: the dedicated approver account (H-13).
-    pub approvers: BTreeSet<UserId>,
+    #[must_use]
+    pub const fn approvers(&self) -> &BTreeSet<UserId> {
+        &self.approvers
+    }
+
     /// `maintainers`: the owner's daily account, which takes no privileged action.
-    pub maintainers: BTreeSet<UserId>,
+    #[must_use]
+    pub const fn maintainers(&self) -> &BTreeSet<UserId> {
+        &self.maintainers
+    }
+
     /// `.assay/agents`.
-    pub agents: BTreeSet<UserId>,
+    #[must_use]
+    pub const fn agents(&self) -> &BTreeSet<UserId> {
+        &self.agents
+    }
 }
 
 /// Why an identity list was refused.

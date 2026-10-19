@@ -226,6 +226,61 @@ fn a_secret_in_the_workflows_env_is_held_by_every_job() {
     assert_eq!(workflow(text).jobs[0].holds, Some(Holding::Secret));
 }
 
+/// The reader's refusal of `text`, which must be one.
+fn refusal(text: &str) -> YamlRefusal {
+    match Workflow::read(text) {
+        Err(WorkflowError::Unreadable(refusal)) => refusal.reason(),
+        other => panic!("{text:?} is not refused by the reader: {other:?}"),
+    }
+}
+
+#[test]
+fn a_trigger_or_uses_hidden_behind_a_break_yaml_reads_is_refused() {
+    let trigger = "on:\n  push:\n    branches: x\r  pull_request:\n    types: [opened]\njobs: {}\n";
+    let uses = "on: push\njobs:\n  a:\n    steps:\n      - name: x\r        uses: evil/act@main\n";
+
+    assert_eq!(refusal(trigger), YamlRefusal::Character);
+    assert_eq!(refusal(uses), YamlRefusal::Character);
+    for separator in ['\u{85}', '\u{2028}', '\u{2029}'] {
+        let text = format!(
+            "on: push\njobs:\n  a:\n    steps:\n      - name: x{separator}        uses: evil/act@main\n"
+        );
+        assert_eq!(refusal(&text), YamlRefusal::Character, "{separator:?}");
+    }
+}
+
+#[test]
+fn a_uses_or_trigger_after_a_tab_is_refused() {
+    let uses = "on: push\njobs:\n  a:\n    steps:\n      - uses:\tevil/act@main\n";
+    let trigger = "on: pull_request\t# ci\njobs: {}\n";
+
+    assert_eq!(refusal(uses), YamlRefusal::Tab);
+    assert_eq!(refusal(trigger), YamlRefusal::Tab);
+}
+
+#[test]
+fn a_step_that_is_not_a_mapping_is_refused() {
+    for step in ["- uses evil/act@main", "-", "- [a]"] {
+        let text = format!("on: push\njobs:\n  a:\n    steps:\n      {step}\n");
+
+        assert_eq!(
+            Workflow::read(&text),
+            Err(WorkflowError::Shape("a step is not a mapping")),
+            "{step}"
+        );
+    }
+}
+
+#[test]
+fn a_secret_is_seen_in_any_ascii_case() {
+    let in_job = "on: push\npermissions: {}\njobs:\n  a:\n    steps:\n      - run: echo ${{ SECRETS.KEY }}\n";
+    let in_env =
+        "on: push\npermissions: {}\nenv:\n  K: ${{ Secrets.KEY }}\njobs:\n  a:\n    runs-on: x\n";
+
+    assert_eq!(workflow(in_job).jobs[0].holds, Some(Holding::Secret));
+    assert_eq!(workflow(in_env).jobs[0].holds, Some(Holding::Secret));
+}
+
 #[test]
 fn permissions_that_cannot_be_classified_are_refused() {
     for permissions in ["permissions: admin\n", "permissions:\n  contents: maybe\n"] {

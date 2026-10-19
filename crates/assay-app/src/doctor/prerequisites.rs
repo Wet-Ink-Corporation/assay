@@ -16,9 +16,13 @@ mod identities;
 mod port;
 mod report;
 mod rulesets;
+mod shared;
 mod workflow;
 mod workflows;
 mod yaml;
+
+use shared::Shared;
+use workflows::WorkflowFile;
 
 use thiserror::Error;
 
@@ -45,12 +49,29 @@ pub const AGENTS_PATH: &str = ".assay/agents";
 /// Base config as the default branch holds it: what every check is judged against.
 #[derive(Debug)]
 pub struct PrerequisiteBase {
+    default_branch: String,
+    config: PluginsConfig,
+    identities: IdentityLists,
+}
+
+impl PrerequisiteBase {
     /// The default branch.
-    pub default_branch: String,
+    #[must_use]
+    pub fn default_branch(&self) -> &str {
+        &self.default_branch
+    }
+
     /// Its `.assay/plugins.toml`.
-    pub config: PluginsConfig,
+    #[must_use]
+    pub const fn config(&self) -> &PluginsConfig {
+        &self.config
+    }
+
     /// Its `.assay/owners` and `.assay/agents`.
-    pub identities: IdentityLists,
+    #[must_use]
+    pub const fn identities(&self) -> &IdentityLists {
+        &self.identities
+    }
 }
 
 /// The two GitHub Apps the checks name, by id.
@@ -130,12 +151,17 @@ fn base_text<F: PrerequisiteForge>(
     }
 }
 
-/// What every check reads from.
-struct Scene<'a, F> {
+/// What every check reads from. The bound on the struct names the forge's error type, which
+/// the shared reads keep.
+struct Scene<'a, F: PrerequisiteForge> {
     repository: &'a F,
     ledger: Option<&'a F>,
     base: &'a PrerequisiteBase,
     apps: PrerequisiteApps,
+    /// The repository's rulesets, read once for the verdict and path checks.
+    rulesets: Shared<Vec<Ruleset>, F::Error>,
+    /// The default branch's workflow files, read once for the three workflow checks.
+    workflows: Shared<Vec<WorkflowFile>, F::Error>,
 }
 
 /// One check's outcome: `Err` with the failure.
@@ -145,7 +171,9 @@ type Judged<E> = Result<(), PrerequisiteFailure<E>>;
 ///
 /// `ledger` is the ledger repository; `None` (no `[assay].ledger_repo`) fails the ledger
 /// checks. A check whose reads fail is failed with [`PrerequisiteFailure::Unreadable`]; the
-/// others are still judged.
+/// others are still judged. The rulesets and the workflow files are read once each: when
+/// such a read fails, the first check that needs it reports the cause and the later ones
+/// [`PrerequisiteFailure::AlreadyReported`].
 pub fn prerequisites<F: PrerequisiteForge>(
     repository: &F,
     ledger: Option<&F>,
@@ -157,6 +185,11 @@ pub fn prerequisites<F: PrerequisiteForge>(
         ledger,
         base,
         apps,
+        rulesets: Shared::new("the rulesets", repository.rulesets()),
+        workflows: Shared::new(
+            "the workflow files",
+            workflows::read_files(repository, &base.default_branch),
+        ),
     };
     let results = Prerequisite::ALL
         .into_iter()

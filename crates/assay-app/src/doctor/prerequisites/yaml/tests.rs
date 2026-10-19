@@ -155,6 +155,82 @@ fn what_the_reader_cannot_classify_is_refused() {
 }
 
 #[test]
+fn characters_yaml_reads_as_breaks_or_that_are_controls_are_refused() {
+    // `\r`, NEL, LS and PS break lines for YAML, so each would hide the key after it.
+    let cases = [
+        ("on:\n  push:\n    branches: x\r  pull_request: y\n", 3),
+        ("a: x\u{85}b: y\n", 1),
+        ("a: x\u{2028}b: y\n", 1),
+        ("a: x\n\nb: y\u{2029}c: z\n", 3),
+        ("\u{feff}a: x\n", 1),
+        ("a: x\u{0}\n", 1),
+        ("a: 'x\u{1b}'\n", 1),
+        ("a: |\n  x\u{7f}\n", 2),
+        ("a: x\u{9b}\n", 1),
+        ("a: x\r", 1),
+    ];
+
+    for (text, line) in cases {
+        assert_eq!(refused(text), (line, YamlRefusal::Character), "{text:?}");
+    }
+}
+
+#[test]
+fn crlf_line_ends_are_read_as_line_ends() {
+    assert_eq!(
+        read("a: x\r\nb: |\r\n  y\r\n"),
+        Ok(map(&[
+            ("a", scalar("x")),
+            ("b", Node::Text("y".to_owned()))
+        ]))
+    );
+}
+
+#[test]
+fn a_tab_outside_quoted_or_block_scalar_text_is_refused() {
+    let cases = [
+        "a:\tb\n",
+        "a: b\t# c\n",
+        "a: b\t\n",
+        "- a:\tb\n",
+        "- \tb\n",
+        "a: [x,\ty]\n",
+        "a: [x\t, y]\n",
+        "a: ['x']\t\n",
+        "a: 'x'\t# c\n",
+        "a: {}\t\n",
+        "a: |\t\n  x\n",
+        "a: # c\td\n",
+        "# c\td\na: b\n",
+        "a: b\n\t\nc: d\n",
+    ];
+
+    for text in cases {
+        assert_eq!(refused(text).1, YamlRefusal::Tab, "{text:?}");
+    }
+}
+
+#[test]
+fn a_tab_inside_quoted_or_block_scalar_text_is_kept() {
+    assert_eq!(
+        read("a: 'x\ty'\nb: [\"p\tq\"]\nc: |\n  r\ts\n"),
+        Ok(map(&[
+            ("a", scalar("x\ty")),
+            ("b", Node::Seq(vec![scalar("p\tq")])),
+            ("c", Node::Text("r\ts".to_owned())),
+        ]))
+    );
+}
+
+#[test]
+fn a_mention_ignores_ascii_case() {
+    let node = read("env:\n  KEY: ${{ SECRETS.TOKEN }}\n").expect("read");
+
+    assert!(node.mentions_ignoring_case("secrets"));
+    assert!(!node.mentions_ignoring_case("vars"));
+}
+
+#[test]
 fn nesting_past_the_cap_is_refused() {
     let lines: Vec<String> = (0..=MAX_DEPTH)
         .map(|depth| format!("{}k:\n", "  ".repeat(depth)))

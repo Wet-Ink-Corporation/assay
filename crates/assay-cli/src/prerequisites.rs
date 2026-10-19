@@ -5,13 +5,15 @@
 //! [`run_prerequisites`] reads base config from the repository's default branch, connects to
 //! the ledger repository its `[assay].ledger_repo` names, and judges every prerequisite;
 //! [`write_prerequisites`] writes one line per prerequisite. The binary exits 0 when every
-//! prerequisite holds, 1 when one fails, and 2 when they cannot be judged.
+//! prerequisite holds and 1 when one fails ([`prerequisites_exit_code`]), and 2 when they
+//! cannot be judged.
 
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Write};
 use std::num::NonZeroU64;
+use std::process::ExitCode;
 
 use assay_app::{
     AppId, BaseError, PrerequisiteApps, PrerequisiteForge, PrerequisiteReport, prerequisites,
@@ -167,7 +169,7 @@ where
 {
     let base = read_base(repository).map_err(PrerequisitesRunError::Base)?;
     let ledger = base
-        .config
+        .config()
         .assay()
         .ledger_repo
         .as_deref()
@@ -175,6 +177,17 @@ where
         .transpose()
         .map_err(PrerequisitesRunError::Ledger)?;
     Ok(prerequisites(repository, ledger.as_ref(), &base, apps))
+}
+
+/// The exit code of a judged report: 0 when every prerequisite holds, 1 when one fails. (A
+/// report that cannot be judged is a [`PrerequisitesRunError`], exit 2.)
+#[must_use]
+pub fn prerequisites_exit_code<E>(report: &PrerequisiteReport<E>) -> ExitCode {
+    if report.passed() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 /// Writes one line per prerequisite, `ok <name>` or `FAIL <name>: <why>` with every cause.

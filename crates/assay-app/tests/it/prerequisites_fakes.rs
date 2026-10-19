@@ -1,6 +1,7 @@
 //! A fake of what doctor's repository checks read (TST-09): a repository and a ledger whose
 //! settings meet every prerequisite of 05 §7, for each test to break one.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
@@ -150,6 +151,8 @@ pub(crate) struct FakeRepository {
     pub(crate) access: BTreeMap<UserId, Access>,
     /// Reads that fail, by method name.
     pub(crate) broken: BTreeSet<&'static str>,
+    /// Every read made, by method name, and `file:<path>` for each file read.
+    pub(crate) log: RefCell<Vec<String>>,
 }
 
 impl FakeRepository {
@@ -249,7 +252,17 @@ impl FakeRepository {
             });
     }
 
+    /// How many reads `entry` (a method name, or `file:<path>`) has seen.
+    pub(crate) fn reads_of(&self, entry: &str) -> usize {
+        self.log
+            .borrow()
+            .iter()
+            .filter(|logged| *logged == entry)
+            .count()
+    }
+
     fn read(&self, method: &'static str) -> Result<(), FakeError> {
+        self.log.borrow_mut().push(method.to_owned());
         if self.broken.contains(method) {
             Err(FakeError)
         } else {
@@ -267,6 +280,7 @@ impl PrerequisiteForge for FakeRepository {
     }
 
     fn file(&self, branch: &str, path: &str) -> Result<Option<Vec<u8>>, FakeError> {
+        self.log.borrow_mut().push(format!("file:{path}"));
         self.read("file")?;
         Ok(self
             .files

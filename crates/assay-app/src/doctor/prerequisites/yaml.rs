@@ -3,139 +3,28 @@
 //! No YAML parser is a pre-approved dependency, and doctor needs only a few facts from a
 //! workflow (its triggers, its `uses`, its jobs' `if`, `permissions` and `environment`). This
 //! reader accepts block mappings and sequences of plain, quoted, flow-sequence and block
-//! scalars, and refuses everything it cannot classify exactly (wi-b5affa): a tab in the
-//! indentation, an anchor, alias or tag, a merge or complex key, a flow mapping other than
-//! `{}`, a flow sequence over several lines or with nested collections, a plain or quoted
-//! scalar continued on the next line, an escape in a double-quoted scalar, a second document,
-//! a repeated key and nesting deeper than [`MAX_DEPTH`]. A refused workflow fails the check
-//! that reads it.
+//! scalars, and refuses everything it cannot classify exactly (wi-b5affa): a line break other
+//! than `\n` or `\r\n`, a byte order mark or a control character other than a tab (all before
+//! the text is split into lines), a tab outside quoted and block-scalar text, an anchor, alias
+//! or tag, a merge or complex key, a flow mapping other than `{}`, a flow sequence over
+//! several lines or with nested collections, a plain or quoted scalar continued on the next
+//! line, an escape in a double-quoted scalar, a second document, a repeated key and nesting
+//! deeper than [`MAX_DEPTH`]. A refused workflow fails the check that reads it. The tree is
+//! in `yaml/node.rs`, the refusals in `yaml/refusal.rs` and the one-line scalar readers in
+//! `yaml/scalar.rs`.
 
-use std::fmt;
+mod node;
+mod refusal;
+mod scalar;
+
+pub(crate) use node::Node;
+pub use refusal::{YamlError, YamlRefusal};
+
+use refusal::accepted_characters;
+use scalar::{flow_sequence, is_indicator, key_of, plain, quoted, untabbed, without_comment};
 
 /// The deepest nesting of collections read; deeper is [`YamlRefusal::Depth`] (H-13).
 pub(crate) const MAX_DEPTH: usize = 32;
-
-/// A read document, as a tree.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Node {
-    /// No value (`key:` with nothing under it), or an empty document.
-    Null,
-    /// A plain, single- or double-quoted scalar, unquoted.
-    Scalar(String),
-    /// A block scalar (`|` or `>`), its lines joined with `\n` without their indentation.
-    Text(String),
-    /// A sequence.
-    Seq(Vec<Node>),
-    /// A mapping, in file order, with no key twice.
-    Map(Vec<(String, Node)>),
-}
-
-impl Node {
-    /// The value of `key` when this is a mapping holding it.
-    pub(crate) fn get(&self, key: &str) -> Option<&Self> {
-        match self {
-            Self::Map(entries) => entries
-                .iter()
-                .find(|(candidate, _)| candidate == key)
-                .map(|(_, value)| value),
-            Self::Null | Self::Scalar(_) | Self::Text(_) | Self::Seq(_) => None,
-        }
-    }
-
-    /// Takes the value of `key` out of this mapping, when it holds it.
-    pub(crate) fn remove(&mut self, key: &str) -> Option<Self> {
-        match self {
-            Self::Map(entries) => {
-                let at = entries.iter().position(|(candidate, _)| candidate == key)?;
-                Some(entries.remove(at).1)
-            }
-            Self::Null | Self::Scalar(_) | Self::Text(_) | Self::Seq(_) => None,
-        }
-    }
-
-    /// Whether `needle` appears in any key or scalar under this node.
-    pub(crate) fn mentions(&self, needle: &str) -> bool {
-        match self {
-            Self::Null => false,
-            Self::Scalar(text) | Self::Text(text) => text.contains(needle),
-            Self::Seq(items) => items.iter().any(|item| item.mentions(needle)),
-            Self::Map(entries) => entries
-                .iter()
-                .any(|(key, value)| key.contains(needle) || value.mentions(needle)),
-        }
-    }
-}
-
-/// Why a workflow file was refused, and on which line (1-based).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("line {line}: {reason}")]
-pub struct YamlError {
-    line: usize,
-    reason: YamlRefusal,
-}
-
-impl YamlError {
-    /// The line, counted from 1.
-    #[must_use]
-    pub const fn line(&self) -> usize {
-        self.line
-    }
-
-    /// What the reader could not classify.
-    #[must_use]
-    pub const fn reason(&self) -> YamlRefusal {
-        self.reason
-    }
-}
-
-/// What the workflow reader refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum YamlRefusal {
-    /// A tab in a line's indentation.
-    Tab,
-    /// An anchor, alias, tag, directive, complex key, explicit block indentation or inline
-    /// nested sequence.
-    Indicator,
-    /// A key that is not plain (`A-Z`, `a-z`, `0-9`, `_`, `-`, `.`) or quoted, a merge key
-    /// included.
-    Key,
-    /// A flow mapping other than `{}`.
-    FlowMapping,
-    /// A flow sequence that is unterminated on its line, nests a collection or has an empty
-    /// item.
-    FlowSequence,
-    /// A key repeated in one mapping.
-    RepeatedKey,
-    /// A line indented where nothing can continue: a continued scalar, or a stray item.
-    Indentation,
-    /// A second document, a document end or a directive.
-    Document,
-    /// A plain scalar holding `: ` or ending in `:`.
-    Plain,
-    /// A quoted scalar that does not end on its line, holds a backslash escape or is followed
-    /// by more than a comment.
-    Quote,
-    /// Collections nested more than 32 levels deep.
-    Depth,
-}
-
-impl fmt::Display for YamlRefusal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Tab => "a tab in the indentation",
-            Self::Indicator => "an anchor, alias, tag or other unsupported indicator",
-            Self::Key => "a key that is neither plain nor quoted",
-            Self::FlowMapping => "a flow mapping",
-            Self::FlowSequence => "a flow sequence that is not one line of scalars",
-            Self::RepeatedKey => "a key repeated in one mapping",
-            Self::Indentation => "unexpected indentation",
-            Self::Document => "more than one document",
-            Self::Plain => "a plain scalar holding a mapping indicator",
-            Self::Quote => "a quoted scalar that is not one line without escapes",
-            Self::Depth => "nesting deeper than the reader accepts",
-        })
-    }
-}
 
 /// Reads `text` as the YAML subset described in the module docs.
 ///
@@ -143,6 +32,7 @@ impl fmt::Display for YamlRefusal {
 ///
 /// [`YamlError`] for the first line the reader cannot classify.
 pub(crate) fn read(text: &str) -> Result<Node, YamlError> {
+    accepted_characters(text)?;
     let mut reader = Reader {
         lines: text.lines().collect(),
         next: 0,
@@ -208,13 +98,20 @@ impl<'t> Reader<'t> {
             let index = self.next;
             let trimmed = raw.trim_start_matches([' ', '\t']);
             if trimmed.is_empty() || trimmed.starts_with('#') {
+                if raw.contains('\t') {
+                    return Err(YamlError {
+                        line: index.saturating_add(1),
+                        reason: YamlRefusal::Tab,
+                    });
+                }
                 self.next = index.saturating_add(1);
                 continue;
             }
+            // Trailing tabs stay, for the scalar readers to refuse.
             let line = Line {
                 index,
                 indent: indent_of(raw),
-                body: raw.trim_start_matches(' ').trim_end(),
+                body: raw.trim_start_matches(' ').trim_end_matches(' '),
             };
             if raw.len().saturating_sub(trimmed.len()) != line.indent {
                 return Err(line.refuse(YamlRefusal::Tab));
@@ -347,6 +244,7 @@ impl<'t> Reader<'t> {
         let At { indent, depth } = at;
         let refuse = |reason| line.refuse(reason);
         let Some(first) = rest.chars().next().filter(|&first| first != '#') else {
+            untabbed(rest).map_err(refuse)?;
             return match self.peek()? {
                 Some(next)
                     if next.indent > indent
@@ -358,13 +256,18 @@ impl<'t> Reader<'t> {
             };
         };
         match first {
-            '|' | '>' => self.block_scalar(line, rest, indent),
+            '|' | '>' => {
+                let header = untabbed(rest).map_err(refuse)?;
+                self.block_scalar(line, header, indent)
+            }
             '[' => flow_sequence(rest).map_err(refuse),
-            '{' if without_comment(rest) == "{}" => Ok(Node::Map(Vec::new())),
+            '{' if without_comment(untabbed(rest).map_err(refuse)?) == "{}" => {
+                Ok(Node::Map(Vec::new()))
+            }
             '{' => Err(refuse(YamlRefusal::FlowMapping)),
             '\'' | '"' => {
                 let (text, after) = quoted(rest).map_err(refuse)?;
-                if without_comment(after).is_empty() {
+                if without_comment(untabbed(after).map_err(refuse)?).is_empty() {
                     Ok(Node::Scalar(text))
                 } else {
                     Err(refuse(YamlRefusal::Quote))
@@ -444,136 +347,6 @@ fn insert(
     }
     entries.push((key, value));
     Ok(())
-}
-
-/// Whether a value starts with an indicator the reader does not support.
-fn is_indicator(rest: &str) -> bool {
-    rest.starts_with(['&', '*', '!', '%', '@', '`'])
-        || rest == "-"
-        || rest.starts_with("- ")
-        || rest == "?"
-        || rest.starts_with("? ")
-}
-
-/// `text` up to a comment (a `#` at its start or after a space), without trailing space.
-fn without_comment(text: &str) -> &str {
-    let end = if text.starts_with('#') {
-        0
-    } else {
-        text.find(" #").unwrap_or(text.len())
-    };
-    text.get(..end).unwrap_or(text).trim_end()
-}
-
-/// A plain scalar, refused when it holds a mapping indicator.
-fn plain(rest: &str) -> Result<String, YamlRefusal> {
-    let text = without_comment(rest);
-    if text.contains(": ") || text.ends_with(':') {
-        return Err(YamlRefusal::Plain);
-    }
-    Ok(text.to_owned())
-}
-
-/// The key `body` starts with and the rest after `: `, `None` when it is not a mapping entry.
-fn key_of(body: &str) -> Result<Option<(String, &str)>, YamlRefusal> {
-    if body.starts_with(['\'', '"']) {
-        let (key, after) = quoted(body)?;
-        return Ok(after
-            .strip_prefix(':')
-            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
-            .map(|rest| (key, rest.trim_start_matches(' '))));
-    }
-    let comment = body.find(" #").unwrap_or(body.len());
-    // A `:` is a mapping indicator only before a space or at the end of the line.
-    let indicator = body.match_indices(':').find_map(|(at, _)| {
-        let (key, rest) = body.split_at_checked(at)?;
-        let rest = rest.strip_prefix(':')?;
-        (rest.is_empty() || rest.starts_with(' ')).then_some((key, rest))
-    });
-    let Some((key, rest)) = indicator.filter(|(key, _)| key.len() < comment) else {
-        return Ok(None);
-    };
-    let plain_key = !key.is_empty()
-        && key
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
-    if !plain_key {
-        return Err(YamlRefusal::Key);
-    }
-    Ok(Some((key.to_owned(), rest.trim_start_matches(' '))))
-}
-
-/// The quoted scalar `text` starts with, unquoted, and what follows its closing quote.
-fn quoted(text: &str) -> Result<(String, &str), YamlRefusal> {
-    let mut chars = text.char_indices();
-    let Some((_, quote)) = chars.next() else {
-        return Err(YamlRefusal::Quote);
-    };
-    let mut value = String::new();
-    while let Some((at, next)) = chars.next() {
-        if next == '\\' && quote == '"' {
-            return Err(YamlRefusal::Quote);
-        }
-        if next != quote {
-            value.push(next);
-            continue;
-        }
-        let after = text.get(at.saturating_add(1)..).unwrap_or_default();
-        if quote == '\'' && after.starts_with('\'') {
-            value.push('\'');
-            chars.next();
-            continue;
-        }
-        return Ok((value, after));
-    }
-    Err(YamlRefusal::Quote)
-}
-
-/// A one-line flow sequence of scalars, `[a, 'b']`.
-fn flow_sequence(rest: &str) -> Result<Node, YamlRefusal> {
-    let inner = rest.strip_prefix('[').ok_or(YamlRefusal::FlowSequence)?;
-    let mut items = Vec::new();
-    let mut remaining = inner.trim_start();
-    if let Some(after) = remaining.strip_prefix(']') {
-        return close(after, items);
-    }
-    loop {
-        let (item, after) = flow_item(remaining)?;
-        items.push(Node::Scalar(item));
-        let after = after.trim_start();
-        if let Some(after) = after.strip_prefix(']') {
-            return close(after, items);
-        }
-        remaining = after
-            .strip_prefix(',')
-            .ok_or(YamlRefusal::FlowSequence)?
-            .trim_start();
-    }
-}
-
-/// The sequence, when only a comment follows its `]`.
-fn close(after: &str, items: Vec<Node>) -> Result<Node, YamlRefusal> {
-    if without_comment(after).is_empty() {
-        Ok(Node::Seq(items))
-    } else {
-        Err(YamlRefusal::FlowSequence)
-    }
-}
-
-/// One item of a flow sequence and what follows it.
-fn flow_item(text: &str) -> Result<(String, &str), YamlRefusal> {
-    if text.starts_with(['\'', '"']) {
-        return quoted(text);
-    }
-    let end = text.find([',', ']']).ok_or(YamlRefusal::FlowSequence)?;
-    let item = text.get(..end).unwrap_or_default().trim_end();
-    if item.is_empty() || item.contains(['[', '{', '#']) || item.contains(": ") {
-        return Err(YamlRefusal::FlowSequence);
-    }
-    if is_indicator(item) {
-        return Err(YamlRefusal::Indicator);
-    }
-    Ok((item.to_owned(), text.get(end..).unwrap_or_default()))
 }
 
 #[cfg(test)]

@@ -3,7 +3,8 @@
 //! and whether it carries the `github.run_attempt == 1` guard.
 //!
 //! Every reading over-approximates towards a failure (wi-b5affa): a job holds a secret when
-//! the text `secrets` appears anywhere in it or in the workflow's `env`, or it names an
+//! the text `secrets`, in any ASCII case, appears anywhere in it or in the workflow's `env`, or
+//! it names an
 //! `environment`; it holds a write token unless `permissions` at job or workflow level grants
 //! only `read` or `none` (a job with none declared gets the repository's default token, which
 //! may write); it is guarded only when its `if` is a conjunction, at the top level, of which
@@ -18,6 +19,9 @@ use super::yaml::YamlRefusal;
 
 /// The guard every job holding a secret or a write token carries (T22, R3-05).
 const GUARD: &str = "github.run_attempt == 1";
+
+/// The expression context of secrets, matched in any ASCII case as GitHub reads it.
+const SECRETS: &str = "secrets";
 
 /// What doctor reads from one workflow file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,7 +101,9 @@ impl Workflow {
             return Err(WorkflowError::Shape("no `jobs` mapping"));
         };
         let workflow_token = token(root.get("permissions"))?;
-        let env_secret = root.get("env").is_some_and(|env| env.mentions("secrets"));
+        let env_secret = root
+            .get("env")
+            .is_some_and(|env| env.mentions_ignoring_case(SECRETS));
         let mut uses = Vec::new();
         let mut read_jobs = Vec::with_capacity(jobs.len());
         for (id, mut job) in jobs {
@@ -146,7 +152,12 @@ fn job_uses(job: &mut Node, uses: &mut Vec<String>) -> Result<(), WorkflowError>
     push_uses(job, uses)?;
     match job.remove("steps") {
         None | Some(Node::Null) => Ok(()),
-        Some(Node::Seq(mut steps)) => steps.iter_mut().try_for_each(|step| push_uses(step, uses)),
+        Some(Node::Seq(mut steps)) => steps.iter_mut().try_for_each(|step| match step {
+            Node::Map(_) => push_uses(step, uses),
+            Node::Null | Node::Scalar(_) | Node::Text(_) | Node::Seq(_) => {
+                Err(WorkflowError::Shape("a step is not a mapping"))
+            }
+        }),
         Some(Node::Scalar(_) | Node::Text(_) | Node::Map(_)) => {
             Err(WorkflowError::Shape("`steps` is not a sequence"))
         }
@@ -198,7 +209,7 @@ fn token(permissions: Option<&Node>) -> Result<Option<Token>, WorkflowError> {
 fn holding(job: &Node, env_secret: bool, token: Option<Token>) -> Option<Holding> {
     if job.get("environment").is_some() {
         Some(Holding::Environment)
-    } else if env_secret || job.mentions("secrets") {
+    } else if env_secret || job.mentions_ignoring_case(SECRETS) {
         Some(Holding::Secret)
     } else if token == Some(Token::ReadOnly) {
         None

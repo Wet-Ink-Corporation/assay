@@ -38,12 +38,8 @@ pub(super) fn verdict<F: PrerequisiteForge>(scene: &Scene<'_, F>) -> Judged<F::E
             branch: default.clone(),
         });
     }
-    let rulesets = scene
-        .repository
-        .rulesets()
-        .map_err(PrerequisiteFailure::Unreadable)?;
     let verdicts = Verdicts {
-        rulesets: &rulesets,
+        rulesets: scene.rulesets.get()?,
         app: scene.apps.verdict,
     };
     for base in bases {
@@ -101,11 +97,16 @@ impl Verdicts<'_> {
     }
 }
 
-/// `None` when ruleset `id` is listed and has no bypass actor; why not otherwise.
+/// `None` when ruleset `id` is listed, active and has no bypass actor; why not otherwise.
 fn unbypassable<E>(rulesets: &[Ruleset], id: RulesetId) -> Option<PrerequisiteFailure<E>> {
     let Some(ruleset) = rulesets.iter().find(|ruleset| ruleset.id == id) else {
         return Some(PrerequisiteFailure::UnknownRuleset { ruleset: id });
     };
+    // `rules/branches` lists only rules in force; the ruleset's own enforcement is checked
+    // too, so neither answer alone is trusted.
+    if ruleset.enforcement != Enforcement::Active {
+        return Some(PrerequisiteFailure::NotActive { ruleset: id });
+    }
     // The report owns its failures; the ruleset stays the caller's.
     ruleset
         .bypass
@@ -116,11 +117,9 @@ fn unbypassable<E>(rulesets: &[Ruleset], id: RulesetId) -> Option<PrerequisiteFa
 
 /// Every trust path is restricted by an active push ruleset without bypass actors.
 pub(super) fn paths<F: PrerequisiteForge>(scene: &Scene<'_, F>) -> Judged<F::Error> {
-    let rulesets = scene
-        .repository
-        .rulesets()
-        .map_err(PrerequisiteFailure::Unreadable)?;
-    let restricted: BTreeSet<&str> = rulesets
+    let restricted: BTreeSet<&str> = scene
+        .rulesets
+        .get()?
         .iter()
         .filter(|ruleset| {
             ruleset.target == RulesetTarget::Push

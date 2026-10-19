@@ -14,7 +14,7 @@ use crate::status::UserId;
 pub(super) const ENVIRONMENTS: [&str; 2] = ["assay-publish", "assay-review"];
 
 /// `owners ∪ approvers`: the privileged identities.
-fn privileged<F>(scene: &Scene<'_, F>) -> BTreeSet<UserId> {
+fn privileged<F: PrerequisiteForge>(scene: &Scene<'_, F>) -> BTreeSet<UserId> {
     let lists = &scene.base.identities;
     lists.owners.union(&lists.approvers).copied().collect()
 }
