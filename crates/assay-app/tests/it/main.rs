@@ -25,6 +25,14 @@ mod eval_run;
 mod exec_roots;
 mod gate;
 mod golden;
+mod ledger_budget;
+mod ledger_cost;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod ledger_fakes;
+mod ledger_schema;
+mod ledger_state;
+mod ledger_streams;
+mod ledger_time;
 mod model_runner;
 mod package_set;
 mod plan;

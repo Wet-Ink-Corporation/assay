@@ -1,0 +1,1 @@
+{"schema":"assay.ledger-push/1","run_uid":{"repo_id":42,"run_id":7002,"run_attempt":1},"pr":7,"seq":1,"before":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","after":"ffff","sender_id":1001,"forced":true,"at":"2026-10-12T09:30:00.000Z"}

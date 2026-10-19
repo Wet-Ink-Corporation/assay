@@ -14,6 +14,7 @@ mod comments;
 mod dto;
 mod error;
 mod identity;
+mod ledger;
 mod ports;
 mod pulls;
 mod reads;
@@ -27,6 +28,7 @@ use assay_app::{AppId, UserId};
 pub use api::{Api, MAX_LIST_ITEMS};
 pub use error::{ForgeError, Operation};
 pub use identity::MAX_COMMITS;
+pub use ledger::{LedgerRepo, LedgerRepoError};
 pub use repository::{ParseRepositoryError, Repository};
 pub use token::{Access, InstallationId, InstallationToken, Permission, ScopeError, TokenScope};
 pub use transport::{
