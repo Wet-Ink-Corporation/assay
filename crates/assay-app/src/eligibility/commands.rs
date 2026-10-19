@@ -13,9 +13,13 @@ use crate::status::UserId;
 /// The most command records read for one PR (H-13); more is refused.
 pub const MAX_COMMAND_RECORDS: usize = 256;
 
-/// An App-authored record of `commands/<repo_id>/<pr>.jsonl`.
+/// An App-authored record of `commands/<repo_id>/<pr>.jsonl` as the snapshot judges it.
+///
+/// The command is parsed and bound to the head it was posted on. The ledger's own model of the
+/// line is [`crate::CommandRecord`] (`assay.ledger-command/1`), which does not yet carry
+/// `head_sha`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandRecord {
+pub struct SnapshotCommand {
     /// The comment the command was posted in.
     pub comment_id: CommentId,
     /// Who posted it, eligible when it was recorded.
@@ -71,7 +75,7 @@ pub struct CommentEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recorded {
     /// A privileged command to append to the ledger.
-    Record(CommandRecord),
+    Record(SnapshotCommand),
     /// `/assay recheck`: re-decide, record nothing.
     Recheck,
 }
@@ -155,13 +159,13 @@ pub(crate) enum CommandStatus {
 /// A record with what this decision made of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct JudgedCommand {
-    pub(crate) record: CommandRecord,
+    pub(crate) record: SnapshotCommand,
     pub(crate) status: CommandStatus,
 }
 
 /// How a record's comment stands now: `None` when it still reads as recorded.
 pub(crate) fn void_cause(
-    record: &CommandRecord,
+    record: &SnapshotCommand,
     comment: Option<&IssueComment>,
 ) -> Option<VoidCause> {
     let Some(comment) = comment else {
@@ -185,7 +189,7 @@ pub(crate) fn void_cause(
 /// the lists are re-read (a revoked owner's dismissal falls at once); a head-bound command must
 /// name this head, postdate its push and come from an id eligible on it now.
 pub(crate) fn applicability(
-    record: &CommandRecord,
+    record: &SnapshotCommand,
     head: &CommitId,
     clock: Option<Timestamp>,
     rule: &Rule,
@@ -235,7 +239,7 @@ pub(crate) fn record(
     if comment.created_at <= clock {
         return Err(CommandRejected::BeforePushClock);
     }
-    Ok(Recorded::Record(CommandRecord {
+    Ok(Recorded::Record(SnapshotCommand {
         comment_id: comment.id,
         actor,
         created_at: comment.created_at,

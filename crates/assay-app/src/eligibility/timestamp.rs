@@ -1,10 +1,12 @@
 //! The instants the eligibility rule compares (04 §5): a review's `submitted_at`, a comment's
-//! `created_at` and `updated_at`, and a push record's `at`, all RFC 3339 UTC as GitHub writes them.
+//! `created_at` and `updated_at`, all RFC 3339 UTC as GitHub writes them, and a push record's
+//! `at`, a [`LedgerTime`] read as the same instant.
 
 use std::fmt;
 use std::str::FromStr;
 
 use crate::calendar::CalendarDate;
+use crate::ledger::LedgerTime;
 use crate::status::FetchedAt;
 
 /// Digits of a fraction of a second kept: nanoseconds.
@@ -13,6 +15,11 @@ const NANO_DIGITS: u32 = 9;
 /// Seconds in an hour and a minute.
 const SECONDS_PER_HOUR: u32 = 3_600;
 const SECONDS_PER_MINUTE: u32 = 60;
+
+/// Milliseconds in a UTC day and a second, and nanoseconds in a millisecond.
+const MILLIS_PER_DAY: u64 = 86_400_000;
+const MILLIS_PER_SECOND: u64 = 1_000;
+const NANOS_PER_MILLI: u64 = 1_000_000;
 
 /// An RFC 3339 date-time in UTC (`2026-10-13T09:30:00Z`, an optional fraction of one to nine
 /// digits), from 1970 to 9999.
@@ -70,6 +77,23 @@ fn nanos(fraction: &str) -> Option<u32> {
     value.checked_mul(scale)
 }
 
+impl From<LedgerTime> for Timestamp {
+    /// The same instant: a ledger time is a UTC instant to the millisecond in the same range.
+    fn from(time: LedgerTime) -> Self {
+        let millis = time.unix_millis();
+        let of_day = millis % MILLIS_PER_DAY;
+        // A `LedgerTime` is at most 9999-12-31 and `of_day` under a day, so no part saturates.
+        let days = u32::try_from(millis / MILLIS_PER_DAY).unwrap_or(u32::MAX);
+        let seconds = u32::try_from(of_day / MILLIS_PER_SECOND).unwrap_or(u32::MAX);
+        let nanos = u32::try_from(of_day % MILLIS_PER_SECOND * NANOS_PER_MILLI).unwrap_or(u32::MAX);
+        Self {
+            date: CalendarDate::from_days_saturating(days),
+            seconds,
+            nanos,
+        }
+    }
+}
+
 impl fmt::Display for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let hour = self.seconds / SECONDS_PER_HOUR;
@@ -92,7 +116,7 @@ impl serde::Serialize for Timestamp {
 
 #[cfg(test)]
 mod tests {
-    use super::nanos;
+    use super::{LedgerTime, Timestamp, nanos};
 
     #[test]
     fn a_fraction_is_scaled_to_nanoseconds() {
@@ -100,5 +124,20 @@ mod tests {
         assert_eq!(nanos("5"), Some(500_000_000));
         assert_eq!(nanos("000000001"), Some(1));
         assert_eq!(nanos("1234567890"), None, "ten digits are refused");
+    }
+
+    #[test]
+    fn a_ledger_time_is_the_same_instant() {
+        for (ledger, rfc) in [
+            ("2026-10-13T09:30:00.250Z", "2026-10-13T09:30:00.25Z"),
+            ("1970-01-01T00:00:00.000Z", "1970-01-01T00:00:00Z"),
+            ("9999-12-31T23:59:59.999Z", "9999-12-31T23:59:59.999Z"),
+        ] {
+            let time: LedgerTime = ledger.parse().expect("a canonical ledger time");
+            let expected: Timestamp = rfc.parse().expect("an RFC 3339 UTC time");
+
+            assert_eq!(Timestamp::from(time), expected, "{ledger}");
+            assert_eq!(Timestamp::from(time).to_string(), rfc, "{ledger}");
+        }
     }
 }

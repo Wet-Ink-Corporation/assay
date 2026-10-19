@@ -2,8 +2,7 @@
 //! who may approve, which approvals count, and what a merge from base or a rebase does.
 
 use assay_app::{
-    Actor, CommitRange, IgnoredApproval, Ineligible, MergeTree, PushTrigger, RangeListing,
-    ReviewState, push_record,
+    Actor, CommitRange, IgnoredApproval, Ineligible, MergeTree, RangeListing, ReviewState,
 };
 use assay_domain::{Authorship, OwnerApproval, Readiness};
 
@@ -278,7 +277,9 @@ fn a_merge_of_a_commit_off_the_base_disqualifies_its_author() -> Outcome {
 #[test]
 fn a_merge_pushed_on_another_commit_disqualifies_its_pusher() -> Outcome {
     let mut world = updated_branch(MergeTree::Clean(tree('e')));
-    world.pushes.retain(|record| record.after != sha(MERGE));
+    world
+        .pushes
+        .retain(|record| record.push.after != sha(MERGE));
     world.force_push(('9', MERGE), OWNER, 5);
 
     let state = world.state()?;
@@ -438,61 +439,17 @@ fn a_range_past_250_commits_needs_a_split_and_approves_nothing() -> Outcome {
     Ok(())
 }
 
-#[test]
-fn only_synchronize_is_a_push_and_opened_is_the_opener() {
-    let opened = push_record(PushTrigger::Opened {
-        head: sha(FIRST),
-        sender: user(CONTRIBUTOR),
-        at: at(0),
-    });
-    let synchronize = push_record(PushTrigger::Synchronize {
-        before: sha(FIRST),
-        after: sha('2'),
-        sender: user(OWNER),
-        forced: false,
-        at: at(1),
-    });
-
-    assert_eq!(
-        opened.map(|record| (record.kind, record.before, record.sender)),
-        Some((assay_app::PushKind::Opener, None, user(CONTRIBUTOR)))
-    );
-    assert_eq!(
-        synchronize.map(|record| (record.kind, record.before, record.at)),
-        Some((assay_app::PushKind::Push, Some(sha(FIRST)), at(1)))
-    );
-}
-
-#[test]
-fn a_non_push_event_never_records_a_push() {
-    for trigger in [
-        PushTrigger::Reopened,
-        PushTrigger::ReadyForReview,
-        PushTrigger::Edited,
-        PushTrigger::BaseEdited,
-        PushTrigger::Dispatch,
-        PushTrigger::Rerun,
-        PushTrigger::Requeue,
-    ] {
-        let label = format!("{trigger:?}");
-
-        assert_eq!(push_record(trigger), None, "{label} recorded a push");
-    }
-}
-
 /// #58 review F6: the clock is the latest push *onto the head*, so a later run that adds no
 /// record naming the head (a re-run, a requeue, a push record of another commit) leaves an
 /// approval that postdates the head's push counted. A clock read as the latest record of any
-/// commit would drop it.
+/// commit would drop it. A re-run or a requeue appends no record at all: `open` appends only for
+/// `opened` and `synchronize` and refuses a re-run before any port call (pinned in `open.rs`).
 #[test]
 fn a_rerun_or_requeue_does_not_move_the_push_clock() -> Outcome {
     let mut world = World::opened_by(CONTRIBUTOR);
     world.review(APPROVER, ReviewState::Approved, (FIRST, 5));
     let before = world.state()?;
 
-    for trigger in [PushTrigger::Rerun, PushTrigger::Requeue] {
-        world.pushes.extend(push_record(trigger));
-    }
     world.push((FIRST, '2'), CONTRIBUTOR, 8);
     let after = world.state()?;
 

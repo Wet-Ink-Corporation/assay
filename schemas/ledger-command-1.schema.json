@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:assay:schema:ledger-command:1",
+  "title": "assay.ledger-command/1",
+  "description": "One line of a command file `commands/<repo_id>/<pr>.jsonl` in the ledger repository (docs/architecture/06-operations.md §1, 05-security.md T21, 03-contracts.md §6c), appended by decide-only from the triggering `issue_comment.created` payload. One record per `comment_id`; `run_uid.repo_id` and `pr` are the file's. Unknown fields are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "run_uid", "pr", "comment_id", "actor_id", "command", "body_sha256", "created_at",
+    "at"
+  ],
+  "properties": {
+    "schema": { "const": "assay.ledger-command/1" },
+    "run_uid": { "$ref": "#/$defs/runUid" },
+    "pr": { "$ref": "#/$defs/id" },
+    "comment_id": { "$ref": "#/$defs/id" },
+    "actor_id": { "$ref": "#/$defs/id" },
+    "command": {
+      "description": "The command as parsed, free text of 1 to 256 characters without a control character.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+    },
+    "body_sha256": {
+      "description": "The sha256 of the comment body at `created`: a body with another hash later voids the record (T21).",
+      "$ref": "#/$defs/digest"
+    },
+    "created_at": { "$ref": "#/$defs/time" },
+    "at": { "$ref": "#/$defs/time" }
+  },
+  "$defs": {
+    "id": { "type": "integer", "minimum": 1 },
+    "runUid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_id", "run_id", "run_attempt"],
+      "properties": {
+        "repo_id": { "$ref": "#/$defs/id" },
+        "run_id": { "$ref": "#/$defs/id" },
+        "run_attempt": { "$ref": "#/$defs/id" }
+      }
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "time": {
+      "description": "A UTC instant to the millisecond, `YYYY-MM-DDTHH:MM:SS.mmmZ`.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  }
+}

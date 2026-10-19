@@ -5,9 +5,9 @@
 use std::collections::BTreeSet;
 
 use assay_app::{
-    CommandRecord, CommandRejected, CommitId, CommitIdentity, CommitRange, MAX_COMMAND_RECORDS,
-    MAX_PUSH_RECORDS, MAX_RANGE_COMMITS, PushRecord, RangeCommit, RangeListing, ReviewState,
-    Sha256Digest, SnapshotStep, StateError,
+    CommandRejected, CommitId, CommitIdentity, CommitRange, MAX_COMMAND_RECORDS, MAX_PUSH_RECORDS,
+    MAX_RANGE_COMMITS, PushRecord, RangeCommit, RangeListing, ReviewState, Sha256Digest,
+    SnapshotCommand, SnapshotStep, StateError,
 };
 
 use crate::eligibility_fakes::{
@@ -26,10 +26,10 @@ fn opener_records(
 }
 
 /// `count` command records of distinct comments.
-fn command_records(count: u64) -> Result<Vec<CommandRecord>, Box<dyn std::error::Error>> {
+fn command_records(count: u64) -> Result<Vec<SnapshotCommand>, Box<dyn std::error::Error>> {
     (1..=count)
         .map(|id| {
-            Ok(CommandRecord {
+            Ok(SnapshotCommand {
                 comment_id: comment(id, APPROVER, 5, "/assay waive 0123456789abcdef").id,
                 actor: user(APPROVER),
                 created_at: at(5),

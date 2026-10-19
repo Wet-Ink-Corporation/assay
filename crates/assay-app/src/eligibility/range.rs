@@ -6,9 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
-use super::pushes::{PushKind, PushRecord};
+use super::pushes::pushed;
 use crate::config::CommitId;
 use crate::forge::{Actor, CommitIdentity};
+use crate::ledger::PushRecord;
 use crate::status::UserId;
 
 /// The most commits a PR range may hold; past it the PR is `needs-split` (R3-22).
@@ -160,12 +161,12 @@ pub(crate) fn merge_candidates<'a>(
         .collect();
     let mut seen = BTreeSet::new();
     let mut candidates = Vec::new();
-    for record in pushes.iter().filter(|record| record.kind == PushKind::Push) {
-        let Some(commit) = by_id.get(&record.after) else {
+    for push in pushes.iter().filter_map(pushed) {
+        let Some(commit) = by_id.get(push.after) else {
             continue;
         };
         if let [ours, theirs] = commit.parents.as_slice()
-            && record.before.as_ref() == Some(ours)
+            && push.before == ours
             && seen.insert(&commit.commit)
         {
             candidates.push(MergeCandidate {
