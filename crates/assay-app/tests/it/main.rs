@@ -28,7 +28,23 @@ mod eval_run;
 mod exec_roots;
 mod gate;
 mod golden;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod lease_fakes;
+mod lease_grant;
+mod lease_lock;
+mod lease_slot;
+mod ledger_budget;
+mod ledger_cost;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod ledger_fakes;
+mod ledger_schema;
+mod ledger_state;
+mod ledger_streams;
+mod ledger_time;
 mod model_runner;
+mod open;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod open_fakes;
 mod package_set;
 mod plan;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
@@ -49,6 +65,10 @@ mod publish_persist;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod publish_support;
 mod read_limits;
+mod reconcile_checks;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod reconcile_fakes;
+mod reconcile_ledger;
 mod redaction;
 mod replay;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns

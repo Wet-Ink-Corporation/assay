@@ -45,8 +45,10 @@ impl Disposition {
     /// severity, must name its finding's fingerprint (03 §6, #170): validation records these
     /// only after it has located the finding's evidence, which is when the fingerprint is
     /// computed. `cap-exceeded` with `from` is the role's ceiling, recorded then; without, it is a
-    /// finding past its document's cap, never located. Every other code is also recorded for a
-    /// document refused whole or a finding never located, or is not validation's.
+    /// finding past its document's cap, never located. The coordinator's `duplicate` and the
+    /// verifier's `verifier-rejected-downgraded` are about findings validation kept, so they
+    /// name it too (#263). Every other code is also recorded for a document refused whole or a
+    /// finding never located, or is not validation's.
     #[must_use]
     pub const fn requires_fingerprint(self, from: Option<Severity>) -> bool {
         match self {
@@ -55,14 +57,13 @@ impl Disposition {
             | Self::NoTrigger
             | Self::SuppressedByRule
             | Self::DismissedByOwner
-            | Self::DuplicateOfGate => true,
-            Self::CapExceeded => from.is_some(),
-            Self::Schema
-            | Self::EvidenceMissing
-            | Self::InjectionSuspect
+            | Self::DuplicateOfGate
             | Self::Duplicate
-            | Self::WaivedByOwner
-            | Self::VerifierRejectedDowngraded => false,
+            | Self::VerifierRejectedDowngraded => true,
+            Self::CapExceeded => from.is_some(),
+            Self::Schema | Self::EvidenceMissing | Self::InjectionSuspect | Self::WaivedByOwner => {
+                false
+            }
         }
     }
 }

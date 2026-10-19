@@ -5,7 +5,8 @@ use std::io;
 use std::process::Command;
 
 use assay_app::Termination;
-use assay_forge::process::{self, GroupKiller, Limits, ProcessError};
+use assay_forge::github::{GhCall, GhRunner};
+use assay_forge::process::{self, Captured, GroupKiller, Limits, ProcessError};
 use assay_gates::{CaptureSupervisor, CapturedRun, ProcessSpec, Supervisor};
 use assay_runner::GroupKill;
 
@@ -15,7 +16,8 @@ use assay_runner::GroupKill;
 /// As an [`assay_gates::Supervisor`] it runs a gate under [`process::run`], and as an
 /// [`assay_gates::CaptureSupervisor`] it also keeps the process's stdout (the pinned
 /// `temper scan`); as an [`assay_runner::GroupKill`] it kills `claude`'s group with
-/// [`GroupKiller::kill_group`].
+/// [`GroupKiller::kill_group`]; as an [`assay_forge::github::GhRunner`] it runs the `gh api`
+/// calls of the GitHub transport, with their stdin and both outputs kept (#273).
 #[derive(Debug, Clone)]
 pub struct ForgeSupervisor {
     killer: GroupKiller,
@@ -88,6 +90,25 @@ impl CaptureSupervisor for ForgeSupervisor {
             Err(ProcessError::OutputTooLarge) => Ok(stopped(Termination::OutputTooLarge)),
             Err(error) => Err(error),
         }
+    }
+}
+
+impl GhRunner for ForgeSupervisor {
+    /// Runs `call` under [`process::run`] with exactly its environment, working directory,
+    /// stdin and limits.
+    ///
+    /// # Errors
+    ///
+    /// The [`ProcessError`] of [`process::run`]: a timeout or an over-cap output once the
+    /// group is shown gone, [`ProcessError::Kill`] when it could not be (abort the job).
+    fn run(&self, call: &GhCall<'_>) -> Result<Captured, ProcessError> {
+        let mut command = Command::new(call.program);
+        command
+            .args(call.args)
+            .current_dir(call.cwd)
+            .env_clear()
+            .envs(call.env.iter().copied());
+        process::run(command, call.stdin, call.limits, &self.killer)
     }
 }
 
