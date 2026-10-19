@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 mod refusals;
 
 use assay_forge::git::{
-    CommitSha, EntryKind, GitEnvironment, GitError, GitLimits, ObjectRepo, Snapshot, TreeLimits,
-    UserDirs, WorkingTree,
+    CommitSha, EntryKind, GitEnvironment, GitError, GitLimits, ObjectRepo, RepositoryHead,
+    Snapshot, TreeLimits, UserDirs, WorkingTree,
 };
 use tempfile::TempDir;
 
@@ -296,6 +296,45 @@ fn resolves_a_branch_and_refuses_an_unknown_revision() -> Result<(), Box<dyn Err
             Err(GitError::UnknownRevision { revision }) if revision == "refs/remotes/origin/main"
         ),
         "an unknown revision is named, got {unknown:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_repository_head_reads_the_branch_of_a_tree_local_mode_would_refuse()
+-> Result<(), Box<dyn Error>> {
+    let clone = Clone::new()?;
+    plain_git(&clone.root, &["checkout", "--quiet", "-b", "topic"])?;
+    plain_git(
+        &clone.root,
+        &["update-index", "--skip-worktree", "src/lib.rs"],
+    )?;
+    plain_git(&clone.root, &["config", "core.sparseCheckout", "true"])?;
+    let env = GitEnvironment::from_process_env()?;
+
+    let head = RepositoryHead::open(&clone.root, env, GitLimits::default())?;
+
+    assert_eq!(head.root(), clone.root.as_path());
+    assert_eq!(head.branch()?.as_deref(), Some("topic"));
+    assert!(clone.open().is_err(), "WorkingTree refuses the same tree");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_repository_head_refuses_a_directory_without_git() -> Result<(), Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+
+    let opened = RepositoryHead::open(
+        scratch.path(),
+        GitEnvironment::from_process_env()?,
+        GitLimits::default(),
+    );
+
+    assert!(
+        matches!(&opened, Err(GitError::NotAWorkingTree { reason, .. }) if reason == &"it has no .git"),
+        "{opened:?}"
     );
     Ok(())
 }

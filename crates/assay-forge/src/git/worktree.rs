@@ -14,8 +14,11 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
 mod developer;
+mod head;
 
 use self::developer::Sparse;
+pub use self::head::RepositoryHead;
+use self::head::branch_in;
 use super::GitError;
 use super::command::{GitEnvironment, GitOperation, Scope, UserDirs};
 use super::repository::{Call, GitLimits, ObjectRepo, call, run_in};
@@ -185,28 +188,7 @@ impl WorkingTree {
     /// `refs/heads/<branch>` or `HEAD`, and [`GitError`] when git cannot run or fails (an
     /// unborn `HEAD` included).
     pub fn branch(&self) -> Result<Option<String>, GitError> {
-        // `HEAD` is a constant, so needs no `--end-of-options`, which rev-parse would echo.
-        let args = ["--symbolic-full-name", "HEAD"];
-        let captured = self.run(call(GitOperation::RevParse, &args, self.limits))?;
-        let malformed = GitError::Malformed {
-            operation: GitOperation::RevParse,
-            detail: "rev-parse did not print one ref HEAD names",
-        };
-        let Some(name) = std::str::from_utf8(&captured.stdout)
-            .ok()
-            .and_then(|text| text.strip_suffix('\n'))
-        else {
-            return Err(malformed);
-        };
-        if name == "HEAD" {
-            return Ok(None);
-        }
-        match name.strip_prefix("refs/heads/") {
-            Some(branch) if !branch.is_empty() && !branch.contains('\n') => {
-                Ok(Some(branch.to_owned()))
-            }
-            _ => Err(malformed),
-        }
+        branch_in(&self.git_dir, &self.environment, self.limits)
     }
 
     fn run(&self, call: Call<'_>) -> Result<Captured, GitError> {

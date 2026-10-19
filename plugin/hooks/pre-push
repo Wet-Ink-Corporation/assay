@@ -4,9 +4,10 @@
 # owner's to settle, or naming what it blocks) stops the push; one still awaiting triage only
 # warns. `git push --no-verify` skips this hook. Advisory: CI never reads it (P9).
 #
-# Install in a repository (from its root):
+# Install in a repository (from its root), preferably with a symlink:
 #   ln -s /path/to/assay/plugin/hooks/pre-push .git/hooks/pre-push
-# or point git at this directory: git config core.hooksPath /path/to/assay/plugin/hooks
+# `git config core.hooksPath /path/to/assay/plugin/hooks` also works, but it replaces every
+# hook the repository has (.git/hooks is no longer read), so use it only where there are none.
 #
 # ASSAY names the assay program (default: `assay` on PATH). ASSAY_WEIGHIN names the weighin
 # program, absolute (default: `weighin` on PATH); without one, `assay pre-push` says it did not

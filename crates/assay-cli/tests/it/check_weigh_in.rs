@@ -148,6 +148,30 @@ fn output_weighin_would_not_write_stops_the_check_before_the_snapshot() -> Resul
 }
 
 #[test]
+fn a_weighin_that_writes_past_the_output_cap_stops_the_check() -> Result<(), Box<dyn Error>> {
+    let scene = on_branch("feat-x")?;
+    let weighin = scene.path("weighin");
+    // One byte over `MAX_OPEN_BYTES` (8 MiB).
+    let over = assay_app::MAX_OPEN_BYTES + 1;
+    write_executable(
+        &weighin,
+        &format!("#!/bin/sh\n/usr/bin/head -c {over} /dev/zero\n"),
+    )?;
+
+    let outcome = check(&scene, &weighin)?;
+
+    assert_eq!(outcome.code, Some(2), "{outcome:?}");
+    assert!(
+        outcome
+            .stderr
+            .starts_with("assay: weighin open did not run: "),
+        "{outcome:?}"
+    );
+    assert!(!scene.path("seen-tree").exists(), "the model never ran");
+    Ok(())
+}
+
+#[test]
 fn a_weighin_that_fails_stops_the_check() -> Result<(), Box<dyn Error>> {
     let scene = on_branch("feat-x")?;
     let weighin = scene.path("weighin");

@@ -38,6 +38,46 @@ fn scene_on(branch: &str) -> Result<(Scene, PathBuf), Box<dyn Error>> {
 }
 
 #[test]
+fn pre_push_reads_a_tree_local_mode_would_refuse() -> Result<(), Box<dyn Error>> {
+    let (scene, weighin) = scene_on("other")?;
+    let work = scene.path("work");
+    plain_git(&work, &["update-index", "--skip-worktree", "gate.sh"])?;
+    plain_git(&work, &["config", "core.sparseCheckout", "true"])?;
+
+    let outcome = scene.assay_with(&["pre-push"], &[("ASSAY_WEIGHIN", &weighin)])?;
+
+    assert_eq!(
+        (outcome.code, outcome.stderr.as_str()),
+        (Some(0), ""),
+        "a skip-worktree entry and a sparse checkout do not stop the push: {outcome:?}"
+    );
+    assert!(
+        outcome.stdout.starts_with("weigh-in on other: "),
+        "{outcome:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn pre_push_refuses_output_weighin_would_not_write() -> Result<(), Box<dyn Error>> {
+    let (scene, _) = scene_on("feat-x")?;
+    let weighin = scene.path("weighin");
+    write_executable(&weighin, "#!/bin/sh\necho '{}'\n")?;
+
+    let outcome = scene.assay_with(&["pre-push"], &[("ASSAY_WEIGHIN", &weighin)])?;
+
+    assert_eq!(
+        (outcome.code, outcome.stderr.as_str()),
+        (
+            Some(2),
+            "assay: weighin open did not print a list of items (git push --no-verify skips this \
+             check)\n"
+        )
+    );
+    Ok(())
+}
+
+#[test]
 fn a_blocking_item_fails_pre_push() -> Result<(), Box<dyn Error>> {
     let (scene, weighin) = scene_on("feat-x")?;
 

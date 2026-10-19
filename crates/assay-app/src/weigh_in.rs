@@ -10,8 +10,8 @@
 use std::collections::BTreeSet;
 
 use assay_domain::{
-    Authority, BlockingCause, Blocks, Door, ParseWeighInIdError, Standing, Triage, WeighInId,
-    standing,
+    Authority, BlockingCause, BlockingCauses, Blocks, Door, ParseWeighInIdError, Standing, Triage,
+    WeighInId, standing,
 };
 use serde_json::{Map, Value};
 
@@ -32,10 +32,22 @@ const OPEN_STATUSES: [&str; 5] = ["raised", "triaged", "grounded", "presented", 
 /// One blocking item and why it blocks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockingItem {
+    id: WeighInId,
+    causes: BlockingCauses,
+}
+
+impl BlockingItem {
     /// The item.
-    pub id: WeighInId,
-    /// Why it blocks: never empty, door then authority then blocks.
-    pub causes: Vec<BlockingCause>,
+    #[must_use]
+    pub const fn id(&self) -> &WeighInId {
+        &self.id
+    }
+
+    /// Why it blocks: at least one cause.
+    #[must_use]
+    pub const fn causes(&self) -> BlockingCauses {
+        self.causes
+    }
 }
 
 /// The open items of one branch that CP1 reports: blocking ones block the push, pending ones
@@ -79,14 +91,14 @@ impl Checkpoint {
             self.pending.len()
         );
         for item in &self.blocking {
-            let causes: Vec<String> = item.causes.iter().map(|cause| cause_text(*cause)).collect();
-            text.extend([
-                "  blocking ",
-                item.id.as_str(),
-                ": ",
-                &causes.join(", "),
-                "\n",
-            ]);
+            text.extend(["  blocking ", item.id.as_str(), ": "]);
+            for (n, cause) in item.causes.iter().enumerate() {
+                if n > 0 {
+                    text.push_str(", ");
+                }
+                write_cause(&mut text, cause);
+            }
+            text.push('\n');
         }
         for id in &self.pending {
             text.extend(["  pending triage ", id.as_str(), "\n"]);
@@ -101,16 +113,17 @@ impl Checkpoint {
     }
 }
 
-/// How a cause reads in the report.
-fn cause_text(cause: BlockingCause) -> String {
+/// Appends how `cause` reads in the report to `text`.
+fn write_cause(text: &mut String, cause: BlockingCause) {
     match cause {
-        BlockingCause::Door(door) => format!("door {}", door.code()),
-        BlockingCause::Authority => "authority".to_owned(),
-        BlockingCause::Blocks => "blocks".to_owned(),
+        BlockingCause::Door(door) => text.extend(["door ", door.code()]),
+        BlockingCause::Authority => text.push_str("authority"),
+        BlockingCause::Blocks => text.push_str("blocks"),
     }
 }
 
-/// Why `weighin open` output was refused. No value from the output is echoed.
+/// Why `weighin open` output was refused. No value from the output is echoed except a
+/// validated id ([`OpenItemsError::Duplicate`]).
 #[derive(Debug, thiserror::Error)]
 pub enum OpenItemsError {
     /// The output is over [`MAX_OPEN_BYTES`]; it was not parsed.
@@ -339,11 +352,11 @@ mod tests {
         let checkpoint = checkpoint(RECORDED, "feat-x").expect("the recorded output is read");
 
         assert_eq!(
-            checkpoint.blocking(),
-            [BlockingItem {
-                id: id("wi-7529b9"),
-                causes: vec![BlockingCause::Door(Door::OneWay), BlockingCause::Authority],
-            }]
+            shown(checkpoint.blocking()),
+            [(
+                id("wi-7529b9"),
+                vec![BlockingCause::Door(Door::OneWay), BlockingCause::Authority],
+            )]
         );
         assert_eq!(checkpoint.pending(), [id("wi-b83949")]);
         assert!(checkpoint.blocks_push());
@@ -366,12 +379,17 @@ mod tests {
         let checkpoint = checkpoint(&with(&items), "feat-x").expect("read");
 
         assert_eq!(
-            checkpoint.blocking().get(1),
-            Some(&BlockingItem {
-                id: id("wi-567b42"),
-                causes: vec![BlockingCause::Blocks],
-            })
+            shown(checkpoint.blocking()).get(1),
+            Some(&(id("wi-567b42"), vec![BlockingCause::Blocks]))
         );
+    }
+
+    /// Each blocking item's id and causes.
+    fn shown(items: &[BlockingItem]) -> Vec<(WeighInId, Vec<BlockingCause>)> {
+        items
+            .iter()
+            .map(|item| (item.id().clone(), item.causes().iter().collect()))
+            .collect()
     }
 
     #[test]

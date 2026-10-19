@@ -5,18 +5,20 @@
 //! only warns, and output weighin would not write stops the check (exit 2) before anything
 //! costly runs. `git push --no-verify` skips the pre-push hook, and with it all of this.
 //!
-//! The program is `ASSAY_WEIGHIN`, which must be absolute, else the first `weighin` on `PATH`.
+//! The program is `ASSAY_WEIGHIN`, which must be absolute, else the first executable `weighin`
+//! on `PATH`.
 //! With neither, or on a detached `HEAD`, CP1 says it did not check and does not block: it is
 //! a convenience where a ledger is present (P9), never a trust anchor.
 
 use std::ffi::OsString;
 use std::fmt;
-use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::Duration;
 
 use assay_app::{Checkpoint, MAX_OPEN_BYTES, MAX_OPEN_ITEMS, OpenItemsError, checkpoint};
-use assay_forge::git::{GitError, WorkingTree};
+use assay_forge::git::GitError;
 use assay_forge::process::{self, GroupKiller, Limits, ProcessError};
 
 use crate::doctor::write_chain;
@@ -120,16 +122,21 @@ impl fmt::Display for WeighInError {
 
 impl std::error::Error for WeighInError {}
 
-/// Runs CP1 for `worktree` with the variables of `vars` and `killer` for the process group.
+/// Runs CP1 in the working tree at `root`, whose current branch `branch` reads, with the
+/// variables of `vars` and `killer` for the process group.
+///
+/// `branch` is the caller's: `check --local` asks its `WorkingTree`, while `pre-push` asks a
+/// `RepositoryHead`, which has none of local mode's snapshot preconditions.
 pub(crate) fn run(
-    worktree: &WorkingTree,
+    root: &Path,
+    branch: impl FnOnce() -> Result<Option<String>, GitError>,
     vars: &[(OsString, OsString)],
     killer: &GroupKiller,
 ) -> Result<WeighInCheck, WeighInError> {
     let Some(program) = program(vars)? else {
         return Ok(WeighInCheck::NotChecked(NotChecked::NoProgram));
     };
-    let Some(branch) = worktree.branch().map_err(WeighInError::Branch)? else {
+    let Some(branch) = branch().map_err(WeighInError::Branch)? else {
         return Ok(WeighInCheck::NotChecked(NotChecked::Detached));
     };
     // One more than is read, so a list `--top` cut short is seen and refused.
@@ -137,7 +144,7 @@ pub(crate) fn run(
     let mut command = Command::new(program);
     command
         .args(["open", "--repo", "--json", "--top", &top])
-        .current_dir(worktree.root())
+        .current_dir(root)
         .env_clear()
         .envs(
             vars.iter()
@@ -158,7 +165,7 @@ pub(crate) fn run(
 }
 
 /// The `weighin` to run: `ASSAY_WEIGHIN` when set and not empty, which must be absolute, else
-/// the first `weighin` on `PATH`, else none.
+/// the first executable `weighin` on `PATH`, else none.
 fn program(vars: &[(OsString, OsString)]) -> Result<Option<PathBuf>, WeighInError> {
     let var = |wanted: &str| {
         vars.iter()
@@ -179,7 +186,14 @@ fn program(vars: &[(OsString, OsString)]) -> Result<Option<PathBuf>, WeighInErro
         .flat_map(std::env::split_paths)
         .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join("weighin"))
-        .find(|candidate| candidate.is_file()))
+        .find(|candidate| is_executable(candidate)))
+}
+
+/// Whether `path` is a regular file (symlinks followed) with an execute bit, as a shell's
+/// `PATH` lookup takes it: a file without one shadows nothing.
+fn is_executable(path: &Path) -> bool {
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(test)]
@@ -201,6 +215,26 @@ mod tests {
         ]));
 
         assert!(matches!(found, Ok(None)), "{found:?}");
+    }
+
+    #[test]
+    fn a_weighin_on_path_without_an_execute_bit_is_passed_over() {
+        let shadow = tempfile::tempdir().expect("a scratch directory");
+        let real = tempfile::tempdir().expect("a scratch directory");
+        let shadowing = shadow.path().join("weighin");
+        std::fs::write(&shadowing, "not a program").expect("write the shadow");
+        std::fs::set_permissions(&shadowing, std::fs::Permissions::from_mode(0o644))
+            .expect("chmod the shadow");
+        let wanted = real.path().join("weighin");
+        std::fs::write(&wanted, "#!/bin/sh\n").expect("write the program");
+        std::fs::set_permissions(&wanted, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod the program");
+        let path = std::env::join_paths([shadow.path(), real.path()]).expect("a PATH");
+        let path = path.to_str().expect("scratch paths are UTF-8");
+
+        let found = program(&vars(&[("PATH", path)]));
+
+        assert_eq!(found.ok().flatten(), Some(wanted));
     }
 
     #[test]

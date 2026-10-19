@@ -62,6 +62,6 @@ pub use tiering::{
     RequiredRole, TierReason, Tiering, tier,
 };
 pub use weigh_in::{
-    Authority, BlockingCause, Blocks, Door, ParseWeighInIdError, Standing, Triage, WeighInId,
-    standing,
+    Authority, BlockingCause, BlockingCauses, Blocks, Door, ParseWeighInIdError, Standing, Triage,
+    WeighInId, standing,
 };

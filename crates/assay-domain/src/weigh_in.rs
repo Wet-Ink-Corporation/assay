@@ -132,16 +132,68 @@ pub enum BlockingCause {
     Blocks,
 }
 
+/// Why a triaged item blocks: at least one cause, by construction (only [`standing`] builds
+/// one, and only when a cause holds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockingCauses {
+    /// The door, when it is not two-way.
+    door: Option<Door>,
+    /// Whether only the owner may settle it.
+    authority: bool,
+    /// Whether it names something it blocks.
+    blocks: bool,
+}
+
+impl BlockingCauses {
+    /// The causes of `triage` and `blocks`, or `None` when none holds.
+    fn of(Triage { door, authority }: Triage, blocks: Blocks) -> Option<Self> {
+        let causes = Self {
+            door: (door != Door::TwoWay).then_some(door),
+            authority: authority == Authority::Authority,
+            blocks: blocks == Blocks::Stated,
+        };
+        (causes.door.is_some() || causes.authority || causes.blocks).then_some(causes)
+    }
+
+    /// The door, when it is not two-way.
+    #[must_use]
+    pub const fn door(self) -> Option<Door> {
+        self.door
+    }
+
+    /// Whether only the owner may settle the item.
+    #[must_use]
+    pub const fn authority(self) -> bool {
+        self.authority
+    }
+
+    /// Whether the item names something it blocks.
+    #[must_use]
+    pub const fn blocks(self) -> bool {
+        self.blocks
+    }
+
+    /// Each cause, in the order door, authority, blocks; never empty.
+    pub fn iter(self) -> impl Iterator<Item = BlockingCause> {
+        [
+            self.door.map(BlockingCause::Door),
+            self.authority.then_some(BlockingCause::Authority),
+            self.blocks.then_some(BlockingCause::Blocks),
+        ]
+        .into_iter()
+        .flatten()
+    }
+}
+
 /// Where an open item stands (04 §9).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Standing {
     /// Triaged, and nothing about it blocks.
     Clear,
     /// Not triaged yet: never treated as non-blocking, only as waiting.
     PendingTriage,
-    /// Triaged and blocking, for these causes: never empty, in the order door, authority,
-    /// blocks.
-    Blocking(Vec<BlockingCause>),
+    /// Triaged and blocking, for these causes.
+    Blocking(BlockingCauses),
 }
 
 /// Where an open item with `triage` and `blocks` stands (04 §9 CP1 and CP2 rule 1).
@@ -150,22 +202,10 @@ pub enum Standing {
 /// the owner's or it names what it blocks; else clear.
 #[must_use]
 pub fn standing(triage: Option<Triage>, blocks: Blocks) -> Standing {
-    let Some(Triage { door, authority }) = triage else {
+    let Some(triage) = triage else {
         return Standing::PendingTriage;
     };
-    let causes: Vec<BlockingCause> = [
-        (door != Door::TwoWay).then_some(BlockingCause::Door(door)),
-        (authority == Authority::Authority).then_some(BlockingCause::Authority),
-        (blocks == Blocks::Stated).then_some(BlockingCause::Blocks),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    if causes.is_empty() {
-        Standing::Clear
-    } else {
-        Standing::Blocking(causes)
-    }
+    BlockingCauses::of(triage, blocks).map_or(Standing::Clear, Standing::Blocking)
 }
 
 #[cfg(test)]
@@ -244,24 +284,46 @@ mod tests {
                 vec![BlockingCause::Blocks],
             ),
         ];
-        for (triage, blocks, causes) in cases {
-            assert_eq!(standing(Some(triage), blocks), Standing::Blocking(causes));
+        for (triage, blocks, expected) in cases {
+            assert_eq!(causes(standing(Some(triage), blocks)), Some(expected));
+        }
+    }
+
+    /// The causes of a blocking standing, in order; `None` for any other standing.
+    fn causes(standing: Standing) -> Option<Vec<BlockingCause>> {
+        match standing {
+            Standing::Blocking(causes) => Some(causes.iter().collect()),
+            Standing::Clear | Standing::PendingTriage => None,
         }
     }
 
     #[test]
     fn every_cause_is_listed_in_order_door_authority_blocks() {
         assert_eq!(
-            standing(
+            causes(standing(
                 Some(triaged(Door::OneWay, Authority::Authority)),
                 Blocks::Stated
-            ),
-            Standing::Blocking(vec![
+            )),
+            Some(vec![
                 BlockingCause::Door(Door::OneWay),
                 BlockingCause::Authority,
                 BlockingCause::Blocks,
             ])
         );
+    }
+
+    #[test]
+    fn a_blocking_standing_always_carries_a_cause() {
+        for door in Door::ALL {
+            for authority in Authority::ALL {
+                for blocks in [Blocks::Unstated, Blocks::Stated] {
+                    let standing = standing(Some(triaged(door, authority)), blocks);
+                    if let Standing::Blocking(causes) = &standing {
+                        assert!(causes.iter().next().is_some(), "{standing:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

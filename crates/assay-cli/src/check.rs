@@ -39,8 +39,8 @@ use assay_app::{
 use assay_cli::{ForgeObjectsError, ForgePullRequest, ForgeSupervisor};
 use assay_domain::{Conclusion, ContentHash, RunUid};
 use assay_forge::git::{
-    CommitSha, GitEnvironment, GitError, GitLimits, ObjectRepo, Snapshot, TreeLimits, UserDirs,
-    WorkingTree,
+    CommitSha, GitEnvironment, GitError, GitLimits, ObjectRepo, RepositoryHead, Snapshot,
+    TreeLimits, UserDirs, WorkingTree,
 };
 use assay_forge::process::{GroupKiller, KillerError};
 use assay_gates::{
@@ -422,8 +422,7 @@ pub(crate) fn run(
     } = open_worktree(tree)?;
     let head = worktree.resolve("HEAD").map_err(CheckCliError::Git)?;
     let base = resolve_base(&worktree, &args.base)?;
-    let weigh_in =
-        weigh_in::run(&worktree, &variables.vars, &killer).map_err(CheckCliError::WeighIn)?;
+    let weigh_in = weigh_in_of(&worktree, &variables.vars, &killer)?;
     let scratch = Scratch::new()?;
     let (repo, snapshot) = scratch.snapshot(&worktree, &head, git)?;
     // Opened after the snapshot, so a stream written inside the working tree is not part of
@@ -476,9 +475,22 @@ pub(crate) fn run(
     })
 }
 
+/// CP1 on `worktree`, whose branch it reads.
+fn weigh_in_of(
+    worktree: &WorkingTree,
+    vars: &[(OsString, OsString)],
+    killer: &GroupKiller,
+) -> Result<WeighInCheck, CheckCliError> {
+    weigh_in::run(worktree.root(), || worktree.branch(), vars, killer)
+        .map_err(CheckCliError::WeighIn)
+}
+
 /// `assay pre-push` (#108): CP1 alone on the working tree at the working directory, for the
 /// pre-push hook. No snapshot, gate or model runs, so a push is blocked only by a blocking
-/// Weigh-In item (04 §9), never by the rest of the check.
+/// Weigh-In item, or a weighin it cannot read (04 §9), never by the rest of the check.
+///
+/// The repository is opened with `RepositoryHead`, which reads only the git directory and the
+/// branch: a sparse or skip-worktree tree, which local mode's snapshot refuses, still pushes.
 pub(crate) fn pre_push(
     mut args: impl Iterator<Item = OsString>,
     variables: CheckVariables,
@@ -486,10 +498,15 @@ pub(crate) fn pre_push(
     if args.next().is_some() {
         return Err(CheckCliError::PrePushUsage);
     }
-    let Opened {
-        worktree, killer, ..
-    } = open_worktree(variables.tree)?;
-    weigh_in::run(&worktree, &variables.vars, &killer).map_err(CheckCliError::WeighIn)
+    let root = variables.tree.cwd.map_err(CheckCliError::Cwd)?;
+    let killer = GroupKiller::system().map_err(CheckCliError::Killer)?;
+    // Without a `PATH` git is not found, and opening the repository fails with that error.
+    let path = variables.tree.path.unwrap_or_default();
+    // A cheap handle (the `kill` program's path), owned by the git runner.
+    let git = GitEnvironment::new(path, killer.clone());
+    let head = RepositoryHead::open(root, git, GitLimits::default()).map_err(CheckCliError::Git)?;
+    weigh_in::run(head.root(), || head.branch(), &variables.vars, &killer)
+        .map_err(CheckCliError::WeighIn)
 }
 
 /// The developer's working tree, opened read-only, with the git environment and the

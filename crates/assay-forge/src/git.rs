@@ -71,7 +71,7 @@ pub use patch::{FilePatch, HunkSpan, LineRange};
 pub use repository::{GitLimits, ObjectRepo};
 pub use sha::{CommitSha, HttpsRemote, ParseRemoteError, ParseShaError};
 pub use tree::{BlobRef, EntryKind, TreeEntry, TreeLimits};
-pub use worktree::{Snapshot, WorkingTree};
+pub use worktree::{RepositoryHead, Snapshot, WorkingTree};
 
 /// Why a git operation produced no result.
 #[derive(Debug, thiserror::Error)]
