@@ -27,6 +27,7 @@ mod run_uid;
 mod severity;
 mod tier;
 mod tiering;
+mod weigh_in;
 
 pub use aeu::Aeu;
 pub use content_hash::ContentHash;
@@ -59,4 +60,8 @@ pub use tiering::{
     BaselineChange, ChangeSet, ExecCause, ExecRoot, FileChange, FileKind, FilteredStats, Glob,
     GlobError, Lines, ManifestKey, ManifestTrustChange, PackageChange, PackageDiff, RepoGlobs,
     RequiredRole, TierReason, Tiering, tier,
+};
+pub use weigh_in::{
+    Authority, BlockingCause, Blocks, Door, ParseWeighInIdError, Standing, Triage, WeighInId,
+    standing,
 };

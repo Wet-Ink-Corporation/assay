@@ -177,6 +177,38 @@ impl WorkingTree {
             })
     }
 
+    /// The branch `HEAD` is on, by its name under `refs/heads/` (`claude/topic`), or `None`
+    /// when `HEAD` is detached (Weigh-In's CP1 filters items by it, 04 §9).
+    ///
+    /// # Errors
+    /// [`GitError::Malformed`] when git prints something other than one line naming
+    /// `refs/heads/<branch>` or `HEAD`, and [`GitError`] when git cannot run or fails (an
+    /// unborn `HEAD` included).
+    pub fn branch(&self) -> Result<Option<String>, GitError> {
+        // `HEAD` is a constant, so needs no `--end-of-options`, which rev-parse would echo.
+        let args = ["--symbolic-full-name", "HEAD"];
+        let captured = self.run(call(GitOperation::RevParse, &args, self.limits))?;
+        let malformed = GitError::Malformed {
+            operation: GitOperation::RevParse,
+            detail: "rev-parse did not print one ref HEAD names",
+        };
+        let Some(name) = std::str::from_utf8(&captured.stdout)
+            .ok()
+            .and_then(|text| text.strip_suffix('\n'))
+        else {
+            return Err(malformed);
+        };
+        if name == "HEAD" {
+            return Ok(None);
+        }
+        match name.strip_prefix("refs/heads/") {
+            Some(branch) if !branch.is_empty() && !branch.contains('\n') => {
+                Ok(Some(branch.to_owned()))
+            }
+            _ => Err(malformed),
+        }
+    }
+
     fn run(&self, call: Call<'_>) -> Result<Captured, GitError> {
         run_in(&self.git_dir, &self.environment, self.limits, call)
     }

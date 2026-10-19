@@ -159,3 +159,8 @@ pub use verify::{
     Verification, VerifiedFinding, VerifierFailure, VerifierStatus, VerifierTier, VerifyRequest,
     verify,
 };
+
+mod weigh_in;
+pub use weigh_in::{
+    BlockingItem, Checkpoint, MAX_OPEN_BYTES, MAX_OPEN_ITEMS, OpenItemsError, checkpoint,
+};

@@ -302,6 +302,28 @@ fn resolves_a_branch_and_refuses_an_unknown_revision() -> Result<(), Box<dyn Err
 
 #[test]
 #[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn the_branch_head_names_is_read_with_its_slashes_and_a_detached_head_names_none()
+-> Result<(), Box<dyn Error>> {
+    let clone = Clone::new()?;
+    plain_git(
+        &clone.root,
+        &["checkout", "--quiet", "-b", "claude/topic-1"],
+    )?;
+    let tree = clone.open()?;
+
+    let on_branch = tree.branch()?;
+    plain_git(&clone.root, &["checkout", "--quiet", "--detach"])?;
+    let detached = tree.branch()?;
+
+    assert_eq!(
+        (on_branch.as_deref(), detached),
+        (Some("claude/topic-1"), None)
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
 fn an_unborn_head_is_an_unknown_revision() -> Result<(), Box<dyn Error>> {
     let scratch = tempfile::tempdir()?;
     plain_git(scratch.path(), &["init", "--quiet", "fresh"])?;

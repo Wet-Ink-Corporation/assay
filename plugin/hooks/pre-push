@@ -1,0 +1,21 @@
+#!/bin/sh
+# assay's pre-push helper (#108, docs/architecture/04-pipeline.md §9 CP1): before a push, the
+# current branch's open Weigh-In items. A blocking one (triaged, and one-way or unsure, the
+# owner's to settle, or naming what it blocks) stops the push; one still awaiting triage only
+# warns. `git push --no-verify` skips this hook. Advisory: CI never reads it (P9).
+#
+# Install in a repository (from its root):
+#   ln -s /path/to/assay/plugin/hooks/pre-push .git/hooks/pre-push
+# or point git at this directory: git config core.hooksPath /path/to/assay/plugin/hooks
+#
+# ASSAY names the assay program (default: `assay` on PATH). ASSAY_WEIGHIN names the weighin
+# program, absolute (default: `weighin` on PATH); without one, `assay pre-push` says it did not
+# check and lets the push through. The full advisory check is `assay check --local`
+# (/assay:check), which reports the same Weigh-In items.
+set -eu
+
+# git passes the remote's name and URL as arguments and the refs being pushed on stdin. CP1
+# reads the branch HEAD is on, so neither is used; stdin is drained so git never sees a broken
+# pipe, and closed for assay.
+cat > /dev/null
+exec "${ASSAY:-assay}" pre-push < /dev/null
