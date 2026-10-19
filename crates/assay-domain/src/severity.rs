@@ -60,18 +60,26 @@ pub enum Marker {
     PreExisting,
 }
 
+/// Whether the diff introduced a finding, for its [`Marker`]: a finding's `pre_existing` flag,
+/// named (#147).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Provenance {
+    /// The diff introduced it.
+    Introduced,
+    /// It is about code the diff did not introduce.
+    PreExisting,
+}
+
 impl Marker {
-    /// The marker for a finding of `severity`; `pre_existing` findings are 🟣 whatever their
-    /// severity.
+    /// The marker for a finding of `severity` and `provenance`: a pre-existing finding is 🟣
+    /// whatever its severity.
     #[must_use]
-    pub const fn of(severity: Severity, pre_existing: bool) -> Self {
-        if pre_existing {
-            return Self::PreExisting;
-        }
-        match severity {
-            Severity::Blocker => Self::Blocker,
-            Severity::Major => Self::Major,
-            Severity::Minor | Severity::Nit => Self::Nit,
+    pub const fn of(severity: Severity, provenance: Provenance) -> Self {
+        match (provenance, severity) {
+            (Provenance::PreExisting, _) => Self::PreExisting,
+            (Provenance::Introduced, Severity::Blocker) => Self::Blocker,
+            (Provenance::Introduced, Severity::Major) => Self::Major,
+            (Provenance::Introduced, Severity::Minor | Severity::Nit) => Self::Nit,
         }
     }
 
@@ -116,14 +124,15 @@ mod tests {
 
     #[test]
     fn introduced_findings_are_marked_by_severity() {
-        let shown = Severity::ALL.map(|severity| Marker::of(severity, false).to_string());
+        let shown =
+            Severity::ALL.map(|severity| Marker::of(severity, Provenance::Introduced).to_string());
 
         assert_eq!(shown, ["🔴", "🟡", "🟡 (nit)", "🟡 (nit)"]);
     }
 
     #[test]
     fn pre_existing_findings_are_purple_whatever_their_severity() {
-        let shown = Severity::ALL.map(|severity| Marker::of(severity, true));
+        let shown = Severity::ALL.map(|severity| Marker::of(severity, Provenance::PreExisting));
 
         assert_eq!(shown, [Marker::PreExisting; 4]);
         assert_eq!(Marker::PreExisting.to_string(), "🟣");

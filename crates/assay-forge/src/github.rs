@@ -14,6 +14,7 @@ mod checks;
 mod comments;
 mod dto;
 mod error;
+mod gh;
 mod identity;
 mod ledger;
 mod ledger_refs;
@@ -30,6 +31,10 @@ use assay_app::{AppId, UserId};
 
 pub use api::{Api, MAX_LIST_ITEMS};
 pub use error::{ForgeError, Operation};
+pub use gh::{
+    GH_OUTPUT_CAP, GH_TIMEOUT, GhApi, GhCall, GhEnvironment, GhError, GhRunner, GhSetupError,
+    GhToken, InvalidToken,
+};
 pub use identity::MAX_COMMITS;
 pub use ledger::{LedgerRepo, LedgerRepoError};
 pub use ledger_refs::{LedgerRefsError, LedgerRefsRepo, LedgerRemoteError, ledger_push_remote};
