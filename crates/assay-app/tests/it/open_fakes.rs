@@ -74,6 +74,7 @@ pub(crate) struct FakeGitHub<'r> {
     reopen: Cell<Reopen>,
     down: Cell<bool>,
     rival_stamp: RefCell<Option<String>>,
+    rival_after: RefCell<Option<String>>,
 }
 
 impl<'r> FakeGitHub<'r> {
@@ -88,6 +89,7 @@ impl<'r> FakeGitHub<'r> {
             reopen: Cell::new(Reopen::Accepts),
             down: Cell::new(false),
             rival_stamp: RefCell::new(None),
+            rival_after: RefCell::new(None),
         }
     }
 
@@ -132,6 +134,13 @@ impl<'r> FakeGitHub<'r> {
     /// Before the next update lands, another writer stamps the check `stamp`.
     pub(crate) fn rival_stamps(self, stamp: &str) -> Self {
         *self.rival_stamp.borrow_mut() = Some(stamp.to_owned());
+        self
+    }
+
+    /// Just after the next update is answered, whatever its answer, another writer stamps the
+    /// check `stamp`.
+    pub(crate) fn rival_stamps_after(self, stamp: &str) -> Self {
+        *self.rival_after.borrow_mut() = Some(stamp.to_owned());
         self
     }
 
@@ -232,29 +241,17 @@ impl Forge for FakeGitHub<'_> {
         if self.down.get() {
             return Err(CompareAndSetError::Forge(GitHubDown));
         }
-        let mut checks = self.checks.borrow_mut();
-        let check = checks
-            .iter_mut()
-            .find(|check| check.id == id)
-            .ok_or(CompareAndSetError::Forge(GitHubDown))?;
-        if let Some(stamp) = self.rival_stamp.borrow_mut().take() {
+        let written = self.apply_update(id, expected, update);
+        if let Some(stamp) = self.rival_after.borrow_mut().take()
+            && let Some(check) = self
+                .checks
+                .borrow_mut()
+                .iter_mut()
+                .find(|check| check.id == id)
+        {
             check.external_id = stamp;
         }
-        if check.external_id != expected {
-            return Err(CompareAndSetError::Conflict {
-                found: check.external_id.clone(),
-            });
-        }
-        let reopening =
-            check.status == CheckStatus::Completed && update.state == CheckState::InProgress;
-        match (reopening, self.reopen.get()) {
-            (true, Reopen::Rejects) => return Err(CompareAndSetError::Forge(GitHubDown)),
-            (true, Reopen::KeepsCompleted) => {}
-            (false, _) | (true, Reopen::Accepts) => check.status = status_of(update.state),
-        }
-        check.external_id.clone_from(&update.external_id);
-        check.last = update.clone();
-        Ok(())
+        written
     }
 
     fn upsert_comment(
@@ -284,6 +281,40 @@ impl Forge for FakeGitHub<'_> {
 
     fn timeline(&self, _number: NonZeroU64) -> Result<Vec<TimelineEvent>, GitHubDown> {
         self.unexpected("timeline")
+    }
+}
+
+impl FakeGitHub<'_> {
+    /// The compare-and-set write of [`Forge::update_check_if`], once the call is recorded.
+    fn apply_update(
+        &self,
+        id: CheckRunId,
+        expected: &str,
+        update: &CheckUpdate,
+    ) -> Result<(), CompareAndSetError<GitHubDown>> {
+        let mut checks = self.checks.borrow_mut();
+        let check = checks
+            .iter_mut()
+            .find(|check| check.id == id)
+            .ok_or(CompareAndSetError::Forge(GitHubDown))?;
+        if let Some(stamp) = self.rival_stamp.borrow_mut().take() {
+            check.external_id = stamp;
+        }
+        if check.external_id != expected {
+            return Err(CompareAndSetError::Conflict {
+                found: check.external_id.clone(),
+            });
+        }
+        let reopening =
+            check.status == CheckStatus::Completed && update.state == CheckState::InProgress;
+        match (reopening, self.reopen.get()) {
+            (true, Reopen::Rejects) => return Err(CompareAndSetError::Forge(GitHubDown)),
+            (true, Reopen::KeepsCompleted) => {}
+            (false, _) | (true, Reopen::Accepts) => check.status = status_of(update.state),
+        }
+        check.external_id.clone_from(&update.external_id);
+        check.last = update.clone();
+        Ok(())
     }
 }
 

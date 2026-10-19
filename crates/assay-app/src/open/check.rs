@@ -25,7 +25,7 @@ pub(super) struct Target<'a> {
 
 /// Why the stamp stopped under the lock, before the lock's fate is known.
 pub(super) enum Halt<F, C> {
-    /// The lease ran out (or the clock could not tell) before a write.
+    /// The lease ran out before a write.
     Expired,
     /// The clock could not be read.
     Clock(C),
@@ -57,8 +57,8 @@ type Halted<F, C> = Halt<<F as Forge>::Error, <C as OpenClock>::Error>;
 /// What [`stamp`] returns over the ports' error types.
 type Stamp<F, C> = Result<(CheckRunId, Stamped<<F as Forge>::Error>), Halted<F, C>>;
 
-/// Finds or creates the check and stamps it for this run, every write made only while the
-/// lock's lease is still live.
+/// Finds or creates the check and stamps it for this run. No write starts at or past the lock
+/// lease's expiry; a forge call already started is not bounded by it (#290).
 pub(super) fn stamp<F: Forge, L, R, C: OpenClock>(
     target: &Target<'_>,
     ports: &OpenPorts<'_, F, L, R, C>,
@@ -92,7 +92,7 @@ pub(super) fn stamp<F: Forge, L, R, C: OpenClock>(
             .map(|()| (id, Stamped::Restamped))
             .map_err(|error| cas_halt(OpenStep::Restamp, error));
     }
-    reopen(target, ports, written).map(|stamped| (id, stamped))
+    reopen(target, ports, &current.external_id, written).map(|stamped| (id, stamped))
 }
 
 /// The outcome of reopening a completed check: confirmed by reading it back, or published as
@@ -100,6 +100,7 @@ pub(super) fn stamp<F: Forge, L, R, C: OpenClock>(
 fn reopen<F: Forge, L, R, C: OpenClock>(
     target: &Target<'_>,
     ports: &OpenPorts<'_, F, L, R, C>,
+    original: &str,
     written: Result<(), CompareAndSetError<F::Error>>,
 ) -> Result<Stamped<F::Error>, Halted<F, C>> {
     let pending = pending_update(target.stamp);
@@ -108,12 +109,19 @@ fn reopen<F: Forge, L, R, C: OpenClock>(
         Err(CompareAndSetError::Conflict { found }) => return Err(Halt::Moved(found)),
         Err(CompareAndSetError::Forge(error)) => ReopenRefused::Rejected(error),
     };
+    // The read-back can create a check, which is a write.
+    held(target, ports.clock)?;
     let reread = reread(target, ports.forge, &pending)?;
     if matches!(refused, ReopenRefused::KeptConclusion)
         && reread.status == CheckStatus::InProgress
         && reread.external_id == pending.external_id
     {
         return Ok(Stamped::Reopened);
+    }
+    // Only this run's stamp (the reopen write landed) or the one it replaced (it did not) may
+    // be published over; any other stamp is another writer's.
+    if reread.external_id != pending.external_id && reread.external_id != original {
+        return Err(Halt::Moved(reread.external_id));
     }
     held(target, ports.clock)?;
     ports
@@ -144,7 +152,8 @@ fn cas_halt<F, C>(step: OpenStep, error: CompareAndSetError<F>) -> Halt<F, C> {
     }
 }
 
-/// Whether the lock's lease is still live now; a write is made only then (R3-09).
+/// Whether the lock's lease is still live now; a write starts only then (R3-09). The call it
+/// guards can still outlast the lease (#290).
 fn held<F, C: OpenClock>(target: &Target<'_>, clock: &C) -> Result<(), Halt<F, C::Error>> {
     let now = clock.now().map_err(Halt::Clock)?;
     if now < target.hold.lease.expires_at {

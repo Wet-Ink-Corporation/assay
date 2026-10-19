@@ -16,6 +16,8 @@ use crate::open_fakes::{FakeClock, FakeGitHub, ForgeCall, GitHubDown, Reopen};
 /// The triggering workflow run's `created_at`: the push clock.
 const CREATED: &str = "2026-10-12T09:29:00.000Z";
 const NOW: &str = "2026-10-12T09:30:00.000Z";
+/// The instant a lock taken at [`NOW`] expires: no write starts then.
+const EXPIRED: &str = "2026-10-12T09:32:00.000Z";
 const VERDICT: &str = "assay / verdict";
 
 /// The publish lock of head `bbbb…` in repository 42.
@@ -415,12 +417,142 @@ fn a_lock_whose_lease_ran_out_before_the_write_aborts_without_a_write() {
         matches!(
             opened,
             Err(OpenError::LockExpired {
-                unlock: Unlock::Released | Unlock::Failed(_)
+                unlock: Unlock::Released
             })
         ),
         "{opened:?}"
     );
     assert_eq!(forge.calls(), Vec::new());
+}
+
+#[test]
+fn a_lease_that_runs_out_before_the_restamp_writes_nothing() {
+    let refs = MemoryRefs::default();
+    let forge = FakeGitHub::new(&refs, &lock_ref());
+    forge.holding(VERDICT, "pending:20:1", CheckStatus::InProgress);
+    let ledger = ledger_with_pushes(1);
+    let clock = FakeClock::reading(&[NOW, NOW, EXPIRED]);
+    let case = Case::new(30, OpenTrigger::Dispatch);
+
+    let opened = open(&case.request(), &ports(&forge, &ledger, &refs, &clock));
+
+    assert!(
+        matches!(
+            opened,
+            Err(OpenError::LockExpired {
+                unlock: Unlock::Released
+            })
+        ),
+        "{opened:?}"
+    );
+    assert_eq!(updates(&forge.calls()), 0, "{:?}", forge.calls());
+}
+
+#[test]
+fn a_lease_that_runs_out_before_the_read_back_reads_nothing_more() {
+    let refs = MemoryRefs::default();
+    let forge = FakeGitHub::new(&refs, &lock_ref()).reopening(Reopen::KeepsCompleted);
+    forge.holding(VERDICT, &"0f".repeat(32), CheckStatus::Completed);
+    let ledger = ledger_with_pushes(1);
+    let clock = FakeClock::reading(&[NOW, NOW, NOW, EXPIRED]);
+    let case = Case::new(30, OpenTrigger::Reopened);
+
+    let opened = open(&case.request(), &ports(&forge, &ledger, &refs, &clock));
+
+    assert!(
+        matches!(opened, Err(OpenError::LockExpired { .. })),
+        "{opened:?}"
+    );
+    let calls = forge.calls();
+    assert!(
+        matches!(
+            calls.as_slice(),
+            [ForgeCall::FindOrCreate { .. }, ForgeCall::Update { .. }]
+        ),
+        "no read-back, which could create: {calls:?}"
+    );
+}
+
+#[test]
+fn a_lease_that_runs_out_before_the_re_deciding_write_makes_only_the_reopen_write() {
+    let refs = MemoryRefs::default();
+    let forge = FakeGitHub::new(&refs, &lock_ref()).reopening(Reopen::KeepsCompleted);
+    forge.holding(VERDICT, &"0f".repeat(32), CheckStatus::Completed);
+    let ledger = ledger_with_pushes(1);
+    let clock = FakeClock::reading(&[NOW, NOW, NOW, NOW, EXPIRED]);
+    let case = Case::new(30, OpenTrigger::Reopened);
+
+    let opened = open(&case.request(), &ports(&forge, &ledger, &refs, &clock));
+
+    assert!(
+        matches!(opened, Err(OpenError::LockExpired { .. })),
+        "{opened:?}"
+    );
+    assert_eq!(updates(&forge.calls()), 1, "{:?}", forge.calls());
+}
+
+#[test]
+fn a_stamp_moved_between_the_reopen_and_the_read_back_is_refused() {
+    let refs = MemoryRefs::default();
+    let forge = FakeGitHub::new(&refs, &lock_ref())
+        .reopening(Reopen::Rejects)
+        .rival_stamps_after("pending:50:1");
+    forge.holding(VERDICT, &"0f".repeat(32), CheckStatus::Completed);
+    let ledger = ledger_with_pushes(1);
+    let clock = FakeClock::reading(&[NOW]);
+    let case = Case::new(30, OpenTrigger::Reopened);
+
+    let opened = open(&case.request(), &ports(&forge, &ledger, &refs, &clock));
+
+    assert!(
+        matches!(&opened, Err(OpenError::Moved { found, .. }) if found == "pending:50:1"),
+        "{opened:?}"
+    );
+    assert_eq!(
+        updates(&forge.calls()),
+        1,
+        "no re-deciding write over the rival"
+    );
+    assert_eq!(
+        forge
+            .checks()
+            .first()
+            .map(|check| check.external_id.as_str()),
+        Some("pending:50:1")
+    );
+}
+
+#[test]
+fn a_delayed_older_run_restamps_a_check_a_newer_run_already_decided() {
+    // A decision key names no run (06 §4 allows this limit, wi-ccfc9c): run 30, delayed past
+    // run 40's decision on the same head, takes the check back to pending.
+    let refs = MemoryRefs::default();
+    let forge = FakeGitHub::new(&refs, &lock_ref());
+    forge.holding(VERDICT, &"0f".repeat(32), CheckStatus::Completed);
+    let ledger = ledger_with_pushes(2);
+    let clock = FakeClock::reading(&[NOW]);
+    let case = Case::new(30, OpenTrigger::Dispatch);
+
+    let opened = open(&case.request(), &ports(&forge, &ledger, &refs, &clock)).expect("opened");
+
+    assert_eq!(opened.stamped, Stamped::Reopened);
+    assert_eq!(
+        shown(&forge),
+        [(
+            CheckStatus::InProgress,
+            "pending:30:2".to_owned(),
+            CheckState::InProgress,
+            "assay: pending".to_owned(),
+        )]
+    );
+}
+
+/// How many `update_check_if` calls `calls` holds.
+fn updates(calls: &[ForgeCall]) -> usize {
+    calls
+        .iter()
+        .filter(|call| matches!(call, ForgeCall::Update { .. }))
+        .count()
 }
 
 #[test]

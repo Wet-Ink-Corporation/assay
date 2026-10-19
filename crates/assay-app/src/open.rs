@@ -261,6 +261,10 @@ pub type OpenOutcome<F, L, R, C> =
 /// (see [`Stamped`]); the lock is released by compare-and-set. Forge calls are retried by the
 /// adapter; `open` aborts on the error it returns.
 ///
+/// No check write starts at or past the lock lease's expiry ([`OpenError::LockExpired`]). A
+/// forge call already started is not bounded by the lease, so it can still land after it
+/// (deadline-bounded forge calls are #290).
+///
 /// The lock is re-entrant within one workflow run: a live lock of `request.run_uid` is taken as
 /// held at its existing commit, with its own expiry (#288). So `open` and `decide`'s publish
 /// must never hold it at the same time within one run; the workflow orders them.
@@ -289,8 +293,8 @@ pub fn open<F: Forge, L: Ledger, R: LedgerRefs, C: OpenClock>(
     };
     let stamped = check::stamp(&target, ports);
     let unlock = match release_lock(ports.refs, &hold) {
-        // `NotHeld`: the lease ran out after the last write (each write first checked it was
-        // live) and another writer reaped it, so nothing of this run's is left to release.
+        // `NotHeld`: the lease ran out after the last write started (each write first checked
+        // it was live) and another writer reaped it, so nothing of this run's is left to release.
         Ok(Released::Released | Released::NotHeld) => Unlock::Released,
         Err(error) => Unlock::Failed(error),
     };
