@@ -72,8 +72,12 @@ pub enum GitOperation {
     RangeDiff,
     /// `git rev-list --count`: how many commits a range holds.
     RevListCount,
-    /// `git rev-parse`: a revision's commit, or a path inside a developer's repository (local
-    /// mode, 02 §6).
+    /// `git rev-list --parents`: a range's commits with their parents (the eligibility rule).
+    RevListParents,
+    /// `git merge-tree --write-tree --no-messages`: the tree a conflict-free merge writes.
+    MergeTree,
+    /// `git rev-parse`: a revision's commit or tree, or a path inside a developer's repository
+    /// (local mode, 02 §6).
     RevParse,
     /// `git read-tree`: load a commit's tree into a scratch index.
     ReadTree,
@@ -123,6 +127,8 @@ impl GitOperation {
                 "--no-textconv",
             ],
             Self::RevListCount => &["rev-list", "--count"],
+            Self::RevListParents => &["rev-list", "--parents"],
+            Self::MergeTree => &["merge-tree", "--write-tree", "--no-messages"],
             Self::RevParse => &["rev-parse"],
             Self::ReadTree => &["read-tree"],
             Self::AddAll => &["add", "--all"],
@@ -187,6 +193,8 @@ impl fmt::Display for GitOperation {
             Self::IsAncestor => "merge-base --is-ancestor",
             Self::RangeDiff => "range-diff",
             Self::RevListCount => "rev-list --count",
+            Self::RevListParents => "rev-list --parents",
+            Self::MergeTree => "merge-tree",
             Self::RevParse => "rev-parse",
             Self::ReadTree => "read-tree",
             Self::AddAll => "add",
@@ -354,7 +362,7 @@ mod tests {
     use crate::process::{Limits, run};
 
     /// Every operation.
-    const ALL: [GitOperation; 20] = [
+    const ALL: [GitOperation; 22] = [
         GitOperation::Init,
         GitOperation::Fetch,
         GitOperation::VerifyCommit,
@@ -366,6 +374,8 @@ mod tests {
         GitOperation::IsAncestor,
         GitOperation::RangeDiff,
         GitOperation::RevListCount,
+        GitOperation::RevListParents,
+        GitOperation::MergeTree,
         GitOperation::RevParse,
         GitOperation::ReadTree,
         GitOperation::AddAll,
@@ -619,62 +629,69 @@ mod tests {
             .map(|operation| (operation, operation.leading_args()))
             .collect();
 
-        let expected: [(GitOperation, &[&str]); 20] = [
-            (GitOperation::Init, &["init", "--bare", "--quiet"]),
-            (
-                GitOperation::Fetch,
-                &[
-                    "fetch",
-                    "--quiet",
-                    "--no-tags",
-                    "--no-recurse-submodules",
-                    "--no-write-fetch-head",
-                    "--no-auto-gc",
-                    "--no-auto-maintenance",
-                ],
-            ),
-            (GitOperation::VerifyCommit, &["cat-file", "-e"]),
-            (
-                GitOperation::Diff,
-                &["diff", "--no-ext-diff", "--no-textconv", "--no-color"],
-            ),
-            (GitOperation::CheckAttr, &["check-attr", "-z", "--stdin"]),
-            (GitOperation::ListTree, &["ls-tree", "-r", "-z", "-l"]),
-            (GitOperation::ReadBlobs, &["cat-file", "--batch"]),
-            (
-                GitOperation::HashBlob,
-                &["hash-object", "--no-filters", "--stdin"],
-            ),
-            (GitOperation::IsAncestor, &["merge-base", "--is-ancestor"]),
-            (
-                GitOperation::RangeDiff,
-                &[
-                    "range-diff",
-                    "--no-color",
-                    "--no-notes",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                ],
-            ),
-            (GitOperation::RevListCount, &["rev-list", "--count"]),
-            (GitOperation::RevParse, &["rev-parse"]),
-            (GitOperation::ReadTree, &["read-tree"]),
-            (GitOperation::AddAll, &["add", "--all"]),
-            (GitOperation::WriteTree, &["write-tree"]),
-            (GitOperation::CommitTree, &["commit-tree"]),
-            (GitOperation::CheckoutIndex, &["checkout-index", "--all"]),
-            (
-                GitOperation::ConfigPath,
-                &["config", "--null", "--path", "--get"],
-            ),
-            (
-                GitOperation::ConfigBool,
-                &["config", "--null", "--bool", "--get"],
-            ),
-            (GitOperation::ListIndex, &["ls-files", "-t", "-z"]),
-        ];
-        assert_eq!(leading, expected);
+        assert_eq!(leading, LEADING);
     }
+
+    /// Each operation's subcommand and fixed flags, in `ALL`'s order.
+    const LEADING: [(GitOperation, &[&str]); 22] = [
+        (GitOperation::Init, &["init", "--bare", "--quiet"]),
+        (
+            GitOperation::Fetch,
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-recurse-submodules",
+                "--no-write-fetch-head",
+                "--no-auto-gc",
+                "--no-auto-maintenance",
+            ],
+        ),
+        (GitOperation::VerifyCommit, &["cat-file", "-e"]),
+        (
+            GitOperation::Diff,
+            &["diff", "--no-ext-diff", "--no-textconv", "--no-color"],
+        ),
+        (GitOperation::CheckAttr, &["check-attr", "-z", "--stdin"]),
+        (GitOperation::ListTree, &["ls-tree", "-r", "-z", "-l"]),
+        (GitOperation::ReadBlobs, &["cat-file", "--batch"]),
+        (
+            GitOperation::HashBlob,
+            &["hash-object", "--no-filters", "--stdin"],
+        ),
+        (GitOperation::IsAncestor, &["merge-base", "--is-ancestor"]),
+        (
+            GitOperation::RangeDiff,
+            &[
+                "range-diff",
+                "--no-color",
+                "--no-notes",
+                "--no-ext-diff",
+                "--no-textconv",
+            ],
+        ),
+        (GitOperation::RevListCount, &["rev-list", "--count"]),
+        (GitOperation::RevListParents, &["rev-list", "--parents"]),
+        (
+            GitOperation::MergeTree,
+            &["merge-tree", "--write-tree", "--no-messages"],
+        ),
+        (GitOperation::RevParse, &["rev-parse"]),
+        (GitOperation::ReadTree, &["read-tree"]),
+        (GitOperation::AddAll, &["add", "--all"]),
+        (GitOperation::WriteTree, &["write-tree"]),
+        (GitOperation::CommitTree, &["commit-tree"]),
+        (GitOperation::CheckoutIndex, &["checkout-index", "--all"]),
+        (
+            GitOperation::ConfigPath,
+            &["config", "--null", "--path", "--get"],
+        ),
+        (
+            GitOperation::ConfigBool,
+            &["config", "--null", "--bool", "--get"],
+        ),
+        (GitOperation::ListIndex, &["ls-files", "-t", "-z"]),
+    ];
 
     #[test]
     fn only_a_setting_lookup_with_user_dirs_reads_the_developer_s_config() {

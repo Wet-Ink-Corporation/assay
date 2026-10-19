@@ -6,6 +6,7 @@
 use std::num::NonZeroU64;
 
 use crate::config::CommitId;
+use crate::eligibility::Timestamp;
 use crate::publish::{CheckName, CheckRun, CheckRunId, CheckUpdate, CommentId};
 use crate::status::UserId;
 
@@ -135,7 +136,8 @@ pub enum Upserted {
 pub struct CommitIdentity {
     /// The commit.
     pub commit: CommitId,
-    /// Its authors, co-authors included, as GitHub lists them.
+    /// Its authors, co-authors included, as GitHub lists them: the git author first, then the
+    /// `Co-authored-by:` trailers. The eligibility rule reads the first only (04 §5).
     pub authors: Vec<Actor>,
     /// Its committer.
     pub committer: Actor,
@@ -161,6 +163,8 @@ pub struct Review {
     pub state: ReviewState,
     /// The commit it was submitted on; `None` when GitHub reports none.
     pub commit: Option<CommitId>,
+    /// When it was submitted; `None` for a pending review, which GitHub gives no time.
+    pub submitted_at: Option<Timestamp>,
 }
 
 /// A review's state.

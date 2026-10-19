@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:assay:schema:run-inputs:1",
   "title": "assay.run-inputs/1",
-  "description": "The bundle `decide` persists as `run-inputs.json` in its own artifact, the one the evidence pointer's sha256 names (docs/architecture/02-architecture.md §5, 03-contracts.md §6a): every authenticated input document as its job published it, the decision inputs, the decision, the run's events and the findings it carries into the next run. Unknown fields are rejected.",
+  "description": "The bundle `decide` persists as `run-inputs.json` in its own artifact, the one the evidence pointer's sha256 names (docs/architecture/02-architecture.md §5, 03-contracts.md §6a): every authenticated input document as its job published it, the decision inputs, the decision, the run's events, the findings it carries into the next run and the GitHub state snapshot. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema", "run_uid", "evidence_key", "documents", "inputs", "rubric_version", "decision", "events",
-    "carry"
+    "carry", "github"
   ],
   "properties": {
     "schema": { "const": "assay.run-inputs/1" },
@@ -77,9 +77,123 @@
           }
         }
       }
+    },
+    "github": {
+      "description": "The GitHub state snapshot the decision's `inputs` were built from (04-pipeline.md §5, 02 §5, #58): the eligibility lists judged by (base `.assay/owners` and `.assay/agents`, for decide-only narrowed by the protected base's tip), the PR author and head, what the git range and the push records said, the push clock, every reviewer's standing approval of the head and every command record with what this decision made of it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lists", "author", "head_sha", "range", "pushers", "push_clock", "approvals", "commands"],
+      "properties": {
+        "lists": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["owners", "approvers", "maintainers", "agents"],
+          "properties": {
+            "owners": { "$ref": "#/$defs/identities" },
+            "approvers": { "$ref": "#/$defs/identities" },
+            "maintainers": { "$ref": "#/$defs/identities" },
+            "agents": { "$ref": "#/$defs/identities" }
+          }
+        },
+        "author": { "$ref": "#/$defs/userId" },
+        "head_sha": { "$ref": "#/$defs/commit" },
+        "range": {
+          "description": "Rule (b): `within` (at most 250 commits) with the GitHub users who authored (git author only) or committed a counted commit, clean merges from base apart, and whether a counted commit is attributed to no GitHub user; or `needs-split`.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "users", "unattributed"],
+              "properties": {
+                "status": { "const": "within" },
+                "users": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/userId" } },
+                "unattributed": { "type": "boolean" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status"],
+              "properties": { "status": { "const": "needs-split" } }
+            }
+          ]
+        },
+        "pushers": {
+          "description": "Rule (c): the senders of push records for the PR, clean merges from base apart.",
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/userId" }
+        },
+        "push_clock": {
+          "description": "The `at` of the latest push record whose `after` is the head; null when none names it.",
+          "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+        },
+        "approvals": {
+          "description": "Each reviewer's latest review of the head that is not a comment, when it is an approval, and whether it counted.",
+          "type": "array",
+          "maxItems": 3000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["review", "reviewer", "submitted_at", "status"],
+            "properties": {
+              "review": { "$ref": "#/$defs/userId" },
+              "reviewer": { "$ref": "#/$defs/userId" },
+              "submitted_at": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+              "status": { "enum": ["counted", "before-push", "no-push-clock", "unsubmitted", "ineligible"] },
+              "reason": { "$ref": "#/$defs/ineligible" }
+            }
+          }
+        },
+        "commands": {
+          "description": "Every command record of the PR (`commands/<repo_id>/<pr>.jsonl`), with its status: `void` (and why) when its comment no longer stands, else whether it applies to this head.",
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["comment_id", "actor_id", "created_at", "head_sha", "body_sha256", "command", "args", "status"],
+            "properties": {
+              "comment_id": { "$ref": "#/$defs/userId" },
+              "actor_id": { "$ref": "#/$defs/userId" },
+              "created_at": { "$ref": "#/$defs/timestamp" },
+              "head_sha": { "$ref": "#/$defs/commit" },
+              "body_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+              "command": { "enum": ["recheck", "waive", "override", "dismiss", "retry", "weigh-in-ack"] },
+              "args": { "type": "array", "maxItems": 3, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },
+              "status": { "enum": ["valid", "void", "other-head", "ineligible", "before-push-clock"] },
+              "reason": {
+                "anyOf": [{ "enum": ["deleted", "edited", "hash", "author", "app"] }, { "$ref": "#/$defs/ineligible" }]
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
+    "userId": { "description": "A positive numeric GitHub id.", "type": "integer", "minimum": 1 },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "identities": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "login"],
+        "properties": {
+          "id": { "$ref": "#/$defs/userId" },
+          "login": { "type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$" }
+        }
+      }
+    },
+    "ineligible": {
+      "enum": ["not-privileged", "maintainer", "agent", "author", "in-range", "pusher", "unattributed-range", "range-too-large"]
+    },
     "nonEmpty": { "type": "string", "minLength": 1 },
     "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
     "line": { "type": "integer", "minimum": 1 },

@@ -39,6 +39,7 @@ pub(crate) use self::sanitise::Repository;
 use self::write::Pending;
 use crate::config::Sha256Digest;
 use crate::decide::{AuthenticatedRun, Refusal};
+use crate::eligibility::GitHubState;
 use crate::plan::PullRequestEvent;
 use crate::rereview::CarrySet;
 
@@ -89,6 +90,9 @@ pub struct Decided<'a> {
     /// The findings this run carries into the next (#224, [`next_carry`](crate::next_carry)),
     /// recorded in the bundle for [`prior_carry`](crate::prior_carry) to read back.
     pub carry: &'a CarrySet,
+    /// The GitHub state snapshot `inputs` was built from (#58): recorded in the bundle, and its
+    /// approvals ignored for timing shown in the summary.
+    pub github: &'a GitHubState,
     /// What the run's LLM stage cost.
     pub cost: Aeu,
 }

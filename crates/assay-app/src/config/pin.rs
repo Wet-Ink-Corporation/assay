@@ -65,7 +65,7 @@ impl fmt::Display for Sha256Digest {
 }
 
 /// A full git commit id: 40 lowercase hexadecimal digits.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CommitId(String);
 
 impl CommitId {

@@ -10,7 +10,8 @@ use std::path::PathBuf;
 
 use assay_app::{
     ArtifactJob, BUNDLE_FILE, BundleError, CheckConclusion, CheckState, Contract,
-    ContractValidator, LlmEvidence, PersistFailure, Sha256Digest, VerifierTier, next_carry, verify,
+    ContractValidator, LlmEvidence, PersistFailure, ReviewState, Sha256Digest, VerifierTier,
+    next_carry, verify,
 };
 use assay_domain::{
     Deferral, Event, EventPayload, EventSchema, FileChange, Lines, LlmStage, NotRunReason,
@@ -19,6 +20,7 @@ use assay_domain::{
 use serde_json::{Value, json};
 
 use crate::decide_fakes::Scenario;
+use crate::eligibility_fakes::{APPROVER, By, CONTRIBUTOR, FIRST, World};
 use crate::plan_fakes::{FakeError, FakePr, run_uid};
 use crate::publish_fakes::{Call, FakeWorld};
 use crate::publish_support::{NAME, Run, STAMP, stamped, written};
@@ -106,8 +108,15 @@ fn the_run_inputs_fixtures_pass_or_fail_their_schema_where_listed() -> Result<()
                 "additionalProperties"
             ),
             at("carried-uppercase-fp", "/carry/findings/0/fp", "pattern"),
+            at("github-push-clock-not-utc", "/github/push_clock", "oneOf"),
+            at(
+                "github-unknown-approval-status",
+                "/github/approvals/0/status",
+                "enum"
+            ),
             at("missing-carry", "", "required"),
             at("missing-events", "", "required"),
+            at("missing-github", "", "required"),
             at("omitted-unknown-reason", "/carry/omitted/0/reason", "enum"),
             at("unknown-field", "", "additionalProperties"),
             at("unknown-job", "/documents/0/job", "enum"),
@@ -253,6 +262,47 @@ fn the_pointer_s_digest_is_the_uploaded_bundle_s() -> Result<(), Box<dyn Error>>
         text.contains(digest.as_str()),
         "the text projects the pointer: {text}"
     );
+    Ok(())
+}
+
+/// #58: the bundle records the GitHub state snapshot (lists, range, pushers, push clock,
+/// approvals) within its schema.
+#[test]
+fn the_bundle_records_the_github_state_snapshot_within_its_schema() -> Result<(), Box<dyn Error>> {
+    let mut run = Run::new()?;
+    let mut pr = World::opened_by(CONTRIBUTOR);
+    pr.commit('2', &[FIRST], By::user(CONTRIBUTOR));
+    pr.review(APPROVER, ReviewState::Approved, ('2', 4));
+    pr.push((FIRST, '2'), CONTRIBUTOR, 5);
+    pr.head('2');
+    run.github = pr.state()?;
+    let world = stamped()?;
+
+    written(run.publish(&world))?;
+
+    let bundle = bundle(&world)?;
+    assert_eq!(violations(&bundle)?, Vec::<(String, String)>::new());
+    let github = &bundle["github"];
+    assert_eq!(
+        github["lists"]["maintainers"],
+        json!([{ "id": 124_330_161, "login": "Ryan-Britton" }])
+    );
+    assert_eq!(
+        github["range"],
+        json!({ "status": "within", "users": [CONTRIBUTOR], "unattributed": false })
+    );
+    assert_eq!(github["pushers"], json!([CONTRIBUTOR]));
+    assert_eq!(github["push_clock"], json!("2026-10-13T09:05:00Z"));
+    assert_eq!(
+        github["approvals"],
+        json!([{
+            "review": 1,
+            "reviewer": APPROVER,
+            "submitted_at": "2026-10-13T09:04:00Z",
+            "status": "before-push"
+        }])
+    );
+    assert_eq!(github["commands"], json!([]));
     Ok(())
 }
 

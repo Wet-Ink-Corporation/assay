@@ -3,8 +3,8 @@
 use std::error::Error;
 
 use assay_app::{
-    AuthenticatedRun, CarrySet, DecideRequest, Decided, Publication, PublishError, PublishPorts,
-    Published, Snapshot, Target, Verdict, Written, publish,
+    AuthenticatedRun, CarrySet, CommitRange, DecideRequest, Decided, GitHubState, Publication,
+    PublishError, PublishPorts, Published, Snapshot, Target, Verdict, Written, publish,
 };
 use assay_domain::{
     Aeu, Authorship, DecisionInputs, Event, LlmStage, OwnerApproval, Readiness, RequiredRole,
@@ -12,6 +12,7 @@ use assay_domain::{
 };
 
 use crate::decide_fakes::{Scenario, authenticated};
+use crate::eligibility_fakes::{CONTRIBUTOR, World};
 use crate::plan_fakes::{FakeError, HEAD};
 use crate::publish_fakes::FakeWorld;
 use crate::support::rubric_v1;
@@ -42,6 +43,9 @@ pub(crate) struct Run {
     pub(crate) carry: CarrySet,
     /// What the run spent, shown in the summary but not part of the bundle.
     pub(crate) cost: Aeu,
+    /// The GitHub state snapshot: a contributor's one-commit PR nobody approved, unless a test
+    /// replaces it.
+    pub(crate) github: GitHubState,
 }
 
 impl Run {
@@ -62,6 +66,7 @@ impl Run {
             events: Vec::new(),
             carry: CarrySet::default(),
             cost: Aeu::from_micros(740_000),
+            github: World::opened_by(CONTRIBUTOR).state()?,
         })
     }
 
@@ -84,6 +89,7 @@ impl Run {
                 inputs: &self.inputs,
                 events: &self.events,
                 carry: &self.carry,
+                github: &self.github,
                 cost: self.cost,
             }),
         };
@@ -125,6 +131,7 @@ fn inputs(run: &AuthenticatedRun) -> DecisionInputs {
             authorship: Authorship::Other,
             readiness: Readiness::Ready,
             requeues: 0,
+            commits: CommitRange::Within,
         }),
         gates: run.gates().to_vec(),
         weigh_in: WeighIn::NotRequired,

@@ -7,11 +7,12 @@ use std::error::Error;
 
 use assay_app::{
     CheckConclusion, CheckName, CheckState, CheckStatus, ForgeStep, JobResult, Publication,
-    PublishError, Published, SUMMARY_MARKER, Stale, Unlock, Verdict, publish,
+    PublishError, Published, ReviewState, SUMMARY_MARKER, Stale, Unlock, Verdict, publish,
 };
 use assay_domain::{Aeu, Deferral, InfraPolicy, LlmStage, Override, OverrideScope, decide};
 
 use crate::decide_fakes::{Scenario, refusal};
+use crate::eligibility_fakes::{APPROVER, By, CONTRIBUTOR, FIRST, World};
 use crate::plan_fakes::{FakeError, HEAD};
 use crate::publish_fakes::{Author, Call, FakeComment, FakeWorld};
 use crate::publish_support::{KEY, NAME, Run, STAMP, ports, stamped, written};
@@ -617,6 +618,43 @@ fn an_unchanged_summary_comment_is_not_rewritten() -> Result<(), Box<dyn Error>>
         !writes.contains(&Call::UpdateSummary) && !writes.contains(&Call::CreateSummary),
         "{writes:?}"
     );
+    Ok(())
+}
+
+/// P10 (#58): an approval ignored for timing is named in the summary, with both times.
+#[test]
+fn an_approval_before_the_push_is_reported_as_ignored() -> Result<(), Box<dyn Error>> {
+    let mut run = Run::new()?;
+    let mut pr = World::opened_by(CONTRIBUTOR);
+    pr.commit('2', &[FIRST], By::user(CONTRIBUTOR));
+    pr.review(APPROVER, ReviewState::Approved, ('2', 4));
+    pr.push((FIRST, '2'), CONTRIBUTOR, 5);
+    pr.head('2');
+    run.github = pr.state()?;
+    let world = stamped()?;
+
+    written(run.publish(&world))?;
+
+    let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
+    assert!(summary.contains("Ignored approvals:"), "{summary}");
+    assert!(
+        summary.contains(
+            "approval at 2026-10-13T09:04:00Z ignored: before push at 2026-10-13T09:05:00Z"
+        ),
+        "{summary}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_summary_without_ignored_approvals_has_no_such_block() -> Result<(), Box<dyn Error>> {
+    let run = Run::new()?;
+    let world = stamped()?;
+
+    written(run.publish(&world))?;
+
+    let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
+    assert!(!summary.contains("Ignored approvals"), "{summary}");
     Ok(())
 }
 

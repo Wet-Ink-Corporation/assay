@@ -76,6 +76,9 @@ pub(crate) struct ReviewDto {
     pub(crate) user: Option<UserDto>,
     pub(crate) state: String,
     pub(crate) commit_id: Option<String>,
+    /// Absent or `null` for a pending review.
+    #[serde(default)]
+    pub(crate) submitted_at: Option<String>,
 }
 
 /// A label.

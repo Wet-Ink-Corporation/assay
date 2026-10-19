@@ -11,6 +11,7 @@ mod dto;
 mod error;
 mod globs;
 mod name;
+mod owners;
 mod pin;
 mod reserved;
 
@@ -26,6 +27,9 @@ use self::dto::{AssayDto, FileDto, PluginDto, StepDto};
 pub use self::error::{ConfigError, TomlError};
 pub use self::globs::{GlobsConfigError, parse_globs};
 pub use self::name::GateName;
+pub use self::owners::{
+    EligibilityLists, Identity, ListFile, ListName, ListsError, MAX_LIST_ENTRIES, MAX_LISTS_BYTES,
+};
 pub use self::pin::{
     CommitId, ParseCommitIdError, ParseDigestError, ParsePinError, Pin, Sha256Digest,
 };

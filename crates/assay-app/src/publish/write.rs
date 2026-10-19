@@ -16,6 +16,7 @@ use super::{
     Stale, Target, Unlock, Written,
 };
 use crate::config::Sha256Digest;
+use crate::eligibility::IgnoredApproval;
 
 /// What one writer publishes.
 pub(super) enum Pending<'w> {
@@ -175,6 +176,7 @@ fn upload<F, L: PublishLedger, B: BundleStore>(
         decision,
         events: decided.events,
         carry: decided.carry,
+        github: decided.github,
     })
     .map_err(PersistFailure::Bundle)?;
     let artifact = &decided.run.record().bundle_artifact;
@@ -311,6 +313,7 @@ fn decided_update<L, B>(
         Some(_) => None,
         None => persist.map(PersistFailure::code),
     };
+    let ignored_approvals: Vec<IgnoredApproval> = decided.github.ignored_approvals().collect();
     let summary = render::summary(&Summary {
         conclusion,
         reasons: &reasons,
@@ -321,6 +324,7 @@ fn decided_update<L, B>(
             degraded: &decision.degraded,
             cost: decided.cost,
             reasons_digest: decision.reasons_digest(),
+            ignored_approvals: &ignored_approvals,
         }),
         warning,
     });
