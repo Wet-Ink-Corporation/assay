@@ -3,6 +3,9 @@
 
 use super::error::ConfigError;
 
+/// The plugin name reserved for `builtin:weigh-in`: a gate report under it is that adapter's.
+pub(crate) const WEIGH_IN_NAME: &str = "weigh-in";
+
 /// A built-in adapter. Its plugin name is reserved: a plugin may take it only when it is that
 /// built-in, so a rubric rule keyed by the name never reads another adapter's findings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,7 +43,7 @@ impl Builtin {
     const fn name(self) -> &'static str {
         match self {
             Self::Temper => "temper",
-            Self::WeighIn => "weigh-in",
+            Self::WeighIn => WEIGH_IN_NAME,
         }
     }
 

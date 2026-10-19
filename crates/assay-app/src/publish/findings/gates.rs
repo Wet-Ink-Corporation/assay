@@ -5,7 +5,7 @@ use std::iter;
 
 use assay_domain::{GateConclusion, GateOutcome, GateReport, Severity};
 
-use crate::config::GateName;
+use crate::config::{GateName, WEIGH_IN_NAME};
 use crate::publish::ports::{CheckConclusion, CheckName, CheckState, CheckUpdate};
 use crate::publish::render;
 
@@ -61,9 +61,20 @@ fn update(name: &GateName, gate: &GateReport, decision_key: &str) -> CheckUpdate
     }
 }
 
-/// The gate's error or skip, its finding counts and its findings, each in a fenced block.
+/// What a non-required Weigh-In gate's summary opens with (04 §9: until D-WI, "the summary
+/// says so"). Its name is reserved for `builtin:weigh-in`, which runs only non-required.
+const WEIGH_IN_EXPERIMENTAL: &str = "Experimental: reports only and never fails. Until \
+     Weigh-In ships `ci-check` (D-WI, #44), G2 is enforced by CP1 (`assay check --local`) and \
+     by convention.";
+
+/// The gate's error or skip, its finding counts and its findings, each in a fenced block; a
+/// non-required Weigh-In gate's opens with [`WEIGH_IN_EXPERIMENTAL`].
 fn summary(gate: &GateReport) -> String {
     let mut lines = Vec::new();
+    if gate.name == WEIGH_IN_NAME && !gate.required {
+        lines.push(WEIGH_IN_EXPERIMENTAL.to_owned());
+        lines.push(String::new());
+    }
     match &gate.outcome {
         GateOutcome::Ran { .. } => {}
         GateOutcome::Error { detail } => {
@@ -100,4 +111,45 @@ fn summary(gate: &GateReport) -> String {
     });
     render::block(&mut lines, gate.findings.len(), items);
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use assay_domain::{GateConclusion, GateOutcome, GateReport, StepAttribution};
+
+    use super::summary;
+
+    fn report(name: &str, required: bool) -> GateReport {
+        GateReport {
+            name: name.to_owned(),
+            required,
+            outcome: GateOutcome::Ran {
+                conclusion: GateConclusion::Pass,
+                steps: StepAttribution::Unknown,
+            },
+            findings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_non_required_weigh_in_summary_says_g2_is_enforced_by_cp1_until_d_wi() {
+        let text = summary(&report("weigh-in", false));
+
+        assert!(
+            text.starts_with(
+                "Experimental: reports only and never fails. Until Weigh-In ships `ci-check` \
+                 (D-WI, #44), G2 is enforced by CP1 (`assay check --local`) and by convention."
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn other_gates_and_a_required_weigh_in_carry_no_experimental_note() {
+        for (name, required) in [("temper", false), ("temper", true), ("weigh-in", true)] {
+            let text = summary(&report(name, required));
+
+            assert!(text.starts_with("Findings: "), "{name} {required}: {text}");
+        }
+    }
 }

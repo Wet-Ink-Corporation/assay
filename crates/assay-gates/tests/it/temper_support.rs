@@ -129,6 +129,21 @@ pub(crate) struct FakeRevisions {
     pub(crate) failing_tree: Option<Revision>,
     /// When set, reading the blob listed at this path fails.
     pub(crate) failing_read: Option<String>,
+    /// When set, a read returns one blob fewer than it was asked for.
+    pub(crate) short_read: bool,
+}
+
+impl FakeRevisions {
+    /// Sets `path` on `revision` to an entry of `kind` whose blob is `bytes`.
+    pub(crate) fn insert(
+        &mut self,
+        (revision, path): (Revision, &str),
+        kind: EntryKind,
+        bytes: &[u8],
+    ) {
+        self.files
+            .insert((revision, path.to_owned()), (kind, bytes.to_vec()));
+    }
 }
 
 /// Why the fake would not answer.
@@ -176,7 +191,12 @@ impl RevisionFiles for FakeRevisions {
     }
 
     fn read(&self, entries: &[&TreeEntry]) -> Result<Vec<Vec<u8>>, FakeError> {
-        entries
+        let asked = if self.short_read {
+            entries.split_last().map_or(entries, |(_, rest)| rest)
+        } else {
+            entries
+        };
+        asked
             .iter()
             .map(|entry| {
                 if self.failing_read.as_deref() == Some(entry.path.as_str()) {
