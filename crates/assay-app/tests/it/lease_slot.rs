@@ -6,8 +6,8 @@ use std::thread;
 
 use assay_app::{
     Corruption, LeaseError, LeaseRef, LeaseReservation, LeaseState, MAX_LEASE_MESSAGE_BYTES,
-    MAX_REVIEW_TIMEOUT, Released, SLOT_TTL, Slot, SlotAcquired, acquire_slot, read_slots,
-    reap_expired_slots, release_slot,
+    MAX_REVIEW_TIMEOUT, Released, SLOT_TTL, Slot, SlotAcquired, SlotRequest, acquire_slot,
+    read_slots, reap_expired_slots, release_slot,
 };
 use assay_domain::Aeu;
 
@@ -162,6 +162,29 @@ fn a_rival_reaping_first_leaves_us_on_the_next_slot() {
 }
 
 #[test]
+fn a_retry_after_a_creation_that_landed_but_failed_holds_the_same_slot() {
+    let refs = MemoryRefs::default().create_lands_then_fails();
+    let lost = acquire_slot(&refs, &slot_request(1), at(NOW));
+    assert!(matches!(lost, Err(LeaseError::Refs(_))), "{lost:?}");
+    let (commit, _) = refs.get(SLOT_0).expect("the creation landed");
+
+    let retry = acquire_slot(&refs, &slot_request(1), at("2026-10-12T09:31:00.000Z"))
+        .expect("the store is up");
+
+    let SlotAcquired::Held(hold) = retry.acquired else {
+        panic!("the run's own live lease is held: {retry:?}");
+    };
+    assert_eq!((hold.slot, &hold.lease_commit), (slot(0), &commit));
+    assert_eq!(
+        hold.lease.expires_at,
+        at("2026-10-12T10:15:00.000Z"),
+        "the lease the ref carries, not the retry's"
+    );
+    assert_eq!(retry.reaped, []);
+    assert_eq!(refs.names(), [SLOT_0], "no second slot is taken");
+}
+
+#[test]
 fn release_deletes_the_lease_it_holds() {
     let refs = MemoryRefs::default();
     let acquisition = acquire_slot(&refs, &slot_request(1), at(NOW)).expect("the store is up");
@@ -198,14 +221,29 @@ fn a_stale_holder_cannot_release_a_newer_holders_lease() {
 fn a_lease_assay_did_not_write_fails_the_acquisition_closed() {
     let canonical = lease_line(9, "2026-10-12T09:00:00.000Z");
     let refused = [
-        canonical.replace(r#""pr":7"#, r#""pr":7,"extra":1"#),
-        canonical.replace(r#","repo""#, r#", "repo""#),
-        canonical.replace("ledger-lease/1", "ledger-lease/2"),
-        canonical.replace("acme/widgets", "acme/.."),
-        format!("{canonical}\n\n"),
-        "x".repeat(MAX_LEASE_MESSAGE_BYTES + 1),
+        (
+            canonical.replace(r#""pr":7"#, r#""pr":7,"extra":1"#),
+            Corruption::Shape,
+        ),
+        (
+            canonical.replace(r#","repo""#, r#", "repo""#),
+            Corruption::NotCanonical,
+        ),
+        (
+            canonical.replace("ledger-lease/1", "ledger-lease/2"),
+            Corruption::Schema,
+        ),
+        (
+            canonical.replace("acme/widgets", "acme/.."),
+            Corruption::Field("repo"),
+        ),
+        (format!("{canonical}\n\n"), Corruption::NotCanonical),
+        (
+            "x".repeat(MAX_LEASE_MESSAGE_BYTES + 1),
+            Corruption::LongLine,
+        ),
     ];
-    for message in refused {
+    for (message, expected) in refused {
         let refs = MemoryRefs::default();
         refs.holding(SLOT_0, &message);
 
@@ -215,7 +253,7 @@ fn a_lease_assay_did_not_write_fails_the_acquisition_closed() {
             panic!("{message:?} must be refused: {acquisition:?}");
         };
         assert_eq!(name, LeaseRef::slot(slot(0)));
-        assert_ne!(problem, Corruption::Duplicate, "{message:?}");
+        assert_eq!(problem, expected, "{message:?}");
         assert!(
             !refs
                 .calls()
@@ -225,6 +263,46 @@ fn a_lease_assay_did_not_write_fails_the_acquisition_closed() {
         );
         assert_eq!(refs.names(), [SLOT_0], "nothing else is taken: {message:?}");
     }
+}
+
+#[test]
+fn a_request_whose_lease_its_reader_would_refuse_writes_nothing() {
+    let refs = MemoryRefs::default();
+    let request = SlotRequest {
+        repo: "acme/..".to_owned(),
+        ..slot_request(1)
+    };
+
+    let acquisition = acquire_slot(&refs, &request, at(NOW));
+
+    assert!(
+        matches!(
+            acquisition,
+            Err(LeaseError::Invalid {
+                problem: Corruption::Field("repo")
+            })
+        ),
+        "{acquisition:?}"
+    );
+    assert_eq!(refs.calls(), []);
+}
+
+#[test]
+fn a_lease_that_would_expire_after_9999_writes_nothing() {
+    let refs = MemoryRefs::default();
+
+    let acquisition = acquire_slot(&refs, &slot_request(1), at("9999-12-31T23:59:59.000Z"));
+
+    assert!(
+        matches!(
+            acquisition,
+            Err(LeaseError::Invalid {
+                problem: Corruption::Field("expires_at")
+            })
+        ),
+        "{acquisition:?}"
+    );
+    assert_eq!(refs.calls(), []);
 }
 
 #[test]
@@ -290,8 +368,10 @@ fn a_store_that_cannot_be_reached_is_an_error() {
     );
 }
 
+/// A pin of the two constants and their order only: that the `review` job's `timeout-minutes`
+/// is at most [`MAX_REVIEW_TIMEOUT`] is the workflow's, and is not checked here.
 #[test]
-fn a_live_lease_outlasts_the_review_job() {
+fn the_slot_ttl_and_review_timeout_constants_are_pinned_in_order() {
     assert_eq!(SLOT_TTL.as_secs(), 45 * 60);
     assert_eq!(MAX_REVIEW_TIMEOUT.as_secs(), 40 * 60);
     assert!(

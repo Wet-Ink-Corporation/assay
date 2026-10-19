@@ -13,7 +13,9 @@ use crate::ledger::Corruption;
 #[derive(Debug, Error)]
 pub enum LeaseError<E> {
     /// The ledger repository's refs could not be read or written; a deletion or creation may
-    /// or may not have happened.
+    /// or may not have happened. It may also follow a completed reap of an expired lease by
+    /// the same operation, which is then reported nowhere: the reconcile must not rely on an
+    /// operation's `reaped` list to find every reaped lease.
     #[error("the ledger refs could not be read or written")]
     Refs(#[source] E),
     /// The ref's message breaks a rule of its contract; it was neither reaped nor taken over.

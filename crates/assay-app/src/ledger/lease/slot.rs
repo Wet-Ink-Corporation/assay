@@ -119,19 +119,27 @@ impl Expiring for SlotLease {
     fn expires_at(&self) -> LedgerTime {
         self.expires_at
     }
+
+    fn holder(&self) -> RunUid {
+        self.run_uid
+    }
 }
 
 /// Takes a slot for `request` at `now`, trying `slot-0` then `slot-1`.
 ///
 /// It creates the slot's ref at a commit carrying the lease, which expires [`SLOT_TTL`] after
 /// `now`. A slot held by an expired lease is reaped by compare-and-set first (06 §1: `admit`
-/// reaps before it waits).
+/// reaps before it waits). A slot held by a live lease of `request.run_uid` is this run's
+/// already (an earlier acquisition's creation landed though its answer was lost, wi-d55bfe): it
+/// is returned held, with the lease its ref carries, and no second slot is taken.
 ///
 /// # Errors
 ///
 /// [`LeaseError::Invalid`] when the lease would break its contract (nothing is written),
 /// [`LeaseError::Corrupt`] when a slot's lease cannot be read (none is reaped or taken after it),
-/// and [`LeaseError::Refs`] when the refs cannot be read or written.
+/// and [`LeaseError::Refs`] when the refs cannot be read or written. An error may follow a
+/// completed reap, whose lease is then in no [`SlotAcquisition::reaped`]: the reconcile must not
+/// rely on `reaped` to find every reaped lease.
 pub fn acquire_slot<R: LedgerRefs>(
     refs: &R,
     request: &SlotRequest,
@@ -155,6 +163,7 @@ pub fn acquire_slot<R: LedgerRefs>(
             name: &name,
             message: &message,
             now,
+            holder: request.run_uid,
         };
         let taken = take(refs, attempt, read_lease)?;
         if let Some((lease_commit, lease)) = taken.reaped {
@@ -165,7 +174,8 @@ pub fn acquire_slot<R: LedgerRefs>(
                 state: LeaseState::Expired,
             });
         }
-        if let Some(lease_commit) = taken.held {
+        if let Some(held) = taken.held {
+            let (lease_commit, lease) = held.into_parts(lease);
             let hold = SlotHold {
                 slot,
                 lease_commit,
@@ -234,7 +244,9 @@ pub fn read_slots<R: LedgerRefs>(
 ///
 /// # Errors
 ///
-/// As [`read_slots`], and [`LeaseError::Refs`] when a deletion fails.
+/// As [`read_slots`], and [`LeaseError::Refs`] when a deletion fails. An error may follow
+/// completed reaps of earlier slots, which are then reported nowhere: the reconcile must not
+/// rely on the list returned to find every reaped lease.
 pub fn reap_expired_slots<R: LedgerRefs>(
     refs: &R,
     now: LedgerTime,

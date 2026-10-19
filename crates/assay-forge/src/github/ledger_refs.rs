@@ -48,7 +48,8 @@ pub enum LedgerRefsError<E> {
     #[error(transparent)]
     Forge(#[from] ForgeError<E>),
     /// The deletion's push failed or could not be run; the ref may or may not have been deleted
-    /// when the push did not run to completion.
+    /// (git can exit non-zero after reporting the deletion made, and a push cut short may have
+    /// landed).
     #[error("the ledger ref could not be deleted")]
     Git(#[from] GitError),
     /// The lease message is over [`MAX_LEASE_MESSAGE_BYTES`]: not sent, or not read.

@@ -58,6 +58,21 @@ fn a_live_lock_is_busy() {
 }
 
 #[test]
+fn a_writer_retrying_after_a_lost_answer_holds_its_own_live_lock() {
+    let refs = MemoryRefs::default();
+    let existing = refs.holding(&lock_ref(), &lock_line(1, 'b', "2026-10-12T09:31:00.000Z"));
+
+    let acquired = acquire_lock(&refs, &request(1), at(NOW)).expect("the store is up");
+
+    let LockAcquired::Held(hold) = acquired else {
+        panic!("the run's own live lock is held: {acquired:?}");
+    };
+    assert_eq!(hold.lock_commit, existing);
+    assert_eq!(hold.lease.expires_at, at("2026-10-12T09:31:00.000Z"));
+    assert_eq!(refs.names(), [lock_ref()]);
+}
+
+#[test]
 fn an_expired_lock_is_reaped_by_compare_and_set_and_taken() {
     let refs = MemoryRefs::default();
     refs.holding(&lock_ref(), &lock_line(9, 'b', "2026-10-12T09:29:00.000Z"));
@@ -118,4 +133,44 @@ fn a_lock_lease_naming_another_head_is_refused() {
         Some(lock_line(9, 'c', "2026-10-12T09:00:00.000Z")),
         "a lock bound to another ref is never reaped"
     );
+}
+
+#[test]
+fn a_request_whose_lock_its_reader_would_refuse_writes_nothing() {
+    let refs = MemoryRefs::default();
+    let request = LockRequest {
+        repo: "acme/..".to_owned(),
+        ..request(1)
+    };
+
+    let acquired = acquire_lock(&refs, &request, at(NOW));
+
+    assert!(
+        matches!(
+            acquired,
+            Err(LeaseError::Invalid {
+                problem: Corruption::Field("repo")
+            })
+        ),
+        "{acquired:?}"
+    );
+    assert_eq!(refs.calls(), []);
+}
+
+#[test]
+fn a_lock_that_would_expire_after_9999_writes_nothing() {
+    let refs = MemoryRefs::default();
+
+    let acquired = acquire_lock(&refs, &request(1), at("9999-12-31T23:59:59.000Z"));
+
+    assert!(
+        matches!(
+            acquired,
+            Err(LeaseError::Invalid {
+                problem: Corruption::Field("expires_at")
+            })
+        ),
+        "{acquired:?}"
+    );
+    assert_eq!(refs.calls(), []);
 }

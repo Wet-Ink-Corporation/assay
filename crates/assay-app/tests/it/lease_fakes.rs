@@ -67,6 +67,7 @@ struct State {
     rivals: VecDeque<(Before, Rival)>,
     calls: Vec<Call>,
     down: bool,
+    lose_create: bool,
 }
 
 /// The fake ledger ref store.
@@ -101,6 +102,12 @@ impl MemoryRefs {
     /// Every call fails.
     pub(crate) fn down(self) -> Self {
         self.lock().down = true;
+        self
+    }
+
+    /// Our next creation lands but reports an error, as when the answer is lost.
+    pub(crate) fn create_lands_then_fails(self) -> Self {
+        self.lock().lose_create = true;
         self
     }
 
@@ -157,8 +164,11 @@ impl LedgerRefs for MemoryRefs {
                 name: name.as_str().to_owned(),
                 created: created.is_some(),
             });
-            created.map_or(RefCreation::Exists, RefCreation::Created)
-        })
+            if std::mem::take(&mut state.lose_create) {
+                return Err(RefsDown);
+            }
+            Ok(created.map_or(RefCreation::Exists, RefCreation::Created))
+        })?
     }
 
     fn read(&self, name: &LeaseRef) -> Result<Option<RefTip>, RefsDown> {

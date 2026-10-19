@@ -261,6 +261,10 @@ pub type OpenOutcome<F, L, R, C> =
 /// (see [`Stamped`]); the lock is released by compare-and-set. Forge calls are retried by the
 /// adapter; `open` aborts on the error it returns.
 ///
+/// The lock is re-entrant within one workflow run: a live lock of `request.run_uid` is taken as
+/// held at its existing commit, with its own expiry (#288). So `open` and `decide`'s publish
+/// must never hold it at the same time within one run; the workflow orders them.
+///
 /// # Errors
 ///
 /// [`OpenError`]: every variant aborts the run visibly. A push record that cannot be appended

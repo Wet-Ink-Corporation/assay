@@ -366,6 +366,25 @@ fn a_busy_lock_is_retried_three_times_then_the_run_aborts_without_a_write() {
 }
 
 #[test]
+fn a_live_lock_of_this_run_is_held_and_its_own_expiry_bounds_the_writes() {
+    let refs = MemoryRefs::default();
+    refs.holding(&lock_ref(), &lock_line(30, "2026-10-12T09:30:30.000Z"));
+    let forge = FakeGitHub::new(&refs, &lock_ref());
+    let ledger = ledger_with_pushes(1);
+    let clock = FakeClock::reading(&[NOW, "2026-10-12T09:31:00.000Z"]);
+    let case = Case::new(30, OpenTrigger::Dispatch);
+
+    let opened = open(&case.request(), &ports(&forge, &ledger, &refs, &clock));
+
+    assert!(
+        matches!(opened, Err(OpenError::LockExpired { .. })),
+        "re-entrant (#288), but the existing lease expires at 09:30:30: {opened:?}"
+    );
+    assert_eq!(clock.pauses(), Vec::<u8>::new(), "not busy");
+    assert_eq!(forge.calls(), Vec::new());
+}
+
+#[test]
 fn a_lock_freed_during_a_pause_is_taken_on_the_retry() {
     let refs = MemoryRefs::default()
         .rival(Before::Create, |_| {})

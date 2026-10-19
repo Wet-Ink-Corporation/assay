@@ -67,3 +67,17 @@ fn a_ledger_time_after_year_9999_is_refused() {
         Ok("9999-12-31T23:59:59.999Z".to_owned())
     );
 }
+
+#[test]
+fn a_ledger_time_later_than_year_9999_is_none() {
+    let last = LedgerTime::from_unix_millis(253_402_300_799_999).expect("the last millisecond");
+    let second_before = LedgerTime::from_unix_millis(253_402_300_798_999).expect("in range");
+
+    assert_eq!(last.checked_add(Duration::ZERO), Some(last));
+    assert_eq!(
+        second_before.checked_add(Duration::from_secs(1)),
+        Some(last)
+    );
+    assert_eq!(last.checked_add(Duration::from_millis(1)), None);
+    assert_eq!(second_before.checked_add(Duration::MAX), None);
+}
