@@ -9,6 +9,7 @@
 //! the adapter cannot read exactly is refused ([`ForgeError`], wi-b5affa).
 
 mod api;
+mod base64;
 mod checks;
 mod comments;
 mod dto;
@@ -22,6 +23,7 @@ mod pulls;
 mod reads;
 mod reconcile;
 mod repository;
+mod settings;
 mod status;
 mod token;
 mod transport;
