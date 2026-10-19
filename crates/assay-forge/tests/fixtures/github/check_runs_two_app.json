@@ -1,0 +1,81 @@
+{
+  "total_count": 2,
+  "check_runs": [
+    {
+      "id": 117798470001,
+      "name": "assay / verdict",
+      "node_id": "CR_kwDOVER55s8AAAAbbVXrEQ",
+      "head_sha": "70aa6d748be6f3884e85d294112f9addf83cee59",
+      "external_id": "pending:39168909542:3",
+      "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/check-runs/117798470001",
+      "html_url": "https://github.com/Wet-Ink-Corporation/assay/runs/117798470001",
+      "details_url": "https://github.com/Wet-Ink-Corporation/assay/runs/117798470001",
+      "status": "in_progress",
+      "conclusion": null,
+      "started_at": "2026-10-18T21:44:41Z",
+      "completed_at": null,
+      "output": {
+        "title": "assay: pending",
+        "summary": "Review in progress.",
+        "text": null,
+        "annotations_count": 0
+      },
+      "check_suite": {
+        "id": 106140756690
+      },
+      "app": {
+        "id": 5371952,
+        "slug": "assay-verdict",
+        "node_id": "A_kwDOAAAAAAAAAAAA",
+        "owner": {
+          "login": "Wet-Ink-Corporation",
+          "id": 200000001,
+          "type": "Organization"
+        },
+        "name": "assay-verdict",
+        "html_url": "https://github.com/apps/assay-verdict",
+        "created_at": "2026-10-18T10:00:00Z",
+        "updated_at": "2026-10-18T10:00:00Z"
+      },
+      "pull_requests": []
+    },
+    {
+      "id": 117798470002,
+      "name": "assay / verdict",
+      "node_id": "CR_kwDOVER55s8AAAAbbVXrEQ",
+      "head_sha": "70aa6d748be6f3884e85d294112f9addf83cee59",
+      "external_id": "pending:39168909543:4",
+      "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/check-runs/117798470001",
+      "html_url": "https://github.com/Wet-Ink-Corporation/assay/runs/117798470001",
+      "details_url": "https://github.com/Wet-Ink-Corporation/assay/runs/117798470001",
+      "status": "in_progress",
+      "conclusion": null,
+      "started_at": "2026-10-18T21:44:41Z",
+      "completed_at": null,
+      "output": {
+        "title": "assay: pending",
+        "summary": "Review in progress.",
+        "text": null,
+        "annotations_count": 0
+      },
+      "check_suite": {
+        "id": 106140756690
+      },
+      "app": {
+        "id": 5371952,
+        "slug": "assay-verdict",
+        "node_id": "A_kwDOAAAAAAAAAAAA",
+        "owner": {
+          "login": "Wet-Ink-Corporation",
+          "id": 200000001,
+          "type": "Organization"
+        },
+        "name": "assay-verdict",
+        "html_url": "https://github.com/apps/assay-verdict",
+        "created_at": "2026-10-18T10:00:00Z",
+        "updated_at": "2026-10-18T10:00:00Z"
+      },
+      "pull_requests": []
+    }
+  ]
+}

@@ -1,0 +1,505 @@
+[
+  {
+    "sha": "70aa6d748be6f3884e85d294112f9addf83cee59",
+    "node_id": "C_kwDOVER55toAKDcwYWE2ZDc0OGJlNmYzODg0ZTg1ZDI5NDExMmY5YWRkZjgzY2VlNTk",
+    "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/git/commits/70aa6d748be6f3884e85d294112f9addf83cee59",
+    "html_url": "https://github.com/Wet-Ink-Corporation/assay/commit/70aa6d748be6f3884e85d294112f9addf83cee59",
+    "author": {
+      "name": "Claude",
+      "email": "noreply@anthropic.com",
+      "date": "2026-10-18T21:40:47Z"
+    },
+    "committer": {
+      "name": "Claude",
+      "email": "noreply@anthropic.com",
+      "date": "2026-10-18T21:40:47Z"
+    },
+    "tree": {
+      "sha": "facda5f678409ded7158ad95296a93f0c665878a",
+      "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/git/trees/facda5f678409ded7158ad95296a93f0c665878a"
+    },
+    "message": "Record the agent identity and defer the approver account (#42, #41)\n\nAlso drop the stale ledger-App open question from 06 (settled by ADR-26).\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01MJk1YPBYyyzXGHjgUj2RXB",
+    "parents": [
+      {
+        "sha": "9a6a316e170701b5391bc981129b96283abb11f4",
+        "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/git/commits/9a6a316e170701b5391bc981129b96283abb11f4",
+        "html_url": "https://github.com/Wet-Ink-Corporation/assay/commit/9a6a316e170701b5391bc981129b96283abb11f4"
+      }
+    ],
+    "verification": {
+      "verified": true,
+      "reason": "valid",
+      "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgrLzsfFISF4by8Q+FKz27YpkK1USsBB+m\namu1QkJnbDsAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQEiHJlLq\nTCCkAUy3q/X714tmmKW8e70zTLpmr+3wLvtnU5T6lU7+qtFgMB5UWH5V4zEaJftmb7u0wzCR04fz\ncQQ=\n-----END SSH SIGNATURE-----",
+      "payload": "tree facda5f678409ded7158ad95296a93f0c665878a\nparent 9a6a316e170701b5391bc981129b96283abb11f4\nauthor Claude <noreply@anthropic.com> 1792359647 +0000\ncommitter Claude <noreply@anthropic.com> 1792359647 +0000\n\nRecord the agent identity and defer the approver account (#42, #41)\n\nAlso drop the stale ledger-App open question from 06 (settled by ADR-26).\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01MJk1YPBYyyzXGHjgUj2RXB\n",
+      "verified_at": "2026-10-18T21:40:50Z"
+    },
+    "event": "committed"
+  },
+  {
+    "id": 5565100718,
+    "node_id": "PRR_kwDOVER55s8AAAABS7Syrg",
+    "user": {
+      "login": "greptile-apps[bot]",
+      "id": 165735046,
+      "node_id": "BOT_kgDOCeDqhg",
+      "url": "https://api.github.com/users/greptile-apps%5Bbot%5D",
+      "html_url": "https://github.com/apps/greptile-apps",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "body": "`Ryan-Britton` has reached the 50-credit limit for trial accounts. To continue receiving code reviews, [upgrade your plan](https://app.greptile.com/review/github).",
+    "commit_id": "70aa6d748be6f3884e85d294112f9addf83cee59",
+    "state": "commented",
+    "html_url": "https://github.com/Wet-Ink-Corporation/assay/pull/268#pullrequestreview-5565100718",
+    "pull_request_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/pulls/268",
+    "_links": {
+      "html": {
+        "href": "https://github.com/Wet-Ink-Corporation/assay/pull/268#pullrequestreview-5565100718"
+      },
+      "pull_request": {
+        "href": "https://api.github.com/repos/Wet-Ink-Corporation/assay/pulls/268"
+      }
+    },
+    "submitted_at": "2026-10-18T21:40:56Z",
+    "updated_at": "2026-10-18T21:40:56Z",
+    "author_association": "NONE",
+    "event": "reviewed"
+  },
+  {
+    "actor": {
+      "login": "Ryan-Britton",
+      "id": 124330161,
+      "node_id": "U_kgDOB2kgsQ",
+      "url": "https://api.github.com/users/Ryan-Britton",
+      "html_url": "https://github.com/Ryan-Britton",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-18T21:41:06Z",
+    "updated_at": "2026-10-18T21:41:06Z",
+    "source": {
+      "type": "issue",
+      "issue": {
+        "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/41",
+        "repository_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay",
+        "labels_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/41/labels{/name}",
+        "comments_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/41/comments",
+        "html_url": "https://github.com/Wet-Ink-Corporation/assay/issues/41",
+        "id": 5797858902,
+        "node_id": "I_kwDOVER55s8AAAABWZROVg",
+        "number": 41,
+        "title": "Create the dedicated approver account (H-13)",
+        "user": {
+          "login": "Ryan-Britton",
+          "id": 124330161,
+          "node_id": "U_kgDOB2kgsQ",
+          "url": "https://api.github.com/users/Ryan-Britton",
+          "html_url": "https://github.com/Ryan-Britton",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "labels": [
+          {
+            "id": 12634073969,
+            "node_id": "LA_kwDOVER55s8AAAAC8QyrcQ",
+            "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/labels/owner-action",
+            "name": "owner-action",
+            "color": "d93f0b",
+            "default": false,
+            "archived_at": null,
+            "archived_by": null
+          },
+          {
+            "id": 12634074022,
+            "node_id": "LA_kwDOVER55s8AAAAC8Qyrpg",
+            "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/labels/security-control",
+            "name": "security-control",
+            "color": "b60205",
+            "default": false,
+            "archived_at": null,
+            "archived_by": null
+          },
+          {
+            "id": 12745956833,
+            "node_id": "LA_kwDOVER55s8AAAAC97fd4Q",
+            "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/labels/blocked",
+            "name": "blocked",
+            "color": "B60205",
+            "default": false,
+            "archived_at": null,
+            "archived_by": null
+          }
+        ],
+        "state": "open",
+        "locked": false,
+        "assignees": [],
+        "milestone": null,
+        "comments": 3,
+        "created_at": "2026-10-11T04:12:31Z",
+        "updated_at": "2026-10-19T02:44:01Z",
+        "closed_at": null,
+        "assignee": null,
+        "author_association": "MEMBER",
+        "issue_field_values": [],
+        "type": {
+          "id": 31307864,
+          "node_id": "IT_kwDOD6EiX84B3bhY",
+          "name": "Task",
+          "color": "orange",
+          "created_at": "2026-02-17T21:44:01Z",
+          "updated_at": "2026-10-09T04:35:40Z",
+          "is_enabled": true
+        },
+        "active_lock_reason": null,
+        "sub_issues_summary": {
+          "total": 0,
+          "completed": 0,
+          "percent_completed": 0
+        },
+        "parent_issue_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/10",
+        "issue_dependencies_summary": {
+          "blocked_by": 0,
+          "total_blocked_by": 0,
+          "blocking": 0,
+          "total_blocking": 0
+        },
+        "repository": {
+          "id": 1413773798,
+          "node_id": "R_kgDOVER55g",
+          "name": "assay",
+          "full_name": "Wet-Ink-Corporation/assay",
+          "private": true,
+          "owner": {
+            "login": "Wet-Ink-Corporation",
+            "id": 262218335,
+            "node_id": "O_kgDOD6EiXw",
+            "url": "https://api.github.com/users/Wet-Ink-Corporation",
+            "html_url": "https://github.com/Wet-Ink-Corporation",
+            "type": "Organization",
+            "user_view_type": "public",
+            "site_admin": false
+          },
+          "html_url": "https://github.com/Wet-Ink-Corporation/assay",
+          "fork": false,
+          "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay",
+          "forks_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/forks",
+          "keys_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/keys{/key_id}",
+          "collaborators_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/collaborators{/collaborator}",
+          "teams_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/teams",
+          "hooks_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/hooks",
+          "issue_events_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/events{/number}",
+          "assignees_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/assignees{/user}",
+          "branches_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/branches{/branch}",
+          "tags_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/tags",
+          "blobs_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/git/blobs{/sha}",
+          "git_tags_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/git/tags{/sha}",
+          "git_refs_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/git/refs{/sha}",
+          "trees_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/git/trees{/sha}",
+          "statuses_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/statuses/{sha}",
+          "languages_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/languages",
+          "stargazers_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/stargazers",
+          "contributors_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/contributors",
+          "subscribers_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/subscribers",
+          "subscription_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/subscription",
+          "commits_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/commits{/sha}",
+          "git_commits_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/git/commits{/sha}",
+          "comments_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/comments{/number}",
+          "issue_comment_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/comments{/number}",
+          "contents_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/contents/{+path}",
+          "compare_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/compare/{base}...{head}",
+          "merges_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/merges",
+          "archive_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/{archive_format}{/ref}",
+          "downloads_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/downloads",
+          "issues_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues{/number}",
+          "pulls_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/pulls{/number}",
+          "milestones_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/milestones{/number}",
+          "notifications_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/notifications{?since,all,participating}",
+          "labels_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/labels{/name}",
+          "releases_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/releases{/id}",
+          "deployments_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/deployments",
+          "created_at": "2026-10-10T23:57:55Z",
+          "updated_at": "2026-10-19T01:18:17Z",
+          "pushed_at": "2026-10-19T02:50:54Z",
+          "git_url": "git://github.com/Wet-Ink-Corporation/assay.git",
+          "ssh_url": "git@github.com:Wet-Ink-Corporation/assay.git",
+          "clone_url": "https://github.com/Wet-Ink-Corporation/assay.git",
+          "svn_url": "https://github.com/Wet-Ink-Corporation/assay",
+          "homepage": null,
+          "size": 2868,
+          "stargazers_count": 0,
+          "watchers_count": 0,
+          "language": "Rust",
+          "has_issues": true,
+          "has_projects": true,
+          "has_downloads": false,
+          "has_wiki": true,
+          "has_pages": false,
+          "has_discussions": false,
+          "forks_count": 0,
+          "mirror_url": null,
+          "archived": false,
+          "disabled": false,
+          "open_issues_count": 132,
+          "license": null,
+          "allow_forking": false,
+          "is_template": false,
+          "web_commit_signoff_required": false,
+          "has_pull_requests": true,
+          "pull_request_creation_policy": "all",
+          "topics": [],
+          "visibility": "internal",
+          "forks": 0,
+          "open_issues": 132,
+          "watchers": 0,
+          "default_branch": "main"
+        },
+        "body": "## Context\nUnder P10 an owner-authored PR has no eligible owner approver. A second account that never pushes and is not an agent is the expected approver (ADR-16).\n\n## Steps\n- [ ] Create the account; enable 2FA\n- [ ] Grant review rights on consumer repos; no push rights\n- [ ] Record its numeric user id for `.assay/owners` `approvers`\n\n## Done when\n- Account exists and its numeric id is recorded\n\n## Blocked by\n_Nothing; can start now._",
+        "reactions": {
+          "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/41/reactions",
+          "total_count": 0,
+          "+1": 0,
+          "-1": 0,
+          "laugh": 0,
+          "hooray": 0,
+          "confused": 0,
+          "heart": 0,
+          "rocket": 0,
+          "eyes": 0
+        },
+        "timeline_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/41/timeline",
+        "performed_via_github_app": {
+          "id": 1236702,
+          "slug": "claude",
+          "node_id": "A_kwHOBIuudM4AEt7e",
+          "owner": {
+            "login": "anthropics",
+            "id": 76263028,
+            "node_id": "MDEyOk9yZ2FuaXphdGlvbjc2MjYzMDI4",
+            "url": "https://api.github.com/users/anthropics",
+            "html_url": "https://github.com/anthropics",
+            "type": "Organization",
+            "user_view_type": "public",
+            "site_admin": false
+          },
+          "name": "Claude",
+          "html_url": "https://github.com/apps/claude",
+          "created_at": "2025-04-30T17:54:24Z",
+          "updated_at": "2026-09-30T19:04:00Z"
+        },
+        "state_reason": null,
+        "pinned_comment": null
+      }
+    },
+    "event": "cross-referenced"
+  },
+  {
+    "id": 33593766945,
+    "node_id": "AE_lADOVER55s8AAAABYIbiw88AAAAH0lg0IQ",
+    "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/events/33593766945",
+    "actor": {
+      "login": "Ryan-Britton",
+      "id": 124330161,
+      "node_id": "U_kgDOB2kgsQ",
+      "url": "https://api.github.com/users/Ryan-Britton",
+      "html_url": "https://github.com/Ryan-Britton",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "assigned",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-10-18T21:42:52Z",
+    "assignee": {
+      "login": "Ryan-Britton",
+      "id": 124330161,
+      "node_id": "U_kgDOB2kgsQ",
+      "url": "https://api.github.com/users/Ryan-Britton",
+      "html_url": "https://github.com/Ryan-Britton",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "intent": null,
+    "performed_via_github_app": null
+  },
+  {
+    "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/comments/6255521952",
+    "html_url": "https://github.com/Wet-Ink-Corporation/assay/pull/268#issuecomment-6255521952",
+    "issue_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/268",
+    "id": 6255521952,
+    "node_id": "IC_kwDOVER55s8AAAABdNuwoA",
+    "user": {
+      "login": "github-actions[bot]",
+      "id": 41898282,
+      "node_id": "MDM6Qm90NDE4OTgyODI=",
+      "url": "https://api.github.com/users/github-actions%5Bbot%5D",
+      "html_url": "https://github.com/apps/github-actions",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-10-18T21:44:44Z",
+    "updated_at": "2026-10-18T21:44:44Z",
+    "body": "<!-- temper-report -->\n### temper compliance: clean\n\n**CLEAN.** No findings: every crate is clean.\n\n| MUST findings | H-rule findings | New | Fixed | Crates clean |\n|---:|---:|---:|---:|:---|\n| 0 of 0 | 0 | 0 (no baseline) | – | 6 of 6 (0 debt, 0 regressed) |\n\n**Crates** (6; clean: no MUST findings, debt: MUST findings within the baseline, regressed: new findings)\n\n| Crate | Status | MUST | SHOULD | Other | H | New | Fixed | Top rules |\n|---|---|---:|---:|---:|---:|---:|---:|---|\n| `assay-app` | clean | 0 | 0 | 0 | 0 | 0 | – | – |\n| `assay-cli` | clean | 0 | 0 | 0 | 0 | 0 | – | – |\n| `assay-domain` | clean | 0 | 0 | 0 | 0 | 0 | – | – |\n| `assay-forge` | clean | 0 | 0 | 0 | 0 | 0 | – | – |\n| `assay-gates` | clean | 0 | 0 | 0 | 0 | 0 | – | – |\n| `assay-runner` | clean | 0 | 0 | 0 | 0 | 0 | – | – |\n\n<sub>temper 1.3.0 · commit f22e31cc6801 · toolchain 1.98.1 · generated 2026-10-18 21:44 UTC · details in report.html</sub>\n\n[Full HTML report](https://github.com/Wet-Ink-Corporation/assay/actions/runs/39168909542/artifacts/12151353390): the temper-report artifact.\n",
+    "author_association": "NONE",
+    "reactions": {
+      "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/comments/6255521952/reactions",
+      "total_count": 0,
+      "+1": 0,
+      "-1": 0,
+      "laugh": 0,
+      "hooray": 0,
+      "confused": 0,
+      "heart": 0,
+      "rocket": 0,
+      "eyes": 0
+    },
+    "performed_via_github_app": {
+      "id": 15368,
+      "slug": "github-actions",
+      "node_id": "MDM6QXBwMTUzNjg=",
+      "owner": {
+        "login": "github",
+        "id": 9919,
+        "node_id": "MDEyOk9yZ2FuaXphdGlvbjk5MTk=",
+        "url": "https://api.github.com/users/github",
+        "html_url": "https://github.com/github",
+        "type": "Organization",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "name": "GitHub Actions",
+      "html_url": "https://github.com/apps/github-actions",
+      "created_at": "2018-07-30T09:30:17Z",
+      "updated_at": "2026-06-18T16:17:48Z"
+    },
+    "minimized": null,
+    "event": "commented",
+    "actor": {
+      "login": "github-actions[bot]",
+      "id": 41898282,
+      "node_id": "MDM6Qm90NDE4OTgyODI=",
+      "url": "https://api.github.com/users/github-actions%5Bbot%5D",
+      "html_url": "https://github.com/apps/github-actions",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    }
+  },
+  {
+    "id": 33602149310,
+    "node_id": "ME_lADOVER55s8AAAABYIbiw88AAAAH0tgbvg",
+    "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/events/33602149310",
+    "actor": {
+      "login": "Ryan-Britton",
+      "id": 124330161,
+      "node_id": "U_kgDOB2kgsQ",
+      "url": "https://api.github.com/users/Ryan-Britton",
+      "html_url": "https://github.com/Ryan-Britton",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "merged",
+    "commit_id": "ea03453e1e8440756d2ae961e16311957f6f37f3",
+    "commit_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/commits/ea03453e1e8440756d2ae961e16311957f6f37f3",
+    "created_at": "2026-10-19T01:18:03Z",
+    "performed_via_github_app": null
+  },
+  {
+    "id": 33602149439,
+    "node_id": "CE_lADOVER55s8AAAABYIbiw88AAAAH0tgcPw",
+    "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/events/33602149439",
+    "actor": {
+      "login": "Ryan-Britton",
+      "id": 124330161,
+      "node_id": "U_kgDOB2kgsQ",
+      "url": "https://api.github.com/users/Ryan-Britton",
+      "html_url": "https://github.com/Ryan-Britton",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "closed",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-10-19T01:18:03Z",
+    "state_reason": null,
+    "intent": null,
+    "performed_via_github_app": null
+  },
+  {
+    "id": 33602150979,
+    "node_id": "HRDE_lADOVER55s8AAAABYIbiw88AAAAH0tgiQw",
+    "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/events/33602150979",
+    "actor": {
+      "login": "Ryan-Britton",
+      "id": 124330161,
+      "node_id": "U_kgDOB2kgsQ",
+      "url": "https://api.github.com/users/Ryan-Britton",
+      "html_url": "https://github.com/Ryan-Britton",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "head_ref_deleted",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-10-19T01:18:05Z",
+    "performed_via_github_app": null
+  },
+  {
+    "id": 33602150990,
+    "node_id": "LE_kwDOAAAAAAAAAAAA",
+    "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/events/33602150990",
+    "actor": {
+      "login": "Ryan-Britton",
+      "id": 124330161,
+      "node_id": "MDQ6VXNlcjEyNDMzMDE2MQ==",
+      "url": "https://api.github.com/users/Ryan-Britton",
+      "html_url": "https://github.com/Ryan-Britton",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "labeled",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-10-18T22:00:00Z",
+    "label": {
+      "name": "assay:recheck",
+      "color": "ededed"
+    },
+    "performed_via_github_app": null
+  },
+  {
+    "id": 33602150991,
+    "node_id": "RDE_kwDOAAAAAAAAAAAA",
+    "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/issues/events/33602150991",
+    "actor": {
+      "login": "Ryan-Britton",
+      "id": 124330161,
+      "node_id": "MDQ6VXNlcjEyNDMzMDE2MQ==",
+      "url": "https://api.github.com/users/Ryan-Britton",
+      "html_url": "https://github.com/Ryan-Britton",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "event": "review_dismissed",
+    "commit_id": null,
+    "commit_url": null,
+    "created_at": "2026-10-18T22:01:00Z",
+    "dismissed_review": {
+      "state": "approved",
+      "review_id": 5565100719,
+      "dismissal_message": "stale",
+      "dismissal_commit_id": null
+    },
+    "performed_via_github_app": null
+  }
+]
