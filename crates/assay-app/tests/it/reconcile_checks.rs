@@ -83,7 +83,7 @@ fn pushes(heads: &[CommitId]) -> String {
             format!(
                 concat!(
                     r#"{{"schema":"assay.ledger-push/1","run_uid":{{"repo_id":42,"run_id":{run},"#,
-                    r#""run_attempt":1}},"pr":7,"seq":{seq},"before":"{before}","after":"{after}","#,
+                    r#""run_attempt":1}},"pr":7,"seq":{seq},"kind":"push","before":"{before}","after":"{after}","#,
                     r#""sender_id":1001,"forced":false,"at":"2026-10-12T09:{seq:02}:00.000Z"}}"#,
                     "\n"
                 ),

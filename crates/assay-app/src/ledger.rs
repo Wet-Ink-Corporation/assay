@@ -36,7 +36,7 @@ pub use port::{
     FileVersion, Ledger, LedgerFile, LedgerPath, MAX_CAS_ATTEMPTS, MAX_LEDGER_FILE_BYTES,
     MAX_RECORD_BYTES, WriteCondition, WriteOutcome,
 };
-pub use push::{PushAppended, PushDraft, PushRecord, append_push, read_pushes};
+pub use push::{PushAppended, PushDraft, PushKind, PushRecord, append_push, read_pushes};
 pub use record::Appended;
 pub use state::{
     ActorCounter, DecisionPointer, DeferralRecord, MAX_STATE_ENTRIES, PrState, StateUpdate,

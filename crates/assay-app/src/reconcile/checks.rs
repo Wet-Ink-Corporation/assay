@@ -3,6 +3,7 @@
 //! that is the ledger-side reconcile's alone.
 
 use std::collections::HashSet;
+use std::iter;
 use std::num::NonZeroU64;
 use std::time::Duration;
 
@@ -16,8 +17,8 @@ use super::ports::{OpenPull, PullHead, ReconcileCheck, ReconcileForge, RunProgre
 use crate::config::CommitId;
 use crate::forge::CompareAndSetError;
 use crate::ledger::{
-    Ledger, LedgerRefs, LedgerTime, LockAcquired, LockRequest, Released, acquire_lock, read_pushes,
-    read_state, release_lock,
+    Ledger, LedgerRefs, LedgerTime, LockAcquired, LockRequest, PushKind, Released, acquire_lock,
+    read_pushes, read_state, release_lock,
 };
 use crate::publish::CheckStatus;
 
@@ -263,10 +264,14 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
         let pushes = read_pushes(self.ports.ledger, self.request.run_uid.repo_id, pull.number)
             .map_err(ChecksReconcileError::Ledger)?;
         let mut heads: Vec<CommitId> = Vec::with_capacity(MAX_SUPERSEDED_HEADS);
-        let seen = pushes
-            .into_iter()
-            .rev()
-            .flat_map(|record| [record.push.after, record.push.before]);
+        // A push names the head it moved from too; an opener has no earlier head.
+        let seen = pushes.into_iter().rev().flat_map(|record| {
+            let before = match record.push.kind {
+                PushKind::Push { before, .. } => Some(before),
+                PushKind::Opener => None,
+            };
+            iter::once(record.push.after).chain(before)
+        });
         for head in seen {
             if heads.len() == MAX_SUPERSEDED_HEADS {
                 break;

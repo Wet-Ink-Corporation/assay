@@ -39,6 +39,9 @@ mod ledger_state;
 mod ledger_streams;
 mod ledger_time;
 mod model_runner;
+mod open;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod open_fakes;
 mod package_set;
 mod plan;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
