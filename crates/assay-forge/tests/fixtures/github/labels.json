@@ -1,0 +1,4 @@
+[
+  {"id": 9876543210, "node_id": "LA_kwDOAAAAAAAAAAAA", "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/labels/assay:recheck", "name": "assay:recheck", "color": "ededed", "default": false, "description": null},
+  {"id": 9876543211, "node_id": "LA_kwDOAAAAAAAAAAAB", "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay/labels/bug", "name": "bug", "color": "d73a4a", "default": true, "description": "Something isn't working"}
+]

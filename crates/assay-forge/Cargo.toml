@@ -10,6 +10,12 @@ workspace = true
 
 # Workspace edges allowed: assay-app and assay-domain (02 §2). Added by the story that first uses them.
 [dependencies]
+# The GitHub adapter implements assay-app's ports over domain types (#53).
+assay-app = { workspace = true }
+assay-domain = { workspace = true }
+# GitHub's JSON: wire DTOs read through assay-app's duplicate-key-refusing parse, request bodies (#53).
+serde = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 
