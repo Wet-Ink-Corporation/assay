@@ -14,6 +14,8 @@ mod ledger_refusals;
 mod pulls;
 mod reads;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod reconcile;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod recorded;
 mod settings;
 mod status;

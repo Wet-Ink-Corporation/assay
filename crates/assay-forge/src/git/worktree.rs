@@ -14,8 +14,11 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
 mod developer;
+mod head;
 
 use self::developer::Sparse;
+pub use self::head::RepositoryHead;
+use self::head::branch_in;
 use super::GitError;
 use super::command::{GitEnvironment, GitOperation, Scope, UserDirs};
 use super::repository::{Call, GitLimits, ObjectRepo, call, run_in};
@@ -175,6 +178,17 @@ impl WorkingTree {
                 operation: GitOperation::RevParse,
                 detail: "rev-parse did not print one commit id",
             })
+    }
+
+    /// The branch `HEAD` is on, by its name under `refs/heads/` (`claude/topic`), or `None`
+    /// when `HEAD` is detached (Weigh-In's CP1 filters items by it, 04 §9).
+    ///
+    /// # Errors
+    /// [`GitError::Malformed`] when git prints something other than one line naming
+    /// `refs/heads/<branch>` or `HEAD`, and [`GitError`] when git cannot run or fails (an
+    /// unborn `HEAD` included).
+    pub fn branch(&self) -> Result<Option<String>, GitError> {
+        branch_in(&self.git_dir, &self.environment, self.limits)
     }
 
     fn run(&self, call: Call<'_>) -> Result<Captured, GitError> {

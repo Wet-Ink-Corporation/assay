@@ -176,6 +176,8 @@ pub enum Operation {
     ReadLedgerRef,
     /// Creating a lease ref of the ledger repository at a new commit.
     CreateLedgerRef,
+    /// Listing the publish lock refs of the ledger repository.
+    ListLedgerRefs,
 }
 
 impl fmt::Display for Operation {
@@ -215,6 +217,7 @@ impl fmt::Display for Operation {
             Self::WriteLedgerFile => "write ledger file",
             Self::ReadLedgerRef => "read ledger ref",
             Self::CreateLedgerRef => "create ledger ref",
+            Self::ListLedgerRefs => "list ledger refs",
         })
     }
 }
