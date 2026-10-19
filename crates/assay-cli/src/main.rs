@@ -3,7 +3,9 @@
 //!
 //! Commands so far: `assay self-gate <corpus-dir> <rubric-file>`, the `assay-self` exec gate
 //! (02 §7, `05` T16), `assay doctor <plugins-toml> <claude-program>`, the session checks of
-//! 03 §8 (#121), and `assay check --local`, the advisory check of a working tree (02 §6, #107).
+//! 03 §8 (#121), `assay doctor --profile <plugins-toml> <claude-program>`, the flag verification
+//! and hook and fence canaries of 03 §8 (#84), and `assay check --local`, the advisory check of
+//! a working tree (02 §6, #107).
 //! `assay doctor --repository <owner/name> --app <id> --ledger-app <id>` (#75) checks its
 //! arguments and then stops with exit 2: the live `gh` transport is #273, and
 //! [`assay_cli::run_prerequisites`] wires the repository checks of 05 §7 once that exists.
@@ -35,6 +37,12 @@ fn main() -> ExitCode {
     };
     if command == "doctor" {
         let mut args = args.peekable();
+        if args
+            .next_if(|arg| arg == doctor::profile::PROFILE_FLAG)
+            .is_some()
+        {
+            return run_doctor_profile(args);
+        }
         if PrerequisitesArgs::requested(args.peek()) {
             return match PrerequisitesArgs::parse(args) {
                 Ok(_) => report(
@@ -90,6 +98,31 @@ fn run_doctor(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         return report(&error);
     }
     if outcome.passed() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// `assay doctor --profile`: exit 0 when every profile check passes, 1 when one fails, 2 when
+/// they cannot run (or the preflight's empty directory cannot be removed after them).
+fn run_doctor_profile(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = doctor::profile::ProfileVariables {
+        token: env::var_os(doctor::OAUTH_TOKEN),
+        path: env::var_os("PATH"),
+        names: env::vars_os().map(|(name, _)| name).collect(),
+    };
+    let outcome = match doctor::profile::run(args, variables) {
+        Ok(outcome) => outcome,
+        Err(error) => return report(&error),
+    };
+    if let Err(error) = doctor::profile::write_report(&outcome.report, io::stdout().lock()) {
+        return report(&error);
+    }
+    if let Some(left) = outcome.left {
+        return report(&doctor::profile::ProfileCliError::Scratch(left));
+    }
+    if outcome.report.passed() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

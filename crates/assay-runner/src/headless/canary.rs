@@ -9,6 +9,10 @@
 //!   and a `CLAUDE.md` asking for the canary word and a skills-folder mod in `.claude/skills/`;
 //! - `markers/`, where each mod's `session.start` hook would write a file named after it;
 //! - `prompt/system.md`, the appended system prompt.
+//!
+//! The same adapter runs the profile canary (`profile`, #84) in a sandbox of its own.
+
+mod profile;
 
 use std::fs;
 use std::io;
@@ -162,8 +166,18 @@ impl<K: GroupKill> CanaryProbe for ClaudeCanary<K> {
     /// removed, or [`CanaryError::Abandoned`] when it failed and the sandbox could not be
     /// removed either.
     fn probe(&self, token: &CanaryToken) -> Result<CanaryRun, CanaryError> {
+        self.in_sandbox(|root| self.probe_in(root, token))
+    }
+}
+
+impl<K> ClaudeCanary<K> {
+    /// Makes a fresh sandbox, runs `canary` in it and removes it, also when `canary` failed.
+    fn in_sandbox<T>(
+        &self,
+        canary: impl FnOnce(&Path) -> Result<T, CanaryError>,
+    ) -> Result<T, CanaryError> {
         let sandbox = self.sandbox()?;
-        let probed = self.probe_in(sandbox.path(), token);
+        let probed = canary(sandbox.path());
         // `close` consumes the sandbox; its path is kept for the report of a failed removal.
         let path = sandbox.path().to_path_buf();
         match (probed, sandbox.close()) {

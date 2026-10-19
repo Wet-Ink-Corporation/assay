@@ -43,6 +43,12 @@ pub use doctor::{
     RequiredChecks, Rule, Ruleset, RulesetId, RulesetTarget, WorkflowError, WorkflowPermissions,
     YamlError, YamlRefusal, doctor, prerequisites, read_base, token_expiry_warning,
 };
+pub use doctor::{
+    FENCE_TARGET, FlagResult, HeadlessFlag, MIN_CLI_VERSION, PROFILE_SCHEMA, PermissionDenial,
+    ProfileCheck, ProfileContext, ProfileError, ProfileFailure, ProfilePorts, ProfileProbe,
+    ProfileReport, ProfileResult, ProfileRun, ProfileVerdict, ProfileWords, ReplyField,
+    verify_profile,
+};
 pub use preflight::{
     AuthProof, CliProbe, CliStatus, FIRST_PARTY_PROVIDER, OAUTH_TOKEN_METHOD, PreflightFailed,
     PreflightFailure, PreflightPassed, StatusParts, StatusReadError, TOKEN_ROTATION_RUNBOOK,

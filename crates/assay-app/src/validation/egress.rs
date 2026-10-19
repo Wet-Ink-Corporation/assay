@@ -297,8 +297,9 @@ impl<'t> EgressScan<'t> {
 
     /// Scans a document that failed its schema for the token alone (Z3 only: without the token
     /// there is nothing to look for, and the document's stamped fields would trip the other
-    /// rules), raw and decoded as [`EgressScan::scan_artifact`] reads it.
-    pub(super) fn scan_rejected(&self, document: &[u8]) -> Option<EgressKind> {
+    /// rules), raw and decoded as [`EgressScan::scan_artifact`] reads it. `doctor`'s fence
+    /// canary scans its transcript with it too (#84): the canary words would trip the run rule.
+    pub(crate) fn scan_rejected(&self, document: &[u8]) -> Option<EgressKind> {
         let token = self.token?;
         views::scan_views(document, |text| {
             token.is_in(text).then_some(EgressKind::Token)
