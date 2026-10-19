@@ -2,8 +2,9 @@
 //! (ADR-07): what the binary lends one adapter from another.
 //!
 //! [`ForgeSupervisor`] lends `assay-forge`'s process-group supervisor to the gate adapters and
-//! to `ClaudeHeadless` (wi-603c63). [`ForgeRevisions`] lends forge's object-only repository to
-//! the temper adapter as the PR's base and head files, and [`ForgePullRequest`] lends it to the
+//! to `ClaudeHeadless` (wi-603c63), and runs the `gh api` calls of forge's GitHub transport
+//! (#273). [`ForgeRevisions`] lends forge's object-only repository to the temper adapter as
+//! the PR's base and head files, and [`ForgePullRequest`] lends it to the
 //! `plan` use case as the PR's objects. [`run_status`] wires `assay status` (#126) over any
 //! [`assay_app::StatusForge`], so it is tested with fakes until the GitHub adapter (#53) exists.
 //! [`OpenCommand`] reads `assay open`'s run from the Actions environment and refuses a re-run.
