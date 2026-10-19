@@ -1,5 +1,6 @@
 //! The production [`Transport`]: one `gh api --include` process per request (#273, option B of
-//! wi-258667).
+//! wi-258667), and `gh run download` for a run's artifact (wi-6b26d6), with the same
+//! environment and working directory into a scratch directory the transport owns.
 //!
 //! This crate decides everything about the call (program, arguments, environment, working
 //! directory, stdin, limits) and reads what gh wrote; a [`GhRunner`] only runs it. `assay-cli`
@@ -7,6 +8,7 @@
 //! runner, so the git constructor stays the only process this crate creates
 //! (`tests/it/single_constructor.rs`).
 
+mod download;
 mod environment;
 mod reply;
 
@@ -24,6 +26,8 @@ use tempfile::TempDir;
 use super::transport::{MAX_RESPONSE_BYTES, Request, Response, Transport};
 use crate::process::{Captured, Limits, ProcessError};
 
+pub(crate) use download::Downloaded;
+pub use download::{GH_DOWNLOAD_TIMEOUT, GhDownloadError};
 pub use environment::GhEnvironment;
 
 /// A request's default deadline, from start until gh's process group is killed.
@@ -245,6 +249,21 @@ impl<R> GhApi<R> {
     pub fn close(self) -> io::Result<()> {
         self.config.close()
     }
+
+    /// gh's whole environment, the same for every call: the token, the fixed switches, the
+    /// scratch configuration directory, then what [`GhEnvironment`] passes on.
+    fn env(&self) -> Vec<(&'static str, &OsStr)> {
+        let mut env = vec![
+            ("GH_TOKEN", OsStr::new(&self.token.0)),
+            ("GH_HOST", OsStr::new("github.com")),
+            ("GH_PROMPT_DISABLED", OsStr::new("1")),
+            ("NO_COLOR", OsStr::new("1")),
+            ("GH_NO_UPDATE_NOTIFIER", OsStr::new("1")),
+            ("GH_CONFIG_DIR", self.config.path().as_os_str()),
+        ];
+        env.extend(self.environment.vars());
+        env
+    }
 }
 
 impl<R: GhRunner> Transport for GhApi<R> {
@@ -274,21 +293,12 @@ impl<R: GhRunner> Transport for GhApi<R> {
             args.extend(["--header", CONTENT_TYPE, "--input", "-"]);
         }
         args.extend(["--", path]);
-        let config = self.config.path();
-        let mut env = vec![
-            ("GH_TOKEN", OsStr::new(&self.token.0)),
-            ("GH_HOST", OsStr::new("github.com")),
-            ("GH_PROMPT_DISABLED", OsStr::new("1")),
-            ("NO_COLOR", OsStr::new("1")),
-            ("GH_NO_UPDATE_NOTIFIER", OsStr::new("1")),
-            ("GH_CONFIG_DIR", config.as_os_str()),
-        ];
-        env.extend(self.environment.vars());
+        let env = self.env();
         let call = GhCall {
             program: &self.program,
             args: &args,
             env: &env,
-            cwd: config,
+            cwd: self.config.path(),
             stdin: request.body.unwrap_or_default(),
             limits: Limits {
                 timeout: self.timeout,

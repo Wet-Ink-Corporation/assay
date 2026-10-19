@@ -1,5 +1,8 @@
 //! The GitHub adapter against recorded API responses; no network (TST-10).
 
+#[cfg(test)] // lets clippy's allow-*-in-tests cover the fake runner, not only #[test] fns
+#[cfg(unix)] // raw wait statuses and symlinks
+mod artifacts;
 mod backoff;
 mod checks;
 mod comments;

@@ -1,16 +1,16 @@
 //! `assay status`'s read port, with the viewer's own token: PRs, check runs of every app, the
-//! App's review comments and the viewer.
+//! App's review comments and the viewer; and the repository itself, which the status names.
 
 use std::num::NonZeroU64;
 
 use assay_app::{
     AppId, CheckStatus, CheckView, CommitId, ObservedConclusion, PullView, ReviewCommentView,
-    StatusForge, UserId, Viewer,
+    StatusForge, StatusRepository, UserId, Viewer,
 };
 
 use super::api::{PER_PAGE, percent_encode};
 use super::checks::check_status;
-use super::dto::{self, CheckRunDto, PullDto, ViewerDto};
+use super::dto::{self, CheckRunDto, PullDto, RepositoryDto, ViewerDto};
 use super::error::{ForgeError, Operation};
 use super::transport::{Sleep, Transport};
 use super::{GitHub, api_path};
@@ -113,6 +113,34 @@ impl<T: Transport, S: Sleep> StatusForge for GitHub<T, S> {
 }
 
 impl<T: Transport, S: Sleep> GitHub<T, S> {
+    /// The repository as `assay status` names it: its numeric id, which keys its runs'
+    /// artifacts, its default branch, which names the verdict check, and its `owner/name` as
+    /// this adapter was configured with.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError::Malformed`] when GitHub answers for another repository (a rename, which
+    /// it redirects), with a zero id or with no default branch; [`ForgeError`] when it cannot
+    /// be read.
+    pub fn status_repository(&self) -> Result<StatusRepository, ForgeError<T::Error>> {
+        let operation = Operation::ReadRepository;
+        let path = api_path(operation, format!("repos/{}", self.repository))?;
+        let seen: RepositoryDto = self.api.get(operation, &path)?;
+        let malformed = |detail| ForgeError::Malformed { operation, detail };
+        if !self.repository.is(&seen.full_name) {
+            return Err(malformed("the API answered for another repository"));
+        }
+        let id = dto::nonzero(operation, seen.id, "a repository id is zero")?;
+        if seen.default_branch.is_empty() {
+            return Err(malformed("the repository has no default branch"));
+        }
+        Ok(StatusRepository {
+            id,
+            name: self.repository.to_string(),
+            default_branch: seen.default_branch,
+        })
+    }
+
     /// `check` as `status` sees it. The App's own check must have one of its three statuses;
     /// another app's pre-start states (`waiting`, `requested`, `pending`, GitHub Actions') read
     /// as queued, since `status` keeps only the App's.

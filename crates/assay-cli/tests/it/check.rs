@@ -435,7 +435,8 @@ pub(crate) fn write(root: &Path, path: &str, contents: &str) -> Result<(), Box<d
     Ok(())
 }
 
-fn plain_git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+/// Runs git as a developer would, isolated from the machine's config. Test setup only.
+pub(crate) fn plain_git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
     plain_git_env(cwd, args, "")
 }
 

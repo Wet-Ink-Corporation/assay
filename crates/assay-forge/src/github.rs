@@ -9,6 +9,7 @@
 //! the adapter cannot read exactly is refused ([`ForgeError`], wi-b5affa).
 
 mod api;
+mod artifacts;
 mod checks;
 mod comments;
 mod dto;
@@ -28,10 +29,11 @@ mod transport;
 use assay_app::{AppId, UserId};
 
 pub use api::{Api, MAX_LIST_ITEMS};
+pub use artifacts::BundleFetchError;
 pub use error::{ForgeError, Operation};
 pub use gh::{
-    GH_OUTPUT_CAP, GH_TIMEOUT, GhApi, GhCall, GhEnvironment, GhError, GhRunner, GhSetupError,
-    GhToken, InvalidToken,
+    GH_DOWNLOAD_TIMEOUT, GH_OUTPUT_CAP, GH_TIMEOUT, GhApi, GhCall, GhDownloadError, GhEnvironment,
+    GhError, GhRunner, GhSetupError, GhToken, InvalidToken,
 };
 pub use identity::MAX_COMMITS;
 pub use ledger::{LedgerRepo, LedgerRepoError};
@@ -69,6 +71,12 @@ impl<T, S> GitHub<T, S> {
             repository,
             identity,
         }
+    }
+
+    /// The API back, to close its transport.
+    #[must_use]
+    pub fn into_api(self) -> Api<T, S> {
+        self.api
     }
 
     /// `repos/<owner>/<name>/<rest>`, for `operation`.

@@ -14,6 +14,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
 mod developer;
+mod location;
 
 use self::developer::Sparse;
 use super::GitError;

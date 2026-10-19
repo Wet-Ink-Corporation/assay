@@ -1,5 +1,6 @@
 //! `ForgeSupervisor` as `assay-forge`'s `GhRunner`: the `gh api` transport run under the
-//! shared process-group supervisor, against a stand-in `gh` script (no network, #273).
+//! shared process-group supervisor, against a stand-in `gh` script (no network, #273), and the
+//! run bundle's `gh run download` under the same supervisor and environment (wi-6b26d6).
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -8,8 +9,9 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use assay_app::{AppId, Forge, UserId};
+use assay_app::{AppId, BundleSource, Forge, StoredBundle, UserId};
 use assay_cli::ForgeSupervisor;
+use assay_domain::RunUid;
 use assay_forge::github::{
     Api, ApiPath, AppIdentity, ForgeError, GH_TIMEOUT, GhApi, GhEnvironment, GhError, GhToken,
     GitHub, MAX_RESPONSE_BYTES, Operation, Request, ThreadSleep, Transport,
@@ -56,8 +58,13 @@ impl FakeGh {
 
     /// The environment the script recorded in `env`, without what the shell adds itself.
     fn env(&self) -> Result<BTreeMap<String, String>, Box<dyn Error>> {
+        self.env_in("env")
+    }
+
+    /// The environment the script recorded in `name`, without what the shell adds itself.
+    fn env_in(&self, name: &str) -> Result<BTreeMap<String, String>, Box<dyn Error>> {
         Ok(self
-            .record("env")?
+            .record(name)?
             .lines()
             .filter_map(|line| line.split_once('='))
             .filter(|(name, _)| !["PWD", "SHLVL", "_"].contains(name))
@@ -233,5 +240,60 @@ fn a_gh_that_writes_past_the_cap_is_stopped() -> Result<(), Box<dyn Error>> {
         matches!(sent, Err(GhError::Run(ProcessError::OutputTooLarge))),
         "{sent:?}"
     );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+fn a_bundle_is_downloaded_through_gh_with_the_api_calls_environment() -> Result<(), Box<dyn Error>>
+{
+    let gh = FakeGh::new(
+        r#"if [ "$1" = run ]; then
+  /usr/bin/env > "$dir/download-env"
+  pwd -P > "$dir/download-cwd"
+  while [ $# -gt 0 ]; do
+    if [ "$1" = --dir ]; then dest="$2"; fi
+    shift
+  done
+  printf '%s' "$dest" > "$dir/dest"
+  printf '{"bundle":1}' > "$dest/run-inputs.json"
+  exit 0
+fi
+/usr/bin/env > "$dir/env"
+printf 'HTTP/2.0 200 OK\n\r\n{"total_count":1,"artifacts":[{"name":"assay-decide-0123456789abcdef0123456789abcdef","size_in_bytes":40,"expired":false,"workflow_run":{"id":7,"repository_id":5}}]}'
+"#,
+    )?;
+    let environment = inheriting(&[("HTTPS_PROXY", "http://proxy.invalid:3128")]);
+    let identity = AppIdentity {
+        app: AppId(NonZeroU64::new(1).ok_or("non-zero")?),
+        bot: UserId(NonZeroU64::new(2).ok_or("non-zero")?),
+    };
+    let github = GitHub::new(
+        Api::new(gh.transport_in(GH_TIMEOUT, environment)?, ThreadSleep),
+        "o/r".parse()?,
+        identity,
+    );
+    let run = RunUid {
+        repo_id: NonZeroU64::new(5).ok_or("non-zero")?,
+        run_id: NonZeroU64::new(7).ok_or("non-zero")?,
+        run_attempt: NonZeroU64::MIN,
+    };
+
+    let fetched = github.fetch(run, "run-inputs.json", 1024)?;
+
+    assert_eq!(fetched, StoredBundle::Found(br#"{"bundle":1}"#.to_vec()));
+    let env = gh.env()?;
+    assert_eq!(gh.env_in("download-env")?, env);
+    assert_eq!(
+        env.get("HTTPS_PROXY").map(String::as_str),
+        Some("http://proxy.invalid:3128")
+    );
+    let config = env.get("GH_CONFIG_DIR").ok_or("GH_CONFIG_DIR is set")?;
+    assert_eq!(
+        gh.record("download-cwd")?,
+        format!("{}\n", fs::canonicalize(config)?.display())
+    );
+    assert!(!Path::new(&gh.record("dest")?).exists());
+    github.into_api().into_transport().close()?;
     Ok(())
 }

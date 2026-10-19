@@ -4,9 +4,9 @@ use std::num::NonZeroU64;
 
 use assay_app::{
     AppId, CheckStatus, CheckView, ObservedConclusion, PullView, ReviewCommentView, StatusForge,
-    Viewer,
+    StatusRepository, Viewer,
 };
-use assay_forge::github::{ForgeError, Method};
+use assay_forge::github::{ForgeError, Method, Operation};
 use serde_json::json;
 
 use super::recorded::{
@@ -172,4 +172,70 @@ fn the_viewer_is_the_authenticated_user() {
             login: "Ryan-Britton".to_owned(),
         }
     );
+}
+
+#[test]
+fn the_repository_is_read_with_its_id_and_default_branch() {
+    let recorded = Recorded::default().ok(
+        Method::Get,
+        "repos/Wet-Ink-Corporation/assay",
+        json_body(&json!({
+            "id": 1_072_347_811_u64,
+            "full_name": "wet-ink-corporation/Assay",
+            "default_branch": "main",
+            "private": true,
+        })),
+    );
+    let waits = Waits::default();
+
+    let repository = github(&recorded, &waits).status_repository();
+
+    assert_eq!(
+        repository.expect("read"),
+        StatusRepository {
+            id: id(1_072_347_811),
+            name: "Wet-Ink-Corporation/assay".to_owned(),
+            default_branch: "main".to_owned(),
+        },
+        "named as configured; GitHub compares names without case"
+    );
+}
+
+#[test]
+fn a_repository_answer_that_is_not_exactly_this_repository_is_refused() {
+    let cases = [
+        (
+            json!({"id": 9, "full_name": "Wet-Ink-Corporation/assay-renamed", "default_branch": "main"}),
+            "the API answered for another repository",
+        ),
+        (
+            json!({"id": 0, "full_name": "Wet-Ink-Corporation/assay", "default_branch": "main"}),
+            "a repository id is zero",
+        ),
+        (
+            json!({"id": 9, "full_name": "Wet-Ink-Corporation/assay", "default_branch": ""}),
+            "the repository has no default branch",
+        ),
+    ];
+    for (body, detail) in cases {
+        let recorded = Recorded::default().ok(
+            Method::Get,
+            "repos/Wet-Ink-Corporation/assay",
+            json_body(&body),
+        );
+        let waits = Waits::default();
+
+        let repository = github(&recorded, &waits).status_repository();
+
+        assert!(
+            matches!(
+                repository,
+                Err(ForgeError::Malformed {
+                    operation: Operation::ReadRepository,
+                    detail: refused,
+                }) if refused == detail
+            ),
+            "{body}: {repository:?}"
+        );
+    }
 }

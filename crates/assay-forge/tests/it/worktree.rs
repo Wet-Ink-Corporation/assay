@@ -6,6 +6,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod checkout;
 mod refusals;
 
 use assay_forge::git::{

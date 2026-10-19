@@ -154,6 +154,10 @@ pub enum Operation {
     ReadLedgerRef,
     /// Creating a lease ref of the ledger repository at a new commit.
     CreateLedgerRef,
+    /// Reading the repository itself: its id and default branch.
+    ReadRepository,
+    /// Listing a workflow run's artifacts.
+    ListArtifacts,
 }
 
 impl fmt::Display for Operation {
@@ -182,6 +186,8 @@ impl fmt::Display for Operation {
             Self::WriteLedgerFile => "write ledger file",
             Self::ReadLedgerRef => "read ledger ref",
             Self::CreateLedgerRef => "create ledger ref",
+            Self::ReadRepository => "read repository",
+            Self::ListArtifacts => "list run artifacts",
         })
     }
 }

@@ -69,10 +69,10 @@ const BUGS: &str = include_str!("../../../plugin/prompts/v1/bugs.md");
 const SECURITY: &str = include_str!("../../../plugin/prompts/v1/security.md");
 const DESIGN: &str = include_str!("../../../plugin/prompts/v1/design.md");
 const META: &str = include_str!("../../../plugin/prompts/v1/meta.md");
-const RUBRIC: &[u8] = include_bytes!("../../../rubric/v1.toml");
+pub(crate) const RUBRIC: &[u8] = include_bytes!("../../../rubric/v1.toml");
 
 /// Wall-clock cap of the diff that lists the changed files.
-const DIFF_CAP: Duration = Duration::from_mins(1);
+pub(crate) const DIFF_CAP: Duration = Duration::from_mins(1);
 
 /// Wall-clock cap of each review attempt.
 const REVIEW_TIMEOUT: Duration = Duration::from_mins(15);
@@ -341,7 +341,7 @@ fn open_events(
 
 /// Whether `name` is a plain branch name: segments of ASCII letters, digits, `.`, `_` and `-`
 /// joined by `/`, none empty or starting with `.` or `-`, so it can name no other revision.
-fn is_branch_name(name: &str) -> bool {
+pub(crate) fn is_branch_name(name: &str) -> bool {
     !name.is_empty()
         && name.split('/').all(|segment| {
             !segment.is_empty()
@@ -365,12 +365,16 @@ fn claude_program(
             Err(CheckCliError::RelativeProgram(program))
         };
     }
+    on_path("claude", path).ok_or(CheckCliError::NoClaude)
+}
+
+/// The first regular file named `program` in an absolute directory of `path`.
+pub(crate) fn on_path(program: &str, path: Option<&OsString>) -> Option<PathBuf> {
     path.into_iter()
         .flat_map(std::env::split_paths)
         .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join("claude"))
+        .map(|dir| dir.join(program))
         .find(|candidate| candidate.is_file())
-        .ok_or(CheckCliError::NoClaude)
 }
 
 /// The commit of `origin/<branch>`, which the check plans against.

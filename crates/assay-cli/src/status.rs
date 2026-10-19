@@ -1,7 +1,7 @@
 //! `assay status [--json] [--pr <n>] [--full]` (#126): the arguments and the wiring of
-//! [`assay_app::status`] over its ports, generic so it is tested with fakes until the GitHub
-//! adapter (#53) exists. `assay status [--json] --local` (#130) shows the local check's result
-//! instead; [`StatusCommand`] tells the two apart.
+//! [`assay_app::status`] over its ports, generic so it is tested with fakes; the binary runs
+//! it over forge's GitHub adapter through `gh` (#273). `assay status [--json] --local` (#130)
+//! shows the local check's result instead; [`StatusCommand`] tells the two apart.
 
 use std::ffi::OsString;
 use std::fmt;

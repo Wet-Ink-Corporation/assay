@@ -153,6 +153,38 @@ fn findings(replay: &GoldenReplay<'_>) -> Vec<Finding> {
     found
 }
 
+/// Why a rubric file was refused: it is not UTF-8 TOML of the rubric's shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the rubric does not parse at line {line}")]
+pub struct RubricError {
+    /// The 1-based line the first error points at (1 when it points nowhere).
+    pub line: usize,
+}
+
+/// A rubric file (`rubric/v1.toml`), read for a binary that embeds the shipped one.
+///
+/// # Errors
+///
+/// [`RubricError`] when it is not UTF-8 TOML of the rubric's shape.
+///
+/// # Examples
+///
+/// ```
+/// let rubric = assay_app::read_rubric(
+///     br#"
+/// version = "1"
+/// majors_block_threshold = 3
+/// max_requeues = 3
+/// micro_roles = ["combined-micro"]
+/// "#,
+/// )?;
+/// assert_eq!(rubric.version(), "1");
+/// # Ok::<(), assay_app::RubricError>(())
+/// ```
+pub fn read_rubric(bytes: &[u8]) -> Result<Rubric, RubricError> {
+    parse_rubric(bytes).map_err(|line| RubricError { line })
+}
+
 /// The rubric, or the 1-based line its parse error points at (1 when it points nowhere).
 pub(crate) fn parse_rubric(bytes: &[u8]) -> Result<Rubric, usize> {
     let text =
