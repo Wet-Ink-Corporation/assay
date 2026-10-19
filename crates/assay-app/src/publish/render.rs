@@ -39,6 +39,8 @@ pub(super) struct Facts<'a> {
     /// Each eligible reviewer's approval ignored for timing,
     /// `approval at T ignored: before push at T′ (reviewer <id>)` (04 §5).
     pub(super) ignored_approvals: &'a [IgnoredApproval],
+    /// Each waiver the decision did not apply, `<fp> by <who>: <why>` (R-08(a), #59).
+    pub(super) unapplied_waivers: &'a [String],
 }
 
 /// What `output.text` projects of the ledger state.
@@ -85,19 +87,7 @@ pub(super) fn summary(summary: &Summary<'_>) -> String {
     });
     block(&mut lines, summary.reasons.len(), reasons);
     if let Some(facts) = &summary.facts {
-        lines.push(String::new());
-        lines.push("Degraded roles:".to_owned());
-        let degraded = facts
-            .degraded
-            .iter()
-            .map(|role| [role.role.as_str(), ": ", role.reason.as_str()].concat());
-        block(&mut lines, facts.degraded.len(), degraded);
-        if !facts.ignored_approvals.is_empty() {
-            lines.push(String::new());
-            lines.push("Ignored approvals:".to_owned());
-            let ignored = facts.ignored_approvals.iter().map(ToString::to_string);
-            block(&mut lines, facts.ignored_approvals.len(), ignored);
-        }
+        fact_lists(&mut lines, facts);
     }
     if let Some(warning) = summary.warning {
         lines.push(String::new());
@@ -124,6 +114,30 @@ pub(super) fn summary(summary: &Summary<'_>) -> String {
         .map(str::to_owned),
     );
     lines.join("\n")
+}
+
+/// The decision's lists after its reasons: degraded roles, then, when there are any, ignored
+/// approvals and the waivers not applied.
+fn fact_lists(lines: &mut Vec<String>, facts: &Facts<'_>) {
+    lines.push(String::new());
+    lines.push("Degraded roles:".to_owned());
+    let degraded = facts
+        .degraded
+        .iter()
+        .map(|role| [role.role.as_str(), ": ", role.reason.as_str()].concat());
+    block(lines, facts.degraded.len(), degraded);
+    if !facts.ignored_approvals.is_empty() {
+        lines.push(String::new());
+        lines.push("Ignored approvals:".to_owned());
+        let ignored = facts.ignored_approvals.iter().map(ToString::to_string);
+        block(lines, facts.ignored_approvals.len(), ignored);
+    }
+    if !facts.unapplied_waivers.is_empty() {
+        lines.push(String::new());
+        lines.push("Waivers not applied:".to_owned());
+        let unapplied = facts.unapplied_waivers.iter();
+        block(lines, facts.unapplied_waivers.len(), unapplied);
+    }
 }
 
 /// The summary's first facts: tier, classes and AEU, the finding counts, then a blank line.
@@ -187,12 +201,19 @@ pub(super) fn comment(summary: &str) -> String {
 
 /// Appends up to [`MAX_ITEMS`] of `total` items as one fenced block whose fence is longer than
 /// any backtick run inside it, each item cleaned and clipped, then how many were left out.
-pub(super) fn block(lines: &mut Vec<String>, total: usize, items: impl Iterator<Item = String>) {
+pub(super) fn block(
+    lines: &mut Vec<String>,
+    total: usize,
+    items: impl Iterator<Item = impl AsRef<str>>,
+) {
     if total == 0 {
         lines.push("none".to_owned());
         return;
     }
-    let shown: Vec<String> = items.take(MAX_ITEMS).map(|item| clean(&item)).collect();
+    let shown: Vec<String> = items
+        .take(MAX_ITEMS)
+        .map(|item| clean(item.as_ref()))
+        .collect();
     let longest = shown.iter().map(|item| longest_backtick_run(item)).max();
     let fence = "`".repeat(longest.unwrap_or(0).saturating_add(1).max(3));
     lines.push([fence.as_str(), "text"].concat());

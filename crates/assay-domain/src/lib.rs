@@ -36,7 +36,7 @@ pub use decide::inputs::{
     OwnerApproval, Policy, PullRequest, Readiness, ReviewedFinding, StepAttribution,
     SupportOutcome, Waiver, WeighIn,
 };
-pub use decide::{decide, waivable_fingerprints};
+pub use decide::{WaiverRefusal, decide, waivable_fingerprints, waiver_refusal};
 pub use decision::{
     Conclusion, Counts, Decision, DecisionSchema, DegradedRole, FindingDisposition, Reason, Waived,
 };

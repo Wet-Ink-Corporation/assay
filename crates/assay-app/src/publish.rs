@@ -14,6 +14,7 @@ mod ports;
 mod render;
 mod resolution;
 mod sanitise;
+mod waivers;
 mod write;
 
 use assay_domain::{Aeu, Conclusion, ContentHash, DecisionInputs, Event, Reason, Rubric, RunUid};

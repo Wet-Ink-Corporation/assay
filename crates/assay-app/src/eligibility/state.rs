@@ -152,9 +152,7 @@ impl GitHubState {
     /// The latest valid override of this head.
     #[must_use]
     pub fn override_record(&self) -> Option<Override> {
-        self.valid()
-            .filter(|record| matches!(record.command, Command::Override { .. }))
-            .max_by_key(|record| (record.created_at, record.comment_id))
+        self.latest_override()
             .and_then(|record| match &record.command {
                 Command::Override {
                     scope,
@@ -193,8 +191,15 @@ impl GitHubState {
             .map(|judged| &judged.record)
     }
 
+    /// The latest valid override record of this head, by `(created_at, comment_id)`.
+    pub(super) fn latest_override(&self) -> Option<&CommandRecord> {
+        self.valid()
+            .filter(|record| matches!(record.command, Command::Override { .. }))
+            .max_by_key(|record| (record.created_at, record.comment_id))
+    }
+
     /// The login the lists give a privileged `id`, as the decision records who acted.
-    fn login(&self, id: UserId) -> String {
+    pub(super) fn login(&self, id: UserId) -> String {
         self.rule
             .lists
             .privileged(id)

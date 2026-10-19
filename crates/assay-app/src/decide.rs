@@ -41,7 +41,7 @@ pub use self::request::{
 };
 use crate::config::{AssaySettings, Sha256Digest};
 use crate::contract::ContractValidator;
-use crate::eligibility::CommitRange;
+use crate::eligibility::{CommitRange, WaiverBindings};
 use crate::plan::{ArtifactJob, EvidenceKey, PlanError, PullRequestEvent, PullRequestObjects};
 
 /// The most documents the `review` job may publish (H-13).
@@ -198,6 +198,25 @@ impl AuthenticatedRun {
     #[must_use]
     pub fn review_documents(&self) -> &[Vec<u8>] {
         &self.review_documents
+    }
+
+    /// What a waiver of each gate fingerprint is bound to on this head (R3-13, #59): the
+    /// digests of the authentic gate documents of every gate carrying it, for
+    /// [`GitHubState::waivers_carried`](crate::GitHubState::waivers_carried).
+    #[must_use]
+    pub fn waiver_bindings(&self) -> WaiverBindings {
+        let documents = self
+            .record
+            .documents
+            .iter()
+            .filter(|document| {
+                matches!(
+                    document.job,
+                    ArtifactJob::GatesStatic | ArtifactJob::GatesLint | ArtifactJob::GatesTest
+                )
+            })
+            .map(|document| (document.file.as_str(), &document.digest));
+        WaiverBindings::of(&self.gates, documents)
     }
 
     /// What the bundle records of the run's artifacts.

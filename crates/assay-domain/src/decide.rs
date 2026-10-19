@@ -18,7 +18,7 @@ use crate::severity::Severity;
 use inputs::{DecisionInputs, LlmPolicy, OverrideScope};
 use rules::{Effect, Firing};
 use waive::Waivers;
-pub use waive::waivable_fingerprints;
+pub use waive::{WaiverRefusal, waivable_fingerprints, waiver_refusal};
 
 /// Decides one PR head: rubric v1 rules 1 to 9, waive and override of 04 §5.
 ///

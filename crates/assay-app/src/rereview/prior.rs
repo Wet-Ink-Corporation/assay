@@ -1,18 +1,21 @@
 //! Seeding a run's carry set from the previous completed run's bundle
 //! (`docs/architecture/04-pipeline.md` §7, #224): the bundle is read through its evidence
 //! pointer, authenticated as replay and `assay status` authenticate it, and its carried
-//! findings go through the carried intake. A reset or a first review reads nothing.
+//! findings go through the carried intake. The same bundle names the waivers its decision
+//! applied, which a later head may carry (#59). A reset or a first review reads nothing.
 
 use std::num::NonZeroU64;
 
-use assay_domain::RunUid;
+use assay_domain::{Decision, RunUid};
+use serde::Deserialize;
 use thiserror::Error;
 
 use super::carried::{CarriedFinding, CarryRefused, read_carried};
 use super::target::Carry;
 use crate::config::Sha256Digest;
+use crate::eligibility::{PriorWaivers, WaiverBindings};
 use crate::publish::{BUNDLE_FILE, EvidencePointer, MAX_BUNDLE_BYTES};
-use crate::replay::{self, BundleShape, BundleSource, Mismatch, StoredBundle};
+use crate::replay::{self, Bundle, BundleShape, BundleSource, Mismatch, StoredBundle};
 
 /// Where the previous completed run's bundle is, and the repository the findings are for.
 #[derive(Debug, Clone, Copy)]
@@ -89,6 +92,67 @@ pub fn prior_carry<S: BundleSource>(
         Carry::Kept => {}
         Carry::FirstReview | Carry::Reset(_) => return Ok(Vec::new()),
     }
+    let bundle = read_prior(request, source)?;
+    read_carried(bundle.carry.into_parts(), request.repository).map_err(PriorCarryError::Refused)
+}
+
+/// What the previous completed run's decision waived, read from the bundle `request.pointer`
+/// names (R3-13, #59).
+///
+/// Each waived fingerprint comes with its binding there, for
+/// [`GitHubState::waivers_carried`](crate::GitHubState::waivers_carried).
+///
+/// Nothing when `carry` is not [`Carry::Kept`], with nothing fetched: a rebase or force-push
+/// carries no waiver, as it carries no finding. Otherwise the bundle is fetched and
+/// authenticated exactly as [`prior_carry`] does; its decision must read as
+/// `assay.decision/1` and each gate document's digest must parse. A waived fingerprint is bound
+/// to the digests of the bundle's gate documents of every gate carrying it, as
+/// [`AuthenticatedRun::waiver_bindings`](crate::AuthenticatedRun::waiver_bindings) binds this
+/// run's.
+///
+/// # Errors
+///
+/// As [`prior_carry`], except [`PriorCarryError::Refused`], which this never returns; a
+/// decision or document digest that does not read is [`PriorCarryError::Shape`].
+pub fn prior_waivers<S: BundleSource>(
+    carry: Carry,
+    request: &PriorCarry<'_>,
+    source: &S,
+) -> Result<PriorWaivers, PriorCarryError<S::Error>> {
+    match carry {
+        Carry::Kept => {}
+        Carry::FirstReview | Carry::Reset(_) => return Ok(PriorWaivers::default()),
+    }
+    let bundle = read_prior(request, source)?;
+    let decision = Decision::deserialize(&bundle.decision).map_err(unreadable)?;
+    let documents = bundle
+        .gate_documents()
+        .map(|(file, digest)| digest.parse().map(|digest: Sha256Digest| (file, digest)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(unreadable)?;
+    let bindings = WaiverBindings::of(
+        &bundle.inputs.gates,
+        documents.iter().map(|(file, digest)| (*file, digest)),
+    );
+    Ok(PriorWaivers::new(
+        decision.waived.iter().map(|waived| waived.fp),
+        bindings,
+    ))
+}
+
+/// A part of an authentic bundle that does not read as its contract says: the bundle's shape
+/// is refused, whatever the parser's own error said.
+fn unreadable<P, E>(_problem: P) -> PriorCarryError<E> {
+    PriorCarryError::Shape(BundleShape::Shape)
+}
+
+/// Fetches and authenticates the bundle `request.pointer` names: attempt 1 only, under
+/// [`MAX_BUNDLE_BYTES`], hashing to the pointer, strictly `assay.run-inputs/1`, recording the
+/// pointer's run and keeping documents that hash to their digests.
+fn read_prior<S: BundleSource>(
+    request: &PriorCarry<'_>,
+    source: &S,
+) -> Result<Bundle, PriorCarryError<S::Error>> {
     let pointer = request.pointer;
     if pointer.run_attempt.get() != 1 {
         return Err(PriorCarryError::NotFirstAttempt);
@@ -118,5 +182,5 @@ pub fn prior_carry<S: BundleSource>(
     if let Some(mismatch) = replay::inconsistency(&bundle, run) {
         return Err(PriorCarryError::Inconsistent(mismatch));
     }
-    read_carried(bundle.carry.into_parts(), request.repository).map_err(PriorCarryError::Refused)
+    Ok(bundle)
 }

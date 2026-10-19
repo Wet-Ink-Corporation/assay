@@ -277,10 +277,25 @@ enum BundleSchema {
 #[serde(deny_unknown_fields)]
 struct BundleDocument {
     job: DocumentJob,
-    #[serde(rename = "file")]
-    _file: String,
+    file: String,
     sha256: String,
     text: String,
+}
+
+impl Bundle {
+    /// Each gate document's file and recorded digest, in bundle order: what a waiver was bound
+    /// to on the bundle's head (#59).
+    pub(crate) fn gate_documents(&self) -> impl Iterator<Item = (&str, &str)> + '_ {
+        self.documents
+            .iter()
+            .filter(|document| {
+                matches!(
+                    document.job,
+                    DocumentJob::GatesStatic | DocumentJob::GatesLint | DocumentJob::GatesTest
+                )
+            })
+            .map(|document| (document.file.as_str(), document.sha256.as_str()))
+    }
 }
 
 /// The job that published a document.

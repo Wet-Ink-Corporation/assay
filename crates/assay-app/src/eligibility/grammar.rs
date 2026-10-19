@@ -137,17 +137,8 @@ impl Command {
 /// ```
 #[must_use]
 pub fn parse_command(body: &str) -> Parsed {
-    let line = body.split_once('\n').map_or(body, |(first, _rest)| first);
-    let line = line.strip_suffix('\r').unwrap_or(line);
-    let Some(rest) = line.strip_prefix(PREFIX) else {
+    let Some(rest) = command_line(body) else {
         return Parsed::NotACommand;
-    };
-    let Some(rest) = rest.strip_prefix(' ') else {
-        return if rest.is_empty() {
-            Parsed::Unknown
-        } else {
-            Parsed::NotACommand
-        };
     };
     let (word, args) = rest.split_once(' ').unwrap_or((rest, ""));
     let parsed = match word {
@@ -169,6 +160,42 @@ pub fn parse_command(body: &str) -> Parsed {
     };
     parsed.map_or(Parsed::Malformed, Parsed::Command)
 }
+
+/// What follows `/assay ` on `body`'s first line (empty for a bare `/assay`), or `None` when
+/// that line is not a command line.
+fn command_line(body: &str) -> Option<&str> {
+    let line = body.split_once('\n').map_or(body, |(first, _rest)| first);
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let rest = line.strip_prefix(PREFIX)?;
+    if rest.is_empty() {
+        return Some(rest);
+    }
+    rest.strip_prefix(' ')
+}
+
+/// The grammar's command word on `body`'s first line, for events: the word when the grammar
+/// has it, `unknown` for any other word, and `None` when the line is not a command line. Never
+/// the comment's own text.
+pub(crate) fn command_word(body: &str) -> Option<&'static str> {
+    let rest = command_line(body)?;
+    let word = rest.split_once(' ').map_or(rest, |(word, _args)| word);
+    Some(
+        WORDS
+            .into_iter()
+            .find(|known| *known == word)
+            .unwrap_or("unknown"),
+    )
+}
+
+/// Every command word of the grammar, as [`Command::name`] gives it.
+const WORDS: [&str; 6] = [
+    "recheck",
+    "waive",
+    "override",
+    "dismiss",
+    "retry",
+    "weigh-in-ack",
+];
 
 /// `llm|all <reasons_digest> <reason>`.
 fn override_command(args: &str) -> Option<Command> {

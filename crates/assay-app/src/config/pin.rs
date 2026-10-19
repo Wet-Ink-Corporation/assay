@@ -28,7 +28,7 @@ impl fmt::Display for LowerHex<'_> {
 }
 
 /// An OCI content digest, `sha256:<64 lowercase hex>`; a tag such as `latest` never parses.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Sha256Digest(String);
 
 impl Sha256Digest {
