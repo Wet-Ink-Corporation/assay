@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::cas::{Refused, Step, compare_and_set, read_file};
 use super::error::{Corruption, LedgerReadError, LedgerWriteError};
-use super::lines::{check_schema, parse, to_line};
+use super::lines::{Newline, check_canonical, check_schema, parse, to_line};
 use super::port::{Ledger, LedgerPath};
 use super::record::{field, is_repository};
 use super::time::LedgerTime;
@@ -162,6 +162,11 @@ fn parse_state(
     {
         return Err(Corruption::WrongPullRequest);
     }
+    check_canonical(
+        contents,
+        &StateDocument::new(repo_id, pr, &state),
+        Newline::Included,
+    )?;
     Ok(state)
 }
 

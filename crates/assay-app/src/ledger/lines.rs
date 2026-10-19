@@ -60,6 +60,35 @@ pub(super) fn to_line<S: serde::Serialize>(record: &S) -> Result<Vec<u8>, Corrup
     Ok(line)
 }
 
+/// Refuses `text` unless it is byte for byte what [`to_line`] writes for `wire`, the wire form
+/// of the record read from it: assay's writer is the only writer, so any other form of the same
+/// record (key order, spacing, escapes, number forms, a struct written as an array) was not
+/// written by assay. `text` is a stream line without its newline, or a whole state document.
+pub(super) fn check_canonical<S: serde::Serialize>(
+    text: &[u8],
+    wire: &S,
+    newline: Newline,
+) -> Result<(), Corruption> {
+    let mut written = serde_json::to_vec(wire).map_err(|_shape| Corruption::Shape)?;
+    if newline == Newline::Included {
+        written.push(b'\n');
+    }
+    if text == written.as_slice() {
+        Ok(())
+    } else {
+        Err(Corruption::NotCanonical)
+    }
+}
+
+/// Whether the text [`check_canonical`] compares carries the writer's final newline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Newline {
+    /// A whole file, newline included.
+    Included,
+    /// A stream line, which [`lines`] gave without its newline.
+    Stripped,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

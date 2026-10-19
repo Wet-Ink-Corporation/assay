@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::cas::{Next, append_line, read_file};
 use super::error::{Corruption, LedgerReadError, LedgerWriteError};
-use super::lines::{Refusal, check_schema, lines, parse, to_line};
+use super::lines::{Newline, Refusal, check_canonical, check_schema, lines, parse, to_line};
 use super::port::{Ledger, LedgerPath};
 use super::record::field;
 use super::time::LedgerTime;
@@ -146,6 +146,7 @@ fn parse_pushes(
         let refuse = |problem| (number, problem);
         let record =
             PushRecord::try_from(parse::<PushLine>(line).map_err(refuse)?).map_err(refuse)?;
+        check_canonical(line, &PushLine::from(&record), Newline::Stripped).map_err(refuse)?;
         if (record.push.run_uid.repo_id, record.push.pr) != (repo_id, pr) {
             return Err(refuse(Corruption::WrongPullRequest));
         }

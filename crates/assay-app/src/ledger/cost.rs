@@ -12,7 +12,7 @@ use super::aeu_text::parse_aeu;
 use super::budget::BUDGET_WINDOW;
 use super::cas::{Next, append_line, read_file};
 use super::error::{Corruption, LedgerReadError, LedgerWriteError};
-use super::lines::{Refusal, check_schema, lines, parse, to_line};
+use super::lines::{Newline, Refusal, check_canonical, check_schema, lines, parse, to_line};
 use super::port::{Ledger, LedgerPath};
 use super::record::{Appended, field, is_repository};
 use super::time::{LedgerMonth, LedgerTime};
@@ -199,7 +199,9 @@ pub(super) fn parse_costs(month: LedgerMonth, contents: &[u8]) -> Result<Vec<Cos
 
 /// One cost line as a record.
 fn parse_cost(line: &[u8]) -> Result<CostRecord, Corruption> {
-    CostRecord::try_from(parse::<CostLine<'_>>(line)?)
+    let record = CostRecord::try_from(parse::<CostLine<'_>>(line)?)?;
+    check_canonical(line, &CostLine::from(&record), Newline::Stripped)?;
+    Ok(record)
 }
 
 /// The wire form of a cost record (OUT-01).

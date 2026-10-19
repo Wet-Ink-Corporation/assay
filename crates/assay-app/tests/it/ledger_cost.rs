@@ -196,6 +196,30 @@ fn a_cost_line_that_is_not_exactly_one_object_is_refused() {
 }
 
 #[test]
+fn a_cost_line_with_an_array_for_its_run_uid_is_refused() {
+    let line = cost_line(1, "reserved", "0.74", "2026-10-12T09:30:00.000Z");
+    let nested = line.replacen(
+        r#""run_uid":{"repo_id":42,"run_id":1,"run_attempt":1}"#,
+        r#""run_uid":[42,1,1]"#,
+        1,
+    );
+    assert_ne!(nested, line, "the run_uid was rewritten");
+    refused(&nested, 1, Corruption::NotCanonical);
+}
+
+#[test]
+fn a_cost_line_with_its_keys_reordered_is_refused() {
+    let line = cost_line(1, "reserved", "0.74", "2026-10-12T09:30:00.000Z");
+    let reordered = line.replacen(
+        r#""cancelled":false,"at":"2026-10-12T09:30:00.000Z""#,
+        r#""at":"2026-10-12T09:30:00.000Z","cancelled":false"#,
+        1,
+    );
+    assert_ne!(reordered, line, "two keys were swapped");
+    refused(&reordered, 1, Corruption::NotCanonical);
+}
+
+#[test]
 fn a_cost_line_that_repeats_a_key_is_refused() {
     let line = cost_line(1, "reserved", "0.74", "2026-10-12T09:30:00.000Z");
     let repeated = line.replacen(r#""pr":7,"#, r#""pr":7,"pr":8,"#, 1);

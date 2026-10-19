@@ -196,6 +196,15 @@ fn a_state_document_written_as_an_array_is_refused() {
 }
 
 #[test]
+fn a_state_document_not_in_its_written_form_is_refused() {
+    let document = full_document();
+    let escaped = document.replacen("assay.ledger-state/1", r"assay.ledger-state\/1", 1);
+    assert_ne!(escaped, document, "the schema id was escaped");
+    state_refused(&escaped, Corruption::NotCanonical);
+    state_refused(document.trim_end(), Corruption::NotCanonical);
+}
+
+#[test]
 fn a_state_file_of_another_pr_is_refused() {
     state_refused(
         &full_document().replacen(r#""pr":7,"evidence""#, r#""pr":8,"evidence""#, 1),

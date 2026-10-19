@@ -86,6 +86,11 @@ pub enum Corruption {
     /// unknown or missing field, or a mistyped value.
     #[error("not a record of the contract's shape")]
     Shape,
+    /// The record reads, but not byte for byte as assay writes it (key order, spacing, escapes,
+    /// number forms, an object written as an array): assay's writer is the only writer, so
+    /// someone else wrote it.
+    #[error("not in the form assay writes")]
+    NotCanonical,
     /// The `schema` field names another contract or version.
     #[error("another contract or version")]
     Schema,

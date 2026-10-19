@@ -174,6 +174,36 @@ fn a_push_record_of_another_repository_is_refused() {
     pushes_refused(&line, 1, Corruption::WrongPullRequest);
 }
 
+#[test]
+fn a_push_line_with_an_escaped_character_is_refused() {
+    let line = push_line(1, 1, "2026-10-12T09:30:00.000Z");
+    let escaped = line.replacen("assay.ledger-push/1", r"assay.ledger-push\/1", 1);
+    assert_ne!(escaped, line, "the schema id was escaped");
+    pushes_refused(&escaped, 1, Corruption::NotCanonical);
+}
+
+#[test]
+fn a_command_line_with_an_escaped_character_is_refused() {
+    let line = command_line(500, "/assay recheck");
+    let escaped = line.replacen("/assay recheck", r"\/assay recheck", 1);
+    assert_ne!(escaped, line, "the command was escaped");
+    let ledger = MemoryLedger::default().with_file(&commands(), escaped.as_bytes());
+
+    let read = read_commands(&ledger, id(42), id(7));
+
+    assert!(
+        matches!(
+            &read,
+            Err(LedgerReadError::Corrupt {
+                line: 1,
+                problem: Corruption::NotCanonical,
+                ..
+            })
+        ),
+        "{read:?}"
+    );
+}
+
 fn command(comment_id: u64, text: &str) -> CommandRecord {
     CommandRecord {
         run_uid: run(9),

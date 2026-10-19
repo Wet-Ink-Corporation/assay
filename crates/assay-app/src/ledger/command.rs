@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::cas::{Next, append_line, read_file};
 use super::error::{Corruption, LedgerReadError, LedgerWriteError};
-use super::lines::{Refusal, check_schema, lines, parse, to_line};
+use super::lines::{Newline, Refusal, check_canonical, check_schema, lines, parse, to_line};
 use super::port::{Ledger, LedgerPath};
 use super::record::{Appended, field};
 use super::time::LedgerTime;
@@ -120,6 +120,7 @@ fn parse_commands(
         let refuse = |problem| (number, problem);
         let record = CommandRecord::try_from(parse::<CommandLine<'_>>(line).map_err(refuse)?)
             .map_err(refuse)?;
+        check_canonical(line, &CommandLine::from(&record), Newline::Stripped).map_err(refuse)?;
         if (record.run_uid.repo_id, record.pr) != (repo_id, pr) {
             return Err(refuse(Corruption::WrongPullRequest));
         }

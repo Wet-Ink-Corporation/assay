@@ -32,8 +32,12 @@ fn violations(stem: &str, document: &Value) -> Result<Violations, Box<dyn Error>
         .collect())
 }
 
-/// The fixtures of `contract` (`ledger-cost`, ...) with `validity`, by file stem.
-fn fixtures(contract: &str, validity: &str) -> Result<BTreeMap<String, Value>, Box<dyn Error>> {
+/// Golden fixtures by file stem: each file's bytes, one JSON line in the form assay writes, and
+/// the document they parse to.
+type Fixtures = BTreeMap<String, (Vec<u8>, Value)>;
+
+/// The fixtures of `contract` (`ledger-cost`, ...) with `validity`.
+fn fixtures(contract: &str, validity: &str) -> Result<Fixtures, Box<dyn Error>> {
     let dir = schemas_dir().join("fixtures").join(contract).join(validity);
     let mut found = BTreeMap::new();
     for entry in fs::read_dir(dir)? {
@@ -43,36 +47,36 @@ fn fixtures(contract: &str, validity: &str) -> Result<BTreeMap<String, Value>, B
             .and_then(|stem| stem.to_str())
             .ok_or("a fixture name")?
             .to_owned();
-        found.insert(stem, serde_json::from_slice(&fs::read(&path)?)?);
+        let bytes = fs::read(&path)?;
+        let document = serde_json::from_slice(&bytes)?;
+        found.insert(stem, (bytes, document));
     }
     Ok(found)
 }
 
-/// Whether the reader of `contract` accepts `document`, as the only record of PR 7 of
-/// repository 42 (cost records in October 2026's file).
-fn reader_accepts(contract: &str, document: &Value) -> Result<bool, Box<dyn Error>> {
-    let mut bytes = serde_json::to_vec(document)?;
-    bytes.push(b'\n');
+/// Whether the reader of `contract` accepts the file `bytes` as is, as the only record of PR 7
+/// of repository 42 (cost records in October 2026's file).
+fn reader_accepts(contract: &str, bytes: &[u8]) -> Result<bool, Box<dyn Error>> {
     let october = at("2026-10-15T00:00:00.000Z");
     let accepted = match contract {
         "ledger-cost" => {
             let ledger =
-                MemoryLedger::default().with_file(&LedgerPath::costs(october.month()), &bytes);
+                MemoryLedger::default().with_file(&LedgerPath::costs(october.month()), bytes);
             read_costs(&ledger, october).is_ok_and(|window| window.records().len() == 1)
         }
         "ledger-push" => {
             let ledger =
-                MemoryLedger::default().with_file(&LedgerPath::pushes(id(42), id(7)), &bytes);
+                MemoryLedger::default().with_file(&LedgerPath::pushes(id(42), id(7)), bytes);
             read_pushes(&ledger, id(42), id(7)).is_ok_and(|records| records.len() == 1)
         }
         "ledger-command" => {
             let ledger =
-                MemoryLedger::default().with_file(&LedgerPath::commands(id(42), id(7)), &bytes);
+                MemoryLedger::default().with_file(&LedgerPath::commands(id(42), id(7)), bytes);
             read_commands(&ledger, id(42), id(7)).is_ok_and(|records| records.len() == 1)
         }
         "ledger-state" => {
             let ledger =
-                MemoryLedger::default().with_file(&LedgerPath::state(id(42), id(7)), &bytes);
+                MemoryLedger::default().with_file(&LedgerPath::state(id(42), id(7)), bytes);
             read_state(&ledger, id(42), id(7)).is_ok()
         }
         other => return Err(format!("no reader for {other}").into()),
@@ -84,17 +88,17 @@ fn reader_accepts(contract: &str, document: &Value) -> Result<bool, Box<dyn Erro
 /// schema exactly as `expected` lists, by stem, and are refused by the reader.
 fn check(contract: &str, expected: &[(&str, &str, &str)]) -> Result<(), Box<dyn Error>> {
     let stem = format!("{contract}-1");
-    for (name, document) in fixtures(contract, "valid")? {
+    for (name, (bytes, document)) in fixtures(contract, "valid")? {
         assert_eq!(violations(&stem, &document)?, [], "{contract} valid/{name}");
         assert!(
-            reader_accepts(contract, &document)?,
+            reader_accepts(contract, &bytes)?,
             "{contract} valid/{name} read"
         );
     }
     let mut rejected = Vec::new();
-    for (name, document) in fixtures(contract, "invalid")? {
+    for (name, (bytes, document)) in fixtures(contract, "invalid")? {
         assert!(
-            !reader_accepts(contract, &document)?,
+            !reader_accepts(contract, &bytes)?,
             "{contract} invalid/{name} must be refused by the reader"
         );
         rejected.push((name, violations(&stem, &document)?));
