@@ -8,8 +8,8 @@ use std::collections::{BTreeSet, HashSet};
 use std::error::Error;
 
 use assay_app::{
-    Actor, AdmitError, CommandRecord, CommentId, CommentNow, CommitId, CommitIdentity, PushDraft,
-    PushKind, RangeIdentities, Sha256Digest, UserId, append_command, append_push,
+    Actor, AdmitError, CommandRecord, CommentId, CommitId, CommitIdentity, IssueComment, PushDraft,
+    PushKind, RangeIdentities, Sha256Digest, Timestamp, UserId, append_command, append_push,
 };
 use assay_domain::RunUid;
 use serde_json::{Value, json};
@@ -47,7 +47,7 @@ fn dismissals_of(world: &mut World) -> Result<Value, Box<dyn Error>> {
 }
 
 /// A comment `id` by `actor` saying `body`, recorded by decide-only, and as GitHub shows it now.
-fn command(id: u64, actor: u64, body: &str) -> (CommandRecord, CommentNow) {
+fn command(id: u64, actor: u64, body: &str) -> (CommandRecord, IssueComment) {
     let created = at("2026-10-19T10:00:00.000Z");
     let record = CommandRecord {
         run_uid: RunUid {
@@ -63,10 +63,13 @@ fn command(id: u64, actor: u64, body: &str) -> (CommandRecord, CommentNow) {
         created_at: created,
         at: at("2026-10-19T10:00:05.000Z"),
     };
-    let now = CommentNow {
-        created_at: created,
-        updated_at: created,
+    let now = IssueComment {
+        id: CommentId(nz(id)),
+        user: Some(UserId(nz(actor))),
+        created_at: Timestamp::from(created),
+        updated_at: Timestamp::from(created),
         body: body.to_owned(),
+        via_app: false,
     };
     (record, now)
 }
@@ -74,7 +77,7 @@ fn command(id: u64, actor: u64, body: &str) -> (CommandRecord, CommentNow) {
 /// `record` is in the ledger and its comment reads `now`.
 fn recorded(
     world: &mut World,
-    (record, now): (CommandRecord, CommentNow),
+    (record, now): (CommandRecord, IssueComment),
 ) -> Result<(), Box<dyn Error>> {
     append_command(&world.ledger, &record)?;
     world
@@ -160,7 +163,7 @@ fn dismissals_of_every_kind(world: &mut World) -> Result<(), Box<dyn Error>> {
     for (record, mut now) in cases {
         match record.comment_id.0.get() {
             // Edited after it was recorded.
-            4 => now.updated_at = at("2026-10-19T10:30:00.000Z"),
+            4 => now.updated_at = Timestamp::from(at("2026-10-19T10:30:00.000Z")),
             // Deleted.
             5 => {
                 append_command(&world.ledger, &record)?;
@@ -170,7 +173,7 @@ fn dismissals_of_every_kind(world: &mut World) -> Result<(), Box<dyn Error>> {
             6 => now.body = format!("{dismiss}."),
             // Never edited, but not the comment created when the record says.
             9 => {
-                now.created_at = at("2026-10-19T09:59:00.000Z");
+                now.created_at = Timestamp::from(at("2026-10-19T09:59:00.000Z"));
                 now.updated_at = now.created_at;
             }
             _ => {}

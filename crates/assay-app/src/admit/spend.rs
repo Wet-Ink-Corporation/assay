@@ -12,10 +12,11 @@ use super::error::{AfterSlot, UnwoundOf};
 use super::events::EventFailure;
 use super::gate::{Gate, GateInputs, Priced, gate};
 use super::{
-    Admission, AdmitError, AdmitFailure, Admitted, Budget, BudgetRead, CommandComments,
-    ContextPack, Deferred, Run, Spend, Unwound, clock_time,
+    Admission, AdmitError, AdmitFailure, Admitted, Budget, BudgetRead, ContextPack, Deferred, Run,
+    Spend, Unwound, clock_time,
 };
 use crate::clock::Clock;
+use crate::eligibility::CommandComments;
 use crate::events::EventSink;
 use crate::ledger::{
     Appended, Consumed, CostKind, CostRecord, Ledger, LedgerRefs, Released, SlotHold, append_cost,

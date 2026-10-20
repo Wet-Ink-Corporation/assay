@@ -11,9 +11,9 @@ use std::num::NonZeroU64;
 use assay_domain::Fingerprint;
 use serde::Serialize;
 
-use super::comments::CommandComments;
 use super::range::RangeIdentities;
 use crate::config::Sha256Digest;
+use crate::eligibility::{CommandComments, Timestamp};
 use crate::ledger::CommandRecord;
 use crate::status::{Identities, UserId};
 
@@ -111,7 +111,7 @@ fn parse_dismiss(command: &str) -> Option<(Fingerprint, &str)> {
 /// record says, never edited, and with the body whose hash the record holds.
 fn stands<C: CommandComments>(record: &CommandRecord, comments: &C) -> Result<bool, C::Error> {
     Ok(comments.comment(record.comment_id)?.is_some_and(|now| {
-        now.created_at == record.created_at
+        now.created_at == Timestamp::from(record.created_at)
             && now.updated_at == now.created_at
             && Sha256Digest::of(now.body.as_bytes()) == record.body_sha256
     }))

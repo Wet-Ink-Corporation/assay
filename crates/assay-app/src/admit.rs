@@ -19,7 +19,6 @@
 //! releases it by compare-and-set. The live GitHub transport behind the ports is #273's.
 
 mod budget;
-mod comments;
 mod dismissals;
 mod document;
 mod error;
@@ -38,7 +37,6 @@ use assay_domain::{Aeu, EventPayload, NotRunReason, RunUid};
 
 use self::budget::SpendTier;
 pub use self::budget::{ADMISSIONS_PER_HOUR, DAY_CAP};
-pub use self::comments::{CommandComments, CommentNow, MAX_COMMENT_BYTES};
 pub use self::dismissals::MAX_DISMISSALS;
 use self::dismissals::{Eligible, valid_dismissals};
 pub use self::document::PlanDocument;
@@ -56,6 +54,7 @@ use self::spend::Holding;
 use crate::clock::Clock;
 use crate::contract::ContractValidator;
 use crate::decide::TierDegrade;
+use crate::eligibility::CommandComments;
 use crate::events::EventSink;
 use crate::ledger::{
     DeferralRecord, LeaseError, Ledger, LedgerReadError, LedgerRefs, LedgerTime,

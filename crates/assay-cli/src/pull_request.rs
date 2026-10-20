@@ -1,19 +1,21 @@
 //! `assay-forge`'s object-only repository, lent to the `plan` use case as the PR's objects
-//! (`assay_app::PullRequestObjects`) and to `check_local` as the change's patches
-//! (`assay_app::ChangePatches`).
+//! (`assay_app::PullRequestObjects`), to `check_local` as the change's patches
+//! (`assay_app::ChangePatches`) and to the eligibility snapshot as the PR range
+//! (`assay_app::RangeObjects`, #58).
 
 use std::error::Error;
 use std::fmt;
+use std::str::FromStr;
 use std::time::Duration;
 
 use assay_app::{
-    ChangePatches, ChangedFiles, CommitId, EntryKind, FilePatch, Hunk, LineSpan, PatchBudget,
-    PullRequestObjects, TreeEntry,
+    ChangePatches, ChangedFiles, CommitId, EntryKind, FilePatch, Hunk, LineSpan, MergeTree,
+    PatchBudget, PullRequestObjects, RangeCommit, RangeListing, RangeObjects, TreeEntry, TreeId,
 };
 use assay_domain::{FileChange, FileKind, Lines};
 use assay_forge::git::{
-    self, ChangeListing, ChangedFile, CommitSha, GitError, LineCount, ObjectRepo, ParseShaError,
-    TreeLimits,
+    self, Ancestry, ChangeListing, ChangedFile, CommitSha, GitError, LineCount, MergeOutcome,
+    ObjectRepo, ParseShaError, RangeCommits, TreeLimits,
 };
 use assay_forge::process::ProcessError;
 
@@ -47,6 +49,9 @@ pub enum ForgeObjectsError {
     Git(GitError),
     /// A commit id forge does not accept.
     Commit(ParseShaError),
+    /// git named an object by an id assay does not accept (not 40 lowercase hex digits, as in
+    /// a SHA-256 repository).
+    ObjectId,
 }
 
 impl fmt::Display for ForgeObjectsError {
@@ -54,6 +59,7 @@ impl fmt::Display for ForgeObjectsError {
         match self {
             Self::Git(_) => f.write_str("git could not read the pull request's objects"),
             Self::Commit(_) => f.write_str("a commit id is not one git accepts"),
+            Self::ObjectId => f.write_str("git named an object by an id assay does not accept"),
         }
     }
 }
@@ -63,6 +69,7 @@ impl Error for ForgeObjectsError {
         match self {
             Self::Git(source) => Some(source),
             Self::Commit(source) => Some(source),
+            Self::ObjectId => None,
         }
     }
 }
@@ -75,6 +82,81 @@ impl From<GitError> for ForgeObjectsError {
 
 fn sha(commit: &CommitId) -> Result<CommitSha, ForgeObjectsError> {
     commit.as_str().parse().map_err(ForgeObjectsError::Commit)
+}
+
+/// `id`, an object id git printed, as the app's type `T`.
+fn accepted<T: FromStr>(id: &str) -> Result<T, ForgeObjectsError> {
+    id.parse()
+        .map_err(|_unaccepted| ForgeObjectsError::ObjectId)
+}
+
+impl RangeObjects for ForgePullRequest<'_> {
+    type Error = ForgeObjectsError;
+
+    /// `git rev-list --parents --max-count=<max + 1> base..head`.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeObjectsError`] when git cannot list the range or names a commit by an id the app
+    /// does not accept.
+    fn range(
+        &self,
+        base: &CommitId,
+        head: &CommitId,
+        max: usize,
+    ) -> Result<RangeListing, ForgeObjectsError> {
+        match self.repo.range_commits(&sha(base)?, &sha(head)?, max)? {
+            RangeCommits::TooMany => Ok(RangeListing::TooMany),
+            RangeCommits::Listed(commits) => commits
+                .iter()
+                .map(|listed| {
+                    Ok(RangeCommit {
+                        commit: accepted(listed.commit.as_str())?,
+                        parents: listed
+                            .parents
+                            .iter()
+                            .map(|parent| accepted(parent.as_str()))
+                            .collect::<Result<_, _>>()?,
+                    })
+                })
+                .collect::<Result<_, _>>()
+                .map(RangeListing::Listed),
+        }
+    }
+
+    /// `git rev-parse --verify <commit>^{tree}`.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeObjectsError`] when git cannot read the commit.
+    fn tree(&self, commit: &CommitId) -> Result<TreeId, ForgeObjectsError> {
+        accepted(&self.repo.tree_of(&sha(commit)?)?)
+    }
+
+    /// `git merge-tree --write-tree --no-messages ours theirs`.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeObjectsError`] when git cannot merge other than by a conflict.
+    fn merge_tree(
+        &self,
+        ours: &CommitId,
+        theirs: &CommitId,
+    ) -> Result<MergeTree, ForgeObjectsError> {
+        match self.repo.merge_tree(&sha(ours)?, &sha(theirs)?)? {
+            MergeOutcome::Clean(tree) => accepted(&tree).map(MergeTree::Clean),
+            MergeOutcome::Conflicted => Ok(MergeTree::Conflicted),
+        }
+    }
+
+    /// `git merge-base --is-ancestor`, after checking `ancestor` is in the repository.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeObjectsError`] when git cannot answer, `of` included.
+    fn is_ancestor(&self, ancestor: &CommitId, of: &CommitId) -> Result<bool, ForgeObjectsError> {
+        Ok(self.repo.ancestry(&sha(ancestor)?, &sha(of)?)? == Ancestry::Ancestor)
+    }
 }
 
 impl PullRequestObjects for ForgePullRequest<'_> {

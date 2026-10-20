@@ -56,6 +56,37 @@ impl<'a> Waivers<'a> {
 /// Whether a waiver of `fp` may clear it: some gate finding carries it, and every one that does
 /// has a rule the rubric lists as waivable for its own gate.
 fn clearable(rubric: &Rubric, gates: &[GateReport], fp: Fingerprint) -> bool {
+    waiver_refusal(rubric, gates, fp).is_none()
+}
+
+/// Why an owner's waiver of a fingerprint clears nothing (R-08(a), 04 §5 waive).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WaiverRefusal<'g> {
+    /// No gate finding of the decided head carries the fingerprint: it names a reviewer
+    /// finding, a finding of another head, or nothing.
+    NoGateFinding,
+    /// A gate finding carrying it is not a human-decision finding the rubric lists as waivable
+    /// for its gate (a clippy, build, test or deny finding, or one with no rule): the first
+    /// such finding, in gate then finding order.
+    NotWaivable {
+        /// The gate (plugin) that reported it.
+        gate: &'g str,
+        /// Its rule id, if it has one.
+        rule: Option<&'g str>,
+    },
+}
+
+/// Why a waiver of `fp` would clear nothing over `gates`, or `None` when `decide` applies it
+/// (given an actor): the same all-or-nothing predicate as `decide`'s waive and
+/// [`waivable_fingerprints`].
+///
+/// The refusal borrows the gate name and rule it reports from `gates`.
+#[must_use]
+pub fn waiver_refusal<'g>(
+    rubric: &Rubric,
+    gates: &'g [GateReport],
+    fp: Fingerprint,
+) -> Option<WaiverRefusal<'g>> {
     let mut carriers = gates
         .iter()
         .flat_map(|gate| {
@@ -65,7 +96,15 @@ fn clearable(rubric: &Rubric, gates: &[GateReport], fp: Fingerprint) -> bool {
                 .map(move |finding| (gate, finding))
         })
         .peekable();
-    carriers.peek().is_some() && carriers.all(|(gate, finding)| waivable(rubric, gate, finding))
+    if carriers.peek().is_none() {
+        return Some(WaiverRefusal::NoGateFinding);
+    }
+    carriers
+        .find(|(gate, finding)| !waivable(rubric, gate, finding))
+        .map(|(gate, finding)| WaiverRefusal::NotWaivable {
+            gate: gate.name.as_str(),
+            rule: finding.rule.as_deref(),
+        })
 }
 
 /// The fingerprints an owner's `/assay waive` may clear (R-08(a), 04 §5 waive).

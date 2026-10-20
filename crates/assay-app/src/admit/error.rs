@@ -6,9 +6,9 @@ use std::num::NonZeroU64;
 
 use thiserror::Error;
 
-use super::comments::CommandComments;
 use super::document::PlanDocument;
 use super::events::EventFailure;
+use crate::eligibility::CommandComments;
 use crate::events::EventSink;
 use crate::ledger::{LeaseError, Ledger, LedgerReadError, LedgerRefs, LedgerWriteError, SlotHold};
 use crate::prompt_bundle::Role;

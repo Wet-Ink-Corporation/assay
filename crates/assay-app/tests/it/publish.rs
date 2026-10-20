@@ -7,14 +7,15 @@ use std::error::Error;
 
 use assay_app::{
     CheckConclusion, CheckName, CheckState, CheckStatus, ForgeStep, JobResult, Publication,
-    PublishError, Published, SUMMARY_MARKER, Stale, Unlock, Verdict, publish,
+    PublishError, Published, ReviewState, SUMMARY_MARKER, Stale, Unlock, Verdict, publish,
 };
 use assay_domain::{Aeu, Deferral, InfraPolicy, LlmStage, Override, OverrideScope, decide};
 
 use crate::decide_fakes::{Scenario, refusal};
+use crate::eligibility_fakes::{APPROVER, By, CONTRIBUTOR, FIRST, World};
 use crate::plan_fakes::{FakeError, HEAD};
 use crate::publish_fakes::{Author, Call, FakeComment, FakeWorld};
-use crate::publish_support::{KEY, NAME, Run, STAMP, ports, stamped, written};
+use crate::publish_support::{HEAD_COMMIT, KEY, NAME, Run, STAMP, ports, stamped, written};
 
 // --- writing nothing ---
 
@@ -544,6 +545,21 @@ fn inputs_over_another_run_s_evidence_are_refused_before_any_call() -> Result<()
     Ok(())
 }
 
+/// #58 review F5: the GitHub state snapshot must be of the run's head, or the bundle would
+/// record another head's approvals and commands beside this run's decision.
+#[test]
+fn a_github_snapshot_of_another_head_is_refused_before_any_call() -> Result<(), Box<dyn Error>> {
+    let mut run = Run::new()?;
+    run.github = World::opened_by(CONTRIBUTOR).state()?;
+    let world = stamped()?;
+
+    let outcome = run.publish(&world);
+
+    assert_matches!(outcome, Err(PublishError::SnapshotHead));
+    assert_eq!(*world.calls.borrow(), []);
+    Ok(())
+}
+
 // --- the summary comment ---
 
 #[test]
@@ -617,6 +633,44 @@ fn an_unchanged_summary_comment_is_not_rewritten() -> Result<(), Box<dyn Error>>
         !writes.contains(&Call::UpdateSummary) && !writes.contains(&Call::CreateSummary),
         "{writes:?}"
     );
+    Ok(())
+}
+
+/// P10 (#58): an approval ignored for timing is named in the summary, with both times.
+#[test]
+fn an_approval_before_the_push_is_reported_as_ignored() -> Result<(), Box<dyn Error>> {
+    let mut run = Run::new()?;
+    let mut pr = World::opened_by(CONTRIBUTOR);
+    pr.commit(HEAD_COMMIT, &[FIRST], By::user(CONTRIBUTOR));
+    pr.review(APPROVER, ReviewState::Approved, (HEAD_COMMIT, 4));
+    pr.push((FIRST, HEAD_COMMIT), CONTRIBUTOR, 5);
+    pr.head(HEAD_COMMIT);
+    run.github = pr.state()?;
+    let world = stamped()?;
+
+    written(run.publish(&world))?;
+
+    let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
+    assert!(summary.contains("Ignored approvals:"), "{summary}");
+    assert!(
+        summary.contains(
+            "approval at 2026-10-13T09:04:00Z ignored: before push at 2026-10-13T09:05:00Z \
+             (reviewer 1002)"
+        ),
+        "{summary}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_summary_without_ignored_approvals_has_no_such_block() -> Result<(), Box<dyn Error>> {
+    let run = Run::new()?;
+    let world = stamped()?;
+
+    written(run.publish(&world))?;
+
+    let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
+    assert!(!summary.contains("Ignored approvals"), "{summary}");
     Ok(())
 }
 

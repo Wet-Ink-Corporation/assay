@@ -1,0 +1,4 @@
+# Agent identities (docs/architecture/03-contracts.md §1, 04-pipeline.md §2.5). Read from the base
+# commit only. Never in `owners` or `approvers` of `.assay/owners`. Decision 0005: the owner's
+# daily account is the agent identity.
+agents = [{ id = 124330161, login = "Ryan-Britton" }]

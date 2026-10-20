@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime};
 
 use assay_app::{
     Actor, AdmitFailure, AdmitPorts, AdmitRequest, Admitted, Carry, Clock, CommandComments,
-    CommentId, CommentNow, CommitId, CommitIdentity, ContractValidator, CostKind, CostRecord,
-    CostRole, DeferralRecord, EventSink, Identities, LeaseRef, LedgerTime, PrState,
+    CommentId, CommitId, CommitIdentity, ContractValidator, CostKind, CostRecord, CostRole,
+    DeferralRecord, EventSink, Identities, IssueComment, LeaseRef, LedgerTime, PrState,
     RangeIdentities, RetryGrant, Role, RoleCost, Slot, UserId, admit, append_cost, grant_retry,
     read_state, update_state,
 };
@@ -181,7 +181,7 @@ impl Clock for FakeClock {
 /// Issue comments by id as GitHub shows them now; an id not held was deleted.
 #[derive(Debug, Default)]
 pub(crate) struct FakeComments {
-    pub(crate) comments: BTreeMap<u64, CommentNow>,
+    pub(crate) comments: BTreeMap<u64, IssueComment>,
     pub(crate) down: bool,
     pub(crate) asked: RefCell<Vec<CommentId>>,
 }
@@ -189,7 +189,7 @@ pub(crate) struct FakeComments {
 impl CommandComments for FakeComments {
     type Error = FakeError;
 
-    fn comment(&self, id: CommentId) -> Result<Option<CommentNow>, FakeError> {
+    fn comment(&self, id: CommentId) -> Result<Option<IssueComment>, FakeError> {
         self.asked.borrow_mut().push(id);
         if self.down {
             return Err(FakeError);

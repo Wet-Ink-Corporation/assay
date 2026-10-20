@@ -15,6 +15,7 @@ mod contract;
 mod coordinate;
 mod decide;
 mod doctor;
+mod eligibility;
 mod eval;
 mod events;
 mod finding_text;
@@ -38,9 +39,8 @@ mod tiering;
 
 pub use admit::{
     ADMISSIONS_PER_HOUR, Admission, AdmitError, AdmitFailure, AdmitPorts, AdmitRequest, Admitted,
-    AfterSlot, Budget, CommandComments, CommentNow, ContextPack, DAY_CAP, Deferred,
-    MAX_COMMENT_BYTES, MAX_DISMISSALS, MAX_SUPPRESS_BYTES, PlanDocument, RangeIdentities,
-    SLOT_POLL, SLOT_POLLS, Spend, Unwound, admit,
+    AfterSlot, Budget, ContextPack, DAY_CAP, Deferred, MAX_DISMISSALS, MAX_SUPPRESS_BYTES,
+    PlanDocument, RangeIdentities, SLOT_POLL, SLOT_POLLS, Spend, Unwound, admit,
 };
 pub use calendar::{CalendarDate, CalendarDateError};
 pub use clock::Clock;
@@ -71,8 +71,9 @@ pub use check::{
 };
 pub use config::{
     Adapter, Argv, AssaySettings, BuiltinAllowlist, BuiltinKind, BuiltinsError, CommitId,
-    ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion, GateName, GlobsConfigError,
-    MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS, MAX_TIMEOUT_SECS, ParseCommitIdError, ParseDigestError,
+    ConfigError, DEFAULT_TIMEOUT_SECS, EligibilityLists, ExactVersion, GateName, GlobsConfigError,
+    Identity, ListFile, ListName, ListsError, MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS,
+    MAX_LIST_ENTRIES, MAX_LISTS_BYTES, MAX_TIMEOUT_SECS, ParseCommitIdError, ParseDigestError,
     ParsePinError, Pin, Plugin, PluginsConfig, RunnerKind, Sha256Digest, Step, TomlError,
     parse_globs,
 };
@@ -92,6 +93,15 @@ pub use decide::{
     MAX_SYMBOL_BYTES, Moved, OutputsProblem, PlanJob, PlanMismatch, PlanRefusal, PullOnHead,
     PullRequestState, Refusal, Reported, ReportedGate, ReviewJob, RunArtifacts, Snapshot,
     StateStep, TierDegrade, Unreadable, UpstreamJob, authenticate,
+};
+pub use eligibility::{
+    AckedSet, Command, CommandComments, CommandRejected, CommentAction, CommentEvent, CommitRange,
+    GitHubState, IgnoredApproval, Ineligible, InvalidTimestamp, IssueComment, LedgerRecords,
+    MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_COMMENT_BYTES, MAX_PUSH_RECORDS,
+    MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, Parsed, PriorWaivers, RangeCommit,
+    RangeListing, RangeObjects, Recorded, SnapshotCommand, SnapshotLedger, SnapshotStep,
+    StateError, StatePorts, StateRequest, Timestamp, TreeId, VoidCause, WEB_FLOW, WaiverBindings,
+    github_state, parse_command, waiver_events,
 };
 pub use eval::{
     Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,
@@ -163,7 +173,7 @@ pub use rereview::{
     Cumulative, Increment, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, MAX_RANGE_DIFF_BYTES,
     NotReverified, OmitReason, Omitted, PriorCarry, PriorCarryError, PriorHistory, RangeDiff,
     RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError, TargetRequest, next_carry,
-    prior_carry, read_carried, recheck_anchors, review_target, settle_carried,
+    prior_carry, prior_waivers, read_carried, recheck_anchors, review_target, settle_carried,
 };
 pub use shard::{
     Import, MAX_IMPORTS, MAX_SHARD_FILES, MAX_SHARDS, Shard, ShardCount, ShardError, ShardFile,

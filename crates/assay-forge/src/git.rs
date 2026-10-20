@@ -51,6 +51,7 @@ mod history;
 mod numstat;
 mod patch;
 mod push;
+mod range;
 mod repository;
 mod sha;
 mod tree;
@@ -70,6 +71,7 @@ pub use history::{
 pub use numstat::{DiffOutcome, FileChange, LineCount};
 pub use patch::{FilePatch, HunkSpan, LineRange};
 pub use push::{Authorization, BranchRef, DeleteOutcome, InvalidHeader, ParseRefError, PushRemote};
+pub use range::{MergeOutcome, RangeCommit, RangeCommits};
 pub use repository::{GitLimits, ObjectRepo};
 pub use sha::{CommitSha, HttpsRemote, ParseRemoteError, ParseShaError};
 pub use tree::{BlobRef, EntryKind, TreeEntry, TreeLimits};
