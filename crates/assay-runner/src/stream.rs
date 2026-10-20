@@ -7,8 +7,10 @@
 
 mod init;
 mod message;
+mod profile;
 
 pub use init::read_session_init;
+pub(crate) use profile::observe;
 
 use assay_app::{ModelOutcome, ModelResult, RateLimitObserved, Structured};
 use assay_domain::{Aeu, RateLimitStatus};

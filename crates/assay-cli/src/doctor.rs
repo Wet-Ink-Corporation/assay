@@ -10,6 +10,11 @@
 //! The binary prints one line per check and exits 0 when all pass, 1 when any fails, and 2 when
 //! the checks could not be run (a usage error, an unreadable or unpinned config, no token, an
 //! unreadable expiry, a CLI that could not be started).
+//!
+//! `assay doctor --profile <plugins-toml> <claude-program>` runs the profile checks (#84,
+//! [`profile`]): flag verification and the hook and fence canaries.
+
+pub(crate) mod profile;
 
 use std::ffi::{OsStr, OsString};
 use std::fmt::{self, Write as _};
@@ -169,11 +174,29 @@ pub(crate) fn run(
     let (Some(config), Some(program), None) = (args.next(), args.next(), args.next()) else {
         return Err(DoctorCliError::Usage);
     };
+    let (program, token) = program_and_token(program, variables.token)?;
+    let expiry = judge_expiry(variables.expires_on.as_deref(), variables.now)?;
+    let config = read_pins(Path::new(&config))?;
+    let assay = config.assay();
+    let pinned = assay.claude_cli.as_ref().ok_or(DoctorCliError::NoPin)?;
+    let env = headless_env(token, variables.path)?;
+    let supervisor = system_supervisor()?;
+    let canary = ClaudeCanary::new(program, env, &supervisor);
+    let report = doctor(&canary, &mut Urandom, pinned, &assay.claude_cli_builtins)
+        .map_err(DoctorCliError::Doctor)?;
+    Ok(DoctorOutcome { report, expiry })
+}
+
+/// The absolute `program` and the token, refused before anything is read or run.
+pub(crate) fn program_and_token(
+    program: OsString,
+    token: Option<OsString>,
+) -> Result<(PathBuf, String), DoctorCliError> {
     let program = PathBuf::from(program);
     if !program.is_absolute() {
         return Err(DoctorCliError::RelativeProgram(program));
     }
-    let token = match variables.token {
+    let token = match token {
         None => return Err(DoctorCliError::Token),
         Some(token) if token.is_empty() => return Err(DoctorCliError::Token),
         Some(token) => match token.into_string() {
@@ -182,21 +205,31 @@ pub(crate) fn run(
             Err(_) => return Err(DoctorCliError::TokenNotUnicode),
         },
     };
-    let expiry = judge_expiry(variables.expires_on.as_deref(), variables.now)?;
-    let config: PluginsConfig = read_config(Path::new(&config))?
-        .parse()
-        .map_err(DoctorCliError::Config)?;
-    let assay = config.assay();
-    let pinned = assay.claude_cli.as_ref().ok_or(DoctorCliError::NoPin)?;
+    Ok((program, token))
+}
+
+/// The base config at `path`, read through [`MAX_CONFIG_BYTES`] and parsed.
+pub(crate) fn read_pins(path: &Path) -> Result<PluginsConfig, DoctorCliError> {
+    read_config(path)?.parse().map_err(DoctorCliError::Config)
+}
+
+/// The calls' environment: the token, and `PATH` when set.
+pub(crate) fn headless_env(
+    token: String,
+    path: Option<OsString>,
+) -> Result<HeadlessEnv, DoctorCliError> {
     let mut env = HeadlessEnv::new(token);
-    if let Some(path) = variables.path {
+    if let Some(path) = path {
         env.pass("PATH", path).map_err(DoctorCliError::Env)?;
     }
-    let supervisor = ForgeSupervisor::new(GroupKiller::system().map_err(DoctorCliError::Killer)?);
-    let canary = ClaudeCanary::new(program, env, &supervisor);
-    let report = doctor(&canary, &mut Urandom, pinned, &assay.claude_cli_builtins)
-        .map_err(DoctorCliError::Doctor)?;
-    Ok(DoctorOutcome { report, expiry })
+    Ok(env)
+}
+
+/// Forge's process-group supervisor with the system `kill`.
+pub(crate) fn system_supervisor() -> Result<ForgeSupervisor, DoctorCliError> {
+    Ok(ForgeSupervisor::new(
+        GroupKiller::system().map_err(DoctorCliError::Killer)?,
+    ))
 }
 
 /// The warning for the recorded expiry `expires_on` on the day of `now`; `None` when no

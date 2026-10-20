@@ -6,13 +6,16 @@
 //! Every versioned contract is validated on read through [`ContractValidator`]
 //! (`docs/architecture/03-contracts.md`). Base configuration is parsed into [`PluginsConfig`].
 
+mod admit;
 mod calendar;
 mod check;
+mod clock;
 mod config;
 mod contract;
 mod coordinate;
 mod decide;
 mod doctor;
+mod eligibility;
 mod eval;
 mod events;
 mod finding_text;
@@ -34,7 +37,13 @@ mod specialists;
 mod status;
 mod tiering;
 
+pub use admit::{
+    ADMISSIONS_PER_HOUR, Admission, AdmitError, AdmitFailure, AdmitPorts, AdmitRequest, Admitted,
+    AfterSlot, Budget, ContextPack, DAY_CAP, Deferred, MAX_DISMISSALS, MAX_SUPPRESS_BYTES,
+    PlanDocument, RangeIdentities, SLOT_POLL, SLOT_POLLS, Spend, Unwound, admit,
+};
 pub use calendar::{CalendarDate, CalendarDateError};
+pub use clock::Clock;
 pub use doctor::{
     AGENTS_PATH, Access, AppliedRule, BaseError, BranchPolicy, BypassActor, CanaryProbe, CanaryRun,
     CanaryToken, Check, CheckFailure, CheckResult, Collaborator, Conditions, DeploymentBranches,
@@ -44,6 +53,12 @@ pub use doctor::{
     PrerequisiteFailure, PrerequisiteForge, PrerequisiteReport, PrerequisiteResult, RequiredCheck,
     RequiredChecks, Rule, Ruleset, RulesetId, RulesetTarget, WorkflowError, WorkflowPermissions,
     YamlError, YamlRefusal, doctor, prerequisites, read_base, token_expiry_warning,
+};
+pub use doctor::{
+    FENCE_TARGET, FlagResult, HeadlessFlag, MIN_CLI_VERSION, PROFILE_SCHEMA, PermissionDenial,
+    ProfileCheck, ProfileContext, ProfileError, ProfileFailure, ProfilePorts, ProfileProbe,
+    ProfileReport, ProfileResult, ProfileRun, ProfileVerdict, ProfileWords, ReplyField,
+    verify_profile,
 };
 pub use preflight::{
     AuthProof, CliProbe, CliStatus, FIRST_PARTY_PROVIDER, OAUTH_TOKEN_METHOD, PreflightFailed,
@@ -62,10 +77,11 @@ pub use check::{
 };
 pub use config::{
     Adapter, Argv, AssaySettings, BuiltinAllowlist, BuiltinKind, BuiltinsError, CommitId,
-    ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion, GateName, GlobsConfigError,
-    MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS, MAX_TIMEOUT_SECS, ParseCommitIdError, ParseDigestError,
-    ParsePinError, Pin, Plugin, PluginsConfig, RunnerKind, Sha256Digest, Step, TomlError,
-    parse_globs,
+    ConfigError, DEFAULT_TIMEOUT_SECS, EligibilityLists, ExactVersion, GateName, GlobsConfigError,
+    IdentitiesConfigError, Identity, ListFile, ListName, ListsError, MAX_BUILTIN_NAME_BYTES,
+    MAX_BUILTINS, MAX_LIST_ENTRIES, MAX_LISTS_BYTES, MAX_TIMEOUT_SECS, ParseCommitIdError,
+    ParseDigestError, ParsePinError, Pin, Plugin, PluginsConfig, RunnerKind, Sha256Digest, Step,
+    TomlError, parse_globs,
 };
 pub use contract::{
     Contract, ContractSchemaError, ContractValidator, MAX_DOCUMENT_BYTES, ReadContractError,
@@ -83,6 +99,15 @@ pub use decide::{
     MAX_SYMBOL_BYTES, Moved, OutputsProblem, PlanJob, PlanMismatch, PlanRefusal, PullOnHead,
     PullRequestState, Refusal, Reported, ReportedGate, ReviewJob, RunArtifacts, Snapshot,
     StateStep, TierDegrade, Unreadable, UpstreamJob, authenticate,
+};
+pub use eligibility::{
+    AckedSet, Command, CommandComments, CommandRejected, CommentAction, CommentEvent, CommitRange,
+    GitHubState, IgnoredApproval, Ineligible, InvalidTimestamp, IssueComment, LedgerRecords,
+    MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_COMMENT_BYTES, MAX_PUSH_RECORDS,
+    MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, Parsed, PriorWaivers, RangeCommit,
+    RangeListing, RangeObjects, Recorded, SnapshotCommand, SnapshotLedger, SnapshotStep,
+    StateError, StatePorts, StateRequest, Timestamp, TreeId, VoidCause, WEB_FLOW, WaiverBindings,
+    github_state, parse_command, waiver_events,
 };
 pub use eval::{
     Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,
@@ -102,7 +127,9 @@ pub use gate::{
     BuildJob, GateDocument, GateError, GateJob, GateJobOutcome, GateJobReport, GateRun, GateRunner,
     Termination, account_for_required, run_gates,
 };
-pub use golden::{CorpusEntry, CorpusEntryKind, GoldenReplay, SELF_GATE, replay_golden};
+pub use golden::{
+    CorpusEntry, CorpusEntryKind, GoldenReplay, RubricError, SELF_GATE, read_rubric, replay_golden,
+};
 pub use ledger::{
     ActorCounter, Appended, BUDGET_WINDOW, COOLDOWN_WINDOW, CommandRecord, Consumed, Corruption,
     CostKind, CostRecord, CostRole, CostWindow, DecisionPointer, DeferralRecord, FileVersion,
@@ -114,8 +141,8 @@ pub use ledger::{
     PushRecord, RefCreation, RefDeletion, RefTip, Released, RetryGrant, RoleCost, SLOT_TTL, Slot,
     SlotAcquired, SlotAcquisition, SlotHold, SlotLease, SlotRequest, SlotView, StateUpdate,
     WriteCondition, WriteOutcome, acquire_lock, acquire_slot, append_command, append_cost,
-    append_push, consume_grant, grant_retry, read_commands, read_costs, read_pushes, read_slots,
-    read_state, reap_expired_slots, release_lock, release_slot, update_state,
+    append_push, consume_grant, grant_retry, pending_grant, read_commands, read_costs, read_pushes,
+    read_slots, read_state, reap_expired_slots, release_lock, release_slot, update_state,
 };
 pub use model_runner::{
     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
@@ -154,7 +181,7 @@ pub use rereview::{
     Cumulative, Increment, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, MAX_RANGE_DIFF_BYTES,
     NotReverified, OmitReason, Omitted, PriorCarry, PriorCarryError, PriorHistory, RangeDiff,
     RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError, TargetRequest, next_carry,
-    prior_carry, read_carried, recheck_anchors, review_target, settle_carried,
+    prior_carry, prior_waivers, read_carried, recheck_anchors, review_target, settle_carried,
 };
 pub use shard::{
     Import, MAX_IMPORTS, MAX_SHARD_FILES, MAX_SHARDS, Shard, ShardCount, ShardError, ShardFile,
@@ -166,11 +193,12 @@ pub use specialists::{
     run_specialists,
 };
 pub use status::{
-    AppId, BundleProblem, CheckView, Detail, FetchedAt, Identities, InvalidFetchedAt,
-    LocalStatusError, LocalStatusRequest, MAX_CHECK_RUNS, MAX_FINDINGS, MAX_REASONS,
-    ObservedConclusion, PullSelector, PullView, ReviewCommentView, StatusError, StatusFailure,
-    StatusForge, StatusPorts, StatusReport, StatusRepository, StatusRequest, StatusStep,
-    StatusUnreadable, StoredLocalReport, UserId, Viewer, is_tree_id, local_status, status,
+    AppId, BaseIdentitiesError, BundleProblem, CheckView, Detail, FetchedAt, Identities,
+    InvalidFetchedAt, LocalStatusError, LocalStatusRequest, MAX_CHECK_RUNS, MAX_FINDINGS,
+    MAX_IDENTITY_FILE_BYTES, MAX_REASONS, ObservedConclusion, PullSelector, PullView,
+    ReviewCommentView, StatusError, StatusFailure, StatusForge, StatusPorts, StatusReport,
+    StatusRepository, StatusRequest, StatusStep, StatusUnreadable, StoredLocalReport, UserId,
+    Viewer, base_identities, is_tree_id, local_status, read_pull, status,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};

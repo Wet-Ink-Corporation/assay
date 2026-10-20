@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 mod developer;
 mod head;
+mod location;
 
 use self::developer::Sparse;
 pub use self::head::RepositoryHead;

@@ -10,7 +10,9 @@ mod builtins;
 mod dto;
 mod error;
 mod globs;
+mod identities;
 mod name;
+mod owners;
 mod pin;
 mod reserved;
 
@@ -25,7 +27,12 @@ pub use self::builtins::{
 use self::dto::{AssayDto, FileDto, PluginDto, StepDto};
 pub use self::error::{ConfigError, TomlError};
 pub use self::globs::{GlobsConfigError, parse_globs};
+pub use self::identities::IdentitiesConfigError;
+pub(crate) use self::identities::{parse_agents, parse_owners};
 pub use self::name::GateName;
+pub use self::owners::{
+    EligibilityLists, Identity, ListFile, ListName, ListsError, MAX_LIST_ENTRIES, MAX_LISTS_BYTES,
+};
 pub use self::pin::{
     CommitId, ParseCommitIdError, ParseDigestError, ParsePinError, Pin, Sha256Digest,
 };

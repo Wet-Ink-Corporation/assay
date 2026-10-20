@@ -1,5 +1,6 @@
 //! `ForgeSupervisor` as `assay-forge`'s `GhRunner`: the `gh api` transport run under the
-//! shared process-group supervisor, against a stand-in `gh` script (no network, #273).
+//! shared process-group supervisor, against a stand-in `gh` script (no network, #273), and the
+//! run bundle's `gh run download` under the same supervisor and environment (wi-6b26d6).
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -8,8 +9,9 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use assay_app::{AppId, Forge, UserId};
+use assay_app::{AppId, BundleSource, Forge, StoredBundle, UserId};
 use assay_cli::ForgeSupervisor;
+use assay_domain::RunUid;
 use assay_forge::github::{
     Api, ApiPath, AppIdentity, ForgeError, GH_TIMEOUT, GhApi, GhEnvironment, GhError, GhToken,
     GitHub, MAX_RESPONSE_BYTES, Operation, Request, ThreadSleep, Transport,
@@ -56,8 +58,13 @@ impl FakeGh {
 
     /// The environment the script recorded in `env`, without what the shell adds itself.
     fn env(&self) -> Result<BTreeMap<String, String>, Box<dyn Error>> {
+        self.env_in("env")
+    }
+
+    /// The environment the script recorded in `name`, without what the shell adds itself.
+    fn env_in(&self, name: &str) -> Result<BTreeMap<String, String>, Box<dyn Error>> {
         Ok(self
-            .record("env")?
+            .record(name)?
             .lines()
             .filter_map(|line| line.split_once('='))
             .filter(|(name, _)| !["PWD", "SHLVL", "_"].contains(name))
@@ -116,6 +123,7 @@ printf 'HTTP/2.0 201 Created\nX-Test: yes\r\n\r\n{"id":1}'
     assert_eq!(gh.record("stdin")?, r#"{"name":"assay"}"#);
     let env = gh.env()?;
     let config = env.get("GH_CONFIG_DIR").ok_or("GH_CONFIG_DIR is set")?;
+    let tmp = format!("{config}/tmp");
     let expected = [
         ("GH_CONFIG_DIR", config.as_str()),
         ("GH_HOST", "github.com"),
@@ -124,6 +132,7 @@ printf 'HTTP/2.0 201 Created\nX-Test: yes\r\n\r\n{"id":1}'
         ("GH_TOKEN", "ghs_test"),
         ("NO_COLOR", "1"),
         ("SSL_CERT_DIR", "/etc/ssl/certs"),
+        ("TMPDIR", tmp.as_str()),
     ];
     assert!(
         env.iter()
@@ -233,5 +242,137 @@ fn a_gh_that_writes_past_the_cap_is_stopped() -> Result<(), Box<dyn Error>> {
         matches!(sent, Err(GhError::Run(ProcessError::OutputTooLarge))),
         "{sent:?}"
     );
+    Ok(())
+}
+
+/// Repository `o/r` (id 5) over `gh`, as the artifact store.
+fn bundle_store(
+    gh: &FakeGh,
+    environment: GhEnvironment,
+) -> Result<GitHub<GhApi<ForgeSupervisor>, ThreadSleep>, Box<dyn Error>> {
+    let identity = AppIdentity {
+        app: AppId(NonZeroU64::new(1).ok_or("non-zero")?),
+        bot: UserId(NonZeroU64::new(2).ok_or("non-zero")?),
+    };
+    Ok(GitHub::new(
+        Api::new(gh.transport_in(GH_TIMEOUT, environment)?, ThreadSleep),
+        "o/r".parse()?,
+        identity,
+    ))
+}
+
+/// Run 7 of repository 5, first attempt.
+fn run_seven() -> Result<RunUid, Box<dyn Error>> {
+    Ok(RunUid {
+        repo_id: NonZeroU64::new(5).ok_or("non-zero")?,
+        run_id: NonZeroU64::new(7).ok_or("non-zero")?,
+        run_attempt: NonZeroU64::MIN,
+    })
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+fn a_temporary_zip_gh_leaves_when_killed_stays_in_the_scratch_directory()
+-> Result<(), Box<dyn Error>> {
+    // As gh does: the zip goes to `$TMPDIR`, removed by a defer a kill never runs.
+    let gh = FakeGh::new(
+        r#"if [ "$1" = run ]; then
+  while [ $# -gt 0 ]; do
+    if [ "$1" = --dir ]; then dest="$2"; fi
+    shift
+  done
+  zip="$TMPDIR/gh-artifact.1.zip"
+  printf 'PK' > "$zip"
+  printf '%s' "$zip" > "$dir/zip"
+  printf '%s' "$GH_CONFIG_DIR" > "$dir/config"
+  exec /bin/cat /dev/zero > "$dest/run-inputs.json"
+fi
+printf 'HTTP/2.0 200 OK\n\r\n{"total_count":1,"artifacts":[{"name":"assay-decide-0123456789abcdef0123456789abcdef","size_in_bytes":40,"expired":false,"workflow_run":{"id":7,"repository_id":5}}]}'
+"#,
+    )?;
+    let github = bundle_store(&gh, GhEnvironment::default())?;
+
+    let fetched = github.fetch(run_seven()?, "run-inputs.json", 1024)?;
+
+    assert_eq!(fetched, StoredBundle::TooLarge);
+    let zip = PathBuf::from(gh.record("zip")?);
+    let config = PathBuf::from(gh.record("config")?);
+    assert!(
+        zip.starts_with(&config),
+        "{} is under {}",
+        zip.display(),
+        config.display()
+    );
+    assert!(zip.exists(), "the kill left the zip behind");
+    github.into_api().into_transport().close()?;
+    assert!(!zip.exists(), "close removes it with the scratch directory");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+fn an_extraction_past_the_limit_is_killed_and_too_large() -> Result<(), Box<dyn Error>> {
+    // Without the directory cap this gh writes until its 2 min deadline.
+    let gh = FakeGh::new(
+        r#"if [ "$1" = run ]; then
+  while [ $# -gt 0 ]; do
+    if [ "$1" = --dir ]; then dest="$2"; fi
+    shift
+  done
+  printf '%s' "$dest" > "$dir/dest"
+  exec /bin/cat /dev/zero > "$dest/run-inputs.json"
+fi
+printf 'HTTP/2.0 200 OK\n\r\n{"total_count":1,"artifacts":[{"name":"assay-decide-0123456789abcdef0123456789abcdef","size_in_bytes":40,"expired":false,"workflow_run":{"id":7,"repository_id":5}}]}'
+"#,
+    )?;
+    let github = bundle_store(&gh, GhEnvironment::default())?;
+
+    let fetched = github.fetch(run_seven()?, "run-inputs.json", 1024)?;
+
+    assert_eq!(fetched, StoredBundle::TooLarge);
+    assert!(!Path::new(&gh.record("dest")?).exists());
+    github.into_api().into_transport().close()?;
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+fn a_bundle_is_downloaded_through_gh_with_the_api_calls_environment() -> Result<(), Box<dyn Error>>
+{
+    let gh = FakeGh::new(
+        r#"if [ "$1" = run ]; then
+  /usr/bin/env > "$dir/download-env"
+  pwd -P > "$dir/download-cwd"
+  while [ $# -gt 0 ]; do
+    if [ "$1" = --dir ]; then dest="$2"; fi
+    shift
+  done
+  printf '%s' "$dest" > "$dir/dest"
+  printf '{"bundle":1}' > "$dest/run-inputs.json"
+  exit 0
+fi
+/usr/bin/env > "$dir/env"
+printf 'HTTP/2.0 200 OK\n\r\n{"total_count":1,"artifacts":[{"name":"assay-decide-0123456789abcdef0123456789abcdef","size_in_bytes":40,"expired":false,"workflow_run":{"id":7,"repository_id":5}}]}'
+"#,
+    )?;
+    let environment = inheriting(&[("HTTPS_PROXY", "http://proxy.invalid:3128")]);
+    let github = bundle_store(&gh, environment)?;
+
+    let fetched = github.fetch(run_seven()?, "run-inputs.json", 1024)?;
+
+    assert_eq!(fetched, StoredBundle::Found(br#"{"bundle":1}"#.to_vec()));
+    let env = gh.env()?;
+    assert_eq!(gh.env_in("download-env")?, env);
+    assert_eq!(
+        env.get("HTTPS_PROXY").map(String::as_str),
+        Some("http://proxy.invalid:3128")
+    );
+    let config = env.get("GH_CONFIG_DIR").ok_or("GH_CONFIG_DIR is set")?;
+    assert_eq!(
+        gh.record("download-cwd")?,
+        format!("{}\n", fs::canonicalize(config)?.display())
+    );
+    assert!(!Path::new(&gh.record("dest")?).exists());
+    github.into_api().into_transport().close()?;
     Ok(())
 }

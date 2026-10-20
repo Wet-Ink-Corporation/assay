@@ -3,15 +3,17 @@
 //!
 //! Commands so far: `assay self-gate <corpus-dir> <rubric-file>`, the `assay-self` exec gate
 //! (02 §7, `05` T16), `assay doctor <plugins-toml> <claude-program>`, the session checks of
-//! 03 §8 (#121), and `assay check --local`, the advisory check of a working tree (02 §6, #107).
+//! 03 §8 (#121), `assay doctor --profile <plugins-toml> <claude-program>`, the flag verification
+//! and hook and fence canaries of 03 §8 (#84), and `assay check --local`, the advisory check of
+//! a working tree (02 §6, #107).
 //! `assay pre-push` (#108) runs that check's CP1 alone, the Weigh-In checkpoint the pre-push
 //! hook in `plugin/hooks/` calls (04 §9).
 //! `assay doctor --repository <owner/name> --app <id> --ledger-app <id>` (#75) checks its
-//! arguments and then stops with exit 2: the live `gh` transport is #273, and
-//! [`assay_cli::run_prerequisites`] wires the repository checks of 05 §7 once that exists.
-//! `assay status [--json] [--pr <n>] [--full]` (#126) checks its arguments and
-//! then stops with exit 2: its GitHub adapter is #53's, and [`assay_cli::run_status`] wires it
-//! once that exists. `assay status [--json] --local` (#130) shows the local check's result.
+//! arguments and then stops with exit 2: [`assay_cli::run_prerequisites`] runs the repository
+//! checks of 05 §7, but the binary does not wire it to the live `gh` transport (#273) yet.
+//! `assay status [--json] [--pr <n>] [--full]` (#126, #273) shows a PR's status, read live
+//! through `gh` with `ASSAY_GITHUB_TOKEN`, from a checkout whose `origin` is on github.com.
+//! `assay status [--json] --local` (#130) shows the local check's result.
 //! `assay open` (#54) reads its run from the Actions environment, refuses a re-run, and then
 //! stops with exit 2: the live transport it writes through is #273's.
 //! `assay reconcile [--ledger]` (#73) refuses any run attempt but the first (R3-05), then stops
@@ -23,14 +25,16 @@ mod doctor;
 mod reconcile;
 mod self_gate;
 mod status_local;
+mod status_pr;
 
 use std::env;
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::SystemTime;
 
-use assay_cli::{Format, OpenCommand, OpenVariables, PrerequisitesArgs, StatusCommand};
+use assay_cli::{Format, OpenCommand, OpenVariables, PrerequisitesArgs, StatusArgs, StatusCommand};
 use assay_domain::GateConclusion;
+use assay_forge::github::GhEnvironment;
 
 /// Exit code of a usage error or a gate error (03 §2: 2 and above).
 const ERROR: u8 = 2;
@@ -42,6 +46,12 @@ fn main() -> ExitCode {
     };
     if command == "doctor" {
         let mut args = args.peekable();
+        if args
+            .next_if(|arg| arg == doctor::profile::PROFILE_FLAG)
+            .is_some()
+        {
+            return run_doctor_profile(args);
+        }
         if PrerequisitesArgs::requested(args.peek()) {
             return match PrerequisitesArgs::parse(args) {
                 Ok(_) => report(
@@ -64,9 +74,7 @@ fn main() -> ExitCode {
     if command == "status" {
         return match StatusCommand::parse(args) {
             Ok(StatusCommand::Local(format)) => run_local_status(format),
-            Ok(StatusCommand::Pull(_)) => {
-                report(&"status: the GitHub adapter it reads through is not built yet (#53)")
-            }
+            Ok(StatusCommand::Pull(args)) => run_pull_status(&args),
             Err(usage) => report(&usage),
         };
     }
@@ -123,6 +131,31 @@ fn run_doctor(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         return report(&error);
     }
     if outcome.passed() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// `assay doctor --profile`: exit 0 when every profile check passes, 1 when one fails, 2 when
+/// they cannot run (or the preflight's empty directory cannot be removed after them).
+fn run_doctor_profile(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = doctor::profile::ProfileVariables {
+        token: env::var_os(doctor::OAUTH_TOKEN),
+        path: env::var_os("PATH"),
+        names: env::vars_os().map(|(name, _)| name).collect(),
+    };
+    let outcome = match doctor::profile::run(args, variables) {
+        Ok(outcome) => outcome,
+        Err(error) => return report(&error),
+    };
+    if let Err(error) = doctor::profile::write_report(&outcome.report, io::stdout().lock()) {
+        return report(&error);
+    }
+    if let Some(left) = outcome.left {
+        return report(&doctor::profile::ProfileCliError::Scratch(left));
+    }
+    if outcome.report.passed() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -200,6 +233,39 @@ fn run_local_status(format: Format) -> ExitCode {
         Some(left) => report(left),
         None => ExitCode::SUCCESS,
     }
+}
+
+/// `assay status [--pr <n>]`: exit 0 when the status is written, 2 when it cannot be or when
+/// a scratch directory is left behind.
+fn run_pull_status(args: &StatusArgs) -> ExitCode {
+    let variables = status_pr::PullVariables {
+        tree: tree_variables(),
+        token: env::var_os(status_pr::TOKEN),
+        app_id: env::var_os(status_pr::APP_ID),
+        bot_id: env::var_os(status_pr::BOT_ID),
+        gh: GhEnvironment::from_process_env(),
+    };
+    let ended = match status_pr::run(args, variables) {
+        Ok(ended) => ended,
+        Err(error) => return report(&error),
+    };
+    let mut code = match ended.status {
+        Ok(bytes) => {
+            let mut out = io::stdout().lock();
+            match out.write_all(&bytes).and_then(|()| out.flush()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => report(&error),
+            }
+        }
+        Err(error) => report(&error),
+    };
+    if let Some(left) = &ended.gh_left {
+        code = report(left);
+    }
+    if let Some(left) = &ended.scratch_left {
+        code = report(left);
+    }
+    code
 }
 
 /// The environment that opens the working tree (`check --local`, `status --local`).

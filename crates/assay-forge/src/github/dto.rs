@@ -76,6 +76,9 @@ pub(crate) struct ReviewDto {
     pub(crate) user: Option<UserDto>,
     pub(crate) state: String,
     pub(crate) commit_id: Option<String>,
+    /// Absent or `null` for a pending review.
+    #[serde(default)]
+    pub(crate) submitted_at: Option<String>,
 }
 
 /// A label.
@@ -137,6 +140,14 @@ pub(crate) struct BaseDto {
 #[derive(Debug, Deserialize)]
 pub(crate) struct RepoDto {
     pub(crate) full_name: String,
+}
+
+/// The repository itself (`GET repos/<owner>/<name>`), as `assay status` reads it.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RepositoryDto {
+    pub(crate) id: u64,
+    pub(crate) full_name: String,
+    pub(crate) default_branch: String,
 }
 
 /// The authenticated user.

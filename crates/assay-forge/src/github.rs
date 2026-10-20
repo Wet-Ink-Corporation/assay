@@ -4,11 +4,14 @@
 //! [`GitHub`] implements `assay-app`'s [`Forge`](assay_app::Forge),
 //! [`VerdictForge`](assay_app::VerdictForge), [`CommentForge`](assay_app::CommentForge),
 //! [`StatusForge`](assay_app::StatusForge), [`PullRequestState`](assay_app::PullRequestState)
-//! and [`ReconcileForge`](assay_app::ReconcileForge) for one repository. [`Api::mint_installation_token`] mints the narrowed token a job's
-//! [`GitHub`] is built with. Every response is decoded into a wire DTO and converted, and data
-//! the adapter cannot read exactly is refused ([`ForgeError`], wi-b5affa).
+//! and [`ReconcileForge`](assay_app::ReconcileForge) for one repository, and over the `gh`
+//! transport the [`BundleSource`](assay_app::BundleSource) run bundles are read from.
+//! [`Api::mint_installation_token`] mints the narrowed token a job's [`GitHub`] is built with.
+//! Every response is decoded into a wire DTO and converted, and data the adapter cannot read
+//! exactly is refused ([`ForgeError`], wi-b5affa).
 
 mod api;
+mod artifacts;
 mod base64;
 mod checks;
 mod comments;
@@ -31,10 +34,11 @@ mod transport;
 use assay_app::{AppId, UserId};
 
 pub use api::{Api, MAX_LIST_ITEMS};
+pub use artifacts::BundleFetchError;
 pub use error::{ForgeError, Operation};
 pub use gh::{
-    GH_OUTPUT_CAP, GH_TIMEOUT, GhApi, GhCall, GhEnvironment, GhError, GhRunner, GhSetupError,
-    GhToken, InvalidToken,
+    GH_DOWNLOAD_TIMEOUT, GH_OUTPUT_CAP, GH_TIMEOUT, GhApi, GhCall, GhDownloadError, GhEnvironment,
+    GhError, GhRunner, GhSetupError, GhToken, InvalidToken,
 };
 pub use identity::MAX_COMMITS;
 pub use ledger::{LedgerRepo, LedgerRepoError};
@@ -72,6 +76,12 @@ impl<T, S> GitHub<T, S> {
             repository,
             identity,
         }
+    }
+
+    /// The API back, to close its transport.
+    #[must_use]
+    pub fn into_api(self) -> Api<T, S> {
+        self.api
     }
 
     /// `repos/<owner>/<name>/<rest>`, for `operation`.

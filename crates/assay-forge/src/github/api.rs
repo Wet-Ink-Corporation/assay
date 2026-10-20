@@ -54,6 +54,21 @@ impl<E> From<ForgeError<E>> for Failed<E> {
     }
 }
 
+impl<T, S> Api<T, S> {
+    /// The transport, for what it does besides requests (`gh run download` on
+    /// [`GhApi`](super::GhApi)).
+    pub(crate) const fn transport(&self) -> &T {
+        &self.transport
+    }
+
+    /// The transport back, to close it ([`GhApi::close`](super::GhApi::close) reports a
+    /// failure to remove its scratch directory, which dropping it would not).
+    #[must_use]
+    pub fn into_transport(self) -> T {
+        self.transport
+    }
+}
+
 impl<T: Transport, S: Sleep> Api<T, S> {
     /// The API over `transport`, waiting between retries with `sleeper`.
     pub const fn new(transport: T, sleeper: S) -> Self {

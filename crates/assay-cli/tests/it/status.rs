@@ -1,5 +1,6 @@
 //! `assay status` (#126): its arguments, its wiring of `assay_app::status` over fakes of the
-//! read port and the artifact store, and the binary's answer until the GitHub adapter (#53).
+//! read port and the artifact store, and the binary's refusals before it reads GitHub
+//! (`status_pr.rs` drives it end to end through a stand-in `gh`).
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -10,8 +11,8 @@ use std::process::Command;
 
 use assay_app::{
     AppId, BundleSource, CheckView, CommitId, Contract, ContractValidator, Detail, FetchedAt,
-    Identities, PullView, ReviewCommentView, StatusForge, StatusPorts, StatusRepository,
-    StoredBundle, UserId, Viewer,
+    Identities, PullSelector, PullView, ReviewCommentView, StatusForge, StatusPorts,
+    StatusRepository, StoredBundle, UserId, Viewer,
 };
 use assay_cli::{
     Format, StatusArgs, StatusCommand, StatusContext, StatusRunError, StatusUsage, run_status,
@@ -183,7 +184,10 @@ fn run(words: &[&str], branch: &str, out: impl Write) -> Result<Outcome, Box<dyn
     let context = StatusContext {
         repository: &repository,
         app: AppId(NonZeroU64::new(424_242).ok_or("not zero")?),
-        branch,
+        // As the binary chooses: `--pr`'s number, else the branch's open PR.
+        pull: parsed
+            .pr
+            .map_or(PullSelector::Branch(branch), PullSelector::Number),
         local_head: Some(&local),
         rubric: &rubric,
         identities: &identities,
@@ -260,21 +264,22 @@ fn a_closed_output_is_reported() -> Result<(), Box<dyn Error>> {
 
 #[test]
 #[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
-fn the_binary_refuses_bad_arguments_and_names_the_missing_adapter() -> Result<(), Box<dyn Error>> {
+fn the_binary_refuses_bad_arguments_and_a_missing_token() -> Result<(), Box<dyn Error>> {
     let bad = Command::new(env!("CARGO_BIN_EXE_assay"))
         .args(["status", "--bogus"])
         .output()?;
-    let unwired = Command::new(env!("CARGO_BIN_EXE_assay"))
+    let untokened = Command::new(env!("CARGO_BIN_EXE_assay"))
         .args(["status", "--json"])
+        .env_remove("ASSAY_GITHUB_TOKEN")
         .output()?;
 
     assert_eq!((bad.status.code(), bad.stdout.is_empty()), (Some(2), true));
     assert_eq!(
-        (unwired.status.code(), unwired.stdout.is_empty()),
+        (untokened.status.code(), untokened.stdout.is_empty()),
         (Some(2), true)
     );
-    let message = String::from_utf8(unwired.stderr)?;
-    assert!(message.contains("(#53)"), "{message}");
+    let message = String::from_utf8(untokened.stderr)?;
+    assert!(message.contains("ASSAY_GITHUB_TOKEN"), "{message}");
     Ok(())
 }
 

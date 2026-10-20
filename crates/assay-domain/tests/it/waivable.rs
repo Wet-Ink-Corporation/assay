@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use assay_domain::{
-    Fingerprint, GateFinding, GateReport, Severity, Waiver, decide, waivable_fingerprints,
+    Fingerprint, GateFinding, GateReport, Severity, Waiver, WaiverRefusal, decide,
+    waivable_fingerprints, waiver_refusal,
 };
 
 use crate::support::{attested_gate, clean_inputs, fp, gate_finding, rubric_v1};
@@ -142,6 +143,104 @@ fn every_fingerprint_is_waivable_exactly_when_decide_would_clear_its_waiver()
             cleared,
             "fingerprint {index}: status and decide disagree"
         );
+        assert_eq!(
+            waiver_refusal(&rubric, &inputs.gates, fp_of(index)).is_none(),
+            cleared,
+            "fingerprint {index}: the refusal and decide disagree"
+        );
     }
+    Ok(())
+}
+
+// --- why a waiver cannot apply (#59: the verdict summary shows it) ---
+
+#[test]
+fn a_waiver_of_a_clippy_finding_is_refused_naming_its_gate_and_rule() -> Result<(), Box<dyn Error>>
+{
+    let gates = [temper(vec![gate_finding(
+        "00000000000000a1",
+        "clippy::unwrap_used",
+        Severity::Blocker,
+    )])];
+
+    let refusal = waiver_refusal(&rubric_v1()?, &gates, fp("00000000000000a1"));
+
+    assert_eq!(
+        refusal,
+        Some(WaiverRefusal::NotWaivable {
+            gate: "temper",
+            rule: Some("clippy::unwrap_used"),
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn a_waiver_shared_with_a_clippy_finding_is_refused_for_that_finding() -> Result<(), Box<dyn Error>>
+{
+    let gates = [temper(vec![
+        gate_finding("00000000000000a1", "exception", Severity::Blocker),
+        gate_finding("00000000000000a1", "clippy::unwrap_used", Severity::Blocker),
+    ])];
+
+    let refusal = waiver_refusal(&rubric_v1()?, &gates, fp("00000000000000a1"));
+
+    assert_eq!(
+        refusal,
+        Some(WaiverRefusal::NotWaivable {
+            gate: "temper",
+            rule: Some("clippy::unwrap_used"),
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn a_waiver_of_a_finding_with_no_rule_is_refused() -> Result<(), Box<dyn Error>> {
+    let finding = GateFinding {
+        fp: fp("00000000000000a1"),
+        rule: None,
+        severity: Severity::Blocker,
+    };
+
+    let gates = [temper(vec![finding])];
+
+    let refusal = waiver_refusal(&rubric_v1()?, &gates, fp("00000000000000a1"));
+
+    assert_eq!(
+        refusal,
+        Some(WaiverRefusal::NotWaivable {
+            gate: "temper",
+            rule: None,
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn a_waiver_naming_no_gate_finding_is_refused() -> Result<(), Box<dyn Error>> {
+    let gates = [temper(vec![gate_finding(
+        "00000000000000a1",
+        "raised",
+        Severity::Blocker,
+    )])];
+
+    let refusal = waiver_refusal(&rubric_v1()?, &gates, fp("00000000000000b2"));
+
+    assert_eq!(refusal, Some(WaiverRefusal::NoGateFinding));
+    Ok(())
+}
+
+#[test]
+fn a_waiver_of_a_human_decision_finding_is_not_refused() -> Result<(), Box<dyn Error>> {
+    let gates = [temper(vec![gate_finding(
+        "00000000000000a1",
+        "raised",
+        Severity::Blocker,
+    )])];
+
+    let refusal = waiver_refusal(&rubric_v1()?, &gates, fp("00000000000000a1"));
+
+    assert_eq!(refusal, None);
     Ok(())
 }

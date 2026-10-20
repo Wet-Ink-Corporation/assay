@@ -1,5 +1,12 @@
 //! Integration tests for `assay-app`, compiled as one binary (TST-14).
 
+mod admit;
+mod admit_budget;
+mod admit_dismissals;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod admit_fakes;
+mod admit_pack;
+mod admit_slots;
 mod builtins;
 mod check;
 mod check_egress;
@@ -16,7 +23,16 @@ mod decide_evidence;
 mod decide_fakes;
 mod decide_refusals;
 mod doctor;
+mod doctor_profile;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod doctor_profile_fakes;
 mod domain_model;
+mod eligibility;
+mod eligibility_commands;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod eligibility_fakes;
+mod eligibility_lists;
+mod eligibility_refusals;
 mod eval_compare;
 mod eval_corpus;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
@@ -86,6 +102,8 @@ mod specialists_fakes;
 mod status;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod status_fakes;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod status_identities;
 mod status_local;
 mod status_refusals;
 mod status_refused;
@@ -98,3 +116,5 @@ mod verify;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod verify_fakes;
 mod verify_full;
+mod waive;
+mod waive_carry;

@@ -1,0 +1,97 @@
+#!/bin/sh
+# A stand-in for `claude` in the profile canary tests (#84). Tests copy it into a scratch
+# directory beside a `knobs` file, since the runner clears the environment. For `--version` and
+# `auth status` it prints the files named by VERSION and AUTH (the preflight's probe). For a call
+# it records how it was started and what was planted, then prints the init of STREAM and, as a
+# CLI that honours its flags would, a result whose permission_denials hold the environ and
+# outside reads and whose structured output repeats the prompt, system and tree words. Knobs
+# make it behave as a CLI that ignores a flag:
+#   PERMISSION_MODE=<m>  report permissionMode <m> in the init
+#   RUN_HOOKS=1          run every planted hook (write its marker)
+#   HOOK_EVENTS=1        stream a hook_started message
+#   READ_ENVIRON=1       let the environ read through: stream the token, no denial for it
+#   READ_OUTSIDE=1       let the outside read through: stream the file, no denial for it
+#   DENY_TREE=1          deny the --add-dir tree read: a denial and no tree word
+#   IGNORE_STDIN=1       answer a prompt word that is not the stdin prompt's
+#   IGNORE_SYSTEM=1      answer a system word that is not the system prompt file's
+#   REFUSE=1             refuse the argv: an error on stderr, exit 1 and no stream
+#   IGNORE_FLAGS=1       all of RUN_HOOKS, HOOK_EVENTS, READ_ENVIRON and READ_OUTSIDE
+# It stops at the first failing command.
+set -eu
+dir=${0%/*}
+. "$dir/knobs"
+
+case "$*" in
+  --version) /bin/cat "$VERSION"; exit 0 ;;
+  "auth status") /bin/cat "$AUTH"; exit 0 ;;
+esac
+
+if [ "${IGNORE_FLAGS:-}" = 1 ]; then
+  RUN_HOOKS=1; HOOK_EVENTS=1; READ_ENVIRON=1; READ_OUTSIDE=1
+fi
+
+add_dir=
+system_file=
+prev=
+for arg in "$@"; do
+  if [ "$prev" = --add-dir ]; then add_dir=$arg; fi
+  if [ "$prev" = --append-system-prompt-file ]; then system_file=$arg; fi
+  prev=$arg
+done
+for arg in "$@"; do printf '%s\0' "$arg"; done > "$dir/argv"
+/bin/cat > "$dir/stdin"
+pwd -P > "$dir/cwd"
+/usr/bin/env > "$dir/env"
+(cd "$HOME" && /usr/bin/find . -type f | /usr/bin/sort) > "$dir/home-files"
+(cd "$PWD" && /usr/bin/find . -type f | /usr/bin/sort) > "$dir/cwd-files"
+(cd "$add_dir" && /usr/bin/find . -type f | /usr/bin/sort) > "$dir/pr-files"
+sandbox=${add_dir%/*}
+(cd "$sandbox/outside" && /usr/bin/find . -type f | /usr/bin/sort) > "$dir/outside-files"
+for scope in "$HOME" "$PWD" "$add_dir"; do
+  /bin/cat "$scope/.claude/settings.json" >> "$dir/settings"
+  echo >> "$dir/settings"
+  marker=$(/bin/sed -n "s/.*: > '\([^']*\)'.*/\1/p" "$scope/.claude/settings.json" | /usr/bin/head -n 1)
+  echo "$marker" >> "$dir/markers"
+  if [ "${RUN_HOOKS:-}" = 1 ]; then : > "$marker"; fi
+done
+
+if [ "${REFUSE:-}" = 1 ]; then
+  echo "error: --restricted cannot be combined with --safe-mode" >&2
+  exit 1
+fi
+
+tree_file=$add_dir/TREE.md
+outside_file=$sandbox/outside/OUTSIDE.md
+/bin/cat "$system_file" > "$dir/system.md"
+/bin/cat "$tree_file" > "$dir/tree.md"
+/bin/cat "$outside_file" > "$dir/outside.md"
+prompt_word=$(/bin/sed -n 's/.*prompt_word to `\(ASSAYPROMPT[0-9a-f]*\)`.*/\1/p' "$dir/stdin")
+system_word=$(/bin/sed -n 's/.*The system word is `\([A-Z0-9a-f]*\)`.*/\1/p' "$system_file")
+tree_word=$(/bin/sed -n 's/.*The tree word is `\([A-Z0-9a-f]*\)`.*/\1/p' "$tree_file")
+if [ "${IGNORE_STDIN:-}" = 1 ]; then prompt_word=ready; fi
+if [ "${IGNORE_SYSTEM:-}" = 1 ]; then system_word=; fi
+
+/usr/bin/head -n 1 "$STREAM" | /bin/sed "s/\"permissionMode\":\"dontAsk\"/\"permissionMode\":\"${PERMISSION_MODE:-dontAsk}\"/"
+if [ "${HOOK_EVENTS:-}" = 1 ]; then
+  printf '%s\n' '{"type":"system","subtype":"hook_started","hook_id":"h1","hook_name":"SessionStart:startup","hook_event":"SessionStart","uuid":"u1","session_id":"s1"}'
+fi
+denial() {
+  printf '{"tool_name":"Read","tool_use_id":"toolu_%s","tool_input":{"file_path":"%s"}}' "$1" "$2"
+}
+denials=
+if [ "${READ_ENVIRON:-}" = 1 ]; then
+  printf '{"type":"user","message":{"content":[{"type":"tool_result","content":"CLAUDE_CODE_OAUTH_TOKEN=%s"}]}}\n' "$CLAUDE_CODE_OAUTH_TOKEN"
+else
+  denials=$(denial 1 /proc/self/environ)
+fi
+if [ "${READ_OUTSIDE:-}" = 1 ]; then
+  printf '{"type":"user","message":{"content":[{"type":"tool_result","content":"%s"}]}}\n' "$(/bin/cat "$outside_file")"
+else
+  denials="$denials${denials:+,}$(denial 3 "$outside_file")"
+fi
+if [ "${DENY_TREE:-}" = 1 ]; then
+  denials="$denials${denials:+,}$(denial 2 "$tree_file")"
+  tree_word=
+fi
+printf '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"total_cost_usd":0.012,"permission_denials":[%s],"structured_output":{"prompt_word":"%s","system_word":"%s","tree_word":"%s"}}\n' \
+  "$denials" "$prompt_word" "$system_word" "$tree_word"

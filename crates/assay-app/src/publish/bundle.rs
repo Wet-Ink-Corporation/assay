@@ -8,6 +8,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::decide::{AuthenticatedRun, RunDocument};
+use crate::eligibility::{GitHubState, StateRecord};
 use crate::plan::ArtifactJob;
 use crate::rereview::CarrySet;
 use crate::rereview::record::CarryOut;
@@ -46,6 +47,7 @@ pub(super) struct Contents<'a> {
     pub(super) decision: &'a Decision,
     pub(super) events: &'a [Event],
     pub(super) carry: &'a CarrySet,
+    pub(super) github: &'a GitHubState,
 }
 
 /// `assay.run-inputs/1`.
@@ -60,6 +62,7 @@ struct RunInputs<'a> {
     decision: &'a Decision,
     events: Vec<&'a Event>,
     carry: CarryOut<'a>,
+    github: StateRecord<'a>,
 }
 
 /// One authentic artifact document, kept as the exact text its digest covers.
@@ -73,7 +76,7 @@ struct Document<'a> {
 
 /// The bundle's bytes: `run.json`, the gate documents and the review documents as their exact
 /// text, the decision inputs, the rubric version, the decision, the events ordered by
-/// `(job, idx)` and the carry set the next run reads (#224).
+/// `(job, idx)`, the carry set the next run reads (#224) and the GitHub state snapshot (#58).
 ///
 /// # Errors
 ///
@@ -111,6 +114,7 @@ pub(super) fn bundle(contents: &Contents<'_>) -> Result<Vec<u8>, BundleError> {
         decision: contents.decision,
         events,
         carry: CarryOut::of(contents.carry),
+        github: StateRecord::of(contents.github),
     };
     let mut out = Capped::new(MAX_BUNDLE_BYTES);
     match serde_json::to_writer(&mut out, &inputs) {
