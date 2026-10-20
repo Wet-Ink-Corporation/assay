@@ -34,7 +34,7 @@ pub use self::commands::{
 use self::commands::{JudgedCommand, applicability, void_cause};
 pub use self::error::{SnapshotStep, StateError};
 pub use self::grammar::{AckedSet, Command, MAX_COMMAND_REASON_CHARS, Parsed, parse_command};
-pub use self::ports::{CommandComments, LedgerRecords, SnapshotLedger};
+pub use self::ports::{CommandComments, LedgerRecords, MAX_COMMENT_BYTES, SnapshotLedger};
 pub use self::pushes::MAX_PUSH_RECORDS;
 use self::pushes::{push_clock, pushed};
 pub use self::range::{

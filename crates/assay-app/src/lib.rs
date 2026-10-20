@@ -6,8 +6,10 @@
 //! Every versioned contract is validated on read through [`ContractValidator`]
 //! (`docs/architecture/03-contracts.md`). Base configuration is parsed into [`PluginsConfig`].
 
+mod admit;
 mod calendar;
 mod check;
+mod clock;
 mod config;
 mod contract;
 mod coordinate;
@@ -35,7 +37,13 @@ mod specialists;
 mod status;
 mod tiering;
 
+pub use admit::{
+    ADMISSIONS_PER_HOUR, Admission, AdmitError, AdmitFailure, AdmitPorts, AdmitRequest, Admitted,
+    AfterSlot, Budget, ContextPack, DAY_CAP, Deferred, MAX_DISMISSALS, MAX_SUPPRESS_BYTES,
+    PlanDocument, RangeIdentities, SLOT_POLL, SLOT_POLLS, Spend, Unwound, admit,
+};
 pub use calendar::{CalendarDate, CalendarDateError};
+pub use clock::Clock;
 pub use doctor::{
     AGENTS_PATH, Access, AppliedRule, BaseError, BranchPolicy, BypassActor, CanaryProbe, CanaryRun,
     CanaryToken, Check, CheckFailure, CheckResult, Collaborator, Conditions, DeploymentBranches,
@@ -95,10 +103,11 @@ pub use decide::{
 pub use eligibility::{
     AckedSet, Command, CommandComments, CommandRejected, CommentAction, CommentEvent, CommitRange,
     GitHubState, IgnoredApproval, Ineligible, InvalidTimestamp, IssueComment, LedgerRecords,
-    MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_PUSH_RECORDS, MAX_RANGE_COMMITS, MergeTree,
-    ParseTreeIdError, Parsed, PriorWaivers, RangeCommit, RangeListing, RangeObjects, Recorded,
-    SnapshotCommand, SnapshotLedger, SnapshotStep, StateError, StatePorts, StateRequest, Timestamp,
-    TreeId, VoidCause, WEB_FLOW, WaiverBindings, github_state, parse_command, waiver_events,
+    MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_COMMENT_BYTES, MAX_PUSH_RECORDS,
+    MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, Parsed, PriorWaivers, RangeCommit,
+    RangeListing, RangeObjects, Recorded, SnapshotCommand, SnapshotLedger, SnapshotStep,
+    StateError, StatePorts, StateRequest, Timestamp, TreeId, VoidCause, WEB_FLOW, WaiverBindings,
+    github_state, parse_command, waiver_events,
 };
 pub use eval::{
     Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,
@@ -130,8 +139,8 @@ pub use ledger::{
     PushRecord, RefCreation, RefDeletion, RefTip, Released, RetryGrant, RoleCost, SLOT_TTL, Slot,
     SlotAcquired, SlotAcquisition, SlotHold, SlotLease, SlotRequest, SlotView, StateUpdate,
     WriteCondition, WriteOutcome, acquire_lock, acquire_slot, append_command, append_cost,
-    append_push, consume_grant, grant_retry, read_commands, read_costs, read_pushes, read_slots,
-    read_state, reap_expired_slots, release_lock, release_slot, update_state,
+    append_push, consume_grant, grant_retry, pending_grant, read_commands, read_costs, read_pushes,
+    read_slots, read_state, reap_expired_slots, release_lock, release_slot, update_state,
 };
 pub use model_runner::{
     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,

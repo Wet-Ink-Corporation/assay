@@ -58,15 +58,25 @@ impl<T> LedgerRecords<T> {
     }
 }
 
+/// The longest comment body a [`CommandComments`] adapter reads, in bytes: GitHub caps a body at
+/// 65,536 characters, at most four bytes each.
+pub const MAX_COMMENT_BYTES: usize = 262_144;
+
 /// Issue comments re-fetched to check command records (`GET /issues/comments/{id}`).
+///
+/// Read by the eligibility snapshot and by `admit`'s dismissals (05 T21, R3-02). The record,
+/// never the comment, is what a command says; the comment only shows whether it still stands.
+/// Everything read is untrusted.
 pub trait CommandComments {
     /// Why GitHub could not be read.
     type Error: std::error::Error;
 
     /// Comment `id` as it stands now; `None` when it was deleted.
     ///
+    /// An implementation must refuse a body over [`MAX_COMMENT_BYTES`].
+    ///
     /// # Errors
     ///
-    /// [`Self::Error`] when GitHub cannot be read.
+    /// [`Self::Error`] when GitHub cannot be read, or the comment's body is over the cap.
     fn comment(&self, id: CommentId) -> Result<Option<IssueComment>, Self::Error>;
 }

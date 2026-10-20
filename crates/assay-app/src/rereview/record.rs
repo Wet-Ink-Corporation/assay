@@ -29,9 +29,9 @@ impl<'a> CarryOut<'a> {
     }
 }
 
-/// One carried finding as written.
+/// One carried finding as written; `admit`'s context pack writes its prior findings the same way.
 #[derive(Serialize)]
-struct RecordOut<'a> {
+pub(crate) struct RecordOut<'a> {
     fp: Fingerprint,
     file: &'a str,
     line: NonZeroU64,
@@ -48,7 +48,8 @@ struct RecordOut<'a> {
 }
 
 impl<'a> RecordOut<'a> {
-    fn of(finding: &'a CarriedFinding) -> Self {
+    /// `finding` as written.
+    pub(crate) fn of(finding: &'a CarriedFinding) -> Self {
         Self {
             fp: finding.fp(),
             file: finding.file(),

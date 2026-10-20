@@ -30,7 +30,8 @@ pub use lease::{
     LockAcquired, LockHold, LockLease, LockRequest, MAX_LEASE_MESSAGE_BYTES, MAX_REVIEW_TIMEOUT,
     RefCreation, RefDeletion, RefTip, Released, RetryGrant, SLOT_TTL, Slot, SlotAcquired,
     SlotAcquisition, SlotHold, SlotLease, SlotRequest, SlotView, acquire_lock, acquire_slot,
-    consume_grant, grant_retry, read_slots, reap_expired_slots, release_lock, release_slot,
+    consume_grant, grant_retry, pending_grant, read_slots, reap_expired_slots, release_lock,
+    release_slot,
 };
 pub use port::{
     FileVersion, Ledger, LedgerFile, LedgerPath, MAX_CAS_ATTEMPTS, MAX_LEDGER_FILE_BYTES,
