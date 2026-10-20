@@ -104,3 +104,5 @@ mod verify;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod verify_fakes;
 mod verify_full;
+mod waive;
+mod waive_carry;

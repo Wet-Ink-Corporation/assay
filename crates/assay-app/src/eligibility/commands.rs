@@ -3,7 +3,9 @@
 //! reads the records, re-fetches each comment, and voids a record whose comment was deleted,
 //! edited or no longer hashes to it. An edit can only revoke a command, never grant one.
 
-use super::grammar::{Command, Parsed, parse_command};
+use assay_domain::EventPayload;
+
+use super::grammar::{Command, Parsed, command_word, parse_command};
 use super::rule::{Ineligible, Rule};
 use super::timestamp::Timestamp;
 use crate::config::{CommitId, Sha256Digest};
@@ -110,6 +112,37 @@ pub enum CommandRejected {
     /// The comment is not later than the head's push clock.
     #[error("the command predates the push of this head")]
     BeforePushClock,
+}
+
+impl CommandRejected {
+    /// The `CommandRejected` event decide-only records for `comment`, rejected for this
+    /// reason: an ineligible or mistimed command has no effect, but it leaves this trace
+    /// (#59, 03 §6).
+    ///
+    /// `command` is the grammar's word (`unknown` for any other), never the comment's text, and
+    /// `reason` a closed code (`ineligible:<why>` with [`Ineligible::code`]). There is none
+    /// when the first line is not an `/assay` command line or the comment has no author, since
+    /// the event names its actor.
+    #[must_use]
+    pub fn event(self, comment: &IssueComment) -> Option<EventPayload> {
+        let actor = comment.user?;
+        let command = command_word(&comment.body)?;
+        let reason = match self {
+            Self::NotACommand | Self::NoAuthor => return None,
+            Self::NotCreated => "not-created".to_owned(),
+            Self::ViaApp => "via-app".to_owned(),
+            Self::Unknown => "unknown".to_owned(),
+            Self::Malformed => "malformed".to_owned(),
+            Self::Ineligible(why) => format!("ineligible:{}", why.code()),
+            Self::NoPushClock => "no-push-clock".to_owned(),
+            Self::BeforePushClock => "before-push-clock".to_owned(),
+        };
+        Some(EventPayload::CommandRejected {
+            command: command.to_owned(),
+            actor_id: actor.0,
+            reason,
+        })
+    }
 }
 
 /// Why a command record no longer stands.

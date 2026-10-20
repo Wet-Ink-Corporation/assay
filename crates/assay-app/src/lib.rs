@@ -90,9 +90,9 @@ pub use eligibility::{
     AckedSet, Command, CommandComments, CommandRejected, CommentAction, CommentEvent, CommitRange,
     GitHubState, IgnoredApproval, Ineligible, InvalidTimestamp, IssueComment, LedgerRecords,
     MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_PUSH_RECORDS, MAX_RANGE_COMMITS, MergeTree,
-    ParseTreeIdError, Parsed, RangeCommit, RangeListing, RangeObjects, Recorded, SnapshotCommand,
-    SnapshotLedger, SnapshotStep, StateError, StatePorts, StateRequest, Timestamp, TreeId,
-    VoidCause, WEB_FLOW, github_state, parse_command,
+    ParseTreeIdError, Parsed, PriorWaivers, RangeCommit, RangeListing, RangeObjects, Recorded,
+    SnapshotCommand, SnapshotLedger, SnapshotStep, StateError, StatePorts, StateRequest, Timestamp,
+    TreeId, VoidCause, WEB_FLOW, WaiverBindings, github_state, parse_command, waiver_events,
 };
 pub use eval::{
     Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,
@@ -164,7 +164,7 @@ pub use rereview::{
     Cumulative, Increment, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, MAX_RANGE_DIFF_BYTES,
     NotReverified, OmitReason, Omitted, PriorCarry, PriorCarryError, PriorHistory, RangeDiff,
     RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError, TargetRequest, next_carry,
-    prior_carry, read_carried, recheck_anchors, review_target, settle_carried,
+    prior_carry, prior_waivers, read_carried, recheck_anchors, review_target, settle_carried,
 };
 pub use shard::{
     Import, MAX_IMPORTS, MAX_SHARD_FILES, MAX_SHARDS, Shard, ShardCount, ShardError, ShardFile,

@@ -21,6 +21,7 @@ mod record;
 mod rule;
 mod state;
 mod timestamp;
+mod waive;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
@@ -46,6 +47,7 @@ pub use self::rule::Ineligible;
 use self::rule::{RangeFacts, Rule};
 pub use self::state::{CommitRange, GitHubState};
 pub use self::timestamp::{InvalidTimestamp, Timestamp};
+pub use self::waive::{PriorWaivers, WaiverBindings, waiver_events};
 use crate::config::{CommitId, EligibilityLists};
 use crate::forge::Forge;
 use crate::ledger::PushRecord;

@@ -137,17 +137,8 @@ impl Command {
 /// ```
 #[must_use]
 pub fn parse_command(body: &str) -> Parsed {
-    let line = body.split_once('\n').map_or(body, |(first, _rest)| first);
-    let line = line.strip_suffix('\r').unwrap_or(line);
-    let Some(rest) = line.strip_prefix(PREFIX) else {
+    let Some(rest) = command_line(body) else {
         return Parsed::NotACommand;
-    };
-    let Some(rest) = rest.strip_prefix(' ') else {
-        return if rest.is_empty() {
-            Parsed::Unknown
-        } else {
-            Parsed::NotACommand
-        };
     };
     let (word, args) = rest.split_once(' ').unwrap_or((rest, ""));
     let parsed = match word {
@@ -169,6 +160,42 @@ pub fn parse_command(body: &str) -> Parsed {
     };
     parsed.map_or(Parsed::Malformed, Parsed::Command)
 }
+
+/// What follows `/assay ` on `body`'s first line (empty for a bare `/assay`), or `None` when
+/// that line is not a command line.
+fn command_line(body: &str) -> Option<&str> {
+    let line = body.split_once('\n').map_or(body, |(first, _rest)| first);
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let rest = line.strip_prefix(PREFIX)?;
+    if rest.is_empty() {
+        return Some(rest);
+    }
+    rest.strip_prefix(' ')
+}
+
+/// The grammar's command word on `body`'s first line, for events: the word when the grammar
+/// has it, `unknown` for any other word, and `None` when the line is not a command line. Never
+/// the comment's own text.
+pub(crate) fn command_word(body: &str) -> Option<&'static str> {
+    let rest = command_line(body)?;
+    let word = rest.split_once(' ').map_or(rest, |(word, _args)| word);
+    Some(
+        WORDS
+            .into_iter()
+            .find(|known| *known == word)
+            .unwrap_or("unknown"),
+    )
+}
+
+/// Every command word of the grammar, as [`Command::name`] gives it.
+const WORDS: [&str; 6] = [
+    "recheck",
+    "waive",
+    "override",
+    "dismiss",
+    "retry",
+    "weigh-in-ack",
+];
 
 /// `llm|all <reasons_digest> <reason>`.
 fn override_command(args: &str) -> Option<Command> {
@@ -204,4 +231,74 @@ fn reason_text(reason: &str) -> Option<String> {
         && reason.chars().count() <= MAX_COMMAND_REASON_CHARS
         && !reason.chars().any(char::is_control);
     fits.then(|| reason.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use assay_domain::{Fingerprint, OverrideScope, RequiredRole};
+
+    use super::{AckedSet, Command, WORDS, command_word};
+    use crate::config::Sha256Digest;
+
+    /// One command of each kind. The match has no wildcard, so a new kind does not compile
+    /// until it is listed here, and [`WORDS`] is then checked against it.
+    fn one_of_each() -> Vec<Command> {
+        let fp: Fingerprint = "0123456789abcdef".parse().expect("a fingerprint");
+        let digest: Sha256Digest = format!("sha256:{}", "0".repeat(64))
+            .parse()
+            .expect("a digest");
+        let commands = vec![
+            Command::Recheck,
+            Command::Waive { finding: fp },
+            Command::Override {
+                scope: OverrideScope::All,
+                reasons_digest: digest,
+                reason: "why".to_owned(),
+            },
+            Command::Dismiss {
+                finding: fp,
+                reason: "why".to_owned(),
+            },
+            Command::Retry {
+                role: RequiredRole::Combined,
+            },
+            Command::WeighInAck {
+                set: AckedSet::None,
+            },
+        ];
+        for command in &commands {
+            match command {
+                Command::Recheck
+                | Command::Waive { .. }
+                | Command::Override { .. }
+                | Command::Dismiss { .. }
+                | Command::Retry { .. }
+                | Command::WeighInAck { .. } => {}
+            }
+        }
+        commands
+    }
+
+    #[test]
+    fn every_command_word_is_its_commands_name() {
+        let commands = one_of_each();
+
+        for command in &commands {
+            let word = command.name();
+            assert_eq!(
+                command_word(&format!("/assay {word} x")),
+                Some(word),
+                "{word}"
+            );
+        }
+        assert_eq!(WORDS.len(), commands.len(), "one word per command");
+    }
+
+    #[test]
+    fn any_other_word_is_unknown_and_prose_has_none() {
+        assert_eq!(command_word("/assay approve now"), Some("unknown"));
+        assert_eq!(command_word("/assay"), Some("unknown"));
+        assert_eq!(command_word("LGTM /assay waive"), None);
+        assert_eq!(command_word("/assayed waive"), None);
+    }
 }
