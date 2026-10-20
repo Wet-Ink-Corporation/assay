@@ -1,5 +1,7 @@
 //! `ForgePullRequest` as local mode's `ChangePatches` (#219 R2): one file's diff past forge's
 //! output cap is "not shown", like a text over the patch budget, instead of failing the check.
+//! And as the eligibility snapshot's `RangeObjects` (#58): an "Update branch" merge's parents,
+//! tree and conflict-free merge, read from git objects.
 
 use std::env;
 use std::error::Error;
@@ -8,7 +10,10 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use assay_app::{ChangePatches, CommitId, FilePatch, PatchBudget};
+use assay_app::{
+    ChangePatches, CommitId, FilePatch, MergeTree, PatchBudget, RangeCommit, RangeListing,
+    RangeObjects,
+};
 use assay_cli::ForgePullRequest;
 use assay_domain::{FileChange, FileKind, Lines};
 use assay_forge::git::{GitEnvironment, GitLimits, ObjectRepo, TreeLimits};
@@ -162,5 +167,59 @@ fn a_patch_one_byte_over_the_output_cap_is_not_shown_and_the_rest_are() -> Resul
     );
     assert!(small.text.is_some(), "{small:?}");
     assert_eq!(small.hunks.len(), 1, "{small:?}");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn an_update_branch_merge_reads_as_a_clean_merge_of_its_parents() -> Result<(), Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    let work = scratch.path().join("work");
+    fs::create_dir(&work)?;
+    plain_git(&work, &["init", "--quiet", "--initial-branch=main"])?;
+    fs::write(work.join("lib.rs"), "fn one() {}\n")?;
+    let base = commit(&work, "base")?;
+    plain_git(&work, &["checkout", "--quiet", "-b", "pr"])?;
+    fs::write(work.join("pr.rs"), "fn pr() {}\n")?;
+    let first = commit(&work, "first")?;
+    plain_git(&work, &["checkout", "--quiet", "main"])?;
+    fs::write(work.join("docs.md"), "docs\n")?;
+    let tip = commit(&work, "tip")?;
+    plain_git(&work, &["checkout", "--quiet", "pr"])?;
+    plain_git(&work, &["merge", "--quiet", "--no-ff", "--no-edit", "main"])?;
+    let merge: CommitId = plain_git(&work, &["rev-parse", "HEAD"])?.trim().parse()?;
+    let git_dir = scratch.path().join("objects.git");
+    let repo = ObjectRepo::init(
+        &git_dir,
+        GitEnvironment::from_process_env()?,
+        GitLimits::default(),
+    )?;
+    let destination = git_dir.to_str().ok_or("scratch path is not UTF-8")?;
+    plain_git(&work, &["push", "--quiet", destination, "pr:refs/heads/pr"])?;
+    let objects = ForgePullRequest::new(&repo, TreeLimits::default(), Duration::from_secs(60));
+
+    let listed = objects.range(&base, &merge, 250)?;
+    let merged = objects.merge_tree(&first, &tip)?;
+
+    let RangeListing::Listed(commits) = listed else {
+        return Err("three commits fit the cap".into());
+    };
+    assert_eq!(
+        commits.first(),
+        Some(&RangeCommit {
+            commit: merge.clone(),
+            parents: vec![first.clone(), tip.clone()],
+        })
+    );
+    assert_eq!(merged, MergeTree::Clean(objects.tree(&merge)?));
+    assert!(
+        objects.is_ancestor(&tip, &tip)?,
+        "a commit is its own ancestor"
+    );
+    assert!(
+        !objects.is_ancestor(&first, &tip)?,
+        "the PR commit is not on the base"
+    );
+    assert_eq!(objects.range(&base, &merge, 2)?, RangeListing::TooMany);
     Ok(())
 }

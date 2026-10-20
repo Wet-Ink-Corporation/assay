@@ -72,8 +72,12 @@ pub enum GitOperation {
     RangeDiff,
     /// `git rev-list --count`: how many commits a range holds.
     RevListCount,
-    /// `git rev-parse`: a revision's commit, or a path inside a developer's repository (local
-    /// mode, 02 §6).
+    /// `git rev-list --parents`: a range's commits with their parents (the eligibility rule).
+    RevListParents,
+    /// `git merge-tree --write-tree --no-messages`: the tree a conflict-free merge writes.
+    MergeTree,
+    /// `git rev-parse`: a revision's commit or tree, or a path inside a developer's repository
+    /// (local mode, 02 §6).
     RevParse,
     /// `git read-tree`: load a commit's tree into a scratch index.
     ReadTree,
@@ -128,6 +132,8 @@ impl GitOperation {
                 "--no-textconv",
             ],
             Self::RevListCount => &["rev-list", "--count"],
+            Self::RevListParents => &["rev-list", "--parents"],
+            Self::MergeTree => &["merge-tree", "--write-tree", "--no-messages"],
             Self::RevParse => &["rev-parse"],
             Self::ReadTree => &["read-tree"],
             Self::AddAll => &["add", "--all"],
@@ -207,6 +213,8 @@ impl fmt::Display for GitOperation {
             Self::IsAncestor => "merge-base --is-ancestor",
             Self::RangeDiff => "range-diff",
             Self::RevListCount => "rev-list --count",
+            Self::RevListParents => "rev-list --parents",
+            Self::MergeTree => "merge-tree",
             Self::RevParse => "rev-parse",
             Self::ReadTree => "read-tree",
             Self::AddAll => "add",
@@ -405,7 +413,7 @@ mod tests {
     use crate::process::{Limits, run};
 
     /// Every operation.
-    const ALL: [GitOperation; 22] = [
+    const ALL: [GitOperation; 24] = [
         GitOperation::Init,
         GitOperation::Fetch,
         GitOperation::VerifyCommit,
@@ -417,6 +425,8 @@ mod tests {
         GitOperation::IsAncestor,
         GitOperation::RangeDiff,
         GitOperation::RevListCount,
+        GitOperation::RevListParents,
+        GitOperation::MergeTree,
         GitOperation::RevParse,
         GitOperation::ReadTree,
         GitOperation::AddAll,
@@ -735,7 +745,7 @@ mod tests {
     ];
 
     /// Each operation's subcommand and fixed flags, in [`ALL`]'s order.
-    const LEADING: [(GitOperation, &[&str]); 22] = [
+    const LEADING: [(GitOperation, &[&str]); 24] = [
         (GitOperation::Init, &["init", "--bare", "--quiet"]),
         (
             GitOperation::Fetch,
@@ -773,6 +783,11 @@ mod tests {
             ],
         ),
         (GitOperation::RevListCount, &["rev-list", "--count"]),
+        (GitOperation::RevListParents, &["rev-list", "--parents"]),
+        (
+            GitOperation::MergeTree,
+            &["merge-tree", "--write-tree", "--no-messages"],
+        ),
         (GitOperation::RevParse, &["rev-parse"]),
         (GitOperation::ReadTree, &["read-tree"]),
         (GitOperation::AddAll, &["add", "--all"]),
