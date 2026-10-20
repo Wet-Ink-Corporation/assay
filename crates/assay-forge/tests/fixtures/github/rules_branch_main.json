@@ -1,0 +1,22 @@
+[
+  {
+    "type": "deletion",
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "Wet-Ink-Corporation/assay",
+    "ruleset_id": 25356300
+  },
+  {
+    "type": "required_status_checks",
+    "parameters": {
+      "strict_required_status_checks_policy": true,
+      "do_not_enforce_on_create": false,
+      "required_status_checks": [
+        { "context": "assay / verdict", "integration_id": 5371952 },
+        { "context": "gate" }
+      ]
+    },
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "Wet-Ink-Corporation/assay",
+    "ruleset_id": 25356300
+  }
+]

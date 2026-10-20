@@ -250,22 +250,18 @@ fn coordinated<E>(findings: &[ValidFinding], distinct: Distinct, plan: Plan) -> 
             })
         })
         .collect();
-    let by_coordinator: BTreeMap<usize, usize> = duplicates
+    let by_coordinator: BTreeMap<usize, Merged> = duplicates
         .into_iter()
-        .map(|merge| (merge.index, merge.into))
+        .map(|merge| (merge.index, merge))
         .collect();
     // A finding merged before the call follows its keeper when the coordinator merged that
     // keeper too, so every merge names a kept finding; the coordinator's keepers are kept.
     for merge in &mut merged {
-        if let Some(&into) = by_coordinator.get(&merge.into) {
-            merge.into = into;
+        if let Some(keeper) = by_coordinator.get(&merge.into) {
+            merge.into = keeper.into;
         }
     }
-    merged.extend(
-        by_coordinator
-            .into_iter()
-            .map(|(index, into)| Merged { index, into }),
-    );
+    merged.extend(by_coordinator.into_values());
     merged.sort_by_key(|merge| merge.index);
     Coordination {
         ranked: rank(findings, entries),

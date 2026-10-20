@@ -30,6 +30,7 @@ pub use self::pin::{
     CommitId, ParseCommitIdError, ParseDigestError, ParsePinError, Pin, Sha256Digest,
 };
 use self::reserved::Builtin;
+pub(crate) use self::reserved::WEIGH_IN_NAME;
 use crate::gate::BuildJob;
 
 /// A gate's timeout when `timeout_s` is omitted, in seconds.

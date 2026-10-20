@@ -8,11 +8,12 @@ use assay_app::{
     VerifierFailure, VerifierStatus, VerifierTier, verify,
 };
 use assay_domain::{
-    Aeu, CallFailure, Disposition, EventPayload, RateLimitStatus, Severity, SupportOutcome, Tier,
-    VerifierVerdict,
+    Aeu, CallFailure, Disposition, Event, EventPayload, RateLimitStatus, Severity, SupportOutcome,
+    Tier, VerifierVerdict,
 };
 use serde_json::{Value, json};
 
+use crate::support::read_back;
 use crate::verify_fakes::{
     Scripted, bundle, carried, claims, finding, request, request_carrying, result, verdict,
 };
@@ -254,6 +255,40 @@ fn a_raised_claim_in_a_run_with_carried_ones_keeps_the_verifier_instruction()
     Ok(())
 }
 
+/// #264: a `verifier-rejected-downgraded` of a carried or a raised finding passes the read rule
+/// that requires its fingerprint.
+#[test]
+fn every_downgrade_event_passes_the_read_rule() -> Result<(), Box<dyn Error>> {
+    let carried = [carried(0, Severity::Blocker)?];
+    let findings = [finding(0, Severity::Major)?];
+    let bundle = bundle()?;
+    let runner = Scripted::answering([
+        (verdict("refuted", "the index is guarded"), 1),
+        (verdict("refuted", "the input is digits"), 1),
+    ]);
+    let verified = verify(
+        &runner,
+        request_carrying(VerifierTier::Full, &findings, &carried, &bundle),
+    );
+
+    let read: Vec<Event> = verified.events().map(read_back).collect::<Result<_, _>>()?;
+
+    let downgrades = read
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.payload,
+                EventPayload::FindingDisposed {
+                    code: Disposition::VerifierRejectedDowngraded,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(downgrades, 2, "the carried blocker and the raised major");
+    Ok(())
+}
+
 #[test]
 fn carried_verdicts_change_severity_and_come_first_in_the_events() -> Result<(), Box<dyn Error>> {
     let carried = [carried(0, Severity::Blocker)?];
@@ -290,7 +325,8 @@ fn carried_verdicts_change_severity_and_come_first_in_the_events() -> Result<(),
             },
             EventPayload::FindingDisposed {
                 code: Disposition::VerifierRejectedDowngraded,
-                fp: None,
+                // The carried finding's own: `carried(0)` has fingerprint 0.
+                fp: Some("0000000000000000".parse()?),
                 from: Some(Severity::Blocker),
                 to: Some(Severity::Minor),
             },

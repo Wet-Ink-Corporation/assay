@@ -1,0 +1,16 @@
+{
+  "data": {
+    "repository": {
+      "c0": {
+        "oid": "70aa6d748be6f3884e85d294112f9addf83cee59",
+        "authors": {
+          "totalCount": 101,
+          "nodes": [
+            {"user": {"databaseId": 124330161}}
+          ]
+        },
+        "committer": {"user": {"databaseId": 19864447}}
+      }
+    }
+  }
+}

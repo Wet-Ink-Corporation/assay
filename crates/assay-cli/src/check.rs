@@ -15,7 +15,12 @@
 //! is created after the snapshot, so this run does not check it; inside the working tree and
 //! not ignored, it is part of the next snapshot.
 //!
-//! Exit 0 when the decision is `success` or `neutral`, 1 otherwise, 2 when the check cannot run.
+//! Before the snapshot it runs CP1 (#108, 04 §9, `check/weigh_in.rs`): the current branch's
+//! open Weigh-In items from `weighin open --repo --json`, reported after the pipeline's report.
+//! The Weigh-In gate itself still does not run locally.
+//!
+//! Exit 0 when the decision is `success` or `neutral` and no Weigh-In item blocks, 1
+//! otherwise, 2 when the check cannot run.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -34,8 +39,8 @@ use assay_app::{
 use assay_cli::{ForgeObjectsError, ForgePullRequest, ForgeSupervisor};
 use assay_domain::{Conclusion, ContentHash, RunUid};
 use assay_forge::git::{
-    CommitSha, GitEnvironment, GitError, GitLimits, ObjectRepo, Snapshot, TreeLimits, UserDirs,
-    WorkingTree,
+    CommitSha, GitEnvironment, GitError, GitLimits, ObjectRepo, RepositoryHead, Snapshot,
+    TreeLimits, UserDirs, WorkingTree,
 };
 use assay_forge::process::{GroupKiller, KillerError};
 use assay_gates::{
@@ -46,10 +51,12 @@ use assay_runner::{ClaudeHeadless, EnvVarError, HeadlessEnv, Workdir, WorkdirErr
 use tempfile::TempDir;
 
 use self::events::{EventWriteError, JsonlEvents};
+use self::weigh_in::{WeighInCheck, WeighInError};
 use crate::doctor::write_chain;
 
 mod events;
 pub(crate) mod store;
+pub(crate) mod weigh_in;
 
 /// The directory under the git directory that holds local reports: `.git/assay`. Nothing in CI
 /// reads it (`tests/it/check.rs` pins that no workflow and no other module names it).
@@ -84,7 +91,8 @@ const LOCAL_REPO: &str = "local/working-tree";
 pub(crate) struct CheckVariables {
     /// Where the working tree is and how git runs there.
     pub(crate) tree: TreeVariables,
-    /// Every variable, for the gates' allowlist.
+    /// Every variable, for the gates' allowlist and CP1's `weighin` (`ASSAY_WEIGHIN`, and the
+    /// few it passes on).
     pub(crate) vars: Vec<(OsString, OsString)>,
 }
 
@@ -105,6 +113,8 @@ pub(crate) struct TreeVariables {
 pub(crate) enum CheckCliError {
     /// The arguments are not `--local` followed by distinct known options.
     Usage,
+    /// `assay pre-push` was given arguments.
+    PrePushUsage,
     /// The base branch is not a plain branch name.
     BaseName(String),
     /// `refs/remotes/origin/<branch>` names no commit.
@@ -133,6 +143,8 @@ pub(crate) enum CheckCliError {
     Commit(ParseCommitIdError),
     /// The changed files could not be listed.
     Objects(ForgeObjectsError),
+    /// CP1 could not read the branch's Weigh-In items.
+    WeighIn(WeighInError),
     /// The contract schemas did not compile.
     Contracts(ContractSchemaError),
     /// The `--events` path already exists.
@@ -153,6 +165,10 @@ impl fmt::Display for CheckCliError {
             Self::Usage => f.write_str(
                 "usage: assay check --local [--base <branch>] [--claude <program>] \
                  [--events <path|->], run from the repository root",
+            ),
+            Self::PrePushUsage => f.write_str(
+                "usage: assay pre-push, run from the repository root (plugin/hooks/pre-push runs \
+                 it)",
             ),
             Self::BaseName(name) => write!(f, "the base {name:?} is not a plain branch name"),
             Self::NoBase(name) => write!(
@@ -178,6 +194,7 @@ impl fmt::Display for CheckCliError {
             Self::Env(source) => write_chain(f, source),
             Self::Commit(source) => write_chain(f, source),
             Self::Objects(source) => write_chain(f, source),
+            Self::WeighIn(source) => write!(f, "{source}"),
             Self::Contracts(source) => write_chain(f, source),
             Self::EventsExist(path) => write!(
                 f,
@@ -204,6 +221,7 @@ impl std::error::Error for CheckCliError {}
 /// could not be removed, and where the terminal report goes.
 pub(crate) struct Checked {
     pub(crate) report: LocalReport,
+    pub(crate) weigh_in: WeighInCheck,
     pub(crate) path: PathBuf,
     pub(crate) scratch_left: Option<ScratchLeft>,
     pub(crate) report_to: ReportTo,
@@ -237,20 +255,24 @@ impl fmt::Display for ScratchLeft {
 }
 
 impl Checked {
-    /// Whether the decision lets the change merge.
+    /// Whether the decision lets the change merge and no Weigh-In item blocks the push.
     pub(crate) const fn passed(&self) -> bool {
-        matches!(
-            self.report.decision().conclusion,
-            Conclusion::Success | Conclusion::Neutral
-        )
+        passes(self.report.decision().conclusion, &self.weigh_in)
     }
 
-    /// Writes the terminal report and the report file's path.
+    /// Writes the terminal report, the report file's path and the Weigh-In section.
     pub(crate) fn write(&self, mut out: impl Write) -> io::Result<()> {
         out.write_all(self.report.render().as_bytes())?;
         writeln!(out, "report: {}", self.path.display())?;
+        out.write_all(self.weigh_in.render().as_bytes())?;
         out.flush()
     }
+}
+
+/// Whether a check with `conclusion` and `weigh_in` passes: the decision lets the change merge
+/// and no Weigh-In item blocks the push.
+const fn passes(conclusion: Conclusion, weigh_in: &WeighInCheck) -> bool {
+    matches!(conclusion, Conclusion::Success | Conclusion::Neutral) && !weigh_in.blocks_push()
 }
 
 /// The parsed arguments.
@@ -400,6 +422,7 @@ pub(crate) fn run(
     } = open_worktree(tree)?;
     let head = worktree.resolve("HEAD").map_err(CheckCliError::Git)?;
     let base = resolve_base(&worktree, &args.base)?;
+    let weigh_in = weigh_in_of(&worktree, &variables.vars, &killer)?;
     let scratch = Scratch::new()?;
     let (repo, snapshot) = scratch.snapshot(&worktree, &head, git)?;
     // Opened after the snapshot, so a stream written inside the working tree is not part of
@@ -445,10 +468,45 @@ pub(crate) fn run(
         })?;
     Ok(Checked {
         report,
+        weigh_in,
         path,
         scratch_left: scratch.close(),
         report_to,
     })
+}
+
+/// CP1 on `worktree`, whose branch it reads.
+fn weigh_in_of(
+    worktree: &WorkingTree,
+    vars: &[(OsString, OsString)],
+    killer: &GroupKiller,
+) -> Result<WeighInCheck, CheckCliError> {
+    weigh_in::run(worktree.root(), || worktree.branch(), vars, killer)
+        .map_err(CheckCliError::WeighIn)
+}
+
+/// `assay pre-push` (#108): CP1 alone on the working tree at the working directory, for the
+/// pre-push hook. No snapshot, gate or model runs, so a push is blocked only by a blocking
+/// Weigh-In item, or a weighin it cannot read (04 §9), never by the rest of the check.
+///
+/// The repository is opened with `RepositoryHead`, which reads only the git directory and the
+/// branch: a sparse or skip-worktree tree, which local mode's snapshot refuses, still pushes.
+pub(crate) fn pre_push(
+    mut args: impl Iterator<Item = OsString>,
+    variables: CheckVariables,
+) -> Result<WeighInCheck, CheckCliError> {
+    if args.next().is_some() {
+        return Err(CheckCliError::PrePushUsage);
+    }
+    let root = variables.tree.cwd.map_err(CheckCliError::Cwd)?;
+    let killer = GroupKiller::system().map_err(CheckCliError::Killer)?;
+    // Without a `PATH` git is not found, and opening the repository fails with that error.
+    let path = variables.tree.path.unwrap_or_default();
+    // A cheap handle (the `kill` program's path), owned by the git runner.
+    let git = GitEnvironment::new(path, killer.clone());
+    let head = RepositoryHead::open(root, git, GitLimits::default()).map_err(CheckCliError::Git)?;
+    weigh_in::run(head.root(), || head.branch(), &variables.vars, &killer)
+        .map_err(CheckCliError::WeighIn)
 }
 
 /// The developer's working tree, opened read-only, with the git environment and the
@@ -702,5 +760,40 @@ where
             return Err(LocalGateError::NotLocal);
         }
         self.exec.run(plugin, job).map_err(LocalGateError::Exec)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assay_app::checkpoint;
+
+    use super::weigh_in::NotChecked;
+    use super::*;
+
+    /// weighin 0.9.0's recorded `open --repo --json`: `feat-x` has a blocking item, `other`
+    /// only a pending one.
+    const RECORDED: &[u8] =
+        include_bytes!("../../assay-app/tests/fixtures/weigh-in/open-0.9.0.json");
+
+    fn read(branch: &str) -> WeighInCheck {
+        WeighInCheck::Checked(checkpoint(RECORDED, branch).expect("the fixture is read"))
+    }
+
+    #[test]
+    fn a_blocking_item_fails_a_passing_decision() {
+        assert!(!passes(Conclusion::Success, &read("feat-x")));
+        assert!(!passes(Conclusion::Neutral, &read("feat-x")));
+    }
+
+    #[test]
+    fn a_pending_item_or_no_check_leaves_the_decision_to_decide() {
+        for weigh_in in [
+            read("other"),
+            WeighInCheck::NotChecked(NotChecked::NoProgram),
+            WeighInCheck::NotChecked(NotChecked::Detached),
+        ] {
+            assert!(passes(Conclusion::Success, &weigh_in), "{weigh_in:?}");
+            assert!(!passes(Conclusion::Failure, &weigh_in), "{weigh_in:?}");
+        }
     }
 }

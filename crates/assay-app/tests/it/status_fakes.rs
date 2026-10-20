@@ -199,6 +199,7 @@ fn observed(conclusion: CheckConclusion) -> ObservedConclusion {
         CheckConclusion::Success => ObservedConclusion::Success,
         CheckConclusion::Failure => ObservedConclusion::Failure,
         CheckConclusion::Neutral => ObservedConclusion::Neutral,
+        CheckConclusion::Cancelled => ObservedConclusion::Cancelled,
     }
 }
 
