@@ -23,7 +23,7 @@ jobs:
     outputs:
       report-url: ${{ steps.upload-report.outputs.artifact-url }}
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1.8.1 (v7.0.1)
         with:
           fetch-depth: 0       # the lint ratchet diffs against the merge base
           persist-credentials: false
@@ -162,7 +162,7 @@ jobs:
   msrv:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1.8.1 (v7.0.1)
         with:
           persist-credentials: false
       # The MSRV is read from the manifest, so it never drifts from rust-version: the first
@@ -200,7 +200,7 @@ jobs:
     env:
       CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: allow
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1.8.1 (v7.0.1)
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-28
@@ -226,7 +226,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1.8.1 (v7.0.1)
         with:
           persist-credentials: false
       - name: Baseline mode
@@ -249,7 +249,7 @@ jobs:
     env:
       CARGO_BUILD_WARNINGS: warn   # nightly lint churn is not this job's concern
     steps:
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1.8.1 (v7.0.1)
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09-28
