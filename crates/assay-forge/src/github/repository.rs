@@ -6,6 +6,16 @@ use std::str::FromStr;
 /// The longest owner or name GitHub allows.
 const MAX_PART_BYTES: usize = 100;
 
+/// What a github.com remote URL starts with, before `owner/name`.
+const REMOTE_PREFIXES: [&str; 3] = [
+    "https://github.com/",
+    "git@github.com:",
+    "ssh://git@github.com/",
+];
+
+/// The suffix a remote URL may add to the repository's name.
+const GIT_SUFFIX: &str = ".git";
+
 /// A repository as `owner/name`: each part 1 to 100 of `A-Z a-z 0-9 . _ -`, neither `.` nor
 /// `..`, so it never needs encoding and never changes the path it is written into.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -25,6 +35,27 @@ impl Repository {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The repository a git remote URL names: exactly `https://github.com/<owner>/<name>`,
+    /// `git@github.com:<owner>/<name>` or `ssh://git@github.com/<owner>/<name>`, each with an
+    /// optional `.git`. Anything else (another host, a port, credentials, a trailing `/`, a
+    /// deeper path, a name still ending in `.git`) is refused rather than guessed at
+    /// (wi-b5affa).
+    ///
+    /// # Errors
+    ///
+    /// [`ParseRepositoryError`] for any other URL, or an owner or name [`FromStr`] refuses.
+    pub fn from_remote_url(url: &str) -> Result<Self, ParseRepositoryError> {
+        let path = REMOTE_PREFIXES
+            .iter()
+            .find_map(|prefix| url.strip_prefix(prefix))
+            .ok_or(ParseRepositoryError)?;
+        let full_name = path.strip_suffix(GIT_SUFFIX).unwrap_or(path);
+        if full_name.ends_with(GIT_SUFFIX) {
+            return Err(ParseRepositoryError);
+        }
+        full_name.parse()
     }
 
     /// Whether `full_name` (`owner/name`, as GitHub returns it) is this repository; GitHub
@@ -107,6 +138,55 @@ mod tests {
                 text.parse::<Repository>(),
                 Err(ParseRepositoryError),
                 "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_github_remote_url_names_its_repository() {
+        for url in [
+            "https://github.com/acme/widgets",
+            "https://github.com/acme/widgets.git",
+            "git@github.com:acme/widgets.git",
+            "git@github.com:acme/widgets",
+            "ssh://git@github.com/acme/widgets.git",
+        ] {
+            assert_eq!(
+                Repository::from_remote_url(url),
+                Ok(Repository {
+                    owner: "acme".to_owned(),
+                    name: "widgets".to_owned(),
+                }),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_remote_url_that_is_not_plainly_github_is_refused() {
+        for url in [
+            "",
+            "https://github.com/acme/widgets/",
+            "https://github.com/acme/widgets.git.git",
+            "https://github.com/acme",
+            "https://github.com/acme/widgets/tree/main",
+            "https://user@github.com/acme/widgets",
+            "https://github.com:443/acme/widgets",
+            "https://github.com.evil.example/acme/widgets",
+            "https://gitlab.com/acme/widgets",
+            "http://github.com/acme/widgets",
+            "HTTPS://github.com/acme/widgets",
+            "ssh://github.com/acme/widgets",
+            "git@github.com/acme/widgets",
+            "github.com:acme/widgets",
+            "/srv/git/widgets.git",
+            "https://github.com/acme/..",
+            "https://github.com/acme/.git",
+        ] {
+            assert_eq!(
+                Repository::from_remote_url(url),
+                Err(ParseRepositoryError),
+                "{url}"
             );
         }
     }

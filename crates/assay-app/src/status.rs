@@ -14,6 +14,7 @@
 mod document;
 mod fetched_at;
 mod findings;
+mod identities;
 mod local;
 mod ports;
 mod verdict;
@@ -25,6 +26,7 @@ use assay_domain::Rubric;
 use thiserror::Error;
 
 pub use self::fetched_at::{FetchedAt, InvalidFetchedAt};
+pub use self::identities::{BaseIdentitiesError, MAX_IDENTITY_FILE_BYTES, base_identities};
 pub use self::local::{
     LocalStatusError, LocalStatusRequest, StoredLocalReport, is_tree_id, local_status,
 };
@@ -71,6 +73,10 @@ pub enum PullSelector<'a> {
     Number(NonZeroU64),
     /// The one open PR whose head is this branch (the current branch, without `--pr`).
     Branch(&'a str),
+    /// A PR the caller already read with [`read_pull`], reported as read rather than read
+    /// again, so that what the caller read for it (the base identity lists at its base) and
+    /// the status describe the same PR.
+    Read(&'a PullView),
 }
 
 /// How much of each finding to show.
@@ -366,7 +372,7 @@ pub fn status<F: StatusForge, B: BundleSource>(
     if crate::publish::Repository::parse(repository).is_none() {
         return Err(StatusError::Repository);
     }
-    let pull = pull(request, ports.forge)?;
+    let pull = read_pull(request.pull, ports.forge)?;
     let observed = verdict::observe(request, ports, &pull)?;
     let findings = match &observed.decided {
         Some(decided) => findings::findings(request, ports.forge, &pull, decided)?,
@@ -394,13 +400,25 @@ pub fn status<F: StatusForge, B: BundleSource>(
     })
 }
 
-/// The PR `request` names: by number, or the one open PR of the branch. Its head branch must
-/// read as one.
-fn pull<F: StatusForge, B>(
-    request: &StatusRequest<'_>,
+/// The PR `selector` names, read as [`status`] reads it.
+///
+/// That is by number, or the one open PR of the branch (a [`PullSelector::Read`] is taken as
+/// given); its head branch must read as one. Read it first when something else depends on the
+/// PR (its base), then pass it to [`status`] as [`PullSelector::Read`]. `B` is the bundle error
+/// type of the [`status`] call it precedes.
+///
+/// # Errors
+///
+/// [`StatusError::Forge`] when the PR cannot be read, [`StatusError::NoSuchPull`],
+/// [`StatusError::NoOpenPull`] or [`StatusError::AmbiguousBranch`] when it is not found
+/// exactly once, and [`StatusError::Unreadable`] when its head branch does not read.
+pub fn read_pull<F: StatusForge, B>(
+    selector: PullSelector<'_>,
     forge: &F,
 ) -> Result<PullView, StatusError<F::Error, B>> {
-    let pull = match request.pull {
+    let pull = match selector {
+        // The status owns its view of the PR; the caller keeps its own.
+        PullSelector::Read(read) => read.clone(),
         PullSelector::Number(number) => forge
             .pull(number)
             .map_err(|source| StatusError::Forge {

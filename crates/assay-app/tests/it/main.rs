@@ -102,6 +102,8 @@ mod specialists_fakes;
 mod status;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod status_fakes;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod status_identities;
 mod status_local;
 mod status_refusals;
 mod status_refused;

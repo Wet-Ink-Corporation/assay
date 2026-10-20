@@ -96,6 +96,9 @@ pub enum GitOperation {
     ConfigBool,
     /// `git ls-files -t -z`: a developer's index with each entry's tag (`S` is skip-worktree).
     ListIndex,
+    /// `git config --null --get-all`: every value of one setting in a developer's repository
+    /// config alone (`assay status` reads `remote.origin.url`).
+    ConfigValue,
     /// `git push --porcelain` of one ref to an https remote (the ledger's lease refs, 06 §1),
     /// with no redirect followed.
     Push,
@@ -143,6 +146,7 @@ impl GitOperation {
             Self::ConfigPath => &["config", "--null", "--path", "--get"],
             Self::ConfigBool => &["config", "--null", "--bool", "--get"],
             Self::ListIndex => &["ls-files", "-t", "-z"],
+            Self::ConfigValue => &["config", "--null", "--get-all"],
             Self::Push | Self::PushLocal => &[
                 "push",
                 "--porcelain",
@@ -222,7 +226,7 @@ impl fmt::Display for GitOperation {
             Self::WriteTree => "write-tree",
             Self::CommitTree => "commit-tree",
             Self::CheckoutIndex => "checkout-index",
-            Self::ConfigPath | Self::ConfigBool => "config",
+            Self::ConfigPath | Self::ConfigBool | Self::ConfigValue => "config",
             Self::ListIndex => "ls-files",
         };
         f.write_str(name)
@@ -413,7 +417,7 @@ mod tests {
     use crate::process::{Limits, run};
 
     /// Every operation.
-    const ALL: [GitOperation; 24] = [
+    const ALL: [GitOperation; 25] = [
         GitOperation::Init,
         GitOperation::Fetch,
         GitOperation::VerifyCommit,
@@ -436,6 +440,7 @@ mod tests {
         GitOperation::ConfigPath,
         GitOperation::ConfigBool,
         GitOperation::ListIndex,
+        GitOperation::ConfigValue,
         GitOperation::Push,
         GitOperation::PushLocal,
     ];
@@ -745,7 +750,7 @@ mod tests {
     ];
 
     /// Each operation's subcommand and fixed flags, in [`ALL`]'s order.
-    const LEADING: [(GitOperation, &[&str]); 24] = [
+    const LEADING: [(GitOperation, &[&str]); 25] = [
         (GitOperation::Init, &["init", "--bare", "--quiet"]),
         (
             GitOperation::Fetch,
@@ -803,6 +808,10 @@ mod tests {
             &["config", "--null", "--bool", "--get"],
         ),
         (GitOperation::ListIndex, &["ls-files", "-t", "-z"]),
+        (
+            GitOperation::ConfigValue,
+            &["config", "--null", "--get-all"],
+        ),
         (GitOperation::Push, PUSH_ARGS),
         (GitOperation::PushLocal, PUSH_ARGS),
     ];

@@ -35,6 +35,8 @@ mod release_workflow;
 #[cfg(unix)] // process groups, through `ForgeSupervisor`
 mod self_gate;
 mod status;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod status_pr;
 #[cfg(unix)] // process groups and Unix file modes
 mod supervisor;
 #[cfg(all(test, unix))] // shared helpers (TST-14); writes Unix executables

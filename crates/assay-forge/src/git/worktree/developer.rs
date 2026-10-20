@@ -117,7 +117,9 @@ fn default_excludes(user: &UserDirs) -> Result<Option<PathBuf>, &'static str> {
 }
 
 /// `result`, with git config's "not set" exit (1) read as `None`.
-fn unset_is_none(result: Result<Captured, GitError>) -> Result<Option<Captured>, GitError> {
+pub(super) fn unset_is_none(
+    result: Result<Captured, GitError>,
+) -> Result<Option<Captured>, GitError> {
     match result {
         Ok(captured) => Ok(Some(captured)),
         Err(GitError::Failed { status, .. }) if status.code() == Some(1) => Ok(None),
@@ -126,7 +128,7 @@ fn unset_is_none(result: Result<Captured, GitError>) -> Result<Option<Captured>,
 }
 
 /// The one NUL-terminated, non-empty value `git config --null --get` printed.
-fn one_value(stdout: &[u8], operation: GitOperation) -> Result<&[u8], GitError> {
+pub(super) fn one_value(stdout: &[u8], operation: GitOperation) -> Result<&[u8], GitError> {
     stdout
         .strip_suffix(b"\0")
         .filter(|value| !value.is_empty() && !value.contains(&0))

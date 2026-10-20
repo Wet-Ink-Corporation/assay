@@ -178,6 +178,8 @@ pub enum Operation {
     CreateLedgerRef,
     /// Listing the publish lock refs of the ledger repository.
     ListLedgerRefs,
+    /// Listing a workflow run's artifacts.
+    ListArtifacts,
 }
 
 impl fmt::Display for Operation {
@@ -218,6 +220,7 @@ impl fmt::Display for Operation {
             Self::ReadLedgerRef => "read ledger ref",
             Self::CreateLedgerRef => "create ledger ref",
             Self::ListLedgerRefs => "list ledger refs",
+            Self::ListArtifacts => "list run artifacts",
         })
     }
 }

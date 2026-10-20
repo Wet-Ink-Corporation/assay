@@ -9,7 +9,8 @@ use std::num::NonZeroU64;
 
 use assay_app::{
     CommitId, ContractValidator, Detail, FetchedAt, Identities, ObservedConclusion, PullSelector,
-    StatusError, StatusPorts, StatusReport, StatusRepository, StatusRequest, status,
+    StatusError, StatusPorts, StatusReport, StatusRepository, StatusRequest, StatusStep, read_pull,
+    status,
 };
 use assay_domain::{
     Deferral, Disposition, FindingDisposition, GateConclusion, GateFinding, GateOutcome,
@@ -48,13 +49,13 @@ pub(crate) const COMMENT: &str = "<!-- assay-finding 00000000000000ab -->\n\
      `/assay dismiss 00000000000000ab <reason>`.";
 
 /// What a test asks `status`.
-pub(crate) struct Ask {
-    pub(crate) pull: PullSelector<'static>,
+pub(crate) struct Ask<'a> {
+    pub(crate) pull: PullSelector<'a>,
     pub(crate) local: Option<CommitId>,
     pub(crate) detail: Detail,
 }
 
-impl Ask {
+impl Ask<'static> {
     /// PR 42 by number, no local checkout, without bodies.
     pub(crate) const fn new() -> Self {
         Self {
@@ -69,7 +70,7 @@ impl Ask {
 /// owner and user 2 an agent.
 pub(crate) fn report(
     github: &FakeGitHub,
-    ask: &Ask,
+    ask: &Ask<'_>,
 ) -> Result<Result<StatusReport, StatusError<FakeError, FakeError>>, Box<dyn Error>> {
     report_with(github, ask, &rubric_v1()?)
 }
@@ -77,7 +78,7 @@ pub(crate) fn report(
 /// [`report`] under `rubric`.
 pub(crate) fn report_with(
     github: &FakeGitHub,
-    ask: &Ask,
+    ask: &Ask<'_>,
     rubric: &Rubric,
 ) -> Result<Result<StatusReport, StatusError<FakeError, FakeError>>, Box<dyn Error>> {
     report_as(github, ask, rubric, REPO)
@@ -93,7 +94,7 @@ pub(crate) fn report_named(
 
 fn report_as(
     github: &FakeGitHub,
-    ask: &Ask,
+    ask: &Ask<'_>,
     rubric: &Rubric,
     name: &str,
 ) -> Result<Result<StatusReport, StatusError<FakeError, FakeError>>, Box<dyn Error>> {
@@ -125,7 +126,7 @@ fn report_as(
 }
 
 /// The status document `github` gives for `ask`, parsed.
-pub(crate) fn document(github: &FakeGitHub, ask: &Ask) -> Result<Value, Box<dyn Error>> {
+pub(crate) fn document(github: &FakeGitHub, ask: &Ask<'_>) -> Result<Value, Box<dyn Error>> {
     Ok(serde_json::from_slice(report(github, ask)??.json())?)
 }
 
@@ -140,7 +141,7 @@ fn golden(name: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 /// Asserts `github` gives exactly the golden `name` for `ask`.
 pub(crate) fn assert_golden(
     github: &FakeGitHub,
-    ask: &Ask,
+    ask: &Ask<'_>,
     name: &str,
 ) -> Result<(), Box<dyn Error>> {
     let json = report(github, ask)??.json().to_vec();
@@ -305,6 +306,25 @@ fn a_budget_deferred_pending_verdict_matches_its_golden() -> Result<(), Box<dyn 
 #[test]
 fn a_pr_without_a_check_matches_its_golden() -> Result<(), Box<dyn Error>> {
     assert_golden(&FakeGitHub::new(), &Ask::new(), "no-check")
+}
+
+#[test]
+fn a_pr_read_first_is_reported_without_reading_it_again() -> Result<(), Box<dyn Error>> {
+    let github = FakeGitHub::new();
+    let pull = read_pull::<_, FakeError>(PullSelector::Branch(BRANCH), &github)?;
+    assert_eq!((pull.number.get(), pull.base_ref.as_str()), (42, "main"));
+    let mut unreadable = FakeGitHub::new();
+
+    for step in [StatusStep::Pull, StatusStep::OpenPulls] {
+        unreadable.failing = Some(step);
+        let read = Ask {
+            pull: PullSelector::Read(&pull),
+            ..Ask::new()
+        };
+
+        assert_golden(&unreadable, &read, "no-check")?;
+    }
+    Ok(())
 }
 
 #[test]

@@ -1,5 +1,6 @@
 //! The production [`Transport`]: one `gh api --include` process per request (#273, option B of
-//! wi-258667).
+//! wi-258667), and `gh run download` for a run's artifact (wi-6b26d6), with the same
+//! environment and working directory into a scratch directory the transport owns.
 //!
 //! This crate decides everything about the call (program, arguments, environment, working
 //! directory, stdin, limits) and reads what gh wrote; a [`GhRunner`] only runs it. `assay-cli`
@@ -7,6 +8,7 @@
 //! runner, so the git constructor stays the only process this crate creates
 //! (`tests/it/single_constructor.rs`).
 
+mod download;
 mod environment;
 mod reply;
 
@@ -14,7 +16,7 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
@@ -22,8 +24,10 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 use super::transport::{MAX_RESPONSE_BYTES, Request, Response, Transport};
-use crate::process::{Captured, Limits, ProcessError};
+use crate::process::{Captured, DirectoryCap, Limits, ProcessError};
 
+pub(crate) use download::{Downloaded, Wanted};
+pub use download::{GH_DOWNLOAD_TIMEOUT, GhDownloadError};
 pub use environment::GhEnvironment;
 
 /// A request's default deadline, from start until gh's process group is killed.
@@ -80,11 +84,11 @@ impl fmt::Debug for GhToken {
     }
 }
 
-/// One `gh api` process, as [`GhApi`] decided it.
+/// One `gh` process (`gh api`, `gh run download`), as [`GhApi`] decided it.
 ///
 /// Run `program` with exactly `args`, `env` (nothing inherited), `cwd` and `stdin`, under
-/// `limits`. Its `Debug` shows the variables' names, never their values (the token, a proxy's
-/// credentials).
+/// `limits`, and kill it once the tree under `directory` passes its cap. Its `Debug` shows the
+/// variables' names, never their values (the token, a proxy's credentials).
 #[derive(Clone, Copy)]
 pub struct GhCall<'a> {
     /// The absolute path of gh.
@@ -99,6 +103,10 @@ pub struct GhCall<'a> {
     pub stdin: &'a [u8],
     /// Its timeout and output cap.
     pub limits: Limits,
+    /// What it may write under the directory it extracts into (`gh run download`), or `None`
+    /// when it writes no files (`gh api`). Run it with
+    /// [`process::run_capped`](crate::process::run_capped).
+    pub directory: Option<DirectoryCap<'a>>,
 }
 
 impl fmt::Debug for GhCall<'_> {
@@ -111,20 +119,21 @@ impl fmt::Debug for GhCall<'_> {
             .field("cwd", &self.cwd)
             .field("stdin_bytes", &self.stdin.len())
             .field("limits", &self.limits)
+            .field("directory", &self.directory)
             .finish()
     }
 }
 
 /// Runs a [`GhCall`] in its own process group within its limits, the group killed and shown
-/// gone on a timeout or an over-cap output (H-13).
+/// gone on a timeout, an over-cap output or a tree past its [`GhCall::directory`] cap (H-13).
 pub trait GhRunner {
     /// Runs `call` and returns how gh exited and what it wrote.
     ///
     /// # Errors
     ///
-    /// [`ProcessError`] when gh could not be started or observed, ran past its timeout or
-    /// wrote past its cap; [`ProcessError::Kill`] means its group may still run (abort the
-    /// job).
+    /// [`ProcessError`] when gh could not be started or observed, ran past its timeout, wrote
+    /// past its output cap or past its directory cap ([`ProcessError::DirectoryTooLarge`]);
+    /// [`ProcessError::Kill`] means its group may still run (abort the job).
     fn run(&self, call: &GhCall<'_>) -> Result<Captured, ProcessError>;
 }
 
@@ -191,12 +200,16 @@ pub struct GhApi<R> {
     token: GhToken,
     environment: GhEnvironment,
     config: TempDir,
+    /// `<config>/tmp`, gh's `TMPDIR`: a temporary file gh leaves behind when it is killed
+    /// (`gh run download`'s zip) stays inside the directory [`close`](Self::close) removes.
+    tmp: PathBuf,
     timeout: Duration,
 }
 
 impl<R> GhApi<R> {
     /// gh at the absolute path `program`, run by `runner` with `token` and the variables of
-    /// `environment`, in a new scratch configuration directory.
+    /// `environment`, in a new scratch configuration directory, with a mode-0700 `tmp/` inside
+    /// it as gh's `TMPDIR`.
     ///
     /// Each request has [`GH_TIMEOUT`] unless [`with_timeout`](Self::with_timeout) sets
     /// another. Dropping the transport removes the directory too; [`close`](Self::close)
@@ -205,7 +218,7 @@ impl<R> GhApi<R> {
     /// # Errors
     ///
     /// [`GhSetupError::RelativeProgram`] when `program` is not absolute,
-    /// [`GhSetupError::ConfigDir`] when the directory cannot be created.
+    /// [`GhSetupError::ConfigDir`] when the directory or its `tmp/` cannot be created.
     pub fn new(
         runner: R,
         program: impl Into<PathBuf>,
@@ -221,12 +234,18 @@ impl<R> GhApi<R> {
             .permissions(fs::Permissions::from_mode(0o700))
             .tempdir()
             .map_err(GhSetupError::ConfigDir)?;
+        let tmp = config.path().join("tmp");
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&tmp)
+            .map_err(GhSetupError::ConfigDir)?;
         Ok(Self {
             runner,
             program,
             token,
             environment,
             config,
+            tmp,
             timeout: GH_TIMEOUT,
         })
     }
@@ -244,6 +263,22 @@ impl<R> GhApi<R> {
     /// The I/O error when it cannot be removed.
     pub fn close(self) -> io::Result<()> {
         self.config.close()
+    }
+
+    /// gh's whole environment, the same for every call: the token, the fixed switches, the
+    /// scratch configuration directory and its `tmp/`, then what [`GhEnvironment`] passes on.
+    fn env(&self) -> Vec<(&'static str, &OsStr)> {
+        let mut env = vec![
+            ("GH_TOKEN", OsStr::new(&self.token.0)),
+            ("GH_HOST", OsStr::new("github.com")),
+            ("GH_PROMPT_DISABLED", OsStr::new("1")),
+            ("NO_COLOR", OsStr::new("1")),
+            ("GH_NO_UPDATE_NOTIFIER", OsStr::new("1")),
+            ("GH_CONFIG_DIR", self.config.path().as_os_str()),
+            ("TMPDIR", self.tmp.as_os_str()),
+        ];
+        env.extend(self.environment.vars());
+        env
     }
 }
 
@@ -274,26 +309,18 @@ impl<R: GhRunner> Transport for GhApi<R> {
             args.extend(["--header", CONTENT_TYPE, "--input", "-"]);
         }
         args.extend(["--", path]);
-        let config = self.config.path();
-        let mut env = vec![
-            ("GH_TOKEN", OsStr::new(&self.token.0)),
-            ("GH_HOST", OsStr::new("github.com")),
-            ("GH_PROMPT_DISABLED", OsStr::new("1")),
-            ("NO_COLOR", OsStr::new("1")),
-            ("GH_NO_UPDATE_NOTIFIER", OsStr::new("1")),
-            ("GH_CONFIG_DIR", config.as_os_str()),
-        ];
-        env.extend(self.environment.vars());
+        let env = self.env();
         let call = GhCall {
             program: &self.program,
             args: &args,
             env: &env,
-            cwd: config,
+            cwd: self.config.path(),
             stdin: request.body.unwrap_or_default(),
             limits: Limits {
                 timeout: self.timeout,
                 max_output_bytes: GH_OUTPUT_CAP,
             },
+            directory: None,
         };
         let captured = self.runner.run(&call).map_err(GhError::Run)?;
         read(captured, path == "graphql", &self.token)

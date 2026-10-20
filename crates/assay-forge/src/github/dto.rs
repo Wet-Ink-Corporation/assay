@@ -142,6 +142,14 @@ pub(crate) struct RepoDto {
     pub(crate) full_name: String,
 }
 
+/// The repository itself (`GET repos/<owner>/<name>`), as `assay status` reads it.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RepositoryDto {
+    pub(crate) id: u64,
+    pub(crate) full_name: String,
+    pub(crate) default_branch: String,
+}
+
 /// The authenticated user.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ViewerDto {

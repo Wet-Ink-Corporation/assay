@@ -6,8 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assay_app::{
-    Contract, ContractValidator, CorpusEntry, CorpusEntryKind, GoldenReplay, SELF_GATE,
-    replay_golden,
+    Contract, ContractValidator, CorpusEntry, CorpusEntryKind, GoldenReplay, RubricError,
+    SELF_GATE, read_rubric, replay_golden,
 };
 use assay_domain::{
     DecisionInputs, FindingsDocument, GateConclusion, Rubric, Source, SourceKind, decide,
@@ -501,4 +501,21 @@ fn passing_and_failing_documents_satisfy_the_findings_schema() -> TestResult {
         "a hostile name is reduced and clipped to the title cap"
     );
     Ok(())
+}
+
+#[test]
+fn the_shipped_rubric_is_read_for_a_binary_that_embeds_it() -> TestResult {
+    let rubric = read_rubric(&recorded_rubric()?)?;
+
+    assert_eq!(rubric.version(), "1");
+    Ok(())
+}
+
+#[test]
+fn a_rubric_that_does_not_parse_is_refused_with_its_line() {
+    let refused = read_rubric(b"version = \"1\"\nmajors_block_threshold = \"three\"\n");
+    let not_utf8 = read_rubric(b"version = \"1\"\n\xff\n");
+
+    assert_eq!(refused.err(), Some(RubricError { line: 2 }));
+    assert_eq!(not_utf8.err(), Some(RubricError { line: 2 }));
 }
