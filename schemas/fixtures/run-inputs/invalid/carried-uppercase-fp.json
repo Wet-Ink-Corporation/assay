@@ -20,5 +20,20 @@
       }
     ],
     "omitted": []
+  },
+  "github": {
+    "lists": {
+      "owners": [],
+      "approvers": [],
+      "maintainers": [{ "id": 124330161, "login": "Ryan-Britton" }],
+      "agents": [{ "id": 124330161, "login": "Ryan-Britton" }]
+    },
+    "author": 124330161,
+    "head_sha": "70aa6d748be6f3884e85d294112f9addf83cee59",
+    "range": { "status": "within", "users": [124330161], "unattributed": false },
+    "pushers": [124330161],
+    "push_clock": "2026-10-18T21:30:00Z",
+    "approvals": [],
+    "commands": []
   }
 }

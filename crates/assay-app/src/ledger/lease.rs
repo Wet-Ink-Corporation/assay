@@ -18,7 +18,9 @@ mod slot;
 mod take;
 
 pub use error::LeaseError;
-pub use grant::{Consumed, GrantKey, Granted, RetryGrant, consume_grant, grant_retry};
+pub use grant::{
+    Consumed, GrantKey, Granted, RetryGrant, consume_grant, grant_retry, pending_grant,
+};
 pub use lock::{
     LOCK_TTL, LockAcquired, LockHold, LockLease, LockRequest, acquire_lock, release_lock,
 };

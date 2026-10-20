@@ -11,11 +11,13 @@ use super::ports::{
     EvidenceEntry, EvidencePointer, EvidenceRecord, LlmEvidence, PublishLedger, VerdictForge,
 };
 use super::render::{self, Facts, Projection, SUMMARY_MARKER, Summary};
+use super::waivers;
 use super::{
     Decided, ForgeStep, PersistFailure, PublishError, PublishOutcome, PublishPorts, Published,
     Stale, Target, Unlock, Written,
 };
 use crate::config::Sha256Digest;
+use crate::eligibility::IgnoredApproval;
 
 /// What one writer publishes.
 pub(super) enum Pending<'w> {
@@ -175,6 +177,7 @@ fn upload<F, L: PublishLedger, B: BundleStore>(
         decision,
         events: decided.events,
         carry: decided.carry,
+        github: decided.github,
     })
     .map_err(PersistFailure::Bundle)?;
     let artifact = &decided.run.record().bundle_artifact;
@@ -311,6 +314,8 @@ fn decided_update<L, B>(
         Some(_) => None,
         None => persist.map(PersistFailure::code),
     };
+    let ignored_approvals: Vec<IgnoredApproval> = decided.github.ignored_approvals().collect();
+    let unapplied_waivers = waivers::unapplied(decided.rubric, decided.inputs, decision);
     let summary = render::summary(&Summary {
         conclusion,
         reasons: &reasons,
@@ -321,6 +326,8 @@ fn decided_update<L, B>(
             degraded: &decision.degraded,
             cost: decided.cost,
             reasons_digest: decision.reasons_digest(),
+            ignored_approvals: &ignored_approvals,
+            unapplied_waivers: &unapplied_waivers,
         }),
         warning,
     });

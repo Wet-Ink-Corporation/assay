@@ -38,6 +38,16 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
                         .as_deref()
                         .map(|sha| dto::commit(operation, sha))
                         .transpose()?,
+                    submitted_at: review
+                        .submitted_at
+                        .as_deref()
+                        .map(|at| {
+                            at.parse().map_err(|_not_utc| ForgeError::Malformed {
+                                operation,
+                                detail: "a review's submitted_at is not a UTC date-time",
+                            })
+                        })
+                        .transpose()?,
                 })
             })
             .collect()

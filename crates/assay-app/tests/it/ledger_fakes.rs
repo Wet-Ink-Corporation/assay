@@ -4,6 +4,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroU64;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use assay_app::{
     CommitId, CostKind, CostRecord, CostRole, FileVersion, Ledger, LedgerFile, LedgerPath,
@@ -31,7 +33,16 @@ pub(crate) struct MemoryLedger {
     versions: Cell<u64>,
     writes: RefCell<Vec<WriteCall>>,
     rivals: RefCell<VecDeque<Rival>>,
+    staged: RefCell<Vec<Staged>>,
     down: Cell<bool>,
+}
+
+/// A write another run makes once `trigger` is set, seen by our next read: a write that lands
+/// while we wait on something else, such as a slot.
+struct Staged {
+    trigger: Arc<AtomicBool>,
+    path: String,
+    contents: Vec<u8>,
 }
 
 /// What another writer does just before one of our writes lands.
@@ -74,6 +85,41 @@ impl MemoryLedger {
     pub(crate) fn rival_always(self) -> Self {
         self.rivals.borrow_mut().push_back(Rival::Always);
         self
+    }
+
+    /// Once `trigger` is set, another writer replaces `path` with `contents`, seen by the next
+    /// read or write.
+    pub(crate) fn staging(
+        self,
+        trigger: Arc<AtomicBool>,
+        path: &LedgerPath,
+        contents: &[u8],
+    ) -> Self {
+        self.staged.borrow_mut().push(Staged {
+            trigger,
+            path: path.as_str().to_owned(),
+            contents: contents.to_vec(),
+        });
+        self
+    }
+
+    /// Lands every staged write whose trigger is set.
+    fn land_staged(&self) {
+        let landed: Vec<Staged> = {
+            let mut staged = self.staged.borrow_mut();
+            let (ready, waiting) = staged
+                .drain(..)
+                // The trigger is a one-way flag set and read on this thread.
+                .partition(|write| write.trigger.load(Ordering::Relaxed));
+            *staged = waiting;
+            ready
+        };
+        for write in landed {
+            let version = self.next_version();
+            self.files
+                .borrow_mut()
+                .insert(write.path, (version, write.contents));
+        }
     }
 
     /// Every read and write fails.
@@ -132,6 +178,7 @@ impl Ledger for MemoryLedger {
         if self.down.get() {
             return Err(Down);
         }
+        self.land_staged();
         Ok(self
             .files
             .borrow()
@@ -151,6 +198,7 @@ impl Ledger for MemoryLedger {
         if self.down.get() {
             return Err(Down);
         }
+        self.land_staged();
         self.rival(path.as_str());
         let current = self
             .files

@@ -3,7 +3,7 @@
 
 use assay_app::{
     CommentId, Forge, Reaction, ReactionContent, ReactionSubject, Review, ReviewCommentId,
-    ReviewState, TimelineEvent, TimelineKind, UserId,
+    ReviewState, TimelineEvent, TimelineKind, Timestamp, UserId,
 };
 use assay_forge::github::{ForgeError, MAX_LIST_ITEMS, MAX_RESPONSE_BYTES, Method, Operation};
 use serde_json::json;
@@ -103,13 +103,14 @@ fn a_response_over_the_cap_is_refused() {
 }
 
 #[test]
-fn reviews_keep_state_reviewer_and_commit() {
+fn reviews_keep_state_reviewer_commit_and_submission_time() {
     let recorded = Recorded::default().ok(
         Method::Get,
         &path("pulls/268/reviews?per_page=100"),
         fixture("reviews.json"),
     );
     let waits = Waits::default();
+    let submitted: Timestamp = "2026-10-18T21:40:56Z".parse().expect("a fixed time");
 
     let reviews = github(&recorded, &waits).reviews(pr());
 
@@ -121,20 +122,73 @@ fn reviews_keep_state_reviewer_and_commit() {
                 reviewer: Some(UserId(id(165_735_046))),
                 state: ReviewState::Commented,
                 commit: Some(head()),
+                submitted_at: Some(submitted),
             },
             Review {
                 id: id(5_565_100_719),
                 reviewer: Some(owner()),
                 state: ReviewState::Approved,
                 commit: Some(head()),
+                submitted_at: Some(submitted),
             },
             Review {
                 id: id(5_565_100_720),
                 reviewer: None,
                 state: ReviewState::ChangesRequested,
                 commit: Some(parent()),
+                submitted_at: Some(submitted),
             },
         ]
+    );
+}
+
+#[test]
+fn a_pending_review_has_no_submission_time() {
+    let body = json!([{
+        "id": 9,
+        "user": { "id": 124_330_161, "type": "User" },
+        "state": "PENDING",
+        "commit_id": null,
+    }]);
+    let recorded = Recorded::default().ok(
+        Method::Get,
+        &path("pulls/268/reviews?per_page=100"),
+        body.to_string().into_bytes(),
+    );
+    let waits = Waits::default();
+
+    let reviews = github(&recorded, &waits).reviews(pr());
+
+    assert_eq!(
+        reviews
+            .expect("listed")
+            .first()
+            .map(|review| review.submitted_at),
+        Some(None)
+    );
+}
+
+#[test]
+fn a_submission_time_that_is_not_utc_is_refused() {
+    let body = json!([{
+        "id": 9,
+        "user": { "id": 124_330_161, "type": "User" },
+        "state": "APPROVED",
+        "commit_id": null,
+        "submitted_at": "2026-10-18T21:40:56+01:00",
+    }]);
+    let recorded = Recorded::default().ok(
+        Method::Get,
+        &path("pulls/268/reviews?per_page=100"),
+        body.to_string().into_bytes(),
+    );
+    let waits = Waits::default();
+
+    let reviews = github(&recorded, &waits).reviews(pr());
+
+    assert!(
+        matches!(reviews, Err(ForgeError::Malformed { detail, .. }) if detail == "a review's submitted_at is not a UTC date-time"),
+        "{reviews:?}"
     );
 }
 

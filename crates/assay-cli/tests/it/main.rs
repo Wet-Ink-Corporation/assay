@@ -13,6 +13,8 @@ mod check_weigh_in;
 mod doctor;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod doctor_prerequisites;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod doctor_profile;
 #[cfg(unix)] // process groups and Unix file modes
 mod exec_surface;
 #[cfg(unix)] // drives a bash script and sets Unix file modes

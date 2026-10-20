@@ -3,12 +3,15 @@
 //! the observed built-ins and the pinned allowlist, a loaded or named mod (the mod canary) and a
 //! followed AGENTS.md/CLAUDE.md instruction (the AGENTS.md canary).
 //!
-//! The token's recorded expiry is judged by [`token_expiry_warning`] (05 §5, #93).
+//! The profile checks (flag verification, the hook and fence canaries, #84) are
+//! [`verify_profile`]. The token's recorded expiry is judged by [`token_expiry_warning`]
+//! (05 §5, #93).
 //!
 //! Every check fails closed: a check that cannot see what it needs (an unreadable init, a call
 //! that did not answer, a canary that planted nothing) fails rather than passes.
 
 mod prerequisites;
+mod profile;
 mod token_expiry;
 
 use std::fmt;
@@ -31,6 +34,12 @@ pub use prerequisites::{
     PrerequisiteReport, PrerequisiteResult, RequiredCheck, RequiredChecks, Rule, Ruleset,
     RulesetId, RulesetTarget, WorkflowError, WorkflowPermissions, YamlError, YamlRefusal,
     prerequisites, read_base,
+};
+pub use profile::{
+    FENCE_TARGET, FlagResult, HeadlessFlag, MIN_CLI_VERSION, PROFILE_SCHEMA, PermissionDenial,
+    ProfileCheck, ProfileContext, ProfileError, ProfileFailure, ProfilePorts, ProfileProbe,
+    ProfileReport, ProfileResult, ProfileRun, ProfileVerdict, ProfileWords, ReplyField,
+    verify_profile,
 };
 pub use token_expiry::{EXPIRY_WARNING_DAYS, ExpiryWarning, token_expiry_warning};
 
