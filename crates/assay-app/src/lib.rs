@@ -13,6 +13,7 @@ mod contract;
 mod coordinate;
 mod decide;
 mod doctor;
+mod eligibility;
 mod eval;
 mod events;
 mod finding_text;
@@ -62,8 +63,9 @@ pub use check::{
 };
 pub use config::{
     Adapter, Argv, AssaySettings, BuiltinAllowlist, BuiltinKind, BuiltinsError, CommitId,
-    ConfigError, DEFAULT_TIMEOUT_SECS, ExactVersion, GateName, GlobsConfigError,
-    MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS, MAX_TIMEOUT_SECS, ParseCommitIdError, ParseDigestError,
+    ConfigError, DEFAULT_TIMEOUT_SECS, EligibilityLists, ExactVersion, GateName, GlobsConfigError,
+    Identity, ListFile, ListName, ListsError, MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS,
+    MAX_LIST_ENTRIES, MAX_LISTS_BYTES, MAX_TIMEOUT_SECS, ParseCommitIdError, ParseDigestError,
     ParsePinError, Pin, Plugin, PluginsConfig, RunnerKind, Sha256Digest, Step, TomlError,
     parse_globs,
 };
@@ -83,6 +85,14 @@ pub use decide::{
     MAX_SYMBOL_BYTES, Moved, OutputsProblem, PlanJob, PlanMismatch, PlanRefusal, PullOnHead,
     PullRequestState, Refusal, Reported, ReportedGate, ReviewJob, RunArtifacts, Snapshot,
     StateStep, TierDegrade, Unreadable, UpstreamJob, authenticate,
+};
+pub use eligibility::{
+    AckedSet, Command, CommandComments, CommandRejected, CommentAction, CommentEvent, CommitRange,
+    GitHubState, IgnoredApproval, Ineligible, InvalidTimestamp, IssueComment, LedgerRecords,
+    MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_PUSH_RECORDS, MAX_RANGE_COMMITS, MergeTree,
+    ParseTreeIdError, Parsed, RangeCommit, RangeListing, RangeObjects, Recorded, SnapshotCommand,
+    SnapshotLedger, SnapshotStep, StateError, StatePorts, StateRequest, Timestamp, TreeId,
+    VoidCause, WEB_FLOW, github_state, parse_command,
 };
 pub use eval::{
     Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,

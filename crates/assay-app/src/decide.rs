@@ -41,6 +41,7 @@ pub use self::request::{
 };
 use crate::config::{AssaySettings, Sha256Digest};
 use crate::contract::ContractValidator;
+use crate::eligibility::CommitRange;
 use crate::plan::{ArtifactJob, EvidenceKey, PlanError, PullRequestEvent, PullRequestObjects};
 
 /// The most documents the `review` job may publish (H-13).
@@ -124,7 +125,8 @@ pub(crate) struct RunDocument {
     pub(crate) bytes: Vec<u8>,
 }
 
-/// The facts of GitHub's state snapshot a decision needs about the PR (#58's to compute).
+/// The facts of GitHub's state snapshot a decision needs about the PR, as
+/// [`GitHubState::snapshot`](crate::GitHubState::snapshot) computes them (#58).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Snapshot {
     /// `owner_approved(head)` (04 §5).
@@ -135,6 +137,9 @@ pub struct Snapshot {
     pub readiness: Readiness,
     /// How many times this head's deferred run was requeued.
     pub requeues: u32,
+    /// Whether the git range fits the eligibility rule's 250 commits; past it the PR is
+    /// `needs-split` whatever the plan's tier (R3-22).
+    pub commits: CommitRange,
 }
 
 impl AuthenticatedRun {
@@ -207,7 +212,10 @@ impl AuthenticatedRun {
             // The decision input owns its base ref; the run keeps its own.
             base_ref: self.base_ref.clone(),
             open_prs_on_head: self.open_prs_on_head,
-            tier: self.tier,
+            tier: match snapshot.commits {
+                CommitRange::Within => self.tier,
+                CommitRange::NeedsSplit => Tier::NeedsSplit,
+            },
             // As above: the input owns the classes.
             classes: self.tiering.classes.clone(),
             owner_approval: snapshot.owner_approval,

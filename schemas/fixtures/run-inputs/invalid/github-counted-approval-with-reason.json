@@ -1,0 +1,39 @@
+{
+  "schema": "assay.run-inputs/1",
+  "run_uid": { "repo_id": 42, "run_id": 7, "run_attempt": 1 },
+  "evidence_key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "documents": [
+    {
+      "job": "plan",
+      "file": "run.json",
+      "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "text": "{\"schema\": \"assay.run/1\"}"
+    },
+    {
+      "job": "review",
+      "file": "combined-micro.json",
+      "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "text": ""
+    }
+  ],
+  "inputs": { "decision_key": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+  "rubric_version": "v1",
+  "decision": { "schema": "assay.decision/1" },
+  "events": [{ "schema": "assay.event/1", "job": "decide", "idx": 0 }],
+  "carry": { "findings": [], "omitted": [] },
+  "github": {
+    "lists": {
+      "owners": [],
+      "approvers": [],
+      "maintainers": [{ "id": 124330161, "login": "Ryan-Britton" }],
+      "agents": [{ "id": 124330161, "login": "Ryan-Britton" }]
+    },
+    "author": 124330161,
+    "head_sha": "70aa6d748be6f3884e85d294112f9addf83cee59",
+    "range": { "status": "within", "users": [124330161], "unattributed": false },
+    "pushers": [124330161],
+    "push_clock": "2026-10-18T21:30:00Z",
+    "approvals": [{ "review": 9, "reviewer": 1002, "submitted_at": "2026-10-18T21:40:56Z", "status": "counted", "reason": "maintainer" }],
+    "commands": []
+  }
+}

@@ -7,6 +7,7 @@ pub(crate) mod read;
 use assay_domain::{Aeu, Conclusion, Counts, DegradedRole, PrClass, Reason, Tier};
 
 use super::ports::EvidenceEntry;
+use crate::eligibility::IgnoredApproval;
 
 /// The hidden marker the summary comment is found by (02 §5).
 pub const SUMMARY_MARKER: &str = "<!-- assay-summary -->";
@@ -35,6 +36,9 @@ pub(super) struct Facts<'a> {
     pub(super) degraded: &'a [DegradedRole],
     pub(super) cost: Aeu,
     pub(super) reasons_digest: String,
+    /// Each eligible reviewer's approval ignored for timing,
+    /// `approval at T ignored: before push at T′ (reviewer <id>)` (04 §5).
+    pub(super) ignored_approvals: &'a [IgnoredApproval],
 }
 
 /// What `output.text` projects of the ledger state.
@@ -88,6 +92,12 @@ pub(super) fn summary(summary: &Summary<'_>) -> String {
             .iter()
             .map(|role| [role.role.as_str(), ": ", role.reason.as_str()].concat());
         block(&mut lines, facts.degraded.len(), degraded);
+        if !facts.ignored_approvals.is_empty() {
+            lines.push(String::new());
+            lines.push("Ignored approvals:".to_owned());
+            let ignored = facts.ignored_approvals.iter().map(ToString::to_string);
+            block(&mut lines, facts.ignored_approvals.len(), ignored);
+        }
     }
     if let Some(warning) = summary.warning {
         lines.push(String::new());

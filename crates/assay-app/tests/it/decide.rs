@@ -6,8 +6,8 @@ use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    ArtifactJob, AuthenticatedRun, Authentication, DecideError, GateError, JobResult, Moved,
-    OutputsProblem, PlanMismatch, PullOnHead, Refusal, Reported, ReportedGate, Snapshot,
+    ArtifactJob, AuthenticatedRun, Authentication, CommitRange, DecideError, GateError, JobResult,
+    Moved, OutputsProblem, PlanMismatch, PullOnHead, Refusal, Reported, ReportedGate, Snapshot,
     TierDegrade, Unreadable, UpstreamJob,
 };
 use assay_domain::{
@@ -27,6 +27,7 @@ const SNAPSHOT: Snapshot = Snapshot {
     authorship: Authorship::Other,
     readiness: Readiness::Ready,
     requeues: 0,
+    commits: CommitRange::Within,
 };
 
 /// The decision inputs of `run`: its authenticated facts, with a completed LLM stage in which
@@ -851,6 +852,20 @@ fn a_pull_request_carries_the_recomputed_facts_and_the_snapshot() -> Result<(), 
         ),
         ("main", 1, Tier::Micro, Vec::new(), Readiness::Ready)
     );
+    Ok(())
+}
+
+#[test]
+fn a_range_past_the_commit_cap_makes_the_pr_need_a_split() -> Result<(), Box<dyn Error>> {
+    let scenario = Scenario::new()?;
+    let run = authenticated(scenario.authenticate()?)?;
+
+    let pr = run.pull_request(Snapshot {
+        commits: CommitRange::NeedsSplit,
+        ..SNAPSHOT
+    });
+
+    assert_eq!(pr.tier, Tier::NeedsSplit);
     Ok(())
 }
 

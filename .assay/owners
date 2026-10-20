@@ -1,0 +1,10 @@
+# Eligibility lists (docs/architecture/03-contracts.md §1, 04-pipeline.md §5; P10). Read from
+# the base commit only. Numeric GitHub user ids are authoritative; logins are for display.
+#
+# `owners` and `approvers` list privileged identities only: accounts never authenticated in any
+# agent-reachable context. Both are empty until the dedicated approver account exists (H-13), so
+# no privileged action is eligible here yet. `maintainers` holds the owner's daily account, which
+# may author and push but is never eligible (R3-01, decision 0005).
+owners = []
+approvers = []
+maintainers = [{ id = 124330161, login = "Ryan-Britton" }]
