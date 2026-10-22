@@ -47,7 +47,7 @@ action, with two allowlists: a job is decision-bearing unless it is exempted by 
 `rust.yml`'s `gate`, `aarch64` and `miri`, which are developer feedback that no assay decision
 reads), and decision-bearing jobs and composite actions may only use `actions/checkout`,
 `actions/upload-artifact`, `actions/download-artifact`, `dtolnay/rust-toolchain`,
-`oras-project/setup-oras` and this repository's own composite actions. Adding an action to either
+`oras-project/setup-oras`, `useblacksmith/checkout` (#303) and this repository's own composite actions. Adding an action to either
 list is a review of whether it touches the cache.
 
 ## One-time setup

@@ -20,8 +20,11 @@ const CACHE_EXEMPT_JOBS: &[(&str, &str)] = &[
 ];
 
 /// Actions, by `owner/repo`, that neither restore nor save the Actions cache.
+/// `useblacksmith/checkout` keeps a git mirror on Blacksmith's runners rather than in the
+/// Actions cache; the owner allowlisted it with the move to Blacksmith (#302, #303).
 const CACHE_FREE_ACTIONS: &[&str] = &[
     "actions/checkout",
+    "useblacksmith/checkout",
     "actions/upload-artifact",
     "actions/download-artifact",
     "dtolnay/rust-toolchain",
