@@ -7,3 +7,4 @@ Decision records that outgrow a row in the decisions log (`AGENTS.md`) or in `do
 - `0003-weigh-in-id-formats.md`: Weigh-In item id formats, A-11 verified (#106).
 - `0004-assay-verdict-app.md`: the `assay-verdict` and `assay-ledger-writer` Apps, key storage and rulesets (#39, #40; ADR-26).
 - `0005-agent-identity-and-approver.md`: the daily account is the agent identity; the approver account is deferred to go-live (#42, #41).
+- `0006-public-repository.md`: the assay repository is public; fork PRs are untrusted and never reach a secret (H-05).
