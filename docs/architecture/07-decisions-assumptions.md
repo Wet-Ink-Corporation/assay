@@ -39,7 +39,7 @@ Each assumption names how it becomes a measurement and what changes if wrong.
 
 | ID | Assumption | If wrong | Verified in |
 |---|---|---|---|
-| A-01 | Using the Max OAuth token in CI for the owner's own private repos is within terms and will remain so; headless usage is not being moved to a separate credit | `ClaudeApi` runner; ≈ $282–$423/month AEU at A-02 volume (lower bound) | Official terms/support article at M0 sign-off, quarterly |
+| A-01 | Using the Max OAuth token in CI for the owner's own repos is within terms and will remain so; headless usage is not being moved to a separate credit | `ClaudeApi` runner; ≈ $282–$423/month AEU at A-02 volume (lower bound) | Verified 2026-10-30 with conditions (`docs/decisions/0007`); re-checked quarterly |
 | A-02 | 10 PRs/day (5–15); tier mix 20/25/35/20; 2.5 runs/PR, each at 100% of tier cost (`A-22`) | Cost scales | M1 from `gh pr` history |
 | A-03 | 2 concurrent model-running `review` jobs per subscription (central semaphore) fit the window | Reduce to 1; latency rises | M2/M3 |
 | A-04 | Typical filtered diff sizes | Tier thresholds shift | M1 history |
