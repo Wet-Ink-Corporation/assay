@@ -1,6 +1,6 @@
 # 0002 · Owner answers to H-01..H-14
 
-- **Status:** accepted (partly open; see below)
+- **Status:** accepted (partly open; see below); H-11 answered 2026-10-30
 - **Date:** 2026-10-11
 - **Issue:** #36
 - **Spec:** `docs/architecture/` v1.2, `07 §3` (human decisions and upstream requests)
@@ -26,6 +26,15 @@ On 2026-10-11 the owner accepted the recommended defaults below and the R3-01 ch
 | H-10 | Tooling delivered by GHCR digest |
 | R3-01 | Accepted. The approver account (H-13) is now **mandatory for M1**, and H-08 is restated in two parts: (a) agents push under agent ids; (b) no agent-reachable credential can comment, review, label or merge as any id in `owners ∪ approvers` |
 
+## H-11, answered 2026-10-30
+
+The owner tried Greptile and CodeRabbit and found both too expensive. At list prices on 2026-10-30, and at assay's own pace from 2026-10-11 to 2026-10-30 (99 PRs and 373 pushed commits, one human PR author, agents pushing several times an hour), one repository costs about:
+
+- **Greptile Pro:** $1 per base review ($3 Plus), no seat fee. One review per push comes to about $500/month (about $1,500 on Plus).
+- **CodeRabbit Essentials:** $30 per PR author per month ($24 annual), with 5 reviews per developer per hour. Further reviews cost $0.25 per reviewed file, so overage dominates at agent push rates (hundreds of dollars a month).
+
+Decision: SaaS spend is high, so Path A continues and **Path B stays the pre-agreed fallback (ADR-18), not a first step.** The repository became public on 2026-10-30, which makes GitHub-hosted Actions minutes free and lowers Path A's cash cost to roughly the subscription. The same change makes CodeRabbit free for this repository; whether to use it as an interim advisory reviewer is a separate owner choice and not part of this answer. A-19 is answered by these figures.
+
 ## Still open
 
 | ID | What is open | Tracked by |
@@ -36,7 +45,6 @@ On 2026-10-11 the owner accepted the recommended defaults below and the R3-01 ch
 | H-12 | Owner setup task: create the `assay-verdict` GitHub App and ruleset | #39–#42 |
 | H-13 | Owner setup task: create the dedicated approver account (never pushes, never agent-reachable); required for M1 | #39–#42 |
 | H-14 | Owner setup task: create the private `assay-ledger` repo, the App's second installation, and its access ruleset | #39–#42 |
-| H-11 | Cash justification (SaaS spend; whether Path B goes first). To be answered before M2 | — |
 
 ## Consequences
 
