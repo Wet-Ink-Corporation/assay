@@ -19,7 +19,7 @@ env:
 
 jobs:
   gate:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     outputs:
       report-url: ${{ steps.upload-report.outputs.artifact-url }}
     steps:
@@ -127,7 +127,7 @@ jobs:
   report-comment:
     needs: gate
     if: ${{ !cancelled() && github.event_name == 'pull_request' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     permissions:
       pull-requests: write
     steps:
@@ -160,7 +160,7 @@ jobs:
           fi
 
   msrv:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -195,7 +195,7 @@ jobs:
     # Builds against the newest compatible releases, as `cargo update` would.
     # A failure here is a heads-up, not a broken main: the committed Cargo.lock still passes.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     continue-on-error: true
     env:
       CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: allow
@@ -224,7 +224,7 @@ jobs:
     # Required for crates with non-Relaxed atomics, Condvars or hand-written thread
     # coordination; scheduled or on demand, like miri.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -244,7 +244,7 @@ jobs:
     # coordination; about 1000x slower than native tests, so scheduled or on demand only.
     # Never add -Zmiri-ignore-leaks or any -Zmiri-disable-* flag other than isolation (H-12).
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       CARGO_BUILD_WARNINGS: warn   # nightly lint churn is not this job's concern
