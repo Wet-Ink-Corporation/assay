@@ -57,7 +57,7 @@ Each assumption names how it becomes a measurement and what changes if wrong.
 | A-16 | `pull_request_target` with explicit per-job permissions, base-pinned workflow, head-as-data and the Z0–Z4 split is safe | Move to a GitHub-App-driven `workflow_run` split | M1 canaries |
 | A-17 | A solo owner can run agents under a distinct identity, and can keep privileged identities out of every agent-reachable context (Claude Code cloud sessions hold the owner's GitHub authorisation and can comment, review and merge with it: observed in review round 3) | P10 as convention only | H-08 (a) and (b), M1 behavioural check |
 | A-18 | Average `full` run ≤ 10% of one 5-hour window | Kill criterion `06 §8` | M3 |
-| A-19 | Current SaaS spend is unknown to this spec (third-party figures: ≈ $24–30/seat/month, unverified) | If < ~$100/month, build is not justified on cash (`§4`) | H-11 |
+| A-19 | Current SaaS spend: at assay's push rate, Greptile ≈ $500–1,500/month per repository and CodeRabbit hundreds/month (list prices 2026-10-30; `docs/decisions/0002`) | If < ~$100/month, build is not justified on cash (`§4`) | Answered (H-11, 2026-10-30) |
 | A-20 | Actions in private repo A can pull a GHCR package from the org's other repo with `GITHUB_TOKEN` (`packages: read`, package access granted to the repo) | Vendor pinned binary into base `.assay/`; or a read-only deploy credential in Z1 only | P1, after the first release; procedure in `docs/operations/release.md` (unverified) |
 | A-21 | Role caps and expected costs as in `04 §3` and `06 §2` | Re-size from measured p90 | M2 (lite/micro), M3 (full) |
 | A-22 | 2.5 runs/PR; an incremental run costs 100% of the tier cost (specialists re-read the cumulative diff). Lever (4) in `06 §2` would cut it | Cost scales | M2/M3 |
@@ -75,7 +75,7 @@ Each assumption names how it becomes a measurement and what changes if wrong.
 
 ## 3. Human decisions and upstream requests
 
-The owner answered on 2026-10-11 (`docs/decisions/0002-owner-answers-h01-h14.md`, issue #36): the defaults below were accepted for H-01, H-03, H-04, H-05, H-07 and H-10, and R3-01 was accepted for H-06/H-08/H-13. Still open: H-02 and H-09 (upstream filings), H-08, H-12, H-13 and H-14 (owner setup tasks), and H-11 (before M2).
+The owner answered on 2026-10-11 (`docs/decisions/0002-owner-answers-h01-h14.md`, issue #36): the defaults below were accepted for H-01, H-03, H-04, H-05, H-07 and H-10, and R3-01 was accepted for H-06/H-08/H-13. Still open: H-02 and H-09 (upstream filings), H-08, H-12, H-13 and H-14 (owner setup tasks), H-11 was answered on 2026-10-30 (SaaS spend high; Path A continues, Path B stays the fallback; same file).
 
 | ID | Decision / request | Default if unanswered |
 |---|---|---|
@@ -89,7 +89,7 @@ The owner answered on 2026-10-11 (`docs/decisions/0002-owner-answers-h01-h14.md`
 | H-08 | Agent identity separation (machine user or App for agent commits; agent not in owners). **Changed in v1.2 (R3-01, accepted 2026-10-11):** two parts, (a) agents push under agent ids and (b) no agent-reachable credential can comment, review, label or merge as any id in `owners ∪ approvers`; both checked behaviourally in M1 from a cloud session and a local session | **Required for M1** (the approval rule already needs a non-author, non-pusher approver); until verified, P10 is a convention |
 | H-09 | Upstream requests to temper. **D-TEMPER-1** (stop assay parsing files): a `--fail-on-raise` option; counting `exception` hits as failing unless allowlisted; test-inventory and manifest-switch diffs as CLI subcommands; the gate-config diff as a CLI subcommand; a documented findings contract. **D-TEMPER-2** (close the oracle gaps): `gate --base/--findings-out`; comparing blobs rather than hunks (the `.gitattributes` blinding) | assay implements the interim checks itself (`03 §2.1`) |
 | H-10 | Delivery by GHCR digest | Yes |
-| H-11 | Cash justification: what is the SaaS spend, and is Path B first acceptable? | Start Path B in parallel with M1 only if SaaS spend is high; otherwise M1 first. Answer before M2 |
+| H-11 | Cash justification: what is the SaaS spend, and is Path B first acceptable? | **Answered 2026-10-30:** spend is high (Greptile ≈ $500–1,500/month, CodeRabbit hundreds/month at assay's push rate); Path A continues, Path B stays the fallback (`docs/decisions/0002`) |
 | H-12 | Create the `assay-verdict` GitHub App and ruleset | Required for M1 |
 | H-13 | Create the dedicated approver account (never pushes, not an agent, never authenticated in any agent-reachable context) | **Required for M1 unconditionally** (changed in v1.2, R3-01, accepted by the owner 2026-10-11; v1.1: required only if an owner-authored PR needed approval). Optionally also a separate break-glass account, the only ruleset bypass actor |
 | H-13 · R3-01 record | Owner accepted R3-01 on 2026-10-11: the approver account is now mandatory for M1 and only never-agent-reachable accounts are privileged (`owners ∪ approvers`); the owner's daily account is a `maintainer`. Spec passages: `01 §2`, P10, `03 §1`, `04 §5`, `05` T9 and §7, `06 §4`/§8, ADR-16, ADR-24 | — |
