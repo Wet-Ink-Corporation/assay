@@ -10,7 +10,9 @@
 //! `GitHub` through `gh` (#273). [`run_prerequisites`] wires `assay doctor --repository` (#75)
 //! over any [`assay_app::PrerequisiteForge`], tested with fakes; the binary does not run it
 //! over the live transport yet.
-//! [`OpenCommand`] reads `assay open`'s run from the Actions environment and refuses a re-run.
+//! [`OpenCommand`] reads `assay open`'s run from the Actions environment and refuses a re-run;
+//! [`run_open`] opens the verdict check over any [`OpenReads`] and the app's open ports, so it
+//! is tested with fakes; the binary runs it over forge's `GitHub` and ledger adapters.
 //! The pipeline's CI plumbing (#60, 03 §4a): [`RunEnv`] (the run, with the first-attempt guard
 //! [`RunEnv::first_attempt`]), [`Needs`] (`ASSAY_NEEDS`, read strictly), [`Outputs`] (the
 //! `GITHUB_OUTPUT` writer) and [`outputs`], each job's outputs as typed values. [`guard`] decides
@@ -31,7 +33,9 @@ pub use ci::{
     NotFirstAttempt, OutputError, OutputName, Outputs, RunEnv, RunEnvError, RunVariables, Upstream,
 };
 pub use guard::{GuardError, Guarded, Refusal, UntrustedHead, guard};
-pub use open::{OpenCommand, OpenUsage, OpenVariables};
+pub use open::{
+    OpenCommand, OpenJob, OpenReads, OpenRunError, OpenRunOutcome, OpenUsage, run_open,
+};
 pub use prerequisites::{
     PrerequisitesArgs, PrerequisitesRunError, PrerequisitesUsage, prerequisites_exit_code,
     run_prerequisites, write_prerequisites,
