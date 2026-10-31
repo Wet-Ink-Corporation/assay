@@ -9,9 +9,9 @@
 //! network.
 
 use std::error::Error;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::num::NonZeroU64;
 
@@ -235,6 +235,7 @@ fn present(value: Option<OsString>, name: &'static str) -> Result<OsString, Guar
 
 /// The payload of `event` in the regular file at `path`.
 fn read_payload(event: EventName, path: OsString) -> Result<EventPayload, GuardCliError> {
+    regular_path(&path).map_err(GuardCliError::PayloadFile)?;
     let file = File::open(path).map_err(GuardCliError::PayloadFile)?;
     regular(&file).map_err(GuardCliError::PayloadFile)?;
     EventPayload::read(event, file).map_err(GuardCliError::Payload)
@@ -242,6 +243,7 @@ fn read_payload(event: EventName, path: OsString) -> Result<EventPayload, GuardC
 
 /// The regular file at `path`, opened for appending (GitHub creates it; it is not created).
 fn open_output(path: OsString) -> Result<File, GuardCliError> {
+    regular_path(&path).map_err(GuardCliError::OutputFile)?;
     let file = OpenOptions::new()
         .append(true)
         .open(path)
@@ -250,13 +252,29 @@ fn open_output(path: OsString) -> Result<File, GuardCliError> {
     Ok(file)
 }
 
-/// Refuses an open file that is not a regular one.
+/// Refuses a path that does not name a regular file before it is opened, so a FIFO is never
+/// opened (which would block, H-13), as `check/store.rs` does (#219).
+fn regular_path(path: &OsStr) -> io::Result<()> {
+    if fs::metadata(path)?.is_file() {
+        Ok(())
+    } else {
+        Err(not_regular())
+    }
+}
+
+/// Refuses an open file that is not a regular one: the path may have changed since it was
+/// checked.
 fn regular(file: &File) -> io::Result<()> {
     if file.metadata()?.is_file() {
         Ok(())
     } else {
-        Err(io::Error::other("not a regular file"))
+        Err(not_regular())
     }
+}
+
+/// The refusal of a file that is not a regular one.
+fn not_regular() -> io::Error {
+    io::Error::other("not a regular file")
 }
 
 /// PR `pr` of `repository`, read through `gh` with the run token; gh's scratch directory is

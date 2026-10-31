@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use assay_app::{CommitId, UserId};
 use assay_cli::outputs::{Identity, Trigger};
 use assay_cli::{GuardError, Guarded, OutputName, Refusal, UntrustedHead, guard};
-use assay_forge::github::{EventName, EventPayload, PullIdentity, PullState};
+use assay_forge::github::{
+    EventName, EventPayload, HeadRepository, PullIdentity, PullRequestPayload, PullState,
+};
 
 /// The fixtures' repository, `Codertocat/Hello-World`.
 const REPO_ID: u64 = 1_296_269;
@@ -148,6 +150,33 @@ fn an_edit_without_a_base_change_does_not_run() {
     );
 
     assert_eq!(guarded, Ok(Guarded::Skip));
+}
+
+#[test]
+fn an_untrusted_head_is_refused_before_the_edit_filter() {
+    for (head_repository, head) in [
+        (
+            HeadRepository::Other(id(FORK_ID)),
+            UntrustedHead::Other(id(FORK_ID)),
+        ),
+        (HeadRepository::Deleted, UntrustedHead::Deleted),
+    ] {
+        let EventPayload::PullRequest(edited) = pull_request("event_edited_title.json") else {
+            panic!("a pull_request_target payload");
+        };
+        let event = EventPayload::PullRequest(PullRequestPayload {
+            head_repository,
+            ..edited
+        });
+
+        let guarded = guard(id(REPO_ID), event, no_read);
+
+        assert_eq!(
+            guarded,
+            Ok(Guarded::Refused(Refusal::UntrustedHead { pr: id(2), head })),
+            "{head:?}"
+        );
+    }
 }
 
 #[test]

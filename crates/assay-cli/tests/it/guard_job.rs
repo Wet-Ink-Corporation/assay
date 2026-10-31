@@ -54,6 +54,17 @@ impl Scene {
         Ok(self)
     }
 
+    /// Forge's recorded payload `name`, changed by `edit`, as the event payload.
+    fn edited(&self, name: &str, edit: impl FnOnce(&mut Value)) -> Result<&Self, Box<dyn Error>> {
+        let recorded = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../assay-forge/tests/fixtures/github/events")
+            .join(name);
+        let mut payload: Value = serde_json::from_slice(&fs::read(recorded)?)?;
+        edit(&mut payload);
+        fs::write(self.path("event.json"), payload.to_string())?;
+        Ok(self)
+    }
+
     /// A stand-in `gh` that answers `GET repos/<REPO>/pulls/2` with `pull` and anything else
     /// with a 404, recording each call's arguments in `bin/calls`.
     fn gh_answering(&self, pull: &Value) -> Result<(), Box<dyn Error>> {
@@ -151,8 +162,27 @@ fn a_fork_head_exits_1_and_writes_nothing() -> Result<(), Box<dyn Error>> {
         .guard("pull_request_target", &[])?;
 
     assert_eq!(ran.code, Some(1), "{ran:?}");
-    assert!(ran.stderr.contains("untrusted head repository"), "{ran:?}");
+    assert_eq!(
+        ran.stderr,
+        "assay: untrusted head repository: PR #2's head is in repository 186853002, not this \
+         one; assay does not run for it (0006)\n"
+    );
     assert_eq!(ran.output, "");
+    Ok(())
+}
+
+#[test]
+fn a_fork_heads_edit_without_a_base_change_exits_1_not_run_false() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new()?;
+
+    let ran = scene
+        .edited("event_edited_title.json", |payload| {
+            payload["pull_request"]["head"]["repo"]["id"] = json!(186_853_002);
+        })?
+        .guard("pull_request_target", &[])?;
+
+    assert_eq!((ran.code, ran.output.as_str()), (Some(1), ""), "{ran:?}");
+    assert!(ran.stderr.contains("untrusted head repository"), "{ran:?}");
     Ok(())
 }
 
@@ -199,6 +229,45 @@ fn a_payload_that_cannot_be_read_whole_cannot_run() -> Result<(), Box<dyn Error>
     for (ran, named) in [(missing, "GITHUB_EVENT_PATH"), (over_cap, "cap")] {
         assert_eq!((ran.code, ran.output.as_str()), (Some(2), ""), "{ran:?}");
         assert!(ran.stderr.contains(named), "{ran:?}");
+    }
+    Ok(())
+}
+
+/// Makes a FIFO at `path`.
+fn fifo(path: &Path) -> Result<(), Box<dyn Error>> {
+    let made = Command::new("mkfifo").arg(path).status()?;
+    if made.success() {
+        Ok(())
+    } else {
+        Err(format!("mkfifo {} failed: {made}", path.display()).into())
+    }
+}
+
+#[test]
+fn a_fifo_payload_or_output_is_refused_before_it_is_opened() -> Result<(), Box<dyn Error>> {
+    let payload = Scene::new()?;
+    fifo(&payload.path("event.json"))?;
+    let output = Scene::new()?;
+    output.recorded("event_opened.json")?;
+    fifo(&output.path("fifo-output"))?;
+
+    // Opening either FIFO with no writer or reader on its other end would block forever.
+    let payload_ran = payload.guard("pull_request_target", &[])?;
+    let output_ran = output.guard(
+        "pull_request_target",
+        &[(
+            "GITHUB_OUTPUT",
+            &output.path("fifo-output").display().to_string(),
+        )],
+    )?;
+
+    for (ran, named) in [
+        (payload_ran, "GITHUB_EVENT_PATH"),
+        (output_ran, "GITHUB_OUTPUT"),
+    ] {
+        assert_eq!((ran.code, ran.output.as_str()), (Some(2), ""), "{ran:?}");
+        assert!(ran.stderr.contains(named), "{ran:?}");
+        assert!(ran.stderr.contains("not a regular file"), "{ran:?}");
     }
     Ok(())
 }
@@ -261,6 +330,35 @@ fn a_dispatch_for_a_closed_pr_or_a_fork_head_exits_1() -> Result<(), Box<dyn Err
 
         assert_eq!((ran.code, ran.output.as_str()), (Some(1), ""), "{ran:?}");
         assert!(ran.stderr.contains(refusal), "{ran:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_dispatch_whose_pr_read_fails_cannot_run() -> Result<(), Box<dyn Error>> {
+    let mut other = pull();
+    other["number"] = json!(3);
+    let another_pr = Scene::new()?;
+    another_pr
+        .recorded("event_dispatch.json")?
+        .gh_answering(&other)?;
+    // The stand-in answers only `pulls/2`, so PR 3 is a 404.
+    let not_found = Scene::new()?;
+    not_found
+        .edited("event_dispatch.json", |payload| {
+            payload["inputs"]["pr"] = json!("3");
+        })?
+        .gh_answering(&pull())?;
+
+    for (scene, cause) in [
+        (another_pr, "GitHub returned another PR"),
+        (not_found, "GitHub refused the request (HTTP 404)"),
+    ] {
+        let ran = scene.dispatch()?;
+
+        assert_eq!((ran.code, ran.output.as_str()), (Some(2), ""), "{ran:?}");
+        assert!(ran.stderr.contains("reading PR #"), "{ran:?}");
+        assert!(ran.stderr.contains(cause), "{ran:?}");
     }
     Ok(())
 }
