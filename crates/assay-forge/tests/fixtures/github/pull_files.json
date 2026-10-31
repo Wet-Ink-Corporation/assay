@@ -1,0 +1,130 @@
+[
+  {
+    "sha": "915f626f5df6b44d4a90948e60ffa77e624dbe0e",
+    "filename": "crates/assay-app/AGENTS.md",
+    "status": "modified",
+    "additions": 9,
+    "deletions": 7,
+    "changes": 16
+  },
+  {
+    "sha": "7f174dc79cd114c040fe6ecb419712ceb488944d",
+    "filename": "crates/assay-app/src/config.rs",
+    "status": "modified",
+    "additions": 0,
+    "deletions": 3,
+    "changes": 3
+  },
+  {
+    "sha": "72411773c6164156fadf61a237027b43ba859dd5",
+    "filename": "crates/assay-app/src/config/identities.rs",
+    "status": "removed",
+    "additions": 0,
+    "deletions": 122,
+    "changes": 122
+  },
+  {
+    "sha": "1976cf3d00620e0cd449bc0fe3ad9a09146c1a76",
+    "filename": "crates/assay-app/src/config/owners.rs",
+    "status": "modified",
+    "additions": 41,
+    "deletions": 9,
+    "changes": 50
+  },
+  {
+    "sha": "17d2a38be9b46f7c50005bb31b0fcae3fdd3d62d",
+    "filename": "crates/assay-app/src/doctor.rs",
+    "status": "modified",
+    "additions": 5,
+    "deletions": 6,
+    "changes": 11
+  },
+  {
+    "sha": "3b9eadc007f3d2287b9a3e74721742109b000ba9",
+    "filename": "crates/assay-app/src/doctor/prerequisites.rs",
+    "status": "modified",
+    "additions": 3,
+    "deletions": 3,
+    "changes": 6
+  },
+  {
+    "sha": "16128fe499600dc47f5a6dfe5a8a11294090f264",
+    "filename": "crates/assay-app/src/doctor/prerequisites/identities.rs",
+    "status": "modified",
+    "additions": 24,
+    "deletions": 107,
+    "changes": 131
+  },
+  {
+    "sha": "d7447f6901a73097ec8b8159f696ec57cf2eb29e",
+    "filename": "crates/assay-app/src/lib.rs",
+    "status": "modified",
+    "additions": 13,
+    "deletions": 13,
+    "changes": 26
+  },
+  {
+    "sha": "bd326f37135664e962e7f93df7816ec4c9945f10",
+    "filename": "crates/assay-app/src/status.rs",
+    "status": "modified",
+    "additions": 1,
+    "deletions": 1,
+    "changes": 2
+  },
+  {
+    "sha": "f6bc852dd9185c2a9515f9cb2ac62eccff59d6a1",
+    "filename": "crates/assay-app/src/status/identities.rs",
+    "status": "modified",
+    "additions": 26,
+    "deletions": 47,
+    "changes": 73
+  },
+  {
+    "sha": "1b48d4e76ef309fd336867692af82f96c66bfd47",
+    "filename": "crates/assay-app/tests/it/eligibility_lists.rs",
+    "status": "modified",
+    "additions": 87,
+    "deletions": 0,
+    "changes": 87
+  },
+  {
+    "sha": "87235c5ad319a40b2b00e45b708210edb852fefb",
+    "filename": "crates/assay-app/tests/it/prerequisites.rs",
+    "status": "modified",
+    "additions": 80,
+    "deletions": 46,
+    "changes": 126
+  },
+  {
+    "sha": "9160236641e86285616976c905895fcef236303f",
+    "filename": "crates/assay-app/tests/it/status_identities.rs",
+    "status": "modified",
+    "additions": 103,
+    "deletions": 60,
+    "changes": 163
+  },
+  {
+    "sha": "eb693042fb6cb3029e9f1d511f861704ea66733b",
+    "filename": "crates/assay-cli/tests/it/doctor_prerequisites.rs",
+    "status": "modified",
+    "additions": 2,
+    "deletions": 1,
+    "changes": 3
+  },
+  {
+    "sha": "37b73717c79edf8bf80cc56ad84726a66e59114e",
+    "filename": "crates/assay-cli/tests/it/status_pr.rs",
+    "status": "modified",
+    "additions": 2,
+    "deletions": 1,
+    "changes": 3
+  },
+  {
+    "sha": "1f103c18104e01f97924a6c87ac07628d77b0fbd",
+    "filename": "docs/architecture/03-contracts.md",
+    "status": "modified",
+    "additions": 1,
+    "deletions": 1,
+    "changes": 2
+  }
+]

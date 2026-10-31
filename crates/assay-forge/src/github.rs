@@ -3,9 +3,12 @@
 //!
 //! [`GitHub`] implements `assay-app`'s [`Forge`](assay_app::Forge),
 //! [`VerdictForge`](assay_app::VerdictForge), [`CommentForge`](assay_app::CommentForge),
-//! [`StatusForge`](assay_app::StatusForge), [`PullRequestState`](assay_app::PullRequestState)
-//! and [`ReconcileForge`](assay_app::ReconcileForge) for one repository, and over the `gh`
-//! transport the [`BundleSource`](assay_app::BundleSource) run bundles are read from.
+//! [`StatusForge`](assay_app::StatusForge), [`PullRequestState`](assay_app::PullRequestState),
+//! [`ReconcileForge`](assay_app::ReconcileForge) and
+//! [`CommandComments`](assay_app::CommandComments) for one repository, and over the `gh`
+//! transport the [`BundleSource`](assay_app::BundleSource) run bundles are read from. The
+//! pipeline's other reads are its own methods: [`GitHub::pull_identity`],
+//! [`GitHub::pull_files`], [`GitHub::run_created_at`] and [`GitHub::forced`].
 //! [`Api::mint_installation_token`] mints the narrowed token a job's [`GitHub`] is built with.
 //! Every response is decoded into a wire DTO and converted, and data the adapter cannot read
 //! exactly is refused ([`ForgeError`], wi-b5affa).
@@ -14,6 +17,7 @@ mod api;
 mod artifacts;
 mod base64;
 mod checks;
+mod command_comments;
 mod comments;
 mod dto;
 mod error;
@@ -21,6 +25,7 @@ mod gh;
 mod identity;
 mod ledger;
 mod ledger_refs;
+mod pipeline;
 mod ports;
 mod pulls;
 mod reads;
@@ -43,6 +48,7 @@ pub use gh::{
 pub use identity::MAX_COMMITS;
 pub use ledger::{LedgerRepo, LedgerRepoError};
 pub use ledger_refs::{LedgerRefsError, LedgerRefsRepo, LedgerRemoteError, ledger_push_remote};
+pub use pipeline::{PullIdentity, PullState};
 pub use repository::{ParseRepositoryError, Repository};
 pub use token::{Access, InstallationId, InstallationToken, Permission, ScopeError, TokenScope};
 pub use transport::{
