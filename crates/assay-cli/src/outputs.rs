@@ -14,6 +14,17 @@ use crate::ci::{
     JobName, JobResult, Needs, NeedsError, OutputName, Upstream, canonical_positive, shown,
 };
 
+/// The review job's outputs while it is a placeholder (#60 ST-9, D11 A).
+///
+/// In [`OutputName::REVIEW`]'s order: the review did not run (`stage=not-run`, so `decide`
+/// applies the LLM-unavailable policy), spent nothing and reported no document. The real
+/// review (M2) replaces it.
+pub const REVIEW_PLACEHOLDER: [(OutputName, &str); 3] = [
+    (OutputName::Stage, "not-run"),
+    (OutputName::CostAeu, "0"),
+    (OutputName::Documents, "[]"),
+];
+
 /// The run identity `guard` resolves from the event (I2): every later job reads it from
 /// `guard`'s outputs, never from the event payload.
 ///
