@@ -26,7 +26,7 @@ pub use self::builtins::{
 use self::dto::{AssayDto, FileDto, PluginDto, StepDto};
 pub use self::error::{ConfigError, TomlError};
 pub use self::globs::{GlobsConfigError, parse_globs};
-pub use self::name::GateName;
+pub use self::name::{GateName, ParseGateNameError};
 pub use self::owners::{
     EligibilityLists, Identity, ListFile, ListName, ListsError, MAX_LIST_ENTRIES, MAX_LISTS_BYTES,
 };
