@@ -48,6 +48,8 @@ mod pre_push;
 mod pull_request;
 mod reconcile;
 mod release_workflow;
+#[cfg(unix)] // a FIFO as GITHUB_OUTPUT
+mod review;
 #[cfg(unix)] // process groups, through `ForgeSupervisor`
 mod self_gate;
 mod status;

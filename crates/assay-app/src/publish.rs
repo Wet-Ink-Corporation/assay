@@ -10,6 +10,8 @@
 
 mod bundle;
 mod findings;
+mod ledger;
+mod persisted;
 mod ports;
 mod render;
 mod resolution;
@@ -26,6 +28,11 @@ pub use self::findings::{
     CommentStep, FindingsError, FindingsOutcome, FindingsPublication, FindingsPublished,
     FindingsWritten, MAX_INLINE_COMMENTS, MAX_PRIOR_COMMENTS, publish_findings,
 };
+pub use self::ledger::{LedgerPublish, LedgerPublishError};
+pub use self::persisted::{
+    BundleRefused, PersistOutcome, Persisted, PersistedError, PersistedOutcome, PersistedPorts,
+    PrepareError, PreparedBundle, Unconfirmed, UnknownPersistOutcome, prepare, publish_persisted,
+};
 pub use self::ports::{
     BundleStore, CheckConclusion, CheckName, CheckRun, CheckRunId, CheckState, CheckStatus,
     CheckUpdate, CommentForge, CommentId, EvidenceEntry, EvidencePointer, EvidenceRecord,
@@ -37,10 +44,10 @@ use self::render::{Projection, Summary};
 pub(crate) use self::render::{clean, is_hidden};
 pub(crate) use self::resolution::resolution_note;
 pub(crate) use self::sanitise::Repository;
-use self::write::Pending;
+use self::write::{Basis, Pending, Writer};
 use crate::config::Sha256Digest;
 use crate::decide::{AuthenticatedRun, Refusal};
-use crate::eligibility::GitHubState;
+use crate::eligibility::{GitHubState, IgnoredApproval};
 use crate::plan::PullRequestEvent;
 use crate::rereview::CarrySet;
 
@@ -288,10 +295,14 @@ pub fn publish<F: VerdictForge, L: PublishLedger, B: BundleStore>(
     ports: &PublishPorts<'_, F, L, B>,
 ) -> PublishOutcome<F, L, B> {
     let target = &publication.target;
+    let writer = Writer {
+        forge: ports.forge,
+        ledger: ports.ledger,
+    };
     match publication.verdict {
         Verdict::Silent => Ok(Published::Nothing),
         Verdict::Refused(refusal) => {
-            write::write(target, ports, Pending::Refused(refused(target, refusal)))
+            write::write(target, writer, Pending::Refused(refused(target, refusal)))
         }
         Verdict::Decided(decided) => {
             let inputs = decided.inputs;
@@ -305,16 +316,52 @@ pub fn publish<F: VerdictForge, L: PublishLedger, B: BundleStore>(
                 return Err(PublishError::SnapshotHead);
             }
             let decision = assay_domain::decide(decided.rubric, inputs);
+            let ignored_approvals: Vec<IgnoredApproval> =
+                decided.github.ignored_approvals().collect();
+            let basis = Basis {
+                rubric: decided.rubric,
+                inputs,
+                decision: &decision,
+                tier: decided.run.tier(),
+                classes: &decided.run.tiering().classes,
+                cost: decided.cost,
+                ignored_approvals: &ignored_approvals,
+            };
+            let mut persist = || upload(target, &decided, &decision, ports.bundles);
             write::write(
                 target,
-                ports,
+                writer,
                 Pending::Decided {
-                    decided: &decided,
-                    decision: &decision,
+                    basis,
+                    persist: &mut persist,
                 },
             )
         }
     }
+}
+
+/// Builds and uploads the bundle; its digest when both succeed.
+fn upload<L, B: BundleStore>(
+    target: &Target<'_>,
+    decided: &Decided<'_>,
+    decision: &assay_domain::Decision,
+    bundles: &B,
+) -> Result<Sha256Digest, PersistFailure<L, B::Error>> {
+    let bytes = bundle::bundle(&bundle::Contents {
+        run_uid: target.run_uid,
+        run: decided.run,
+        inputs: decided.inputs,
+        decision,
+        events: decided.events,
+        carry: decided.carry,
+        github: decided.github,
+    })
+    .map_err(PersistFailure::Bundle)?;
+    let artifact = &decided.run.record().bundle_artifact;
+    bundles
+        .upload(artifact, BUNDLE_FILE, &bytes)
+        .map_err(PersistFailure::Upload)?;
+    Ok(Sha256Digest::of(&bytes))
 }
 
 /// The check update for a refusal: `failure` with its reason, keyed by the run and the reason.

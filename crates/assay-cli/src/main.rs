@@ -23,6 +23,8 @@
 //! the config names, and the check stamped `in_progress` under the publish lock.
 //! `assay guard` (#60 ST-2) decides whether the pipeline runs for the event behind the run
 //! and writes the run identity to `GITHUB_OUTPUT`; it exits 1 for an untrusted head (0006).
+//! `assay review --placeholder` (#60 ST-9, D11 A) writes the review job's placeholder outputs
+//! (`stage=not-run`, `cost_aeu=0`, `documents=[]`) to `GITHUB_OUTPUT`.
 //! `assay reconcile [--ledger]` (#73) refuses any run attempt but the first (R3-05), then stops
 //! with exit 2 until the live GitHub transport (#273) exists. With no arguments it exits
 //! successfully without doing anything.
@@ -33,6 +35,7 @@ mod gate;
 mod guard_job;
 mod open_job;
 mod reconcile;
+mod review;
 mod self_gate;
 mod status_local;
 mod status_pr;
@@ -86,6 +89,12 @@ fn main() -> ExitCode {
     }
     if command == "guard" {
         return run_guard(args);
+    }
+    if command == "review" {
+        return match review::run(args, env::var_os(guard_job::OUTPUT)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => report(&error),
+        };
     }
     if command == "status" {
         return match StatusCommand::parse(args) {

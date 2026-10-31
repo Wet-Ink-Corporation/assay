@@ -103,11 +103,11 @@ pub use decide::{
 pub use eligibility::{
     AckedSet, Command, CommandComments, CommandRejected, CommentAction, CommentEvent, CommitRange,
     GitHubState, IgnoredApproval, Ineligible, InvalidTimestamp, IssueComment, LedgerRecords,
-    MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_COMMENT_BYTES, MAX_PUSH_RECORDS,
-    MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, Parsed, PriorWaivers, RangeCommit,
-    RangeListing, RangeObjects, Recorded, SnapshotCommand, SnapshotLedger, SnapshotStep,
-    StateError, StatePorts, StateRequest, Timestamp, TreeId, VoidCause, WEB_FLOW, WaiverBindings,
-    github_state, parse_command, waiver_events,
+    LedgerSnapshot, LedgerSnapshotError, MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS,
+    MAX_COMMENT_BYTES, MAX_PUSH_RECORDS, MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, Parsed,
+    PriorWaivers, RangeCommit, RangeListing, RangeObjects, Recorded, SnapshotCommand,
+    SnapshotLedger, SnapshotStep, StateError, StatePorts, StateRequest, Timestamp, TreeId,
+    VoidCause, WEB_FLOW, WaiverBindings, github_state, parse_command, waiver_events,
 };
 pub use eval::{
     Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,
@@ -166,11 +166,15 @@ pub use publish::{
     BUNDLE_FILE, BundleError, BundleStore, CheckConclusion, CheckName, CheckRun, CheckRunId,
     CheckState, CheckStatus, CheckUpdate, CommentForge, CommentId, CommentStep, Decided,
     EvidenceEntry, EvidencePointer, EvidenceRecord, FindingsError, FindingsOutcome,
-    FindingsPublication, FindingsPublished, FindingsWritten, ForgeStep, InlineComment, LlmEvidence,
-    MAX_BUNDLE_BYTES, MAX_INLINE_COMMENTS, MAX_PRIOR_COMMENTS, PersistFailure, Publication,
-    PublishError, PublishFailure, PublishLedger, PublishOutcome, PublishPorts, Published,
-    SUMMARY_MARKER, Stale, SummaryComment, Target, Unlock, Verdict, VerdictForge, Written, publish,
-    publish_findings,
+    FindingsPublication, FindingsPublished, FindingsWritten, ForgeStep, InlineComment,
+    LedgerPublish, LedgerPublishError, LlmEvidence, MAX_BUNDLE_BYTES, MAX_INLINE_COMMENTS,
+    MAX_PRIOR_COMMENTS, PersistFailure, Publication, PublishError, PublishFailure, PublishLedger,
+    PublishOutcome, PublishPorts, Published, SUMMARY_MARKER, Stale, SummaryComment, Target, Unlock,
+    Verdict, VerdictForge, Written, publish, publish_findings,
+};
+pub use publish::{
+    BundleRefused, PersistOutcome, Persisted, PersistedError, PersistedOutcome, PersistedPorts,
+    PrepareError, PreparedBundle, Unconfirmed, UnknownPersistOutcome, prepare, publish_persisted,
 };
 pub use replay::{
     BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
