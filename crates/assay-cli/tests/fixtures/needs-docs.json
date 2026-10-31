@@ -1,0 +1,13 @@
+{
+  "guard": {
+    "result": "success",
+    "outputs": {
+      "run": "true",
+      "pr": "123456"
+    }
+  },
+  "plan": {
+    "result": "success",
+    "outputs": {}
+  }
+}

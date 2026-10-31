@@ -11,14 +11,23 @@
 //! over any [`assay_app::PrerequisiteForge`], tested with fakes; the binary does not run it
 //! over the live transport yet.
 //! [`OpenCommand`] reads `assay open`'s run from the Actions environment and refuses a re-run.
+//! The pipeline's CI plumbing (#60, 03 §4a): [`RunEnv`] (the run, with the first-attempt guard
+//! [`RunEnv::first_attempt`]), [`Needs`] (`ASSAY_NEEDS`, read strictly), [`Outputs`] (the
+//! `GITHUB_OUTPUT` writer) and [`outputs`], each job's outputs as typed values.
 
+mod ci;
 mod open;
+pub mod outputs;
 mod prerequisites;
 mod pull_request;
 mod revisions;
 mod status;
 mod supervisor;
 
+pub use ci::{
+    EntryProblem, FirstAttempt, JobName, JobResult, MAX_NEEDS_BYTES, Needs, NeedsError,
+    NotFirstAttempt, OutputError, OutputName, Outputs, RunEnv, RunEnvError, RunVariables, Upstream,
+};
 pub use open::{OpenCommand, OpenUsage, OpenVariables};
 pub use prerequisites::{
     PrerequisitesArgs, PrerequisitesRunError, PrerequisitesUsage, prerequisites_exit_code,

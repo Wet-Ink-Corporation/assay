@@ -11,7 +11,8 @@
 //! [`GitHub::pull_files`], [`GitHub::run_created_at`] and [`GitHub::forced`].
 //! [`Api::mint_installation_token`] mints the narrowed token a job's [`GitHub`] is built with.
 //! Every response is decoded into a wire DTO and converted, and data the adapter cannot read
-//! exactly is refused ([`ForgeError`], wi-b5affa).
+//! exactly is refused ([`ForgeError`], wi-b5affa). [`EventPayload::read`] reads the event
+//! behind a pipeline run from its payload file the same way (#60).
 
 mod api;
 mod artifacts;
@@ -21,6 +22,7 @@ mod command_comments;
 mod comments;
 mod dto;
 mod error;
+mod event;
 mod gh;
 mod identity;
 mod ledger;
@@ -41,6 +43,10 @@ use assay_app::{AppId, UserId};
 pub use api::{Api, MAX_LIST_ITEMS};
 pub use artifacts::BundleFetchError;
 pub use error::{ForgeError, Operation};
+pub use event::{
+    DispatchPayload, EventName, EventPayload, EventPayloadError, HeadRepository, MAX_EVENT_BYTES,
+    ParseEventNameError, PullRequestAction, PullRequestPayload,
+};
 pub use gh::{
     GH_DOWNLOAD_TIMEOUT, GH_OUTPUT_CAP, GH_TIMEOUT, GhApi, GhCall, GhDownloadError, GhEnvironment,
     GhError, GhRunner, GhSetupError, GhToken, InvalidToken,
