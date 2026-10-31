@@ -35,6 +35,12 @@ mod guard_job;
 mod layering;
 mod layout;
 mod open;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod open_fakes;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod open_job;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod open_run;
 mod plan;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod pre_push;
