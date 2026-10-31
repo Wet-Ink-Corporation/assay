@@ -10,6 +10,7 @@ mod job;
 
 use std::borrow::Cow;
 use std::convert::Infallible;
+use std::str::FromStr;
 
 use assay_domain::GateConclusion;
 use serde_json::Value;
@@ -144,6 +145,44 @@ impl GateError {
         }
     }
 }
+
+/// The gate errors without a field, which [`GateError::from_str`] finds by their detail.
+const FIELDLESS: [GateError; 9] = [
+    GateError::Signal,
+    GateError::Timeout,
+    GateError::OutputTooLarge,
+    GateError::MissingDocument,
+    GateError::DocumentTooLarge,
+    GateError::InvalidDocument,
+    GateError::NotRun,
+    GateError::Skipped,
+    GateError::RatchetDegraded,
+];
+
+impl FromStr for GateError {
+    type Err = ParseGateErrorError;
+
+    /// Reads a gate error back from its reason, `gate-error:<detail>`, exactly as its
+    /// `Display` writes it: an exit code in canonical decimal (`exit-3`, never `exit-03`).
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let detail = text
+            .strip_prefix("gate-error:")
+            .ok_or(ParseGateErrorError)?;
+        let exit = detail
+            .strip_prefix("exit-")
+            .and_then(|code| code.parse().ok())
+            .map(Self::Exit);
+        exit.into_iter()
+            .chain(FIELDLESS)
+            .find(|error| error.detail() == detail)
+            .ok_or(ParseGateErrorError)
+    }
+}
+
+/// Text that is not a gate error's reason, `gate-error:<detail>`, exactly as assay writes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("not a gate error's reason as assay writes it, `gate-error:<detail>`")]
+pub struct ParseGateErrorError;
 
 /// One gate's result in one job, as that job reports it. `decide` reads the reports of every
 /// job into the domain's [`GateReport`](assay_domain::GateReport).
@@ -389,7 +428,61 @@ fn gate_conclusion(gate: &GateName, document: &Value) -> Option<GateConclusion> 
 
 #[cfg(test)]
 mod tests {
-    use super::GateError;
+    use super::{GateError, ParseGateErrorError};
+
+    #[test]
+    fn a_gate_error_reads_back_from_its_reason() {
+        let errors = [
+            GateError::Exit(0),
+            GateError::Exit(3),
+            GateError::Exit(-1),
+            GateError::Exit(i32::MAX),
+            GateError::Exit(i32::MIN),
+            GateError::Signal,
+            GateError::Timeout,
+            GateError::OutputTooLarge,
+            GateError::MissingDocument,
+            GateError::DocumentTooLarge,
+            GateError::InvalidDocument,
+            GateError::NotRun,
+            GateError::Skipped,
+            GateError::RatchetDegraded,
+        ];
+
+        for error in errors {
+            assert_eq!(
+                error.to_string().parse::<GateError>(),
+                Ok(error),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_reason_exactly_as_written_reads_as_a_gate_error() {
+        for text in [
+            "",
+            "gate-error:",
+            "timeout",
+            "gate-error:Timeout",
+            "gate-error:timeout ",
+            " gate-error:timeout",
+            "GATE-ERROR:timeout",
+            "gate-error:exit-",
+            "gate-error:exit-01",
+            "gate-error:exit-+1",
+            "gate-error:exit--0",
+            "gate-error:exit-2147483648",
+            "gate-error:exit-3x",
+            "gate-error:job-failed",
+        ] {
+            assert_eq!(
+                text.parse::<GateError>(),
+                Err(ParseGateErrorError),
+                "{text:?}"
+            );
+        }
+    }
 
     #[test]
     fn a_gate_errors_detail_is_what_follows_gate_error_in_its_reason() {

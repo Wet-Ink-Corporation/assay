@@ -18,6 +18,14 @@
 //! config of at most 1 MiB, each re-encoded compact from what the validator read under
 //! [`assay_app::MAX_DOCUMENT_BYTES`], so no larger. Loops are over base config's plugins and
 //! their reports only: O(plugins) writes.
+//!
+//! The job's `gates` output (#60 ST-6, 03 §4a) is appended to the regular file `GITHUB_OUTPUT`
+//! names, opened (never created) before anything runs: one entry per gate in file order, with
+//! the sha256 of the exact bytes of each concluded gate's document. The documents and the
+//! output are all encoded before anything is written, the documents are written next and the
+//! output last, so a job that cannot encode or write its documents appends nothing.
+
+mod results;
 
 use std::convert::Infallible;
 use std::ffi::OsString;
@@ -30,16 +38,18 @@ use assay_app::{
     Adapter, BuildJob, ContractSchemaError, ContractValidator, GateJob, GateJobOutcome,
     GateJobReport, GateRun, GateRunner, Plugin, account_for_required, run_gates,
 };
-use assay_cli::ForgeSupervisor;
+use assay_cli::outputs::GatesOutputError;
+use assay_cli::{ForgeSupervisor, OutputError};
 use assay_domain::GateConclusion;
 use assay_forge::process::{GroupKiller, KillerError, ProcessError};
 use assay_gates::{
     ExecAdapter, ExecError, ExecLimits, ExecSettings, ExecSettingsError, GateEnvironment,
     TemperError, TemperSettingsError, TemperStepSettings, TemperTestAdapter,
 };
-use tempfile::{NamedTempFile, TempDir};
+use tempfile::TempDir;
 
 use crate::doctor::{self, DoctorCliError, write_chain};
+use crate::guard_job::{OUTPUT, open_output};
 use crate::self_gate::RUN_KEY;
 
 /// The only job `assay gate` runs so far.
@@ -88,6 +98,14 @@ pub(crate) enum GateCliError {
     Encode(serde_json::Error),
     /// The output directory or a document could not be written.
     Write { path: PathBuf, source: io::Error },
+    /// `GITHUB_OUTPUT` is not set.
+    OutputVariable,
+    /// `GITHUB_OUTPUT` could not be opened for appending, or is not a regular file.
+    OutputFile(io::Error),
+    /// The `gates` output could not be encoded; nothing was written.
+    GatesOutput(GatesOutputError),
+    /// The `gates` output could not be appended.
+    Output(OutputError),
 }
 
 impl fmt::Display for GateCliError {
@@ -140,6 +158,10 @@ impl fmt::Display for GateCliError {
             Self::NoDocument(plugin) => write!(f, "gate `{plugin}` concluded without a document"),
             Self::Encode(source) => write!(f, "cannot encode a document: {source}"),
             Self::Write { path, source } => write!(f, "cannot write {}: {source}", path.display()),
+            Self::OutputVariable => write!(f, "{OUTPUT} is not set"),
+            Self::OutputFile(source) => write!(f, "opening {OUTPUT}: {source}"),
+            Self::GatesOutput(source) => write!(f, "{source}"),
+            Self::Output(source) => write_chain(f, source),
         }
     }
 }
@@ -149,6 +171,8 @@ impl fmt::Display for GateCliError {
 pub(crate) struct GateVariables {
     /// `ASSAY_RUN_KEY`: the run the documents belong to.
     pub(crate) run_key: Option<OsString>,
+    /// `GITHUB_OUTPUT`: the file the job's outputs are appended to.
+    pub(crate) output: Option<OsString>,
     /// Every variable; only the gate allowlist reaches a gate.
     pub(crate) vars: Vec<(OsString, OsString)>,
 }
@@ -234,12 +258,15 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, GateCliError>
     }
 }
 
-/// Runs the job named by `args` (after `gate`) and writes its documents.
+/// Runs the job named by `args` (after `gate`), writes its documents and appends its `gates`
+/// output.
 ///
 /// # Errors
 ///
-/// [`GateCliError`] when the arguments, the variables, the paths or the config are refused,
-/// before anything runs, or when the documents cannot be written; nothing is then promised.
+/// [`GateCliError`] when the arguments, the variables, `GITHUB_OUTPUT`, the paths or the
+/// config are refused, before anything runs, or when the documents or the output cannot be
+/// encoded or written; nothing is then promised, and no output is appended unless every
+/// document was written.
 pub(crate) fn run(
     args: impl Iterator<Item = OsString>,
     variables: GateVariables,
@@ -254,8 +281,10 @@ pub(crate) fn run(
         .ok_or(GateCliError::RunKey)?
         .into_string()
         .map_err(|_not_unicode| GateCliError::RunKeyNotUnicode)?;
+    let output = variables.output.ok_or(GateCliError::OutputVariable)?;
     let Placed { config, head, out } =
         refuse_paths(&args.config, &args.head, &absolute(&args.out)?)?;
+    let output = open_output(output).map_err(GateCliError::OutputFile)?;
     let config = doctor::read_pins(&config).map_err(GateCliError::Config)?;
     let validator = ContractValidator::new().map_err(GateCliError::Validator)?;
     let killer = GroupKiller::system().map_err(GateCliError::Killer)?;
@@ -267,7 +296,7 @@ pub(crate) fn run(
     let mut runner = TestGates::new(&head, environment, run_key, (killer, &scratch))?;
     let mut reports = run_gates(&config, TEST, &mut runner, &validator);
     account_for_required(&config, TEST, &mut reports);
-    write_documents(&out, &reports)?;
+    results::write(&out, &reports, output)?;
     Ok(Ran {
         reports,
         scratch_left: close(scratch),
@@ -343,36 +372,6 @@ struct Placed {
     config: PathBuf,
     head: PathBuf,
     out: PathBuf,
-}
-
-/// Creates `out` and writes each concluded gate's document there as `<plugin>.json`.
-fn write_documents(out: &Path, reports: &[GateJobReport]) -> Result<(), GateCliError> {
-    let failed = |path: &Path| {
-        let path = path.to_path_buf();
-        move |source| GateCliError::Write { path, source }
-    };
-    fs::create_dir(out).map_err(|source| match source.kind() {
-        io::ErrorKind::AlreadyExists => GateCliError::OutExists(out.to_path_buf()),
-        _ => failed(out)(source),
-    })?;
-    for report in reports {
-        if !matches!(report.outcome, GateJobOutcome::Concluded(_)) {
-            continue;
-        }
-        let name = report.plugin.as_str();
-        let document = report
-            .document
-            .as_ref()
-            .ok_or_else(|| GateCliError::NoDocument(name.to_owned()))?;
-        let bytes = serde_json::to_vec(document).map_err(GateCliError::Encode)?;
-        // A plugin name is `[a-z0-9-]`, so it is one path segment.
-        let path = out.join(format!("{name}.json"));
-        let mut file = NamedTempFile::new_in(out).map_err(failed(out))?;
-        file.write_all(&bytes).map_err(failed(&path))?;
-        file.persist_noclobber(&path)
-            .map_err(|error| failed(&path)(error.error))?;
-    }
-    Ok(())
 }
 
 /// Removes the scratch directory, saying where it is left when it cannot be removed.
