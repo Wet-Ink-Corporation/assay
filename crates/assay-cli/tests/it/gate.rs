@@ -15,10 +15,10 @@ use tempfile::TempDir;
 
 const DIGEST: &str = "sha256:dc7c1d8e3ccab68cfdb828ce40a446c3913f7172f899ffe3f439839cfd917a8b";
 const PIN: &str = "git:0123456789abcdef0123456789abcdef01234567";
-const RUN_KEY: &str = "sha256:gate-test";
+pub(crate) const RUN_KEY: &str = "sha256:gate-test";
 
 /// A temper plugin whose declared steps are `steps`, as `(name, job, shell script)`.
-fn temper(steps: &[(&str, &str, &str)]) -> String {
+pub(crate) fn temper(steps: &[(&str, &str, &str)]) -> String {
     let head = format!(
         "[[plugin]]\nname = \"temper\"\nadapter = \"builtin:temper\"\npin = \"{PIN}\"\n\
          required = true\n"
@@ -34,16 +34,16 @@ fn temper(steps: &[(&str, &str, &str)]) -> String {
 
 /// A gates job's scratch: a head tree, a base config outside it and an output path not yet
 /// there.
-struct Job {
-    dir: TempDir,
-    head: PathBuf,
-    config: PathBuf,
-    out: PathBuf,
+pub(crate) struct Job {
+    pub(crate) dir: TempDir,
+    pub(crate) head: PathBuf,
+    pub(crate) config: PathBuf,
+    pub(crate) out: PathBuf,
 }
 
 impl Job {
     /// A job whose base config holds `plugins` after its `[assay]` table.
-    fn new(plugins: &str) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn new(plugins: &str) -> Result<Self, Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
         let head = dir.path().join("head");
         fs::create_dir(&head)?;
@@ -62,12 +62,12 @@ impl Job {
     }
 
     /// `assay gate <job> --config <config> --head <head> --out <out>`.
-    fn run(&self, job: &str) -> Result<Output, Box<dyn Error>> {
+    pub(crate) fn run(&self, job: &str) -> Result<Output, Box<dyn Error>> {
         self.run_with(job, &self.config, Some(RUN_KEY))
     }
 
     /// As [`Job::run`], with `config` and `run_key` (unset when `None`).
-    fn run_with(
+    pub(crate) fn run_with(
         &self,
         job: &str,
         config: &Path,
@@ -93,7 +93,7 @@ impl Job {
     }
 
     /// The names of the files in the output directory, sorted.
-    fn written(&self) -> Result<Vec<String>, Box<dyn Error>> {
+    pub(crate) fn written(&self) -> Result<Vec<String>, Box<dyn Error>> {
         let mut names = fs::read_dir(&self.out)?
             .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
             .collect::<Result<Vec<String>, std::io::Error>>()?;
@@ -121,7 +121,7 @@ impl Job {
     }
 
     /// Whether `marker` exists in the head tree (a step leaves it to show it ran).
-    fn ran(&self, marker: &str) -> bool {
+    pub(crate) fn ran(&self, marker: &str) -> bool {
         self.head.join(marker).exists()
     }
 }

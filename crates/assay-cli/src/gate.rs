@@ -9,10 +9,12 @@
 //! `gates-lint` and `gates-static` are named but refused: their inputs (the object-only repository
 //! with base and head, and Z2s's merge base) are not wired into any job yet.
 //!
-//! The base config is read from outside the head tree (05 T3). `--out` must not exist: it is
-//! checked before anything runs and created only after the gates ran (one that appeared
-//! meanwhile is refused), so nothing a test wrote is in it, and each document goes in through a dot-named temporary file that is
-//! persisted without replacing anything. The output is bounded: one document per plugin of a
+//! The base config is read from outside the head tree (05 T3). `--out` must not exist and its
+//! parent must be named by its resolved path (no symlink, no `..`): it is checked before
+//! anything runs and created only after the gates ran (one that appeared meanwhile is
+//! refused), so nothing a test wrote before the gates finished is in it; a process that
+//! escaped its group with `setsid` is 05 T6's accepted residual. Each document goes in through
+//! a dot-named temporary file that is persisted without replacing anything. The output is bounded: one document per plugin of a
 //! config of at most 1 MiB, each re-encoded compact from what the validator read under
 //! [`assay_app::MAX_DOCUMENT_BYTES`], so no larger. Loops are over base config's plugins and
 //! their reports only: O(plugins) writes.
@@ -66,6 +68,8 @@ pub(crate) enum GateCliError {
     OutExists(PathBuf),
     /// `--out` is inside `--head`, where the PR's code could write first.
     OutInHead(PathBuf),
+    /// `--out`'s parent is not written resolved: a symlink or `..` is on the way.
+    OutNotResolved { given: PathBuf, resolved: PathBuf },
     /// The base config could not be read or was refused.
     Config(DoctorCliError),
     /// No process-group killer is available on this host.
@@ -117,6 +121,13 @@ impl fmt::Display for GateCliError {
                 f,
                 "the output directory {} is inside the head tree",
                 path.display()
+            ),
+            Self::OutNotResolved { given, resolved } => write!(
+                f,
+                "the output directory {} passes through a symlink or `..` (its parent is {}); \
+                 name it by its resolved path",
+                given.display(),
+                resolved.display()
             ),
             Self::Config(source) => write!(f, "{source}"),
             Self::Killer(source) => write_chain(f, source),
@@ -243,8 +254,8 @@ pub(crate) fn run(
         .ok_or(GateCliError::RunKey)?
         .into_string()
         .map_err(|_not_unicode| GateCliError::RunKeyNotUnicode)?;
-    let out = absolute(&args.out)?;
-    let (config, head) = refuse_paths(&args.config, &args.head, &out)?;
+    let Placed { config, head, out } =
+        refuse_paths(&args.config, &args.head, &absolute(&args.out)?)?;
     let config = doctor::read_pins(&config).map_err(GateCliError::Config)?;
     let validator = ContractValidator::new().map_err(GateCliError::Validator)?;
     let killer = GroupKiller::system().map_err(GateCliError::Killer)?;
@@ -253,7 +264,7 @@ pub(crate) fn run(
         source,
     })?;
     let environment = GateEnvironment::from_vars(variables.vars);
-    let mut runner = TestGates::new(&head, &environment, run_key, (killer, &scratch))?;
+    let mut runner = TestGates::new(&head, environment, run_key, (killer, &scratch))?;
     let mut reports = run_gates(&config, TEST, &mut runner, &validator);
     account_for_required(&config, TEST, &mut reports);
     write_documents(&out, &reports)?;
@@ -282,14 +293,10 @@ fn canonical(path: &Path) -> Result<PathBuf, GateCliError> {
 /// Refuses, before anything runs, a head tree that is not a directory, a config that is not a
 /// regular file outside it, and an `out` that exists in any form (a symlink included), whose
 /// parent is not a directory, or that is inside the head tree. Containment is compared on
-/// paths with every symlink resolved (`out`'s parent, since `out` does not exist yet). Returns
-/// the config's and the head tree's resolved paths, the ones used: a head tree's path with `..`
-/// in it would put the git ceiling (its parent) below it.
-fn refuse_paths(
-    config: &Path,
-    head: &Path,
-    out: &Path,
-) -> Result<(PathBuf, PathBuf), GateCliError> {
+/// paths with every symlink resolved; `out`'s parent (it does not exist yet) must already be
+/// written resolved, with no symlink and no `..`. Returns the resolved paths, the ones used: a
+/// head tree's path with `..` in it would put the git ceiling (its parent) below it.
+fn refuse_paths(config: &Path, head: &Path, out: &Path) -> Result<Placed, GateCliError> {
     let head = canonical(head)?;
     if !head.is_dir() {
         return Err(GateCliError::HeadNotDir(head));
@@ -315,11 +322,27 @@ fn refuse_paths(
     let (Some(parent), Some(name)) = (out.parent(), out.file_name()) else {
         return Err(GateCliError::Usage);
     };
-    let placed = canonical(parent)?.join(name);
-    if placed.starts_with(&head) {
-        return Err(GateCliError::OutInHead(placed));
+    let resolved = canonical(parent)?;
+    // A symlink or `..` on the way is refused rather than followed: a test could retarget a
+    // symlink between this check and the writes.
+    if resolved != parent {
+        return Err(GateCliError::OutNotResolved {
+            given: out.to_path_buf(),
+            resolved,
+        });
     }
-    Ok((config, head))
+    let out = resolved.join(name);
+    if out.starts_with(&head) {
+        return Err(GateCliError::OutInHead(out));
+    }
+    Ok(Placed { config, head, out })
+}
+
+/// The job's paths once checked, every symlink resolved: the ones it uses.
+struct Placed {
+    config: PathBuf,
+    head: PathBuf,
+    out: PathBuf,
 }
 
 /// Creates `out` and writes each concluded gate's document there as `<plugin>.json`.
@@ -371,21 +394,15 @@ impl TestGates {
     /// The adapters, run from `head` with `environment`; `exec` documents go under `scratch`.
     fn new(
         head: &Path,
-        environment: &GateEnvironment,
+        environment: GateEnvironment,
         run_key: String,
         (killer, scratch): (GroupKiller, &TempDir),
     ) -> Result<Self, GateCliError> {
         // Each settings value stores its own copy of the head tree's path.
-        let steps = TemperStepSettings::new(head.to_path_buf(), environment, run_key)
+        let steps = TemperStepSettings::new(head.to_path_buf(), &environment, run_key)
             .map_err(GateCliError::TemperSettings)?;
-        // The exec settings store their own environment; the temper settings copied theirs.
-        let exec = ExecSettings::new(
-            head,
-            scratch.path(),
-            environment.clone(),
-            ExecLimits::DEFAULT,
-        )
-        .map_err(GateCliError::ExecSettings)?;
+        let exec = ExecSettings::new(head, scratch.path(), environment, ExecLimits::DEFAULT)
+            .map_err(GateCliError::ExecSettings)?;
         Ok(Self {
             // Each adapter owns a supervisor; the killer is a program path.
             temper: TemperTestAdapter::new(ForgeSupervisor::new(killer.clone()), steps),
