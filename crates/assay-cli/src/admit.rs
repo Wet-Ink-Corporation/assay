@@ -19,9 +19,9 @@ use std::path::PathBuf;
 
 use assay_app::{
     AdmitPorts, AdmitRequest, Admitted, BundleSource, Carry, Clock, CommandComments, CommitId,
-    ContractValidator, EntryKind, Forge, Ledger, LedgerRefs, MAX_SUPPRESS_BYTES, NoEvents,
-    PlanStage, PriorCarry, PullRequestObjects, RangeRequest, Sha256Digest, TargetRequest, admit,
-    base_identities, plan_stage, prior_head, range_identities, read_pushes, read_state,
+    ContractValidator, EntryKind, EvidencePointer, Forge, Ledger, LedgerRefs, MAX_SUPPRESS_BYTES,
+    NoEvents, PlanStage, PriorCarry, PullRequestObjects, RangeRequest, Sha256Digest, TargetRequest,
+    admit, base_identities, plan_stage, prior_head, range_identities, read_pushes, read_state,
     review_target,
 };
 use assay_forge::git::GitError;
@@ -175,11 +175,12 @@ where
         },
     )
     .map_err(AdmitRunError::Range)?;
-    let carry = carry::<L, R, B, C, F, H>(job, objects, ports.ledger, ports.bundles)?;
+    let decided = carry::<L, R, B, C, F, H>(job, objects, ports.ledger, ports.bundles)?;
     let request = AdmitRequest {
         run_uid,
         plan: job.document,
-        carry,
+        carry: decided.carry,
+        prior: decided.prior.as_ref(),
         identities: &identities,
         author: identity.author,
         range: &range,
@@ -197,6 +198,13 @@ where
     admit(ports, &request, job.validator).map_err(|error| AdmitRunError::Admit(Box::new(error)))
 }
 
+/// The carry and the ledger's evidence pointer it was decided on, which `admit` checks the
+/// state it reads against.
+struct Decided {
+    carry: Carry,
+    prior: Option<EvidencePointer>,
+}
+
 /// Whether the previous completed run's open findings carry (04 §7): its head is read from its
 /// bundle through the ledger's evidence pointer (D6 A), and [`review_target`] decides.
 ///
@@ -207,7 +215,7 @@ fn carry<L, R, B, C, F, H>(
     objects: &ForgePullRequest<'_>,
     ledger: &L,
     bundles: &B,
-) -> Result<Carry, AdmitRunFailure<L, R, B, C, F, H>>
+) -> Result<Decided, AdmitRunFailure<L, R, B, C, F, H>>
 where
     L: Ledger,
     R: LedgerRefs,
@@ -240,7 +248,10 @@ where
     if target.range_diff_failure().is_some_and(group_may_run) {
         return Err(AdmitRunError::RangeDiffKilled);
     }
-    Ok(target.carry())
+    Ok(Decided {
+        carry: target.carry(),
+        prior: state.evidence,
+    })
 }
 
 /// Whether `error` leaves a git process group that may still be running: the job must stop.

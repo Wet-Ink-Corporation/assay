@@ -1,7 +1,7 @@
 //! `admit`'s outputs (03 §4a, 06 §1, #60 ST-11): what the admission decided ([`AdmitOutputs`]),
 //! and the review slot it holds for the run, which `release` releases ([`HeldSlot`]).
 
-use assay_app::{Admission, Admitted, CommitId, Sha256Digest, Slot, TierDegrade};
+use assay_app::{Admission, Admitted, CommitId, Sha256Digest, Slot, SlotHold, TierDegrade};
 use assay_domain::{Aeu, Tier};
 
 use super::{Read, flag_word};
@@ -48,11 +48,7 @@ impl AdmitOutputs {
     #[must_use]
     pub fn held(&self) -> Option<HeldSlot> {
         match &self.admission {
-            Admission::Spend(spend) => Some(HeldSlot {
-                slot: spend.hold.slot,
-                // The outputs own the commit they write.
-                lease_commit: spend.hold.lease_commit.clone(),
-            }),
+            Admission::Spend(spend) => Some(HeldSlot::from(&spend.hold)),
             Admission::NoSpend(_) | Admission::Reused(_) | Admission::Deferred(_) => None,
         }
     }
@@ -129,6 +125,17 @@ pub struct HeldSlot {
     pub slot: Slot,
     /// The lease's commit.
     pub lease_commit: CommitId,
+}
+
+impl From<&SlotHold> for HeldSlot {
+    /// The slot `hold` took and the commit its ref points at.
+    fn from(hold: &SlotHold) -> Self {
+        Self {
+            slot: hold.slot,
+            // The outputs own the commit they write; the hold keeps its own.
+            lease_commit: hold.lease_commit.clone(),
+        }
+    }
 }
 
 impl HeldSlot {

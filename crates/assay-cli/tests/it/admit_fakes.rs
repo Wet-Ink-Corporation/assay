@@ -16,7 +16,36 @@ use assay_app::{
 use assay_cli::FetchCommits;
 use assay_domain::RunUid;
 
-use crate::open_fakes::Refused;
+use crate::open_fakes::{MemoryLedger, MemoryRefs, Refused};
+
+/// A ledger that refuses every write once `refs` holds a ref: admit fails after it took the
+/// slot, when it writes the `reserved` record.
+pub(crate) struct ShutOnceHeld<'a> {
+    /// The files, read and written while no slot is held.
+    pub(crate) ledger: &'a MemoryLedger,
+    /// The slots' refs.
+    pub(crate) refs: &'a MemoryRefs,
+}
+
+impl Ledger for ShutOnceHeld<'_> {
+    type Error = Refused;
+
+    fn read(&self, path: &LedgerPath) -> Result<Option<LedgerFile>, Refused> {
+        self.ledger.read(path)
+    }
+
+    fn write(
+        &self,
+        path: &LedgerPath,
+        contents: &[u8],
+        condition: &WriteCondition,
+    ) -> Result<WriteOutcome, Refused> {
+        if !self.refs.names().is_empty() {
+            return Err(Refused("a ledger write once a slot is held"));
+        }
+        self.ledger.write(path, contents, condition)
+    }
+}
 
 /// 2026-10-31T12:00:00Z, where the fixed clock stands.
 pub(crate) const NOW_SECS: u64 = 1_793_448_000;

@@ -315,8 +315,6 @@ fn run_gate(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     }
 }
 
-/// `assay doctor`: exit 0 when every check passes, 1 when one fails or the token is past its
-/// recorded expiry, 2 when they cannot run.
 /// `assay doctor`: its profile, its prerequisites or its checks, as the first argument says.
 fn run_doctor_command(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let mut args = args.peekable();
@@ -337,6 +335,8 @@ fn run_doctor_command(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCod
     run_doctor(args)
 }
 
+/// `assay doctor`: exit 0 when every check passes, 1 when one fails or the token is past its
+/// recorded expiry, 2 when they cannot run.
 fn run_doctor(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let variables = doctor::DoctorVariables {
         token: env::var_os(doctor::OAUTH_TOKEN),

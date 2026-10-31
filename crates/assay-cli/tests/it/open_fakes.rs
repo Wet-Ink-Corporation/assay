@@ -257,6 +257,7 @@ pub(crate) struct MemoryRefs {
     refs: RefCell<BTreeMap<String, RefTip>>,
     commits: Cell<u64>,
     deleted: RefCell<Vec<String>>,
+    created: RefCell<Vec<(String, CommitId)>>,
 }
 
 impl MemoryRefs {
@@ -268,6 +269,11 @@ impl MemoryRefs {
     /// The refs deleted, in order.
     pub(crate) fn deleted(&self) -> Vec<String> {
         self.deleted.borrow().clone()
+    }
+
+    /// Every ref created, with the commit it pointed at, in order.
+    pub(crate) fn created(&self) -> Vec<(String, CommitId)> {
+        self.created.borrow().clone()
     }
 }
 
@@ -283,6 +289,9 @@ impl LedgerRefs for MemoryRefs {
         let commit: CommitId = format!("{:040x}", self.commits.get())
             .parse()
             .map_err(|_not_an_id| Refused("a commit id"))?;
+        self.created
+            .borrow_mut()
+            .push((name.as_str().to_owned(), commit.clone()));
         refs.insert(
             name.as_str().to_owned(),
             RefTip {

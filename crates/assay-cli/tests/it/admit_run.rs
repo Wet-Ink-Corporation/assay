@@ -11,8 +11,9 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use assay_app::{
-    ContractValidator, CostKind, CostRecord, CostRole, EvidencePointer, LedgerTime, PrState,
-    PriorCarryError, Role, RoleCost, Sha256Digest, UserId, append_cost, update_state,
+    AdmitError, ContractValidator, CostKind, CostRecord, CostRole, EvidencePointer, Ledger,
+    LedgerTime, PrState, PriorCarryError, PullRequestObjects, Role, RoleCost, Sha256Digest, UserId,
+    append_cost, update_state,
 };
 use assay_cli::outputs::{AdmitOutputs, Identity, PlanOutputs, Trigger};
 use assay_cli::{
@@ -20,11 +21,11 @@ use assay_cli::{
     PACK_FILE, PlanJob, PlanPorts, RUN_FILE, RunEnv, RunVariables, run_admit, run_plan,
 };
 use assay_domain::{Aeu, ContentHash, RunUid, Tier};
-use assay_forge::git::TreeLimits;
+use assay_forge::git::{GitEnvironment, GitLimits, ObjectRepo, TreeLimits};
 use tempfile::TempDir;
 
 use crate::admit_fakes::{
-    Commits, Fetches, NOW_SECS, NoBundles, NoComments, StillClock, Untouched,
+    Commits, Fetches, NOW_SECS, NoBundles, NoComments, ShutOnceHeld, StillClock, Untouched,
 };
 use crate::open_fakes::{MemoryLedger, MemoryRefs, Refused};
 use crate::plan::{Counting, Pr, pr};
@@ -142,6 +143,16 @@ type Ran =
 impl World {
     /// Admits `planned` over this world.
     fn admit(&self, planned: &Planned) -> Result<Ran, Box<dyn Error>> {
+        self.admit_over(planned, &self.ledger, &OutDir::new(&planned.out)?)
+    }
+
+    /// Admits `planned` over this world's refs and `ledger` into `out`.
+    fn admit_over(
+        &self,
+        planned: &Planned,
+        ledger: &impl Ledger<Error = Refused>,
+        out: &OutDir,
+    ) -> Result<Ran, Box<dyn Error>> {
         let objects = ForgePullRequest::new(
             &planned.pr.repo,
             TreeLimits::default(),
@@ -155,18 +166,101 @@ impl World {
             fetch: &self.fetches,
             objects: &objects,
             forge: &forge,
-            ledger: &self.ledger,
+            ledger,
             refs: &self.refs,
             bundles: &self.bundles,
             comments: &NoComments,
             clock: &mut StillClock::new(),
         };
-        Ok(run_admit(
-            planned.job(&planned.document),
-            ports,
-            &OutDir::new(&planned.out)?,
-        ))
+        Ok(run_admit(planned.job(&planned.document), ports, out))
     }
+}
+
+/// An object repository holding no object, so any read of it fails: a run that must read
+/// nothing is given it.
+fn empty_repo() -> Result<(TempDir, ObjectRepo), Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    let repo = ObjectRepo::init(
+        scratch.path().join("empty.git"),
+        GitEnvironment::from_process_env()?,
+        GitLimits::default(),
+    )?;
+    Ok((scratch, repo))
+}
+
+/// The one ref `refs` created and the commit it pointed at.
+fn created_slot(refs: &MemoryRefs) -> Result<(String, String), Box<dyn Error>> {
+    let [(name, commit)] =
+        <[_; 1]>::try_from(refs.created()).map_err(|_not_one| "exactly one ref created")?;
+    Ok((name, commit.to_string()))
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_spend_whose_documents_cannot_be_written_still_reports_its_slot() -> Result<(), Box<dyn Error>>
+{
+    let planned = Planned::new(false)?;
+    let world = World::default();
+    let out = OutDir::new(&planned.out)?;
+    // `--out` appears after it was checked, so admit cannot create it once it holds the slot.
+    fs::create_dir(&planned.out)?;
+
+    let refused = world.admit_over(&planned, &world.ledger, &out)?;
+
+    let Err(AdmitRunError::Write {
+        held: Some(held), ..
+    }) = &refused
+    else {
+        return Err(format!("not a write failure holding a slot: {refused:?}").into());
+    };
+    let (name, commit) = created_slot(&world.refs)?;
+    assert_eq!(name, format!("refs/heads/slot-{}", held.slot));
+    assert_eq!(world.refs.names(), [name], "the slot is still held");
+    let written: Vec<(&str, String)> = held
+        .outputs()
+        .into_iter()
+        .map(|(output, value)| (output.as_str(), value))
+        .collect();
+    assert_eq!(
+        written,
+        [("slot", held.slot.to_string()), ("lease_commit", commit)]
+    );
+    assert_eq!(
+        refused
+            .as_ref()
+            .err()
+            .and_then(AdmitRunError::held)
+            .as_ref(),
+        Some(held),
+        "the job reports the slot the write failure holds"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_failure_inside_the_admission_after_the_slot_reports_the_slot() -> Result<(), Box<dyn Error>> {
+    let planned = Planned::new(false)?;
+    let world = World::default();
+    let ledger = ShutOnceHeld {
+        ledger: &world.ledger,
+        refs: &world.refs,
+    };
+
+    let refused = world.admit_over(&planned, &ledger, &OutDir::new(&planned.out)?)?;
+
+    let error = refused.err().ok_or("the reservation cannot be written")?;
+    assert_matches!(
+        &error,
+        AdmitRunError::Admit(admit) if matches!(**admit, AdmitError::AfterSlot(_)),
+        "{error:?}"
+    );
+    let held = error.held().ok_or("a failure after the slot reports it")?;
+    let (name, commit) = created_slot(&world.refs)?;
+    assert_eq!(name, format!("refs/heads/slot-{}", held.slot));
+    assert_eq!(held.lease_commit.to_string(), commit);
+    assert!(!planned.out.exists(), "no document is written");
+    Ok(())
 }
 
 /// The names of `outputs`, in order.
@@ -191,11 +285,8 @@ fn value(outputs: &AdmitOutputs, name: OutputName) -> Option<String> {
 fn a_draft_passes_the_plan_through_and_reads_nothing() -> Result<(), Box<dyn Error>> {
     let planned = Planned::new(true)?;
     let untouched = Untouched::default();
-    let objects = ForgePullRequest::new(
-        &planned.pr.repo,
-        TreeLimits::default(),
-        Duration::from_secs(60),
-    );
+    let (_scratch, empty) = empty_repo()?;
+    let objects = ForgePullRequest::new(&empty, TreeLimits::default(), Duration::from_secs(60));
     let ports = AdmitJobPorts {
         fetch: &untouched,
         objects: &objects,
@@ -214,6 +305,10 @@ fn a_draft_passes_the_plan_through_and_reads_nothing() -> Result<(), Box<dyn Err
     )?;
 
     assert_eq!(untouched.calls(), Vec::<&str>::new(), "no port is read");
+    assert!(
+        objects.list(&planned.identity.base_sha, None).is_err(),
+        "the objects it was given answer no read"
+    );
     assert_eq!(planned.written(RUN_FILE)?, planned.document);
     assert!(!planned.out.join(PACK_FILE).exists(), "no pack for a draft");
     let written: Vec<(&str, String)> = outputs
@@ -243,11 +338,8 @@ fn a_plan_artifact_that_is_not_plan_s_digest_takes_no_slot() -> Result<(), Box<d
     let mut tampered = planned.document.clone();
     tampered.push(b'\n');
     let untouched = Untouched::default();
-    let objects = ForgePullRequest::new(
-        &planned.pr.repo,
-        TreeLimits::default(),
-        Duration::from_secs(60),
-    );
+    let (_scratch, empty) = empty_repo()?;
+    let objects = ForgePullRequest::new(&empty, TreeLimits::default(), Duration::from_secs(60));
     let ports = AdmitJobPorts {
         fetch: &untouched,
         objects: &objects,

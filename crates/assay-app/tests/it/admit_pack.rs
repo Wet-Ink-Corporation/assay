@@ -203,6 +203,29 @@ fn a_missing_prior_bundle_fails_admit_with_nothing_taken() -> Result<(), Box<dyn
 }
 
 #[test]
+fn a_pointer_other_than_the_one_the_carry_was_decided_on_fails_admit() -> Result<(), Box<dyn Error>>
+{
+    let (bytes, pointer) = published_carrying_one()?;
+    let other = EvidencePointer {
+        sha256: Sha256Digest::of(b"another bundle"),
+        ..pointer
+    };
+    for decided_on in [None, Some(other)] {
+        let mut world = after_a_run(Carry::Kept, pointer.clone(), Stored::Bytes(bytes.clone()));
+        // A run completed between the caller's read of the state and admit's.
+        world.prior = decided_on;
+
+        let failed = world.admit(&plan("lite"));
+
+        assert_matches!(failed, Err(AdmitError::PriorMoved));
+        assert_eq!(world.refs_held(), Vec::<String>::new());
+        assert_eq!(world.ledger.file(&LedgerPath::costs(at(NOW).month())), None);
+        assert_eq!(world.bundles.asked.borrow().len(), 0, "no bundle is read");
+    }
+    Ok(())
+}
+
+#[test]
 fn a_reset_carry_reads_no_bundle() -> Result<(), Box<dyn Error>> {
     let (_, pointer) = published_carrying_one()?;
     let mut world = after_a_run(Carry::Reset(CarryReset::Rewritten), pointer, Stored::Fails);

@@ -9,9 +9,9 @@ use std::time::{Duration, SystemTime};
 use assay_app::{
     Actor, AdmitFailure, AdmitPorts, AdmitRequest, Admitted, Carry, Clock, CommandComments,
     CommentId, CommitId, CommitIdentity, ContractValidator, CostKind, CostRecord, CostRole,
-    DeferralRecord, EventSink, Identities, IssueComment, LeaseRef, LedgerTime, PrState,
-    RangeIdentities, RetryGrant, Role, RoleCost, Slot, UserId, admit, append_cost, grant_retry,
-    read_state, update_state,
+    DeferralRecord, EventSink, EvidencePointer, Identities, IssueComment, LeaseRef, LedgerTime,
+    PrState, RangeIdentities, RetryGrant, Role, RoleCost, Slot, UserId, admit, append_cost,
+    grant_retry, read_state, update_state,
 };
 use assay_domain::{Aeu, Event, RunUid, Tier};
 use serde_json::{Value, json};
@@ -247,6 +247,9 @@ pub(crate) struct World {
     pub(crate) events: RecordedEvents,
     pub(crate) identities: Identities,
     pub(crate) carry: Carry,
+    /// The evidence pointer the caller decided `carry` on: the one [`World::with_state`]
+    /// recorded, unless a scenario says otherwise.
+    pub(crate) prior: Option<EvidencePointer>,
     pub(crate) suppress: Option<String>,
     pub(crate) range: RangeIdentities,
     pub(crate) validator: ContractValidator,
@@ -268,6 +271,7 @@ impl World {
                 agents: BTreeSet::from([UserId(nz(AGENT))]),
             },
             carry: Carry::FirstReview,
+            prior: None,
             suppress: None,
             range: authors_range(),
         }
@@ -288,6 +292,7 @@ impl World {
             run_uid,
             plan,
             carry: self.carry,
+            prior: self.prior.as_ref(),
             identities: &self.identities,
             author: UserId(nz(AUTHOR)),
             range: &self.range,
@@ -317,12 +322,14 @@ impl World {
         self
     }
 
-    /// The PR's ledger state is `change` applied to the empty state.
-    pub(crate) fn with_state(self, change: impl FnOnce(&mut PrState)) -> Self {
+    /// The PR's ledger state is `change` applied to the empty state, and the caller decides the
+    /// carry on its evidence pointer.
+    pub(crate) fn with_state(mut self, change: impl FnOnce(&mut PrState)) -> Self {
         let mut state = PrState::default();
         change(&mut state);
         update_state(&self.ledger, nz(REPO_ID), nz(PR), |_| Some(state.clone()))
             .expect("the fake ledger takes the state");
+        self.prior = state.evidence;
         self
     }
 

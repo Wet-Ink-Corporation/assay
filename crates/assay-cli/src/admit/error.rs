@@ -114,6 +114,36 @@ pub enum AdmitRunError<L, R, B, C, F, H> {
     },
 }
 
+impl<L, R, B, C, F, H> AdmitRunError<L, R, B, C, F, H> {
+    /// The slot this failure leaves the run holding, which the job still reports so `release`
+    /// releases it: a [`Self::Write`] once a slot was taken, and every
+    /// [`AdmitError::AfterSlot`], whether or not the admission could release the slot itself
+    /// (`release` settles the reservation and finds a released slot reaped).
+    #[must_use]
+    pub fn held(&self) -> Option<HeldSlot> {
+        match self {
+            // The error keeps its slot for its message; the caller writes its own copy.
+            Self::Write { held, .. } => held.clone(),
+            Self::Admit(error) => match error.as_ref() {
+                AdmitError::AfterSlot(after) => Some(HeldSlot::from(&after.hold)),
+                // Every other admission failure comes before a slot is taken.
+                _ => None,
+            },
+            Self::PlanDigest
+            | Self::Plan(_)
+            | Self::Fetch { .. }
+            | Self::Identities(_)
+            | Self::Suppress(_)
+            | Self::Pushes(_)
+            | Self::Range(_)
+            | Self::State(_)
+            | Self::PriorHead(_)
+            | Self::Target(_)
+            | Self::RangeDiffKilled => None,
+        }
+    }
+}
+
 /// The [`AdmitRunError`] of `run_admit` over the ports' error types.
 pub type AdmitRunFailure<L, R, B, C, F, H> = AdmitRunError<
     <L as assay_app::Ledger>::Error,
@@ -135,8 +165,8 @@ impl<L, R, B, C, F, H> fmt::Display for AdmitRunError<L, R, B, C, F, H> {
                 FetchedSide::Base => f.write_str("could not fetch the base commit"),
                 FetchedSide::Head => f.write_str("could not fetch the head commit"),
             },
-            Self::Identities(_) => f.write_str("the base identity lists"),
-            Self::Suppress(_) => f.write_str("the base suppress rules"),
+            Self::Identities(_) => f.write_str("could not read the base identity lists"),
+            Self::Suppress(_) => f.write_str("could not read the base suppress rules"),
             Self::Pushes(_) => f.write_str("could not read the PR's push records"),
             Self::Range(_) => f.write_str("could not attribute the PR's range"),
             Self::State(_) => f.write_str("could not read the PR's ledger state"),

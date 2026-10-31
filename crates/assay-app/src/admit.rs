@@ -63,7 +63,7 @@ use crate::ledger::{
     ParseLedgerTimeError, PrState, PushKind, SlotRequest, SlotView, StateUpdate, read_commands,
     read_costs, read_pushes, read_slots, read_state, update_state,
 };
-use crate::publish::EvidenceRecord;
+use crate::publish::{EvidencePointer, EvidenceRecord};
 use crate::replay::BundleSource;
 use crate::rereview::{Carry, PriorCarry, prior_carry};
 use crate::status::{Identities, UserId};
@@ -94,6 +94,9 @@ pub struct AdmitRequest<'a> {
     pub plan: &'a [u8],
     /// Whether the previous completed run's open findings carry (`review_target`, 04 §7).
     pub carry: Carry,
+    /// The ledger's evidence pointer `carry` was decided on (`None` when it named none): admit
+    /// refuses a state whose pointer is another ([`AdmitError::PriorMoved`]).
+    pub prior: Option<&'a EvidencePointer>,
     /// The base P10 identity lists.
     pub identities: &'a Identities,
     /// The PR's author, from the triggering event.
@@ -112,6 +115,7 @@ pub struct AdmitRequest<'a> {
 /// [`AdmitError::NotFirstAttempt`] before anything is read; [`AdmitError::Plan`] when the
 /// plan's document is refused; a read failure ([`AdmitError::LedgerRead`],
 /// [`AdmitError::Lease`], [`AdmitError::Prior`], [`AdmitError::NoPriorPointer`],
+/// [`AdmitError::PriorMoved`],
 /// [`AdmitError::Comments`]) or an oversized suppress text before anything is written;
 /// [`AdmitError::LedgerWrite`] when a deferral record cannot be written; event and clock
 /// failures; and [`AdmitError::AfterSlot`] for a failure once a slot was taken.
@@ -406,6 +410,10 @@ where
             && text.len() > MAX_SUPPRESS_BYTES
         {
             return Err(AdmitError::SuppressTooLarge { size: text.len() });
+        }
+        // The carry was decided on the previous run the caller read; this state must name it.
+        if state.evidence.as_ref() != request.prior {
+            return Err(AdmitError::PriorMoved);
         }
         let (repo_id, pr) = (self.repo_id(), self.planned.pr);
         // An opener record's sender opened the PR and is not a pusher (03 §6c), and a push of a

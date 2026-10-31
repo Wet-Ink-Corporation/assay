@@ -28,8 +28,8 @@ use std::time::{Duration, SystemTime};
 use assay_app::{ArtifactJob, Clock, CommitId, ContractValidator, MAX_DOCUMENT_BYTES};
 use assay_cli::outputs::{AdmitOutputs, Identity, PlanOutputs};
 use assay_cli::{
-    AdmitJob, AdmitJobPorts, AdmitRunError, FetchCommits, FirstAttempt, ForgePullRequest, JobName,
-    Needs, OutDir, OutputName, Outputs, RUN_FILE, RunEnv, RunEnvError, RunVariables, run_admit,
+    AdmitJob, AdmitJobPorts, FetchCommits, FirstAttempt, ForgePullRequest, JobName, Needs, OutDir,
+    OutputName, Outputs, RUN_FILE, RunEnv, RunEnvError, RunVariables, run_admit,
 };
 use assay_forge::git::{
     Authorization, CommitSha, GitEnvironment, GitLimits, HttpsRemote, ObjectRepo, TreeLimits,
@@ -404,10 +404,7 @@ fn report(
             Ok(line(out, &outputs))
         }
         Err(error) => {
-            if let AdmitRunError::Write {
-                held: Some(held), ..
-            } = &error
-            {
+            if let Some(held) = error.held() {
                 write(&held.outputs())?;
             }
             Err(AdmitCliError::Admit(Box::new(error)))
