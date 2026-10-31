@@ -4,12 +4,14 @@
 //! `ASSAY_NEEDS`, one pair per job, so producer and consumer cannot drift.
 
 mod gates;
+mod plan;
 
 use std::num::NonZeroU64;
 
 use assay_app::{CommitId, UserId};
 
 pub use self::gates::{GatesOutputError, gates_from_needs, gates_output};
+pub use self::plan::PlanOutputs;
 use crate::ci::{
     JobName, JobResult, Needs, NeedsError, OutputName, Upstream, canonical_positive, shown,
 };
@@ -102,7 +104,7 @@ impl Identity {
     /// refuses a line break, and [`Identity::from_needs`] refuses any other invalid name.
     #[must_use]
     pub fn outputs(&self) -> Vec<(OutputName, String)> {
-        let flag = |value: bool| if value { "true" } else { "false" }.to_owned();
+        let flag = |value: bool| flag_word(value).to_owned();
         let mut outputs = vec![
             (OutputName::Run, flag(true)),
             (OutputName::Pr, self.pr.to_string()),
@@ -132,25 +134,8 @@ impl Identity {
     /// [`NeedsError::Output`] for one that does not parse, a `run` other than `true`, or a
     /// `before` beside a trigger other than `synchronize`.
     pub fn from_needs(needs: &Needs) -> Result<Self, NeedsError> {
-        let guard = needs
-            .job(GUARD)
-            .ok_or(NeedsError::MissingJob { job: GUARD })?;
-        if guard.result() != JobResult::Success {
-            return Err(NeedsError::NotSucceeded {
-                job: GUARD,
-                result: guard.result(),
-            });
-        }
-        if let Some((name, _)) = guard
-            .outputs()
-            .find(|&(name, _)| !OutputName::GUARD.iter().any(|own| own.as_str() == name))
-        {
-            return Err(NeedsError::UnexpectedOutput {
-                job: GUARD,
-                name: shown(name),
-            });
-        }
-        let read = Read(guard);
+        let read = Read::succeeded(needs, GUARD, &OutputName::GUARD)?;
+        let invalid = |name| read.invalid(name);
         if read.required(OutputName::Run)? != "true" {
             return Err(invalid(OutputName::Run));
         }
@@ -178,11 +163,7 @@ impl Identity {
             head_sha: read.parsed(OutputName::HeadSha, |text| text.parse().ok())?,
             base_sha: read.parsed(OutputName::BaseSha, |text| text.parse().ok())?,
             base_ref: read.parsed(OutputName::BaseRef, branch)?,
-            draft: read.parsed(OutputName::Draft, |text| match text {
-                "true" => Some(true),
-                "false" => Some(false),
-                _ => None,
-            })?,
+            draft: read.parsed(OutputName::Draft, parse_flag)?,
             author: read.parsed(OutputName::AuthorId, user)?,
             sender: read.parsed(OutputName::SenderId, user)?,
             trigger,
@@ -191,21 +172,52 @@ impl Identity {
     }
 }
 
-/// Reads `guard`'s outputs by name.
-struct Read<'n>(&'n Upstream);
+/// Reads one upstream job's outputs by name.
+struct Read<'n> {
+    job: JobName,
+    upstream: &'n Upstream,
+}
 
 impl<'n> Read<'n> {
+    /// The outputs of `job` in `needs`, which must have succeeded and written only `names`.
+    ///
+    /// # Errors
+    ///
+    /// [`NeedsError::MissingJob`] without `job`; [`NeedsError::NotSucceeded`] when it did
+    /// not succeed; [`NeedsError::UnexpectedOutput`] for an output not in `names`.
+    fn succeeded(needs: &'n Needs, job: JobName, names: &[OutputName]) -> Result<Self, NeedsError> {
+        let upstream = needs.job(job).ok_or(NeedsError::MissingJob { job })?;
+        if upstream.result() != JobResult::Success {
+            return Err(NeedsError::NotSucceeded {
+                job,
+                result: upstream.result(),
+            });
+        }
+        if let Some((name, _)) = upstream
+            .outputs()
+            .find(|&(name, _)| !names.iter().any(|own| own.as_str() == name))
+        {
+            return Err(NeedsError::UnexpectedOutput {
+                job,
+                name: shown(name),
+            });
+        }
+        Ok(Self { job, upstream })
+    }
+
     /// Output `name`, unless absent or empty.
     fn optional(&self, name: OutputName) -> Option<&'n str> {
-        self.0
+        self.upstream
             .output(name.as_str())
             .filter(|value| !value.is_empty())
     }
 
     /// Output `name`, which must be written.
     fn required(&self, name: OutputName) -> Result<&'n str, NeedsError> {
-        self.optional(name)
-            .ok_or(NeedsError::MissingOutput { job: GUARD, name })
+        self.optional(name).ok_or(NeedsError::MissingOutput {
+            job: self.job,
+            name,
+        })
     }
 
     /// Output `name`, which must be written and parse with `parse`.
@@ -214,13 +226,30 @@ impl<'n> Read<'n> {
         name: OutputName,
         parse: impl FnOnce(&str) -> Option<T>,
     ) -> Result<T, NeedsError> {
-        parse(self.required(name)?).ok_or_else(|| invalid(name))
+        parse(self.required(name)?).ok_or_else(|| self.invalid(name))
+    }
+
+    /// The refusal of output `name`'s value.
+    const fn invalid(&self, name: OutputName) -> NeedsError {
+        NeedsError::Output {
+            job: self.job,
+            name,
+        }
     }
 }
 
-/// The refusal of `guard`'s output `name`'s value.
-const fn invalid(name: OutputName) -> NeedsError {
-    NeedsError::Output { job: GUARD, name }
+/// A flag output's value, `true` or `false`.
+const fn flag_word(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
+}
+
+/// A flag output's value read back: exactly `true` or `false`.
+fn parse_flag(text: &str) -> Option<bool> {
+    match text {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
 }
 
 /// `text` as a branch name: not empty, no control character.

@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use super::PullRequestEvent;
 use super::base_config::BaseConfig;
-use crate::config::{Adapter, Plugin};
+use crate::config::{Adapter, Plugin, Sha256Digest};
 
 /// The contract and version `plan` writes.
 const SCHEMA: &str = "assay.run/1";
@@ -28,6 +28,13 @@ impl fmt::Display for EvidenceKey {
     /// `sha256:` and 64 lowercase hex digits.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+impl From<EvidenceKey> for Sha256Digest {
+    /// The key as the digest it displays as, `sha256:<hex>`: how a job's outputs carry it.
+    fn from(key: EvidenceKey) -> Self {
+        Self::from(key.0)
     }
 }
 

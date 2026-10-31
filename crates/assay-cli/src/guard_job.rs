@@ -36,9 +36,10 @@ pub(crate) const OUTPUT: &str = "GITHUB_OUTPUT";
 pub(crate) const RUN_TOKEN: &str = "ASSAY_RUN_TOKEN";
 
 /// GitHub Actions' App, whose installation token `github.token` is (app 15368; its user
-/// `github-actions[bot]` is 41898282). [`GitHub::pull_identity`] attributes nothing to an App,
-/// so these only name the token's owner truthfully.
-const ACTIONS: AppIdentity = AppIdentity {
+/// `github-actions[bot]` is 41898282). [`GitHub::pull_identity`] and `plan`'s
+/// [`GitHub::pull_files`] attribute nothing to an App, so these only name the token's owner
+/// truthfully.
+pub(crate) const ACTIONS: AppIdentity = AppIdentity {
     app: AppId(NonZeroU64::MIN.saturating_add(15_367)),
     bot: UserId(NonZeroU64::MIN.saturating_add(41_898_281)),
 };
@@ -218,7 +219,7 @@ pub(crate) fn run(
         return Ok(Ended::Refused(refusal));
     }
     let file =
-        open_output(present(variables.output, OUTPUT)?).map_err(GuardCliError::OutputFile)?;
+        open_output(&present(variables.output, OUTPUT)?).map_err(GuardCliError::OutputFile)?;
     let mut outputs = Outputs::new(file);
     for (name, value) in guarded.outputs() {
         outputs.write(name, &value).map_err(GuardCliError::Output)?;
@@ -243,9 +244,9 @@ fn read_payload(event: EventName, path: OsString) -> Result<EventPayload, GuardC
 }
 
 /// The regular file at `path`, `GITHUB_OUTPUT`, opened for appending (GitHub creates it; it is
-/// not created). Shared with `assay gate`.
-pub(crate) fn open_output(path: OsString) -> io::Result<File> {
-    regular_path(&path)?;
+/// not created). Shared with `assay gate`, `assay review` and `assay plan`.
+pub(crate) fn open_output(path: &OsStr) -> io::Result<File> {
+    regular_path(path)?;
     let file = OpenOptions::new().append(true).open(path)?;
     regular(&file)?;
     Ok(file)

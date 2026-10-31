@@ -23,17 +23,21 @@
 //! the config names, and the check stamped `in_progress` under the publish lock.
 //! `assay guard` (#60 ST-2) decides whether the pipeline runs for the event behind the run
 //! and writes the run identity to `GITHUB_OUTPUT`; it exits 1 for an untrusted head (0006).
+//! `assay plan --out <dir>` (#60 ST-5) plans guard's identity into `<dir>/run.json` and writes
+//! plan's outputs (03 §4a) to `GITHUB_OUTPUT`.
 //! `assay review --placeholder` (#60 ST-9, D11 A) writes the review job's placeholder outputs
 //! (`stage=not-run`, `cost_aeu=0`, `documents=[]`) to `GITHUB_OUTPUT`.
 //! `assay reconcile [--ledger]` (#73) refuses any run attempt but the first (R3-05), then stops
 //! with exit 2 until the live GitHub transport (#273) exists. With no arguments it exits
 //! successfully without doing anything.
 
+mod bundle;
 mod check;
 mod doctor;
 mod gate;
 mod guard_job;
 mod open_job;
+mod plan_job;
 mod reconcile;
 mod review;
 mod self_gate;
@@ -90,11 +94,11 @@ fn main() -> ExitCode {
     if command == "guard" {
         return run_guard(args);
     }
+    if command == "plan" {
+        return run_plan(args);
+    }
     if command == "review" {
-        return match review::run(args, env::var_os(guard_job::OUTPUT)) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => report(&error),
-        };
+        return run_review(args);
     }
     if command == "status" {
         return match StatusCommand::parse(args) {
@@ -194,6 +198,45 @@ fn run_guard(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         }
         Err(error) => report(&error),
     }
+}
+
+/// `assay review --placeholder` (#60 ST-9): exit 0 once the outputs are written, 2 otherwise.
+fn run_review(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    match review::run(args, env::var_os(guard_job::OUTPUT)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => report(&error),
+    }
+}
+
+/// `assay plan --out <dir>` (#60 ST-5): exit 0 once `<dir>/run.json` and plan's outputs are
+/// written and its line printed; 2 when it refuses or cannot write, or a scratch directory is
+/// left behind.
+fn run_plan(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = plan_job::PlanVariables {
+        run: RunVariables {
+            run_id: env::var_os("GITHUB_RUN_ID"),
+            run_attempt: env::var_os("GITHUB_RUN_ATTEMPT"),
+            repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
+            repository: env::var_os("GITHUB_REPOSITORY"),
+        },
+        output: env::var_os(plan_job::Variable::Output.name()),
+        needs: env::var_os(plan_job::Variable::Needs.name()),
+        token: env::var_os(plan_job::Variable::RunToken.name()),
+        path: env::var_os("PATH"),
+        gh: GhEnvironment::from_process_env(),
+    };
+    let ended = plan_job::run(args, variables);
+    let mut code = match ended.planned {
+        Ok(line) => match writeln!(io::stdout().lock(), "{line}") {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => report(&error),
+        },
+        Err(error) => report(&error),
+    };
+    for left in &ended.left {
+        code = report(left);
+    }
+    code
 }
 
 /// `assay gate <job>`: exit 0 once every gate's line is printed, its document written and the

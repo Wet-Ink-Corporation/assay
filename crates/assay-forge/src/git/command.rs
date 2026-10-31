@@ -71,6 +71,8 @@ pub enum GitOperation {
     HashBlob,
     /// `git merge-base --is-ancestor`: whether one commit is an ancestor of another.
     IsAncestor,
+    /// `git merge-base`: the best common ancestor of two commits (`plan`'s merge base, D4 A).
+    MergeBase,
     /// `git range-diff`, with notes, external diff drivers and textconv disabled.
     RangeDiff,
     /// `git rev-list --count`: how many commits a range holds.
@@ -130,6 +132,7 @@ impl GitOperation {
             Self::ReadBlobs => &["cat-file", "--batch"],
             Self::HashBlob => &["hash-object", "--no-filters", "--stdin"],
             Self::IsAncestor => &["merge-base", "--is-ancestor"],
+            Self::MergeBase => &["merge-base"],
             Self::RangeDiff => &[
                 "range-diff",
                 "--no-color",
@@ -220,6 +223,7 @@ impl fmt::Display for GitOperation {
             Self::ReadBlobs => "cat-file --batch",
             Self::HashBlob => "hash-object",
             Self::IsAncestor => "merge-base --is-ancestor",
+            Self::MergeBase => "merge-base",
             Self::RangeDiff => "range-diff",
             Self::RevListCount => "rev-list --count",
             Self::RevListParents => "rev-list --parents",
@@ -423,7 +427,7 @@ mod tests {
     use crate::process::{Limits, run};
 
     /// Every operation.
-    const ALL: [GitOperation; 26] = [
+    const ALL: [GitOperation; 27] = [
         GitOperation::Init,
         GitOperation::Fetch,
         GitOperation::FetchAuthorized,
@@ -434,6 +438,7 @@ mod tests {
         GitOperation::ReadBlobs,
         GitOperation::HashBlob,
         GitOperation::IsAncestor,
+        GitOperation::MergeBase,
         GitOperation::RangeDiff,
         GitOperation::RevListCount,
         GitOperation::RevListParents,
@@ -772,7 +777,7 @@ mod tests {
     ];
 
     /// Each operation's subcommand and fixed flags, in [`ALL`]'s order.
-    const LEADING: [(GitOperation, &[&str]); 26] = [
+    const LEADING: [(GitOperation, &[&str]); 27] = [
         (GitOperation::Init, &["init", "--bare", "--quiet"]),
         (GitOperation::Fetch, FETCH_ARGS),
         (GitOperation::FetchAuthorized, FETCH_ARGS),
@@ -789,6 +794,7 @@ mod tests {
             &["hash-object", "--no-filters", "--stdin"],
         ),
         (GitOperation::IsAncestor, &["merge-base", "--is-ancestor"]),
+        (GitOperation::MergeBase, &["merge-base"]),
         (
             GitOperation::RangeDiff,
             &[
