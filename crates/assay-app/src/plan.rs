@@ -17,7 +17,7 @@ mod rest;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
-use assay_domain::{ContentHash, FileChange, RunUid, Tiering, tier};
+use assay_domain::{ContentHash, FileChange, RunUid, Tier, Tiering, tier};
 use thiserror::Error;
 
 pub(crate) use self::base_config::BaseConfig;
@@ -26,9 +26,28 @@ pub use self::document::{ArtifactJob, EvidenceKey};
 pub use self::nonce::{ArtifactNonce, NonceSource, ParseNonceError};
 pub use self::objects::{ChangedFiles, EntryKind, PullRequestObjects, TreeEntry};
 pub use self::rest::{FileListError, REST_FILE_CAP, RestFile, RestFiles};
+use crate::admit::SpendTier;
 use crate::config::CommitId;
 use crate::contract::{Contract, ContractValidator, ReadContractError};
 use crate::tiering::PackageSet;
+
+/// Whether a run of `tier` gets an LLM review, for a PR that is (`draft`) or is not a draft.
+///
+/// A draft runs gates only (04 §2.4), and `trivial` and `needs-split` have no LLM stage. These
+/// are exactly the runs `admit` spends for; the `plan` job reports it as its `review` output.
+///
+/// ```
+/// use assay_app::reviewed;
+/// use assay_domain::Tier;
+///
+/// assert!(reviewed(Tier::Micro, false));
+/// assert!(!reviewed(Tier::Full, true));
+/// assert!(!reviewed(Tier::Trivial, false));
+/// ```
+#[must_use]
+pub const fn reviewed(tier: Tier, draft: bool) -> bool {
+    !draft && SpendTier::of(tier).is_some()
+}
 
 /// The PR as the triggering event names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -332,5 +351,37 @@ fn read_entries<O: PullRequestObjects, N>(
             asked: entries.len(),
             returned: blobs.len(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assay_domain::Tier;
+
+    use super::reviewed;
+
+    #[test]
+    fn only_a_ready_pr_of_a_tier_with_an_llm_stage_is_reviewed() {
+        let table: Vec<(Tier, bool, bool)> = Tier::ALL
+            .into_iter()
+            .flat_map(|tier| [false, true].map(|draft| (tier, draft, reviewed(tier, draft))))
+            .collect();
+
+        assert_eq!(
+            table,
+            [
+                (Tier::NeedsSplit, false, false),
+                (Tier::NeedsSplit, true, false),
+                (Tier::Trivial, false, false),
+                (Tier::Trivial, true, false),
+                (Tier::Full, false, true),
+                (Tier::Full, true, false),
+                (Tier::Lite, false, true),
+                (Tier::Lite, true, false),
+                (Tier::Micro, false, true),
+                (Tier::Micro, true, false),
+            ],
+            "a draft runs gates only (04 §2.4); trivial and needs-split have no LLM stage"
+        );
     }
 }

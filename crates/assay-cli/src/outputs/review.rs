@@ -2,10 +2,10 @@
 //! `cost_aeu`, what it spent, in the ledger's form; and `documents`, none until the real review
 //! (M2) writes some.
 
-use assay_app::{ReviewCost, ReviewStage, UnknownReviewStage, parse_aeu};
+use assay_app::{ReviewCost, ReviewStage, parse_aeu};
 use assay_domain::Aeu;
 
-use super::{only_own, written};
+use super::Read;
 use crate::ci::{JobName, JobResult, Needs, NeedsError, OutputName};
 
 /// The job whose outputs [`ReviewEnd`] reads.
@@ -67,18 +67,12 @@ impl ReviewEnd {
             JobResult::Cancelled => return Ok(Self::Cancelled),
             JobResult::Skipped => return Ok(Self::Skipped),
         }
-        only_own(review, REVIEW, &OutputName::REVIEW)?;
-        let required =
-            |name| written(review, name).ok_or(NeedsError::MissingOutput { job: REVIEW, name });
-        let invalid = |name| NeedsError::Output { job: REVIEW, name };
-        let stage = required(OutputName::Stage)?
-            .parse()
-            .map_err(|UnknownReviewStage| invalid(OutputName::Stage))?;
-        let cost = parse_aeu(required(OutputName::CostAeu)?)
-            .ok_or_else(|| invalid(OutputName::CostAeu))?;
-        if required(OutputName::Documents)? != NO_DOCUMENTS {
-            return Err(invalid(OutputName::Documents));
-        }
+        let read = Read::succeeded(needs, REVIEW, &OutputName::REVIEW)?;
+        let stage = read.parsed(OutputName::Stage, |text| text.parse().ok())?;
+        let cost = read.parsed(OutputName::CostAeu, parse_aeu)?;
+        read.parsed(OutputName::Documents, |text| {
+            (text == NO_DOCUMENTS).then_some(())
+        })?;
         Ok(Self::Reported(ReviewReport { stage, cost }))
     }
 }

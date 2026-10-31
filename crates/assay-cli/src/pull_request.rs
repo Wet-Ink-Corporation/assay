@@ -39,6 +39,24 @@ impl<'repo> ForgePullRequest<'repo> {
             diff_cap,
         }
     }
+
+    /// `git merge-base base head`: the commit `base...head` lists the changed files from,
+    /// which `plan` reports as its `merge_base` (D4 A); `None` when they share no history.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeObjectsError`] when git cannot answer (a missing commit included) or names the
+    /// merge base by an id the app does not accept.
+    pub fn merge_base(
+        &self,
+        base: &CommitId,
+        head: &CommitId,
+    ) -> Result<Option<CommitId>, ForgeObjectsError> {
+        self.repo
+            .merge_base(&sha(base)?, &sha(head)?)?
+            .map(|merge_base| accepted(merge_base.as_str()))
+            .transpose()
+    }
 }
 
 /// Why the PR's objects could not be read.

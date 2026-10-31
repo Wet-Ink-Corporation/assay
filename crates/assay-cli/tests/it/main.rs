@@ -43,6 +43,9 @@ mod open_job;
 mod open_run;
 mod plan;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod plan_job;
+mod plan_run;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod pre_push;
 #[cfg(unix)] // process groups, through forge's git
 mod pull_request;

@@ -3,7 +3,7 @@
 
 use assay_app::{CommitId, Slot};
 
-use super::{only_own, written};
+use super::Read;
 use crate::ci::{JobName, Needs, NeedsError, OutputName};
 
 /// The job whose outputs [`HeldSlot`] is.
@@ -44,35 +44,21 @@ impl HeldSlot {
     /// `1`), a `lease_commit` that is not 40 lowercase hex digits, or a `lease_commit` without a
     /// `slot`.
     pub fn from_needs(needs: &Needs) -> Result<Option<Self>, NeedsError> {
-        let admit = needs
-            .job(ADMIT)
-            .ok_or(NeedsError::MissingJob { job: ADMIT })?;
-        only_own(admit, ADMIT, &OutputName::ADMIT)?;
-        let lease = written(admit, OutputName::LeaseCommit);
-        let Some(slot) = written(admit, OutputName::Slot) else {
-            return match lease {
-                Some(_) => Err(invalid(OutputName::LeaseCommit)),
+        let read = Read::any_result(needs, ADMIT, &OutputName::ADMIT)?;
+        if read.optional(OutputName::Slot).is_none() {
+            return match read.optional(OutputName::LeaseCommit) {
+                Some(_) => Err(read.invalid(OutputName::LeaseCommit)),
                 None => Ok(None),
             };
-        };
-        let slot = Slot::ALL
-            .into_iter()
-            .find(|known| known.to_string() == slot)
-            .ok_or_else(|| invalid(OutputName::Slot))?;
-        let lease_commit = lease
-            .ok_or(NeedsError::MissingOutput {
-                job: ADMIT,
-                name: OutputName::LeaseCommit,
-            })?
-            .parse()
-            .map_err(|_not_a_commit| invalid(OutputName::LeaseCommit))?;
+        }
+        let slot = read.parsed(OutputName::Slot, |text| {
+            Slot::ALL
+                .into_iter()
+                .find(|known| known.to_string() == text)
+        })?;
+        let lease_commit = read.parsed(OutputName::LeaseCommit, |text| text.parse().ok())?;
         Ok(Some(Self { slot, lease_commit }))
     }
-}
-
-/// The refusal of `admit`'s output `name`'s value.
-const fn invalid(name: OutputName) -> NeedsError {
-    NeedsError::Output { job: ADMIT, name }
 }
 
 #[cfg(test)]

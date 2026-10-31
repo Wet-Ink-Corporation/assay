@@ -1,5 +1,7 @@
 use std::assert_matches;
 
+use assay_app::UnknownReviewStage;
+
 use super::*;
 use crate::ci::Outputs;
 

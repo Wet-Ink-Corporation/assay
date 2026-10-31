@@ -295,8 +295,8 @@ fn read_config(path: &Path) -> Result<String, DoctorCliError> {
     }
 }
 
-/// Nonces from the kernel's random source.
-struct Urandom;
+/// Nonces from the kernel's random source (the doctor canaries' and `plan`'s artifact names).
+pub(crate) struct Urandom;
 
 impl NonceSource for Urandom {
     type Error = io::Error;

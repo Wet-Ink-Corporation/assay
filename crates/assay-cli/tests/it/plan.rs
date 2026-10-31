@@ -31,17 +31,20 @@ fn plugins_toml(required: bool) -> String {
     )
 }
 
-/// A PR fetched into an object-only repository.
-struct Pr {
+/// A PR fetched into an object-only repository (shared with `plan_run`).
+pub(crate) struct Pr {
     _scratch: TempDir,
-    repo: ObjectRepo,
-    base: CommitSha,
-    head: CommitSha,
+    pub(crate) repo: ObjectRepo,
+    pub(crate) base: CommitSha,
+    pub(crate) head: CommitSha,
 }
 
 /// The fork point holds `.assay/plugins.toml`, a manifest and a library; `base_files` are
 /// committed on top of it as the base, and `head_files` on top of the fork point as the head.
-fn pr(base_files: &[(&str, &str)], head_files: &[(&str, &str)]) -> Result<Pr, Box<dyn Error>> {
+pub(crate) fn pr(
+    base_files: &[(&str, &str)],
+    head_files: &[(&str, &str)],
+) -> Result<Pr, Box<dyn Error>> {
     pr_with_base_edit(
         |work| {
             for (path, contents) in base_files {
@@ -119,7 +122,7 @@ fn write(root: &Path, path: &str, contents: &str) -> Result<(), Box<dyn Error>> 
 }
 
 /// Runs git as a developer would, isolated from the machine's config. Test setup only.
-fn plain_git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+pub(crate) fn plain_git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
     let mut git = Command::new("git");
     git.env_clear();
     if let Some(path) = env::var_os("PATH") {
@@ -147,10 +150,10 @@ fn plain_git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
 
 /// Nonces `0..`, as 32 hex digits.
 #[derive(Debug, Default)]
-struct Counting(u128);
+pub(crate) struct Counting(u128);
 
 #[derive(Debug)]
-struct NoNonce;
+pub(crate) struct NoNonce;
 
 impl std::fmt::Display for NoNonce {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

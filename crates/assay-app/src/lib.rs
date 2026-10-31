@@ -159,7 +159,7 @@ pub use plan::{
     ArtifactJob, ArtifactNonce, BaseConfigError, ChangedFiles, EntryKind, EvidenceKey,
     FileListError, IncludeTargets, NonceSource, ObjectsStep, ParseNonceError, PlanError,
     PlanRequest, PlannedRun, PullRequestEvent, PullRequestObjects, REST_FILE_CAP, RestFile,
-    RestFiles, TreeEntry, plan,
+    RestFiles, TreeEntry, plan, reviewed,
 };
 pub use prompt_bundle::{
     BundleFile, BundleFileError, BundleFiles, InvalidBundle, PromptBundle, Role,

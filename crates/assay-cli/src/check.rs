@@ -31,10 +31,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use assay_app::{
-    Adapter, BundleFiles, ChangedFiles, CheckError, CheckPorts, CheckRequest, CommitId,
-    ContractSchemaError, ContractValidator, GateJob, GateRun, GateRunner, IncludeTargets,
-    InvalidBundle, LocalReport, ParseCommitIdError, PlanRequest, Plugin, PromptBundle,
-    PullRequestEvent, PullRequestObjects, RestFile, RestFiles, ReviewSetup, check_local,
+    Adapter, ChangedFiles, CheckError, CheckPorts, CheckRequest, CommitId, ContractSchemaError,
+    ContractValidator, GateJob, GateRun, GateRunner, IncludeTargets, InvalidBundle, LocalReport,
+    ParseCommitIdError, PlanRequest, Plugin, PromptBundle, PullRequestEvent, PullRequestObjects,
+    RestFile, RestFiles, ReviewSetup, check_local,
 };
 use assay_cli::{ForgeObjectsError, ForgePullRequest, ForgeSupervisor};
 use assay_domain::{Conclusion, ContentHash, RunUid};
@@ -52,6 +52,7 @@ use tempfile::TempDir;
 
 use self::events::{EventWriteError, JsonlEvents};
 use self::weigh_in::{WeighInCheck, WeighInError};
+use crate::bundle;
 use crate::doctor::write_chain;
 
 mod events;
@@ -65,17 +66,7 @@ pub(crate) const REPORT_DIR: &str = "assay";
 /// The base branch when `--base` is not given.
 const DEFAULT_BASE: &str = "main";
 
-/// The shipped prompt bundle and rubric, versioned with this binary.
-const SYSTEM_PROMPT: &str = include_str!("../../../plugin/prompts/v1/system.md");
-const COMBINED: &str = include_str!("../../../plugin/prompts/v1/combined.md");
-const COMBINED_MICRO: &str = include_str!("../../../plugin/prompts/v1/combined-micro.md");
-const VERIFIER: &str = include_str!("../../../plugin/prompts/v1/verifier.md");
-const VERIFIER_CARRIED: &str = include_str!("../../../plugin/prompts/v1/verifier-carried.md");
-const COORDINATOR: &str = include_str!("../../../plugin/prompts/v1/coordinator.md");
-const BUGS: &str = include_str!("../../../plugin/prompts/v1/bugs.md");
-const SECURITY: &str = include_str!("../../../plugin/prompts/v1/security.md");
-const DESIGN: &str = include_str!("../../../plugin/prompts/v1/design.md");
-const META: &str = include_str!("../../../plugin/prompts/v1/meta.md");
+/// The shipped rubric, versioned with this binary (the prompt bundle is [`bundle`]'s).
 pub(crate) const RUBRIC: &[u8] = include_bytes!("../../../rubric/v1.toml");
 
 /// Wall-clock cap of the diff that lists the changed files.
@@ -677,23 +668,9 @@ impl Scratch {
 
     /// The shipped prompt bundle, and its system prompt written out for the CLI.
     fn bundle(&self) -> Result<(PromptBundle, PathBuf), CheckCliError> {
-        let bundle = PromptBundle::new(BundleFiles {
-            system: SYSTEM_PROMPT.to_owned(),
-            // The specialists', verifier's and coordinator's instructions are part of the bundle's
-            // hash, though local mode runs none of them.
-            bugs: BUGS.to_owned(),
-            security: SECURITY.to_owned(),
-            design: DESIGN.to_owned(),
-            meta: META.to_owned(),
-            combined: COMBINED.to_owned(),
-            combined_micro: COMBINED_MICRO.to_owned(),
-            verifier: VERIFIER.to_owned(),
-            verifier_carried: VERIFIER_CARRIED.to_owned(),
-            coordinator: COORDINATOR.to_owned(),
-        })
-        .map_err(CheckCliError::Bundle)?;
+        let bundle = bundle::embedded().map_err(CheckCliError::Bundle)?;
         let file = self.path("system.md");
-        fs::write(&file, SYSTEM_PROMPT).map_err(CheckCliError::Scratch)?;
+        fs::write(&file, bundle::SYSTEM_PROMPT).map_err(CheckCliError::Scratch)?;
         Ok((bundle, file))
     }
 
