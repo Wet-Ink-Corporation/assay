@@ -173,8 +173,13 @@ pub(crate) fn deadline_after(after: Duration) -> Deadline {
 pub(crate) fn locked(update: &CheckUpdate) -> LockedWrite<'_> {
     LockedWrite {
         update,
-        deadline: deadline_after(Duration::from_secs(3_600)),
+        deadline: far(),
     }
+}
+
+/// A publish lock deadline no test reaches: an hour after the [`Waits`] clock's start.
+pub(crate) fn far() -> Deadline {
+    deadline_after(Duration::from_secs(3_600))
 }
 
 /// A response of `status` with `headers` and `body`.

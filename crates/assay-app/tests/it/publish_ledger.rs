@@ -8,13 +8,13 @@ use std::num::NonZeroU64;
 
 use assay_app::{
     EvidenceEntry, EvidencePointer, EvidenceRecord, LedgerPublish, LedgerPublishError, LlmEvidence,
-    MAX_LOCK_RETRIES, MAX_STATE_ENTRIES, PrState, PublishLedger, StateUpdate, read_state,
-    update_state,
+    LockHold, LockLease, MAX_LOCK_RETRIES, MAX_STATE_ENTRIES, PrState, PublishLedger, StateUpdate,
+    read_state, update_state,
 };
 use assay_domain::Tier;
 
 use crate::lease_fakes::{Before, Call, MemoryRefs};
-use crate::ledger_fakes::{MemoryLedger, commit, digest, id, run};
+use crate::ledger_fakes::{MemoryLedger, at, commit, digest, id, run};
 use crate::open_fakes::FakeClock;
 
 /// The instant every attempt reads.
@@ -228,6 +228,93 @@ fn state(ledger: &MemoryLedger) -> Result<PrState, Box<dyn Error>> {
     Ok(read_state(ledger, id(42), id(7))?)
 }
 
+/// Run 7's hold of the lock of head `bbbb…`, its lease expiring at `expires_at`.
+fn hold(expires_at: &str) -> LockHold {
+    LockHold {
+        lock_commit: commit('c'),
+        lease: LockLease {
+            run_uid: run(7),
+            repo: REPO.to_owned(),
+            head_sha: commit('b'),
+            expires_at: at(expires_at),
+        },
+    }
+}
+
+/// A hold whose lease is live at [`NOW`].
+fn live() -> LockHold {
+    hold("2026-10-12T09:32:00.000Z")
+}
+
+// #332 (#331 F3): the evidence is written only while the lease is live, as `open`'s writes are.
+#[test]
+fn evidence_at_or_past_the_lease_s_deadline_is_refused_unwritten() {
+    for expires_at in [NOW, "2026-10-12T09:29:59.999Z"] {
+        let (ledger, refs, clock) = (
+            MemoryLedger::default(),
+            MemoryRefs::default(),
+            FakeClock::reading(&[NOW]),
+        );
+        let expired = hold(expires_at);
+
+        let recorded =
+            publisher(&ledger, &refs, &clock).record_evidence(&expired, &entry(7, 'e', 'a'));
+
+        assert_matches!(
+            recorded,
+            Err(LedgerPublishError::PastDeadline { deadline }) if deadline == expired.deadline(),
+            "{expires_at}"
+        );
+        assert_eq!(ledger.writes(), Vec::new(), "{expires_at}");
+    }
+}
+
+// The comparison is strict: a lease still live by one millisecond records the evidence.
+#[test]
+fn evidence_one_millisecond_before_the_deadline_is_recorded() -> Result<(), Box<dyn Error>> {
+    let (ledger, refs, clock) = (
+        MemoryLedger::default(),
+        MemoryRefs::default(),
+        FakeClock::reading(&[NOW]),
+    );
+    let recorded = entry(7, 'e', 'a');
+
+    publisher(&ledger, &refs, &clock)
+        .record_evidence(&hold("2026-10-12T09:30:00.001Z"), &recorded)?;
+
+    assert_eq!(state(&ledger)?.evidence, Some(recorded.pointer));
+    Ok(())
+}
+
+#[test]
+fn an_unreadable_clock_records_no_evidence() {
+    let (ledger, refs, clock) = (
+        MemoryLedger::default(),
+        MemoryRefs::default(),
+        FakeClock::broken(),
+    );
+
+    let recorded = publisher(&ledger, &refs, &clock).record_evidence(&live(), &entry(7, 'e', 'a'));
+
+    assert_matches!(recorded, Err(LedgerPublishError::Clock(_)));
+    assert_eq!(ledger.writes(), Vec::new());
+}
+
+#[test]
+fn the_deadline_of_a_lease_is_its_hold_s() {
+    let (ledger, refs, clock) = (
+        MemoryLedger::default(),
+        MemoryRefs::default(),
+        FakeClock::reading(&[NOW]),
+    );
+    let held = live();
+
+    assert_eq!(
+        publisher(&ledger, &refs, &clock).deadline(&held),
+        held.deadline()
+    );
+}
+
 #[test]
 fn recording_evidence_writes_the_pointer_and_the_record() -> Result<(), Box<dyn Error>> {
     let (ledger, refs, clock) = (
@@ -237,7 +324,7 @@ fn recording_evidence_writes_the_pointer_and_the_record() -> Result<(), Box<dyn 
     );
     let recorded = entry(7, 'e', 'a');
 
-    publisher(&ledger, &refs, &clock).record_evidence(&recorded)?;
+    publisher(&ledger, &refs, &clock).record_evidence(&live(), &recorded)?;
 
     assert_eq!(
         state(&ledger)?,
@@ -260,7 +347,7 @@ fn a_record_of_the_same_evidence_key_is_replaced_in_place() -> Result<(), Box<dy
     let (refs, clock) = (MemoryRefs::default(), FakeClock::reading(&[NOW]));
     let recorded = entry(7, 'e', 'a');
 
-    publisher(&ledger, &refs, &clock).record_evidence(&recorded)?;
+    publisher(&ledger, &refs, &clock).record_evidence(&live(), &recorded)?;
 
     assert_eq!(
         state(&ledger)?.evidence_records,
@@ -284,7 +371,7 @@ fn a_full_record_list_drops_its_oldest_record_for_the_new_one() -> Result<(), Bo
     let (refs, clock) = (MemoryRefs::default(), FakeClock::reading(&[NOW]));
     let recorded = entry(7, 'e', 'a');
 
-    publisher(&ledger, &refs, &clock).record_evidence(&recorded)?;
+    publisher(&ledger, &refs, &clock).record_evidence(&live(), &recorded)?;
 
     let mut expected = full.get(1..).expect("256 records").to_vec();
     expected.push(recorded.record);
@@ -304,7 +391,7 @@ fn an_older_run_records_its_evidence_but_never_moves_the_pointer_back() -> Resul
     let (refs, clock) = (MemoryRefs::default(), FakeClock::reading(&[NOW]));
     let recorded = entry(7, 'e', 'a');
 
-    publisher(&ledger, &refs, &clock).record_evidence(&recorded)?;
+    publisher(&ledger, &refs, &clock).record_evidence(&live(), &recorded)?;
 
     assert_eq!(
         state(&ledger)?,
@@ -339,15 +426,15 @@ fn an_entry_of_another_run_or_repository_is_refused_unwritten() {
     };
 
     assert_matches!(
-        publish.record_evidence(&other_run),
+        publish.record_evidence(&live(), &other_run),
         Err(LedgerPublishError::OtherRun)
     );
     assert_matches!(
-        publish.record_evidence(&retry),
+        publish.record_evidence(&live(), &retry),
         Err(LedgerPublishError::OtherRun)
     );
     assert_matches!(
-        publish.record_evidence(&other_repository),
+        publish.record_evidence(&live(), &other_repository),
         Err(LedgerPublishError::OtherRepository { repo_id }) if repo_id == id(43)
     );
     assert_eq!(ledger.writes(), Vec::new());

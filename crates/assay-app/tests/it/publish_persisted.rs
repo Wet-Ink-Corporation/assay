@@ -236,6 +236,53 @@ fn prepare_refuses_inputs_it_could_not_publish_from_the_bundle() -> Result<(), B
     Ok(())
 }
 
+/// A PR adding a binary file, so its run is `full` with no class, its inputs saying
+/// `needs-split`: the one tier `prepare` accepts other than the run's.
+fn needs_split_run() -> Result<Run, Box<dyn Error>> {
+    let mut pr = FakePr::new();
+    pr.changes =
+        assay_app::ChangedFiles::Listed(vec![FileChange::new("assets/logo.png", Lines::Binary)]);
+    let mut run = Run::of(&Scenario::of(pr)?)?;
+    assert_eq!(
+        (run.authenticated.tier(), run.inputs.pr.classes.as_slice()),
+        (Tier::Full, [].as_slice()),
+        "the run is full, with no class"
+    );
+    run.inputs.pr.tier = Tier::NeedsSplit;
+    Ok(run)
+}
+
+// #331 F2: the evidence of a persisted `needs-split` decision records the inputs' tier, and the
+// check concludes as `publish` from memory concludes it.
+#[test]
+fn a_needs_split_bundle_records_its_tier_and_concludes_as_publish_does()
+-> Result<(), Box<dyn Error>> {
+    let run = needs_split_run()?;
+    let (_, in_memory_status, in_memory_update, ..) = in_memory(&run, false)?;
+    let bundle = prepared(&run)?;
+    let (world, bundles) = (
+        stamped()?,
+        FakeBundles::new(Stored::Bytes(bundle.bytes().to_vec())),
+    );
+
+    let written = persisted_written(publish_prepared(
+        &run,
+        PersistOutcome::Success,
+        (&world, &bundles),
+    )?)?;
+
+    let (_, status, update, _, evidence) = effects(&world)?;
+    let [recorded] = evidence.as_slice() else {
+        return Err(format!("one evidence entry, got {evidence:?}").into());
+    };
+    assert_eq!(recorded.record.tier, Tier::NeedsSplit);
+    let state = |update: Option<CheckUpdate>| update.map(|written| written.state);
+    let expected = state(in_memory_update);
+    assert_eq!((Some(written.state), status), (expected, in_memory_status));
+    assert_eq!(state(update), expected);
+    Ok(())
+}
+
 // --- a confirmed upload ---
 
 #[test]

@@ -592,7 +592,8 @@ fn decision_with(role: StageRole, reasons: &[CallFailure]) -> Result<Vec<u8>, Bo
     Ok(serde_json::to_vec(&decide(&rubric_v1()?, &inputs))?)
 }
 
-/// #259 F1: every role a report can name reaches `degraded[].role` as a schema-valid code.
+/// #259 F1: every role a report can name reaches `degraded[].role` as a schema-valid code, and
+/// as that role's code (#330 F3).
 #[test]
 fn a_decision_over_every_degraded_stage_role_is_schema_valid() -> Result<(), Box<dyn Error>> {
     let validator = ContractValidator::new()?;
@@ -603,6 +604,12 @@ fn a_decision_over_every_degraded_stage_role_is_schema_valid() -> Result<(), Box
         let read = validator.read(Contract::Decision, &decision);
 
         assert!(read.is_ok(), "{role:?}: {read:?}");
+        let published: Value = serde_json::from_slice(&decision)?;
+        assert_eq!(
+            published.pointer("/degraded/0/role"),
+            Some(&Value::from(role.code())),
+            "{role:?}"
+        );
     }
     Ok(())
 }
