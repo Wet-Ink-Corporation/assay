@@ -1,7 +1,10 @@
 //! The `Forge` port: the GitHub calls the narrow use-case ports do not hold (02 §2, §5). `open`
 //! finds or creates the verdict check and re-stamps it by compare-and-set; `decide`'s GitHub
 //! state snapshot reads reviews and commit identities (#58); feedback reads reactions and the
-//! timeline (R-12). Implemented by the forge adapter (#53).
+//! timeline (R-12). Implemented by the forge adapter (#53). The calls made under the publish
+//! lock take its lease's [`Deadline`] (#290).
+
+mod deadline;
 
 use std::num::NonZeroU64;
 
@@ -10,40 +13,49 @@ use crate::eligibility::Timestamp;
 use crate::publish::{CheckName, CheckRun, CheckRunId, CheckUpdate, CommentId};
 use crate::status::UserId;
 
+pub use deadline::Deadline;
+
 /// GitHub as the `assay-verdict` App sees one repository. Every text it returns is untrusted.
 pub trait Forge {
     /// Why GitHub could not be read or written.
     type Error: std::error::Error;
 
-    /// The check run named `name` on `head` that the App authored, created with `initial` when
-    /// there is none. A same-named check of any other app is never returned, and never stops
-    /// the App's from being created.
+    /// The check run named `name` on `head` that the App authored, created with
+    /// `initial.update` when there is none. A same-named check of any other app is never
+    /// returned, and never stops the App's from being created.
+    ///
+    /// Made under the per-head publish lock: no request is sent, and no retry waited for, unless
+    /// it ends before `initial.deadline`, the lock lease's `expires_at` (#290).
     ///
     /// # Errors
     ///
-    /// [`Self::Error`] when the check runs cannot be listed or the check cannot be created.
+    /// [`Self::Error`] when the check runs cannot be listed or the check cannot be created, or
+    /// when the next request or wait would not end before the deadline (it is not made).
     fn find_or_create_check(
         &self,
         head: &CommitId,
         name: &CheckName,
-        initial: &CheckUpdate,
+        initial: LockedWrite<'_>,
     ) -> Result<CheckFound, Self::Error>;
 
-    /// Overwrites check `id` with `update` only when its `external_id` is still `expected`.
+    /// Overwrites check `id` with `write.update` only when its `external_id` is still
+    /// `expected`.
     ///
     /// GitHub has no atomic check update (02 §5), so this reads, compares and then writes:
-    /// it is a compare-and-set only for writers that hold the per-head publish lock.
+    /// it is a compare-and-set only for writers that hold the per-head publish lock, and so
+    /// sends nothing, and waits for no retry, that would not end before `write.deadline`, the
+    /// lock lease's `expires_at` (#290).
     ///
     /// # Errors
     ///
     /// [`CompareAndSetError::Conflict`] when the check carries another `external_id`; nothing
-    /// was written. [`CompareAndSetError::Forge`] when the check cannot be read or updated, or
-    /// another app authored it.
+    /// was written. [`CompareAndSetError::Forge`] when the check cannot be read or updated,
+    /// another app authored it, or the next request or wait would not end before the deadline.
     fn update_check_if(
         &self,
         id: CheckRunId,
         expected: &str,
-        update: &CheckUpdate,
+        write: LockedWrite<'_>,
     ) -> Result<(), CompareAndSetError<Self::Error>>;
 
     /// Makes the App's comment on PR `number` whose body contains `marker` read `body`: posted
@@ -95,6 +107,16 @@ pub trait Forge {
     ///
     /// [`Self::Error`] when the timeline cannot be read.
     fn timeline(&self, number: NonZeroU64) -> Result<Vec<TimelineEvent>, Self::Error>;
+}
+
+/// A check write made under the per-head publish lock: what to write, and the lock lease's
+/// expiry, which the call's every request and retry wait must end before (#290).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockedWrite<'a> {
+    /// The check's new state.
+    pub update: &'a CheckUpdate,
+    /// The lease's `expires_at`.
+    pub deadline: Deadline,
 }
 
 /// What [`Forge::find_or_create_check`] did.

@@ -58,18 +58,20 @@ fn a_live_lock_is_busy() {
 }
 
 #[test]
-fn a_writer_retrying_after_a_lost_answer_holds_its_own_live_lock() {
+fn a_live_lock_of_the_same_run_is_busy_so_two_jobs_of_one_run_never_both_hold_it() {
+    // #288 R2-1: a run's jobs share its `run_uid`, so the lock is not re-entrant.
     let refs = MemoryRefs::default();
-    let existing = refs.holding(&lock_ref(), &lock_line(1, 'b', "2026-10-12T09:31:00.000Z"));
+    let line = lock_line(1, 'b', "2026-10-12T09:31:00.000Z");
+    let existing = refs.holding(&lock_ref(), &line);
 
     let acquired = acquire_lock(&refs, &request(1), at(NOW)).expect("the store is up");
 
-    let LockAcquired::Held(hold) = acquired else {
-        panic!("the run's own live lock is held: {acquired:?}");
-    };
-    assert_eq!(hold.lock_commit, existing);
-    assert_eq!(hold.lease.expires_at, at("2026-10-12T09:31:00.000Z"));
-    assert_eq!(refs.names(), [lock_ref()]);
+    assert_eq!(acquired, LockAcquired::Busy);
+    assert_eq!(
+        refs.get(&lock_ref()),
+        Some((existing, line)),
+        "left as it was"
+    );
 }
 
 #[test]

@@ -11,7 +11,7 @@ use assay_domain::{Aeu, RunUid, Tier};
 use assay_forge::github::{Api, LedgerRepo, Method, Request, Response, Sleep, Transport};
 use serde_json::{Value, json};
 
-use super::recorded::{id, reply};
+use super::recorded::{SEND_TIMEOUT, id, reply};
 
 /// The adapter sent a request the contents API does not answer.
 #[derive(Debug, thiserror::Error)]
@@ -127,6 +127,10 @@ impl ContentsApi {
 
 impl Transport for ContentsApi {
     type Error = Unexpected;
+
+    fn timeout(&self) -> std::time::Duration {
+        SEND_TIMEOUT
+    }
 
     fn send(&self, request: &Request<'_>) -> Result<Response, Unexpected> {
         let repository = format!("repos/{LEDGER_REPOSITORY}");

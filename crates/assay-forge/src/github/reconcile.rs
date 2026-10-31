@@ -5,7 +5,7 @@
 use std::num::NonZeroU64;
 
 use assay_app::{
-    CheckRunId, CheckUpdate, CommitId, CompareAndSetError, LedgerTime, OpenPull, PullHead,
+    CheckRunId, CommitId, CompareAndSetError, LedgerTime, LockedWrite, OpenPull, PullHead,
     ReconcileCheck, ReconcileForge, RunProgress, StampedRun,
 };
 use serde::Deserialize;
@@ -139,9 +139,9 @@ impl<T: Transport, S: Sleep> ReconcileForge for GitHub<T, S> {
         &self,
         id: CheckRunId,
         expected: &str,
-        update: &CheckUpdate,
+        write: LockedWrite<'_>,
     ) -> Result<(), CompareAndSetError<Self::Error>> {
-        self.compare_and_set(id, expected, update)
+        self.compare_and_set(id, expected, write)
     }
 }
 

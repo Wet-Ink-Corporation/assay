@@ -39,6 +39,14 @@ pub enum ForgeError<E> {
         /// How many requests were sent.
         attempts: u8,
     },
+    /// The call's [`Deadline`](assay_app::Deadline), the publish lock lease's expiry, came
+    /// before its next request or retry wait could end, so neither was made (#290). Requests
+    /// sent earlier may have landed. Like [`Exhausted`](Self::Exhausted), a `publish-error`.
+    #[error("publish-error: {operation}: stopped at the publish lock's deadline")]
+    PastDeadline {
+        /// The call.
+        operation: Operation,
+    },
     /// The response is not what the API documents.
     #[error("{operation}: unexpected response from GitHub: {detail}")]
     Malformed {

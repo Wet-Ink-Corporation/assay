@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    CheckRunId, CheckStatus, CheckUpdate, CommitId, CompareAndSetError, LeaseRef, LedgerRefs,
-    LedgerTime, LockListing, OpenPull, PullHead, ReconcileCheck, ReconcileForge, RefCreation,
-    RefDeletion, RefTip, RunProgress, StampedRun,
+    CheckRunId, CheckStatus, CheckUpdate, CommitId, CompareAndSetError, Deadline, LeaseRef,
+    LedgerRefs, LedgerTime, LockListing, LockedWrite, OpenPull, PullHead, ReconcileCheck,
+    ReconcileForge, RefCreation, RefDeletion, RefTip, RunProgress, StampedRun,
 };
 
 use crate::lease_fakes::{MemoryRefs, RefsDown};
@@ -55,6 +55,8 @@ pub(crate) struct CheckWrite {
     pub(crate) id: CheckRunId,
     pub(crate) expected: String,
     pub(crate) update: CheckUpdate,
+    /// The deadline the write was given.
+    pub(crate) deadline: Deadline,
 }
 
 /// A check as the fake holds it.
@@ -234,8 +236,9 @@ impl ReconcileForge for FakeRepo {
         &self,
         id: CheckRunId,
         expected: &str,
-        update: &CheckUpdate,
+        write: LockedWrite<'_>,
     ) -> Result<(), CompareAndSetError<GitHubDown>> {
+        let LockedWrite { update, deadline } = write;
         self.up().map_err(CompareAndSetError::Forge)?;
         if let Some(probe) = &self.probe {
             self.probed.borrow_mut().push(probe());
@@ -261,6 +264,7 @@ impl ReconcileForge for FakeRepo {
             id,
             expected: expected.to_owned(),
             update: update.clone(),
+            deadline,
         });
         Ok(())
     }

@@ -102,9 +102,10 @@ pub enum Unwound<L, R, S> {
     /// The slots could not be read again once the slot was held.
     #[error("the slots could not be read again once the slot was held")]
     Slots(#[source] LeaseError<R>),
-    /// The budget read again once the slot was held deferred the run, and the slot could not be
-    /// released (`release` says why); no deferral record was written.
-    #[error("the budget deferred the run once the slot was held")]
+    /// The budget read again once the slot was held deferred the run, or left no price within
+    /// what the lease reserves, and the slot could not be released (`release` says why); no
+    /// deferral record was written.
+    #[error("the run was deferred once the slot was held")]
     Deferred,
     /// The `reserved` record could not be written; it may or may not have landed.
     #[error("the reserved record could not be written")]
