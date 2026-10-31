@@ -28,6 +28,12 @@ A-01 is **verified with conditions**. assay keeps the subscription token (ADR-02
 
 Rejected: switching to the `ClaudeApi` runner now (removes the ambiguity, costs API rates on every review); waiting for written confirmation from Anthropic support (slow; may still be asked for, and this record stands meanwhile).
 
+## Applied
+
+On 2026-10-30 the owner created the `assay-review` environment (deployment limited to `main`, no required reviewers) holding `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, with no `ANTHROPIC_API_KEY`. The token expires about **2027-10-30**; renew it before then (#43).
+
+The same day, for #43: `assay-publish` was limited to `main` too; the organisation's and repository's default `GITHUB_TOKEN` became read-only (GitHub has no read-none default, so every workflow declares its own `permissions`), and "Allow GitHub Actions to create and approve pull requests" was turned off.
+
 ## Consequences
 
 - `06 §1` A-01 and `07 §2` ADR-02 point here.
