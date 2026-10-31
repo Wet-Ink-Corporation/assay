@@ -34,7 +34,7 @@ pub use content_hash::ContentHash;
 pub use decide::inputs::{
     Authorship, CallFailure, DecisionInputs, Deferral, DegradedReport, GateFinding, GateOutcome,
     GateReport, InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope,
-    OwnerApproval, Policy, PullRequest, Readiness, ReviewedFinding, StepAttribution,
+    OwnerApproval, Policy, PullRequest, Readiness, ReviewedFinding, StageRole, StepAttribution,
     SupportOutcome, Waiver, WeighIn,
 };
 pub use decide::key::{DecisionKey, DecisionKeyParts, decision_key};

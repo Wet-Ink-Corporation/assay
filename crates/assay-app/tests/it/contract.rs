@@ -7,7 +7,7 @@ use std::error::Error;
 use std::fs;
 
 use assay_app::{Contract, ContractValidator, ReadContractError};
-use assay_domain::{CallFailure, DecisionInputs, DegradedReport, Disposition, decide};
+use assay_domain::{CallFailure, DecisionInputs, DegradedReport, Disposition, StageRole, decide};
 use serde_json::Value;
 
 use crate::support::{Validity, fixtures, golden_inputs, rubric_v1, schemas_dir};
@@ -574,6 +574,12 @@ fn schemas_list_exactly_the_domain_disposition_codes() -> Result<(), Box<dyn Err
 /// The decision over the `rule-8c-llm-degraded` golden inputs with `combined` reported degraded
 /// for each of `reasons`, as published JSON.
 fn decision_over(reasons: &[CallFailure]) -> Result<Vec<u8>, Box<dyn Error>> {
+    decision_with(StageRole::Combined, reasons)
+}
+
+/// The decision over the `rule-8c-llm-degraded` golden inputs with `role` reported degraded for
+/// each of `reasons`, as published JSON.
+fn decision_with(role: StageRole, reasons: &[CallFailure]) -> Result<Vec<u8>, Box<dyn Error>> {
     let inputs = golden_inputs()?;
     let bytes = inputs
         .get("rule-8c-llm-degraded")
@@ -581,12 +587,24 @@ fn decision_over(reasons: &[CallFailure]) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut inputs: DecisionInputs = serde_json::from_slice(bytes)?;
     inputs.degraded = reasons
         .iter()
-        .map(|&reason| DegradedReport {
-            role: "combined".to_owned(),
-            reason,
-        })
+        .map(|&reason| DegradedReport { role, reason })
         .collect();
     Ok(serde_json::to_vec(&decide(&rubric_v1()?, &inputs))?)
+}
+
+/// #259 F1: every role a report can name reaches `degraded[].role` as a schema-valid code.
+#[test]
+fn a_decision_over_every_degraded_stage_role_is_schema_valid() -> Result<(), Box<dyn Error>> {
+    let validator = ContractValidator::new()?;
+
+    for role in StageRole::ALL {
+        let decision = decision_with(role, &[CallFailure::Cap])?;
+
+        let read = validator.read(Contract::Decision, &decision);
+
+        assert!(read.is_ok(), "{role:?}: {read:?}");
+    }
+    Ok(())
 }
 
 #[test]

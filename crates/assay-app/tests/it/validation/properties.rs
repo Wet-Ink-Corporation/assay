@@ -3,12 +3,12 @@
 //! passes the read rule (#264).
 
 use assay_app::{FindingRef, Role, SuppressRules, Validated};
-use assay_domain::{Disposition, Finding, Side, normalise};
+use assay_domain::{Anchor, Class, Dismissal, Disposition, Finding, Severity, Side, normalise};
 use proptest::prelude::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::fixture::{LIB_AT_BASE, LIB_AT_HEAD, Run, RunError, document, finding_with};
+use super::fixture::{LIB, LIB_AT_BASE, LIB_AT_HEAD, Run, RunError, document, finding_with};
 use crate::support::read_back;
 
 /// A base `suppress` rule that matches every finding.
@@ -71,8 +71,41 @@ fn generated_finding() -> impl Strategy<Value = Value> {
         )
 }
 
+/// An owner's dismissal, as a `blocker`, of the generated findings quoting the head's `unwrap`
+/// line, so `dismissed-by-owner` is emitted for them whatever their severity.
+fn dismissed_unwrap() -> Dismissal<'static> {
+    Dismissal {
+        anchor: Anchor {
+            class: Class::ErrorHandling,
+            file: LIB,
+            enclosing_symbol: "parse",
+            evidence: "let x = input.parse().unwrap();",
+            expected_behavior: None,
+        },
+        severity: Severity::Blocker,
+    }
+}
+
 fn validated(findings: &[Value]) -> Result<Validated, RunError> {
     Run::default().validate(&[document(findings)])
+}
+
+/// The read-rule property below emits `dismissed-by-owner` only if its dismissal matches a
+/// generated finding: a blocker quoting the `unwrap` line is one.
+#[test]
+fn the_generated_dismissal_drops_a_finding_on_the_unwrap_line() -> Result<(), RunError> {
+    let mut run = Run::default();
+    run.dismissals.push(dismissed_unwrap());
+    let blocker = finding_with(json!({ "severity": "blocker", "evidence": EVIDENCE[0] }));
+
+    let validated = run.validate(&[document(&[blocker])])?;
+
+    let codes: Vec<Disposition> = validated.transitions.iter().map(|t| t.code).collect();
+    assert_eq!(
+        (codes, validated.findings.len()),
+        (vec![Disposition::DismissedByOwner], 0)
+    );
+    Ok(())
 }
 
 proptest! {
@@ -137,19 +170,23 @@ proptest! {
         }
     }
 
-    /// Whatever the role's ceiling, a gate reporting the first finding, and a suppress rule or
-    /// not, every `FindingDisposed` validation emits reads back as an event: no code that
-    /// requires a fingerprint is written without one (#264).
+    /// Whatever the role's ceiling, a gate reporting the first finding, an owner's dismissal and
+    /// a suppress rule or not, every `FindingDisposed` validation emits reads back as an event:
+    /// no code that requires a fingerprint is written without one (#264, #278).
     #[test]
     fn every_event_validation_emits_passes_the_read_rule(
         findings in prop::collection::vec(generated_finding(), 0..8),
         role in prop::sample::select(Role::ALL.to_vec()),
         gate_reports_first in any::<bool>(),
+        dismissed in any::<bool>(),
         suppressed in any::<bool>(),
     ) {
         let mut run = Run::default();
         if gate_reports_first && let Some(first) = findings.first() {
             run.gate_findings.push(Finding::deserialize(first)?);
+        }
+        if dismissed {
+            run.dismissals.push(dismissed_unwrap());
         }
         if suppressed {
             run.suppress = &SuppressAll;

@@ -57,6 +57,12 @@ pub fn decide(rubric: &Rubric, inputs: &DecisionInputs) -> Decision {
         });
     }
 
+    // A disposition names a fingerprint, not a finding, so `waived-by-owner` labels every finding
+    // that carries a waived gate fingerprint. Only gate findings are waived and counted out. A
+    // reviewer finding with the same fingerprint quotes the same line of the same function, so
+    // upstream validation (04 §4 step 6) normally disposes of it as `duplicate-of-gate` before it
+    // reaches `findings`; one it kept (a base-side finding, or a gate finding whose own line is
+    // more than three away) still counts here, under the same `waived-by-owner` label (#161).
     let mut dispositions: Vec<FindingDisposition> = inputs
         .dispositions
         .iter()

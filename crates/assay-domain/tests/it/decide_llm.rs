@@ -6,7 +6,7 @@ use std::error::Error;
 use assay_domain::{
     Authorship, CallFailure, Conclusion, Decision, DecisionInputs, Deferral, DegradedReport,
     DegradedRole, InfraPolicy, LlmPolicy, LlmStage, OwnerApproval, PrClass, Reason, ReasonCode,
-    Severity, VerifierVerdict, decide,
+    Severity, StageRole, VerifierVerdict, decide,
 };
 
 use crate::support::{clean_inputs, confirmed, fp, reason, rubric_v1};
@@ -35,7 +35,7 @@ fn trust_path(mut inputs: DecisionInputs) -> DecisionInputs {
 
 fn bugs_reported() -> DegradedReport {
     DegradedReport {
-        role: "bugs".to_owned(),
+        role: StageRole::Bugs,
         reason: CallFailure::Cap,
     }
 }

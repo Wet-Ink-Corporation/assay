@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use assay_domain::{
     Authorship, CallFailure, DecisionInputs, Deferral, DegradedReport, GateReport, LlmStage,
     NotRunReason, OwnerApproval, Policy, PullRequest, Readiness, RequiredRole, ReviewedFinding,
-    Severity, SupportOutcome, Tier, Tiering,
+    Severity, StageRole, SupportOutcome, Tier, Tiering,
 };
 
 use super::review::{LocalRole, Reviewed, Stage};
@@ -118,7 +118,7 @@ impl Review {
             Stage::Degraded(failure) => Self {
                 llm: LlmStage::Completed,
                 degraded: vec![DegradedReport {
-                    role: role.bundle().code().to_owned(),
+                    role: StageRole::from(role.required()),
                     reason: *failure,
                 }],
                 ..none
