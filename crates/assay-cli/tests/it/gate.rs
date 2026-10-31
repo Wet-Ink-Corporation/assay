@@ -32,13 +32,14 @@ pub(crate) fn temper(steps: &[(&str, &str, &str)]) -> String {
     std::iter::once(head).chain(declared).collect()
 }
 
-/// A gates job's scratch: a head tree, a base config outside it and an output path not yet
-/// there.
+/// A gates job's scratch: a head tree, a base config outside it, an output path not yet
+/// there and an empty `GITHUB_OUTPUT` file, as the runner creates it.
 pub(crate) struct Job {
     pub(crate) dir: TempDir,
     pub(crate) head: PathBuf,
     pub(crate) config: PathBuf,
     pub(crate) out: PathBuf,
+    pub(crate) github_output: PathBuf,
 }
 
 impl Job {
@@ -53,11 +54,14 @@ impl Job {
             format!("[assay]\ndigest = \"{DIGEST}\"\n\n{plugins}"),
         )?;
         let out = dir.path().join("out");
+        let github_output = dir.path().join("github-output");
+        fs::write(&github_output, "")?;
         Ok(Self {
             dir,
             head,
             config,
             out,
+            github_output,
         })
     }
 
@@ -73,6 +77,13 @@ impl Job {
         config: &Path,
         run_key: Option<&str>,
     ) -> Result<Output, Box<dyn Error>> {
+        let mut command = self.command(job, config, run_key);
+        command.env("GITHUB_OUTPUT", &self.github_output);
+        Ok(command.output()?)
+    }
+
+    /// The command [`Job::run_with`] runs, without `GITHUB_OUTPUT`.
+    pub(crate) fn command(&self, job: &str, config: &Path, run_key: Option<&str>) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_assay"));
         command
             .arg("gate")
@@ -89,7 +100,12 @@ impl Job {
         if let Some(run_key) = run_key {
             command.env("ASSAY_RUN_KEY", run_key);
         }
-        Ok(command.output()?)
+        command
+    }
+
+    /// What the job appended to `GITHUB_OUTPUT`.
+    pub(crate) fn outputs(&self) -> Result<String, Box<dyn Error>> {
+        Ok(fs::read_to_string(&self.github_output)?)
     }
 
     /// The names of the files in the output directory, sorted.

@@ -32,6 +32,9 @@ pub enum OutputName {
     Before,
     /// guard: `default_branch`, the repository's default branch.
     DefaultBranch,
+    /// gates-static, gates-lint, gates-test: `gates`, what the job reported for each plugin it
+    /// ran, as compact JSON.
+    Gates,
 }
 
 impl OutputName {
@@ -50,6 +53,9 @@ impl OutputName {
         Self::DefaultBranch,
     ];
 
+    /// The outputs each gates job writes.
+    pub const GATES: [Self; 1] = [Self::Gates];
+
     /// The name as the workflow reads it, `needs.<job>.outputs.<name>`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -65,6 +71,7 @@ impl OutputName {
             Self::Trigger => "trigger",
             Self::Before => "before",
             Self::DefaultBranch => "default_branch",
+            Self::Gates => "gates",
         }
     }
 }

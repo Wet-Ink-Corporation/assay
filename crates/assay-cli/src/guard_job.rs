@@ -217,7 +217,8 @@ pub(crate) fn run(
     if let Guarded::Refused(refusal) = guarded {
         return Ok(Ended::Refused(refusal));
     }
-    let file = open_output(present(variables.output, OUTPUT)?)?;
+    let file =
+        open_output(present(variables.output, OUTPUT)?).map_err(GuardCliError::OutputFile)?;
     let mut outputs = Outputs::new(file);
     for (name, value) in guarded.outputs() {
         outputs.write(name, &value).map_err(GuardCliError::Output)?;
@@ -241,14 +242,12 @@ fn read_payload(event: EventName, path: OsString) -> Result<EventPayload, GuardC
     EventPayload::read(event, file).map_err(GuardCliError::Payload)
 }
 
-/// The regular file at `path`, opened for appending (GitHub creates it; it is not created).
-fn open_output(path: OsString) -> Result<File, GuardCliError> {
-    regular_path(&path).map_err(GuardCliError::OutputFile)?;
-    let file = OpenOptions::new()
-        .append(true)
-        .open(path)
-        .map_err(GuardCliError::OutputFile)?;
-    regular(&file).map_err(GuardCliError::OutputFile)?;
+/// The regular file at `path`, `GITHUB_OUTPUT`, opened for appending (GitHub creates it; it is
+/// not created). Shared with `assay gate`.
+pub(crate) fn open_output(path: OsString) -> io::Result<File> {
+    regular_path(&path)?;
+    let file = OpenOptions::new().append(true).open(path)?;
+    regular(&file)?;
     Ok(file)
 }
 
