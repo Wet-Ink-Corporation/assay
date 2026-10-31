@@ -23,7 +23,9 @@ use std::time::Duration;
 
 use tempfile::TempDir;
 
+use super::ledger::encode_base64;
 use super::transport::{MAX_RESPONSE_BYTES, Request, Response, Transport};
+use crate::git::{Authorization, InvalidHeader};
 use crate::process::{Captured, DirectoryCap, Limits, ProcessError};
 
 pub(crate) use download::{Downloaded, Wanted};
@@ -54,8 +56,11 @@ const CONTENT_TYPE: &str = "Content-Type: application/json";
 /// The words gh fills in after a `:` (`gh api`'s `:owner`, `:repo`, `:branch`).
 const COLON_PLACEHOLDERS: [&str; 3] = ["owner", "repo", "branch"];
 
-/// The token gh authenticates with (`GH_TOKEN`): not empty, printable ASCII. Its `Debug`
-/// never shows it, and it is neither cloned nor compared.
+/// The token gh (`GH_TOKEN`) and git over https authenticate with: not empty, printable ASCII.
+///
+/// A job's token is minted outside assay and handed in through its environment (D9); git sends
+/// it as [`git_authorization`](Self::git_authorization). Its `Debug` never shows it, and it is
+/// neither cloned nor compared.
 pub struct GhToken(String);
 
 /// Why a token was refused.
@@ -75,6 +80,22 @@ impl GhToken {
             return Err(InvalidToken);
         }
         Ok(Self(secret))
+    }
+
+    /// The header git authenticates with as this token over https.
+    ///
+    /// It is `Authorization: basic <base64 of x-access-token:<token>>`, as GitHub reads an App
+    /// installation token, and goes to [`PushRemote::https`](crate::git::PushRemote::https) or
+    /// [`ObjectRepo::fetch_authorized`](crate::git::ObjectRepo::fetch_authorized), which send it
+    /// to one URL only.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidHeader`] when the header line would hold a control character, which a printable
+    /// token and its base64 never do: refused rather than sent (wi-b5affa).
+    pub fn git_authorization(&self) -> Result<Authorization, InvalidHeader> {
+        let credentials = encode_base64(format!("x-access-token:{}", self.0).as_bytes());
+        Authorization::new(format!("Authorization: basic {credentials}"))
     }
 }
 

@@ -3,6 +3,7 @@
 mod attributes;
 mod changes;
 mod diff;
+mod fetch_authorized;
 mod github;
 mod history;
 #[cfg(unix)] // symlinks in fixtures

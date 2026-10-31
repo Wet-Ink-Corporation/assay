@@ -54,6 +54,9 @@ pub enum GitOperation {
     Init,
     /// `git fetch` of one commit by SHA.
     Fetch,
+    /// The same fetch from a private https remote, sending its credential header to that URL
+    /// only and following no redirect.
+    FetchAuthorized,
     /// `git cat-file -e`: check that a fetched commit is present.
     VerifyCommit,
     /// `git diff`, with external diff drivers and textconv disabled.
@@ -111,7 +114,7 @@ impl GitOperation {
     const fn leading_args(self) -> &'static [&'static str] {
         match self {
             Self::Init => &["init", "--bare", "--quiet"],
-            Self::Fetch => &[
+            Self::Fetch | Self::FetchAuthorized => &[
                 "fetch",
                 "--quiet",
                 "--no-tags",
@@ -157,9 +160,10 @@ impl GitOperation {
         }
     }
 
-    /// Whether the operation sends a ref update to a remote, and so may carry an HTTP header.
-    const fn pushes(self) -> bool {
-        matches!(self, Self::Push | Self::PushLocal)
+    /// Whether the operation talks to a remote that may need a credential, and so may carry an
+    /// HTTP header: a push, and an authorized fetch.
+    const fn carries_header(self) -> bool {
+        matches!(self, Self::Push | Self::PushLocal | Self::FetchAuthorized)
     }
 
     /// Whether the operation may read the developer's system and user config: only a setting's
@@ -170,12 +174,13 @@ impl GitOperation {
 
     /// `-c` settings the operation adds to [`HARDENED_CONFIG`]: a checkout writes symlinks as
     /// plain files holding their target, so nothing read from the written tree can follow one
-    /// out of it; a push to https follows no redirect, so its credential header goes to the
-    /// ledger's host only; a push to a local bare repository may use the file protocol.
+    /// out of it; a push to https and an authorized fetch follow no redirect, so a credential
+    /// header goes to its remote's host only; a push to a local bare repository may use the
+    /// file protocol.
     const fn extra_config(self) -> &'static [&'static str] {
         match self {
             Self::CheckoutIndex => &["core.symlinks=false"],
-            Self::Push => &["http.followRedirects=false"],
+            Self::Push | Self::FetchAuthorized => &["http.followRedirects=false"],
             Self::PushLocal => &["protocol.file.allow=always"],
             _ => &[],
         }
@@ -207,7 +212,7 @@ impl fmt::Display for GitOperation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             Self::Init => "init",
-            Self::Fetch => "fetch",
+            Self::Fetch | Self::FetchAuthorized => "fetch",
             Self::VerifyCommit => "cat-file",
             Self::Diff => "diff",
             Self::CheckAttr => "check-attr",
@@ -331,7 +336,8 @@ pub(super) struct Scope<'a> {
     pub(super) index: Option<&'a Path>,
     /// The developer's user config, read only by a setting's lookup.
     pub(super) user: Option<&'a UserDirs>,
-    /// An HTTP header a push sends to its remote, and only to it: the ledger token.
+    /// An HTTP header a push or an authorized fetch sends to its remote, and only to it: the
+    /// ledger token, or a private repository's.
     pub(super) header: Option<HttpHeader<'a>>,
 }
 
@@ -377,7 +383,7 @@ pub(super) fn git_in(
         command.env_remove("GIT_CONFIG_GLOBAL");
         command.envs(user.variables());
     }
-    if let (Some(header), true) = (scope.header, operation.pushes()) {
+    if let (Some(header), true) = (scope.header, operation.carries_header()) {
         command.env("GIT_CONFIG_COUNT", "1");
         command.env(
             "GIT_CONFIG_KEY_0",
@@ -417,9 +423,10 @@ mod tests {
     use crate::process::{Limits, run};
 
     /// Every operation.
-    const ALL: [GitOperation; 25] = [
+    const ALL: [GitOperation; 26] = [
         GitOperation::Init,
         GitOperation::Fetch,
+        GitOperation::FetchAuthorized,
         GitOperation::VerifyCommit,
         GitOperation::Diff,
         GitOperation::CheckAttr,
@@ -584,6 +591,10 @@ mod tests {
             extras,
             [
                 (
+                    GitOperation::FetchAuthorized,
+                    ["http.followRedirects=false"].as_slice()
+                ),
+                (
                     GitOperation::CheckoutIndex,
                     ["core.symlinks=false"].as_slice()
                 ),
@@ -740,6 +751,17 @@ mod tests {
         assert_eq!(leading, LEADING);
     }
 
+    /// The flags every fetch carries, authorized or not.
+    const FETCH_ARGS: &[&str] = &[
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-recurse-submodules",
+        "--no-write-fetch-head",
+        "--no-auto-gc",
+        "--no-auto-maintenance",
+    ];
+
     /// The flags every push carries.
     const PUSH_ARGS: &[&str] = &[
         "push",
@@ -750,20 +772,10 @@ mod tests {
     ];
 
     /// Each operation's subcommand and fixed flags, in [`ALL`]'s order.
-    const LEADING: [(GitOperation, &[&str]); 25] = [
+    const LEADING: [(GitOperation, &[&str]); 26] = [
         (GitOperation::Init, &["init", "--bare", "--quiet"]),
-        (
-            GitOperation::Fetch,
-            &[
-                "fetch",
-                "--quiet",
-                "--no-tags",
-                "--no-recurse-submodules",
-                "--no-write-fetch-head",
-                "--no-auto-gc",
-                "--no-auto-maintenance",
-            ],
-        ),
+        (GitOperation::Fetch, FETCH_ARGS),
+        (GitOperation::FetchAuthorized, FETCH_ARGS),
         (GitOperation::VerifyCommit, &["cat-file", "-e"]),
         (
             GitOperation::Diff,
