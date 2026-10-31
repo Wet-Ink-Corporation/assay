@@ -23,3 +23,8 @@ serde_json = { workspace = true }
 # `assay check --local`'s scratch directory and atomic report write (#107); pre-approved, a
 # dev-dependency before.
 tempfile = { workspace = true }
+
+[dev-dependencies]
+# Property tests: the run-attempt guard and the job-output round-trips (#60 ST-1); pre-approved,
+# already a workspace dependency.
+proptest = { workspace = true }

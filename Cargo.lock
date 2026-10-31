@@ -54,6 +54,7 @@ dependencies = [
  "assay-forge",
  "assay-gates",
  "assay-runner",
+ "proptest",
  "serde_json",
  "tempfile",
 ]
