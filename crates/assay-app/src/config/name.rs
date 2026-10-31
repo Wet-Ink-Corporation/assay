@@ -1,6 +1,9 @@
 //! Names of plugins and steps: safe as a path segment and as a report label.
 
 use std::fmt;
+use std::str::FromStr;
+
+use thiserror::Error;
 
 /// The longest accepted name, in bytes.
 const MAX_LEN: usize = 64;
@@ -34,5 +37,61 @@ impl GateName {
 impl fmt::Display for GateName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+impl FromStr for GateName {
+    type Err = ParseGateNameError;
+
+    /// Reads a name written elsewhere (a job output) under the same rule as base config's.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Self::new(text.to_owned()).map_err(|_refused| ParseGateNameError)
+    }
+}
+
+/// Text that is not a plugin or step name: 1 to 64 of `a-z`, `0-9` and `-`, starting with a
+/// letter or digit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("a plugin name is 1 to 64 of `a-z`, `0-9` and `-`, starting with a letter or digit")]
+pub struct ParseGateNameError;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_name_of_the_config_shape_parses_as_written() {
+        let longest = "a".repeat(MAX_LEN);
+        for text in ["temper", "0", "a-b-9", "x-", longest.as_str()] {
+            assert_eq!(
+                text.parse::<GateName>()
+                    .map(|name| name.as_str().to_owned()),
+                Ok(text.to_owned()),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn any_other_text_is_not_a_name() {
+        let too_long = "a".repeat(MAX_LEN + 1);
+        for text in [
+            "",
+            "-a",
+            "Temper",
+            "a b",
+            "a\nb",
+            "a/b",
+            "..",
+            "a_b",
+            "é",
+            too_long.as_str(),
+        ] {
+            assert_eq!(
+                text.parse::<GateName>(),
+                Err(ParseGateNameError),
+                "{text:?}"
+            );
+        }
     }
 }

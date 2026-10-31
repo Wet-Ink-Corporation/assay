@@ -19,13 +19,13 @@ use serde_json::json;
 use super::api::{Api, Failed, decode, encode};
 use super::api_path;
 use super::error::{ForgeError, Operation};
-use super::ledger::{confirm_repository, encode_base64};
+use super::gh::GhToken;
+use super::ledger::confirm_repository;
 use super::repository::Repository;
-use super::token::InstallationToken;
 use super::transport::{ApiPath, Request, Sleep, Transport};
 use crate::git::{
-    Authorization, BranchRef, CommitSha, DeleteOutcome, GitError, HttpsRemote, InvalidHeader,
-    ObjectRepo, ParseRemoteError, PushRemote,
+    BranchRef, CommitSha, DeleteOutcome, GitError, HttpsRemote, InvalidHeader, ObjectRepo,
+    ParseRemoteError, PushRemote,
 };
 use wire::{CommitView, RefView};
 
@@ -85,20 +85,18 @@ pub enum LedgerRemoteError {
 /// The push remote of the ledger repository `repository`.
 ///
 /// It is `https://github.com/<owner>/<name>.git`, authenticated as the installation `token`
-/// belongs to (`x-access-token` basic credentials, sent to that URL only).
+/// belongs to ([`GhToken::git_authorization`], sent to that URL only). The token is the
+/// `assay-ledger-writer` App's, minted outside assay (D9).
 ///
 /// # Errors
 ///
-/// [`LedgerRemoteError`] when the URL or the header cannot be formed (a token holding a control
-/// character).
+/// [`LedgerRemoteError`] when the URL or the header cannot be formed.
 pub fn ledger_push_remote(
     repository: &Repository,
-    token: &InstallationToken,
+    token: &GhToken,
 ) -> Result<PushRemote, LedgerRemoteError> {
     let remote: HttpsRemote = format!("https://github.com/{repository}.git").parse()?;
-    let credentials = encode_base64(format!("x-access-token:{}", token.secret()).as_bytes());
-    let authorization = Authorization::new(format!("Authorization: basic {credentials}"))?;
-    Ok(PushRemote::https(remote, authorization))
+    Ok(PushRemote::https(remote, token.git_authorization()?))
 }
 
 /// How the ref creation's attempts ended.

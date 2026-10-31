@@ -72,7 +72,9 @@ impl FromStr for BranchRef {
     }
 }
 
-/// An `Authorization` header line for an https push, `Authorization: <scheme> <credentials>`.
+/// An `Authorization` header line, `Authorization: <scheme> <credentials>`.
+///
+/// It authenticates an https push or an authorized fetch ([`ObjectRepo::fetch_authorized`]).
 /// Its [`Debug`](fmt::Debug) never shows the credentials.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Authorization(String);
@@ -95,6 +97,14 @@ impl Authorization {
             return Err(InvalidHeader);
         }
         Ok(Self(line))
+    }
+
+    /// The header sent to `remote`, and only to it.
+    pub(super) fn header<'a>(&'a self, remote: &'a HttpsRemote) -> HttpHeader<'a> {
+        HttpHeader {
+            url: remote.as_str(),
+            line: &self.0,
+        }
     }
 }
 
@@ -201,10 +211,7 @@ impl ObjectRepo {
             } => (
                 GitOperation::Push,
                 remote.as_str(),
-                Some(HttpHeader {
-                    url: remote.as_str(),
-                    line: &authorization.0,
-                }),
+                Some(authorization.header(remote)),
             ),
             Target::Local(path) => (GitOperation::PushLocal, path.as_str(), None),
         };

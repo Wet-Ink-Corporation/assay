@@ -80,8 +80,8 @@ pub use config::{
     ConfigError, DEFAULT_TIMEOUT_SECS, EligibilityLists, ExactVersion, GateName, GlobsConfigError,
     Identity, ListFile, ListName, ListsError, MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS,
     MAX_LIST_ENTRIES, MAX_LISTS_BYTES, MAX_TIMEOUT_SECS, ParseCommitIdError, ParseDigestError,
-    ParsePinError, Pin, Plugin, PluginsConfig, RunnerKind, Sha256Digest, Step, TomlError,
-    parse_globs,
+    ParseGateNameError, ParsePinError, Pin, Plugin, PluginsConfig, RunnerKind, Sha256Digest, Step,
+    TomlError, parse_globs,
 };
 pub use contract::{
     Contract, ContractSchemaError, ContractValidator, MAX_DOCUMENT_BYTES, ReadContractError,
@@ -126,7 +126,7 @@ pub use forge::{
 };
 pub use gate::{
     BuildJob, GateDocument, GateError, GateJob, GateJobOutcome, GateJobReport, GateRun, GateRunner,
-    Termination, account_for_required, run_gates,
+    ParseGateErrorError, Termination, account_for_required, run_gates,
 };
 pub use golden::{
     CorpusEntry, CorpusEntryKind, GoldenReplay, RubricError, SELF_GATE, read_rubric, replay_golden,

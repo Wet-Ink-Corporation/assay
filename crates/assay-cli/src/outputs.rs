@@ -3,10 +3,13 @@
 //! The job that writes them encodes them and the jobs that read them decode them from
 //! `ASSAY_NEEDS`, one pair per job, so producer and consumer cannot drift.
 
+mod gates;
+
 use std::num::NonZeroU64;
 
 use assay_app::{CommitId, UserId};
 
+pub use self::gates::{GatesOutputError, gates_from_needs, gates_output};
 use crate::ci::{
     JobName, JobResult, Needs, NeedsError, OutputName, Upstream, canonical_positive, shown,
 };
