@@ -188,6 +188,12 @@ pub enum Operation {
     ListLedgerRefs,
     /// Listing a workflow run's artifacts.
     ListArtifacts,
+    /// Listing a PR's files.
+    ListPullFiles,
+    /// Comparing two commits.
+    CompareCommits,
+    /// Reading one issue comment.
+    ReadComment,
 }
 
 impl fmt::Display for Operation {
@@ -229,6 +235,9 @@ impl fmt::Display for Operation {
             Self::CreateLedgerRef => "create ledger ref",
             Self::ListLedgerRefs => "list ledger refs",
             Self::ListArtifacts => "list run artifacts",
+            Self::ListPullFiles => "list pull request files",
+            Self::CompareCommits => "compare commits",
+            Self::ReadComment => "read comment",
         })
     }
 }

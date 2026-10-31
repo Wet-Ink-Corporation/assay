@@ -5,8 +5,8 @@
 use std::num::NonZeroU64;
 
 use assay_app::{
-    CheckRunId, CommitId, CompareAndSetError, LedgerTime, LockedWrite, OpenPull, PullHead,
-    ReconcileCheck, ReconcileForge, RunProgress, StampedRun,
+    CheckRunId, CommitId, CompareAndSetError, LockedWrite, OpenPull, PullHead, ReconcileCheck,
+    ReconcileForge, RunProgress, StampedRun,
 };
 use serde::Deserialize;
 
@@ -107,7 +107,7 @@ impl<T: Transport, S: Sleep> ReconcileForge for GitHub<T, S> {
         })?;
         Ok(Some(StampedRun {
             progress,
-            started_at: github_time(operation, started_at)?,
+            started_at: dto::github_time(operation, started_at)?,
         }))
     }
 
@@ -158,19 +158,4 @@ fn reconcile_check<E>(
         status: check_status(operation, &check.status)?,
         name: check.name,
     })
-}
-
-/// GitHub's `YYYY-MM-DDTHH:MM:SSZ` as a ledger time; any other form is refused.
-fn github_time<E>(operation: Operation, text: &str) -> Result<LedgerTime, ForgeError<E>> {
-    let refused = || ForgeError::Malformed {
-        operation,
-        detail: "a time is not YYYY-MM-DDTHH:MM:SSZ",
-    };
-    let seconds = text.strip_suffix('Z').ok_or_else(refused)?;
-    if seconds.contains('.') {
-        return Err(refused());
-    }
-    format!("{seconds}.000Z")
-        .parse()
-        .map_err(|_refused| refused())
 }

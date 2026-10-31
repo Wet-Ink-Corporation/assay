@@ -1,0 +1,39 @@
+{
+  "number": 317,
+  "state": "closed",
+  "title": "app: one parser for .assay/owners and .assay/agents (#305)",
+  "user": {
+    "login": "Ryan-Britton",
+    "id": 124330161,
+    "type": "User"
+  },
+  "head": {
+    "label": "Wet-Ink-Corporation:claude/assay-305-one-owners-parser",
+    "ref": "claude/assay-305-one-owners-parser",
+    "sha": "f5c3c78d3ef0bef8fa9eca4066027e06648ff6e5",
+    "repo": {
+      "id": 1413773798,
+      "name": "assay",
+      "full_name": "Wet-Ink-Corporation/assay",
+      "private": false
+    }
+  },
+  "base": {
+    "label": "Wet-Ink-Corporation:main",
+    "ref": "main",
+    "sha": "94ea66af94f631022ef97bc57375e47fe5a0e0ae",
+    "repo": {
+      "id": 1413773798,
+      "full_name": "Wet-Ink-Corporation/assay"
+    }
+  },
+  "draft": false,
+  "merged_at": "2026-10-31T05:20:39Z",
+  "created_at": "2026-10-31T04:56:12Z",
+  "updated_at": "2026-10-31T05:20:42Z",
+  "html_url": "https://github.com/Wet-Ink-Corporation/assay/pull/317",
+  "commits": 4,
+  "additions": 397,
+  "deletions": 427,
+  "changed_files": 16
+}

@@ -10,6 +10,9 @@
 //! its rulesets and the `.github/workflows` contents are recorded; branch rules, environments,
 //! branch policies, workflow permissions, collaborators, users and permissions follow the
 //! documented schema, since they need admin rights or settings this repository lacks.
+//! For the pipeline's reads (#60 ST-3b) PR 317 and its file list, one issue comment by id, a
+//! 404 for a comment that does not exist, and the four compare statuses are recorded; no PR
+//! here renamed a file, so a rename is the recorded list edited to GitHub's documented shape.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
