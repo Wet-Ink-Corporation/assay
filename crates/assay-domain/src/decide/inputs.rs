@@ -51,8 +51,9 @@ pub struct DecisionInputs {
     /// How the blind verifier ran; `NotNeeded` only when there was no candidate. On `full` or
     /// `lite`, a blocker or major is a candidate (04 §3), so it must not be `NotNeeded` then.
     pub verifier: SupportOutcome,
-    /// Roles reported degraded, each with its reason: own cap, turns, timeout, or malformed
-    /// output after a retry (rules 8b, 8c). A role degraded on any shard is degraded.
+    /// Roles reported degraded, each with its reason: own cap, turns, timeout, malformed output
+    /// after a retry, or no model to call (rules 8b, 8c). A role degraded on any shard is
+    /// degraded.
     pub degraded: Vec<DegradedReport>,
     /// Valid waiver command records for this head.
     pub waivers: Vec<Waiver>,
@@ -62,16 +63,53 @@ pub struct DecisionInputs {
 
 /// A role of the LLM stage that reported itself degraded (rules 8b, 8c).
 ///
-/// The reason is a [`CallFailure`], never free text, so a report with an empty or unknown
-/// reason is refused where the inputs are parsed rather than reaching the decision's
-/// `degraded[].reason`, which `assay.decision/1` requires to be non-empty (#185).
+/// The role is a [`StageRole`] and the reason a [`CallFailure`], never free text, so a report
+/// with an empty or unknown role or reason is refused where the inputs are parsed rather than
+/// reaching the decision's `degraded[]`, whose `role` and `reason` `assay.decision/1` requires
+/// to be non-empty.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DegradedReport {
     /// The role: a specialist (`bugs`, `combined`), `coordinator` or `verifier`.
-    pub role: String,
+    pub role: StageRole,
     /// Why it produced nothing.
     pub reason: CallFailure,
+}
+
+closed_enum! {
+    /// A call of the LLM stage that can report itself degraded (04 §3): a specialist of the
+    /// roster, the coordinator or the verifier.
+    pub enum StageRole {
+        /// The `bugs` specialist (`full`).
+        Bugs => "bugs",
+        /// The `security` specialist (`full`).
+        Security => "security",
+        /// The `design` specialist (`full`).
+        Design => "design",
+        /// The `meta` specialist (`full`, trust path or exec surface).
+        Meta => "meta",
+        /// The `combined` specialist (`lite`).
+        Combined => "combined",
+        /// The `combined-micro` specialist (`micro`).
+        CombinedMicro => "combined-micro",
+        /// The coordinator (`full`).
+        Coordinator => "coordinator",
+        /// The blind verifier.
+        Verifier => "verifier",
+    }
+}
+
+impl From<RequiredRole> for StageRole {
+    fn from(role: RequiredRole) -> Self {
+        match role {
+            RequiredRole::Bugs => Self::Bugs,
+            RequiredRole::Security => Self::Security,
+            RequiredRole::Design => Self::Design,
+            RequiredRole::Meta => Self::Meta,
+            RequiredRole::Combined => Self::Combined,
+            RequiredRole::CombinedMicro => Self::CombinedMicro,
+        }
+    }
 }
 
 /// Base policy (03 §1 `[assay]`).

@@ -124,30 +124,30 @@ fn script() -> PathBuf {
 
 /// A per-test directory: `store/` (the fake registry), `bin/oras`, `out/` and `oras.log`.
 struct Sandbox {
-    root: PathBuf,
-    /// Owns `root`, unique to this sandbox, so concurrent runs never share it (#166); removed
-    /// on drop.
-    _dir: TempDir,
+    /// The sandbox's root, unique to it, so concurrent runs never share it (#166); removed on
+    /// drop.
+    dir: TempDir,
 }
 
 impl Sandbox {
     fn new(test: &str) -> io::Result<Self> {
-        let scratch = tempfile::Builder::new()
+        let dir = tempfile::Builder::new()
             .prefix(&format!("fetch-by-digest-{test}-"))
             .tempdir_in(env!("CARGO_TARGET_TMPDIR"))?;
-        let root = scratch.path().to_path_buf();
+        let root = dir.path();
         fs::create_dir_all(root.join("store"))?;
         fs::create_dir_all(root.join("bin"))?;
         write_executable(&root.join("bin/oras"), FAKE_ORAS)?;
-        Ok(Self {
-            root,
-            _dir: scratch,
-        })
+        Ok(Self { dir })
+    }
+
+    fn root(&self) -> &Path {
+        self.dir.path()
     }
 
     /// Makes the fake registry answer a request for `sha256:<hex>` with `bytes`.
     fn serve(&self, hex: &str, bytes: &[u8]) -> io::Result<()> {
-        fs::write(self.root.join("store").join(hex), bytes)
+        fs::write(self.root().join("store").join(hex), bytes)
     }
 
     /// Serves the fixture artifact honestly: the manifest and its layer under their own digests.
@@ -157,11 +157,11 @@ impl Sandbox {
     }
 
     fn out(&self) -> PathBuf {
-        self.root.join("out")
+        self.root().join("out")
     }
 
     fn path(&self, name: &str) -> io::Result<String> {
-        self.root
+        self.root()
             .join(name)
             .into_os_string()
             .into_string()
@@ -171,7 +171,7 @@ impl Sandbox {
     /// Runs the script with `env` added to (or overriding) the sandbox environment, in which
     /// `GITHUB_OUTPUT` and every `FETCH_BY_DIGEST_*` variable are unset.
     fn run_with(&self, args: &[&str], env: &[(&str, &str)]) -> io::Result<Output> {
-        let mut path = vec![self.root.join("bin")];
+        let mut path = vec![self.root().join("bin")];
         path.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
         ));
@@ -182,9 +182,9 @@ impl Sandbox {
             .arg(script())
             .args(args)
             .env("PATH", path)
-            .env("FAKE_ORAS_STORE", self.root.join("store"))
-            .env("FAKE_ORAS_LOG", self.root.join("oras.log"))
-            .env("FAKE_ORAS_STDIN", self.root.join("oras.stdin"))
+            .env("FAKE_ORAS_STORE", self.root().join("store"))
+            .env("FAKE_ORAS_LOG", self.root().join("oras.log"))
+            .env("FAKE_ORAS_STDIN", self.root().join("oras.stdin"))
             .env_remove("GITHUB_OUTPUT");
         for variable in [
             "FETCH_BY_DIGEST_USERNAME",
@@ -215,11 +215,11 @@ impl Sandbox {
     }
 
     fn oras_was_called(&self) -> bool {
-        self.root.join("oras.log").exists()
+        self.root().join("oras.log").exists()
     }
 
     fn write_config(&self, text: &str) -> io::Result<String> {
-        let config = self.root.join("plugins.toml");
+        let config = self.root().join("plugins.toml");
         fs::write(&config, text)?;
         config
             .to_str()
@@ -339,7 +339,7 @@ fn rejects_a_layer_title_that_escapes_the_output_directory()
     assert_reason(&output, "is not a plain file name");
     assert!(sandbox.out_is_empty()?, "nothing may be installed");
     assert!(
-        !sandbox.root.join("assay").exists(),
+        !sandbox.root().join("assay").exists(),
         "a layer was written outside the output directory"
     );
     Ok(())
@@ -540,10 +540,10 @@ fn passes_the_registry_password_on_stdin_and_never_in_argv()
     )?;
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let argv = fs::read_to_string(sandbox.root.join("oras.log"))?;
+    let argv = fs::read_to_string(sandbox.root().join("oras.log"))?;
     assert!(!argv.contains(PASSWORD), "password in oras argv: {argv}");
     assert_eq!(
-        fs::read_to_string(sandbox.root.join("oras.stdin"))?,
+        fs::read_to_string(sandbox.root().join("oras.stdin"))?,
         PASSWORD,
         "oras must read the password on stdin"
     );

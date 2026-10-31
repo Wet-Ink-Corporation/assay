@@ -273,8 +273,8 @@ fn every_decision_fixture_rewritten_by_the_domain_is_schema_valid() -> Result<()
 }
 
 /// What `decide` writes for every golden input passes `decision-1.schema.json`, whatever was
-/// recorded. Until #49's `Fingerprint` type lands, the fingerprints are only as well-formed as
-/// the inputs; `by` is never empty because `decide` does not apply a waiver without an actor.
+/// recorded. Every `fp` is a parsed `Fingerprint` (#49), so it is well-formed whatever the
+/// inputs held; `by` is never empty because `decide` does not apply a waiver without an actor.
 #[test]
 fn every_decision_decide_writes_for_a_golden_input_is_schema_valid() -> Result<(), Box<dyn Error>> {
     let validator = ContractValidator::new()?;

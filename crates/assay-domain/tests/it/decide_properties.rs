@@ -9,8 +9,9 @@ use assay_domain::{
     Authorship, CallFailure, Conclusion, Counts, DecisionInputs, Deferral, DegradedReport,
     Disposition, FindingDisposition, Fingerprint, GateConclusion, GateFinding, GateOutcome,
     GateReport, InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope,
-    OwnerApproval, Policy, PrClass, PullRequest, Readiness, RequiredRole, ReviewedFinding, Rubric,
-    Severity, StepAttribution, SupportOutcome, Tier, VerifierVerdict, Waiver, WeighIn, decide,
+    OwnerApproval, Policy, PrClass, PullRequest, Readiness, Reason, ReasonCode, RequiredRole,
+    ReviewedFinding, Rubric, Severity, StageRole, StepAttribution, SupportOutcome, Tier,
+    VerifierVerdict, Waiver, WeighIn, decide,
 };
 use proptest::collection::vec;
 use proptest::option;
@@ -219,13 +220,10 @@ fn inputs() -> impl Strategy<Value = DecisionInputs> {
     );
     let degraded = vec(
         (
-            select(vec!["bugs", "security"]),
+            select(vec![StageRole::Bugs, StageRole::Security]),
             select(CallFailure::ALL.to_vec()),
         )
-            .prop_map(|(role, reason)| DegradedReport {
-                role: role.to_owned(),
-                reason,
-            }),
+            .prop_map(|(role, reason)| DegradedReport { role, reason }),
         0..2,
     );
     (
@@ -321,6 +319,15 @@ fn may_be_pending(inputs: &DecisionInputs) -> bool {
         }
         LlmStage::Completed => false,
     }
+}
+
+/// Whether `reason` is rule 8a's for a stage that did not run on a reviewed tier: pending or
+/// failing as `infra-llm-unavailable`, or warning `llm-degraded` with that deferral as its
+/// detail (a degraded role's warning names the role instead).
+fn is_unavailable_stage(reason: &Reason) -> bool {
+    let unavailable = Deferral::InfraLlmUnavailable.code();
+    reason.code == ReasonCode::InfraLlmUnavailable
+        || (reason.code == ReasonCode::LlmDegraded && reason.detail == unavailable)
 }
 
 /// Clean inputs except for the LLM stage and what rule 8 reads beside it, so rule 8 decides the
@@ -512,9 +519,12 @@ proptest! {
 
         let decision = decide(&rubric, &inputs);
 
+        // The stage's own reason, not a degraded role's warning, which a generated `degraded`
+        // report would also give (#161).
         prop_assert!(
-            decision.conclusion != Conclusion::Success || !decision.reasons.is_empty(),
-            "a reasonless success from {:?} on a ready {:?} PR", inputs.llm, inputs.pr.tier
+            decision.reasons.iter().any(is_unavailable_stage),
+            "no infra-llm-unavailable reason from {:?} on a ready {:?} PR: {:?}",
+            inputs.llm, inputs.pr.tier, decision.reasons
         );
     }
 
