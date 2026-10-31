@@ -45,8 +45,9 @@ pub struct CostRecord {
     pub aeu: Aeu,
     /// Whether this is the admission's reservation or the settled cost.
     pub kind: CostKind,
-    /// A `final` record charged at the run cap because the review died, was cancelled, or was
-    /// back-filled by `reconcile`. Never set on a `reserved` record.
+    /// A `final` record charged at the run cap because the review was cancelled, or because
+    /// `reconcile` back-filled it; `release` charges a review that failed or was skipped the run
+    /// cap too, without setting it. Never set on a `reserved` record.
     pub cancelled: bool,
     /// When the record was written; its month names the file it is in.
     pub at: LedgerTime,

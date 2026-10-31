@@ -142,8 +142,9 @@ pub use ledger::{
     PushRecord, RefCreation, RefDeletion, RefTip, Released, RetryGrant, RoleCost, SLOT_TTL, Slot,
     SlotAcquired, SlotAcquisition, SlotHold, SlotLease, SlotRequest, SlotView, StateUpdate,
     WriteCondition, WriteOutcome, acquire_lock, acquire_slot, append_command, append_cost,
-    append_push, consume_grant, grant_retry, pending_grant, read_commands, read_costs, read_pushes,
-    read_slots, read_state, reap_expired_slots, release_lock, release_slot, update_state,
+    append_push, consume_grant, grant_retry, parse_aeu, pending_grant, read_commands, read_costs,
+    read_pushes, read_slots, read_state, reap_expired_slots, release_lock, release_slot,
+    update_state,
 };
 pub use model_runner::{
     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
@@ -231,6 +232,10 @@ pub use reconcile::{
     LockListing, LostLock, MAX_HEAD_CHECKS, MAX_OPEN_PULLS, MAX_PUBLISH_LOCKS,
     MAX_SUPERSEDED_HEADS, OpenPull, PullHead, ReconcileCheck, ReconcileForge, ReconcilePorts,
     RunProgress, STUCK_AFTER, Skip, SkippedCheck, StampedRun, reconcile_checks, reconcile_ledger,
+};
+mod release;
+pub use release::{
+    ReleaseError, ReleaseFailure, ReleasePorts, ReleaseRequest, ReviewCost, Settled, release,
 };
 mod weigh_in;
 pub use weigh_in::{

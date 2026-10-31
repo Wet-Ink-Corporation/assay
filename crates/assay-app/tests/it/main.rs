@@ -87,6 +87,7 @@ mod reconcile_checks;
 mod reconcile_fakes;
 mod reconcile_ledger;
 mod redaction;
+mod release;
 mod replay;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod replay_fakes;

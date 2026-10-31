@@ -3,27 +3,22 @@
 //! The job that writes them encodes them and the jobs that read them decode them from
 //! `ASSAY_NEEDS`, one pair per job, so producer and consumer cannot drift.
 
+mod admit;
 mod gates;
+mod review;
 
 use std::num::NonZeroU64;
 
 use assay_app::{CommitId, UserId};
 
+pub use self::admit::HeldSlot;
 pub use self::gates::{GatesOutputError, gates_from_needs, gates_output};
+pub use self::review::{
+    REVIEW_PLACEHOLDER, ReviewEnd, ReviewReport, ReviewStage, UnknownReviewStage,
+};
 use crate::ci::{
     JobName, JobResult, Needs, NeedsError, OutputName, Upstream, canonical_positive, shown,
 };
-
-/// The review job's outputs while it is a placeholder (#60 ST-9, D11 A).
-///
-/// In [`OutputName::REVIEW`]'s order: the review did not run (`stage=not-run`, so `decide`
-/// applies the LLM-unavailable policy), spent nothing and reported no document. The real
-/// review (M2) replaces it.
-pub const REVIEW_PLACEHOLDER: [(OutputName, &str); 3] = [
-    (OutputName::Stage, "not-run"),
-    (OutputName::CostAeu, "0"),
-    (OutputName::Documents, "[]"),
-];
 
 /// The run identity `guard` resolves from the event (I2): every later job reads it from
 /// `guard`'s outputs, never from the event payload.
@@ -197,9 +192,7 @@ struct Read<'n>(&'n Upstream);
 impl<'n> Read<'n> {
     /// Output `name`, unless absent or empty.
     fn optional(&self, name: OutputName) -> Option<&'n str> {
-        self.0
-            .output(name.as_str())
-            .filter(|value| !value.is_empty())
+        written(self.0, name)
     }
 
     /// Output `name`, which must be written.
@@ -221,6 +214,27 @@ impl<'n> Read<'n> {
 /// The refusal of `guard`'s output `name`'s value.
 const fn invalid(name: OutputName) -> NeedsError {
     NeedsError::Output { job: GUARD, name }
+}
+
+/// Output `name` of `upstream`, unless absent or empty (GitHub's value for an unset output).
+fn written(upstream: &Upstream, name: OutputName) -> Option<&str> {
+    upstream
+        .output(name.as_str())
+        .filter(|value| !value.is_empty())
+}
+
+/// Refuses the first output of `upstream`, job `job`, that is not among `own`.
+fn only_own(upstream: &Upstream, job: JobName, own: &[OutputName]) -> Result<(), NeedsError> {
+    match upstream
+        .outputs()
+        .find(|&(name, _)| !own.iter().any(|known| known.as_str() == name))
+    {
+        Some((name, _)) => Err(NeedsError::UnexpectedOutput {
+            job,
+            name: shown(name),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// `text` as a branch name: not empty, no control character.

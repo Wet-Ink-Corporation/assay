@@ -41,6 +41,8 @@ mod pre_push;
 #[cfg(unix)] // process groups, through forge's git
 mod pull_request;
 mod reconcile;
+#[cfg(unix)] // stand-in executables with Unix file modes
+mod release_job;
 mod release_workflow;
 #[cfg(unix)] // a FIFO as GITHUB_OUTPUT
 mod review;

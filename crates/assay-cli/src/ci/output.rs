@@ -41,6 +41,26 @@ pub enum OutputName {
     CostAeu,
     /// review: `documents`, the review's documents.
     Documents,
+    /// admit: `admission`, what the admission decided.
+    Admission,
+    /// admit: `deferral`, why the LLM stage was deferred; written for a deferral only.
+    Deferral,
+    /// admit: `slot`, the index of the review slot held; written only when one is held.
+    Slot,
+    /// admit: `lease_commit`, the commit the slot's ref points at; written with `slot`.
+    LeaseCommit,
+    /// admit: `reserved_aeu`, what the admission reserved.
+    ReservedAeu,
+    /// admit: `tier`, the tier the LLM stage runs at.
+    Tier,
+    /// admit: `degrade`, whether and from which tier the admission degraded.
+    Degrade,
+    /// admit: `run_digest`, the sha256 of the admitted `run.json`.
+    RunDigest,
+    /// admit: `pack_digest`, the sha256 of the admitted `context-pack.json`.
+    PackDigest,
+    /// admit: `review`, whether the review job runs.
+    Review,
 }
 
 impl OutputName {
@@ -65,6 +85,21 @@ impl OutputName {
     /// The outputs `review` writes.
     pub const REVIEW: [Self; 3] = [Self::Stage, Self::CostAeu, Self::Documents];
 
+    /// The outputs `admit` writes (#60 ST-11 writes them; `release` reads `slot` and
+    /// `lease_commit`).
+    pub const ADMIT: [Self; 10] = [
+        Self::Admission,
+        Self::Deferral,
+        Self::Slot,
+        Self::LeaseCommit,
+        Self::ReservedAeu,
+        Self::Tier,
+        Self::Degrade,
+        Self::RunDigest,
+        Self::PackDigest,
+        Self::Review,
+    ];
+
     /// The name as the workflow reads it, `needs.<job>.outputs.<name>`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -84,6 +119,16 @@ impl OutputName {
             Self::Stage => "stage",
             Self::CostAeu => "cost_aeu",
             Self::Documents => "documents",
+            Self::Admission => "admission",
+            Self::Deferral => "deferral",
+            Self::Slot => "slot",
+            Self::LeaseCommit => "lease_commit",
+            Self::ReservedAeu => "reserved_aeu",
+            Self::Tier => "tier",
+            Self::Degrade => "degrade",
+            Self::RunDigest => "run_digest",
+            Self::PackDigest => "pack_digest",
+            Self::Review => "review",
         }
     }
 }
@@ -244,6 +289,27 @@ mod tests {
         let names = OutputName::REVIEW.map(OutputName::as_str);
 
         assert_eq!(names, ["stage", "cost_aeu", "documents"]);
+    }
+
+    #[test]
+    fn admit_writes_the_names_the_workflow_reads() {
+        let names = OutputName::ADMIT.map(OutputName::as_str);
+
+        assert_eq!(
+            names,
+            [
+                "admission",
+                "deferral",
+                "slot",
+                "lease_commit",
+                "reserved_aeu",
+                "tier",
+                "degrade",
+                "run_digest",
+                "pack_digest",
+                "review",
+            ]
+        );
     }
 
     #[test]

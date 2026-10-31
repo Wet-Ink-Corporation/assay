@@ -24,6 +24,8 @@
 //! and writes the run identity to `GITHUB_OUTPUT`; it exits 1 for an untrusted head (0006).
 //! `assay review --placeholder` (#60 ST-9, D11 A) writes the review job's placeholder outputs
 //! (`stage=not-run`, `cost_aeu=0`, `documents=[]`) to `GITHUB_OUTPUT`.
+//! `assay release --config <plugins-toml>` (#60 ST-10) releases the review slot `admit` holds
+//! by compare-and-set and writes the run's `final` cost record; with no slot it exits 0 at once.
 //! `assay reconcile [--ledger]` (#73) refuses any run attempt but the first (R3-05), then stops
 //! with exit 2 until the live GitHub transport (#273) exists. With no arguments it exits
 //! successfully without doing anything.
@@ -33,6 +35,7 @@ mod doctor;
 mod gate;
 mod guard_job;
 mod reconcile;
+mod release;
 mod review;
 mod self_gate;
 mod status_local;
@@ -90,11 +93,11 @@ fn main() -> ExitCode {
     if command == "guard" {
         return run_guard(args);
     }
+    if command == "release" {
+        return run_release(args);
+    }
     if command == "review" {
-        return match review::run(args, env::var_os(guard_job::OUTPUT)) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => report(&error),
-        };
+        return run_review(args);
     }
     if command == "status" {
         return match StatusCommand::parse(args) {
@@ -173,6 +176,44 @@ fn run_guard(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         }
         Err(error) => report(&error),
     }
+}
+
+/// `assay review --placeholder` (#60 ST-9): exit 0 once the outputs are written, 2 otherwise.
+fn run_review(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    match review::run(args, env::var_os(guard_job::OUTPUT)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => report(&error),
+    }
+}
+
+/// `assay release` (#60 ST-10): exit 0 once the run is settled (or admit held no slot) and its
+/// line printed, 2 when it cannot run or settle, or a scratch directory is left behind.
+fn run_release(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = release::ReleaseVariables {
+        run: RunVariables {
+            run_id: env::var_os("GITHUB_RUN_ID"),
+            run_attempt: env::var_os("GITHUB_RUN_ATTEMPT"),
+            repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
+            repository: env::var_os("GITHUB_REPOSITORY"),
+        },
+        needs: env::var_os(release::NEEDS),
+        ledger_token: env::var_os(release::LEDGER_TOKEN),
+        path: env::var_os("PATH"),
+        gh: GhEnvironment::from_process_env(),
+        now: SystemTime::now(),
+    };
+    let ended = release::run(args, variables);
+    let mut code = match ended.released {
+        Ok(line) => match writeln!(io::stdout().lock(), "{line}") {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => report(&error),
+        },
+        Err(error) => report(&error),
+    };
+    for left in &ended.left {
+        code = report(left);
+    }
+    code
 }
 
 /// `assay gate <job>`: exit 0 once every gate's line is printed, its document written and the
