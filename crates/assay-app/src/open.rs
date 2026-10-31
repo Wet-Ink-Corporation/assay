@@ -261,13 +261,13 @@ pub type OpenOutcome<F, L, R, C> =
 /// (see [`Stamped`]); the lock is released by compare-and-set. Forge calls are retried by the
 /// adapter; `open` aborts on the error it returns.
 ///
-/// No check write starts at or past the lock lease's expiry ([`OpenError::LockExpired`]). A
-/// forge call already started is not bounded by the lease, so it can still land after it
-/// (deadline-bounded forge calls are #290).
+/// No check write starts at or past the lock lease's expiry ([`OpenError::LockExpired`]), and
+/// every forge call takes that expiry as its [`Deadline`](crate::Deadline): the adapter sends no
+/// request and waits for no retry that would not end before it, and fails the call instead
+/// ([`OpenError::Forge`], #290).
 ///
-/// The lock is re-entrant within one workflow run: a live lock of `request.run_uid` is taken as
-/// held at its existing commit, with its own expiry (#288). So `open` and `decide`'s publish
-/// must never hold it at the same time within one run; the workflow orders them.
+/// The lock is not re-entrant: a live lock is busy even when its lease names `request.run_uid`,
+/// so two jobs of one workflow run never hold it at once (#288).
 ///
 /// # Errors
 ///

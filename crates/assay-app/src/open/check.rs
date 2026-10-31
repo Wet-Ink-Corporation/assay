@@ -5,7 +5,7 @@ use assay_domain::ReasonCode;
 
 use super::{OpenClock, OpenError, OpenPorts, OpenStep, PendingStamp, ReopenRefused, Stamped};
 use crate::config::CommitId;
-use crate::forge::{CheckFound, CompareAndSetError, Forge};
+use crate::forge::{CheckFound, CompareAndSetError, Forge, LockedWrite};
 use crate::ledger::{LeaseError, LockHold};
 use crate::publish::{
     CheckConclusion, CheckName, CheckRun, CheckRunId, CheckState, CheckStatus, CheckUpdate, Unlock,
@@ -21,6 +21,16 @@ pub(super) struct Target<'a> {
     pub(super) stamp: PendingStamp,
     /// The publish lock held.
     pub(super) hold: &'a LockHold,
+}
+
+impl Target<'_> {
+    /// `update` as a write under the lock, bounded by its lease's expiry (#290).
+    fn write<'u>(&self, update: &'u CheckUpdate) -> LockedWrite<'u> {
+        LockedWrite {
+            update,
+            deadline: self.hold.deadline(),
+        }
+    }
 }
 
 /// Why the stamp stopped under the lock, before the lock's fate is known.
@@ -58,7 +68,8 @@ type Halted<F, C> = Halt<<F as Forge>::Error, <C as OpenClock>::Error>;
 type Stamp<F, C> = Result<(CheckRunId, Stamped<<F as Forge>::Error>), Halted<F, C>>;
 
 /// Finds or creates the check and stamps it for this run. No write starts at or past the lock
-/// lease's expiry; a forge call already started is not bounded by it (#290).
+/// lease's expiry, and each forge call takes that expiry as its deadline, so the adapter's
+/// retries never send or wait past it either (#290).
 pub(super) fn stamp<F: Forge, L, R, C: OpenClock>(
     target: &Target<'_>,
     ports: &OpenPorts<'_, F, L, R, C>,
@@ -66,7 +77,8 @@ pub(super) fn stamp<F: Forge, L, R, C: OpenClock>(
     let forge = ports.forge;
     let pending = pending_update(target.stamp);
     held(target, ports.clock)?;
-    let current = match forge.find_or_create_check(target.head, target.name, &pending) {
+    let current = match forge.find_or_create_check(target.head, target.name, target.write(&pending))
+    {
         Ok(CheckFound::Created(created)) => return Ok((created.id, Stamped::Created)),
         Ok(CheckFound::Found(found)) => found,
         Err(error) => return Err(Halt::Forge(OpenStep::FindOrCreate, error)),
@@ -86,7 +98,7 @@ pub(super) fn stamp<F: Forge, L, R, C: OpenClock>(
         return Ok((id, Stamped::Unchanged));
     }
     held(target, ports.clock)?;
-    let written = forge.update_check_if(id, &current.external_id, &pending);
+    let written = forge.update_check_if(id, &current.external_id, target.write(&pending));
     if current.status != CheckStatus::Completed {
         return written
             .map(|()| (id, Stamped::Restamped))
@@ -124,9 +136,10 @@ fn reopen<F: Forge, L, R, C: OpenClock>(
         return Err(Halt::Moved(reread.external_id));
     }
     held(target, ports.clock)?;
+    let failing = re_deciding(target.stamp);
     ports
         .forge
-        .update_check_if(reread.id, &reread.external_id, &re_deciding(target.stamp))
+        .update_check_if(reread.id, &reread.external_id, target.write(&failing))
         .map_err(|error| cas_halt(OpenStep::ReDeciding, error))?;
     Ok(Stamped::ReDeciding(refused))
 }
@@ -138,7 +151,7 @@ fn reread<F: Forge, C>(
     forge: &F,
     pending: &CheckUpdate,
 ) -> Result<CheckRun, Halt<F::Error, C>> {
-    match forge.find_or_create_check(target.head, target.name, pending) {
+    match forge.find_or_create_check(target.head, target.name, target.write(pending)) {
         Ok(CheckFound::Found(check) | CheckFound::Created(check)) => Ok(check),
         Err(error) => Err(Halt::Forge(OpenStep::Reread, error)),
     }
@@ -153,7 +166,7 @@ fn cas_halt<F, C>(step: OpenStep, error: CompareAndSetError<F>) -> Halt<F, C> {
 }
 
 /// Whether the lock's lease is still live now; a write starts only then (R3-09). The call it
-/// guards can still outlast the lease (#290).
+/// guards is bounded by the same instant, its deadline (#290).
 fn held<F, C: OpenClock>(target: &Target<'_>, clock: &C) -> Result<(), Halt<F, C::Error>> {
     let now = clock.now().map_err(Halt::Clock)?;
     if now < target.hold.lease.expires_at {

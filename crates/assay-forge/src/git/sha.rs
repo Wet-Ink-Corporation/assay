@@ -74,10 +74,6 @@ pub enum ParseRemoteError {
     /// The URL contains whitespace or a control character.
     #[error("a remote must not contain whitespace or control characters")]
     ForbiddenCharacter,
-    /// A local repository given as a relative path, which could read as an option or depend on
-    /// the working directory.
-    #[error("a local remote must be an absolute path")]
-    NotAbsolute,
 }
 
 impl FromStr for HttpsRemote {

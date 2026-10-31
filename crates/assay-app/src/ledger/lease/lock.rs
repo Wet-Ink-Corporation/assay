@@ -12,8 +12,9 @@ use super::document::{line_of, to_message};
 use super::error::LeaseError;
 use super::name::LeaseRef;
 use super::refs::{LedgerRefs, RefTip};
-use super::take::{Attempt, Expiring, LeaseState, Released, take};
+use super::take::{Attempt, Expiring, Held, LeaseState, Released, take};
 use crate::config::CommitId;
+use crate::forge::Deadline;
 use crate::ledger::lines::{Newline, check_canonical, check_schema, parse};
 use crate::ledger::record::{field, is_repository};
 use crate::ledger::{Corruption, LedgerTime};
@@ -58,6 +59,15 @@ pub struct LockHold {
     pub lease: LockLease,
 }
 
+impl LockHold {
+    /// The deadline of every forge call made while holding the lock: the lease's `expires_at`
+    /// (#290).
+    #[must_use]
+    pub const fn deadline(&self) -> Deadline {
+        Deadline::at(self.lease.expires_at)
+    }
+}
+
 /// Whether the lock was taken.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LockAcquired {
@@ -70,9 +80,12 @@ pub enum LockAcquired {
 /// Takes the publish lock of `request.head` at `now`, for [`LOCK_TTL`]: creates its ref, and when
 /// it is held by an expired lease, reaps that by compare-and-set and creates it once more.
 ///
-/// A lock held by a live lease of `request.run_uid` is this run's already (an earlier creation
-/// landed though its answer was lost, wi-d55bfe): it is returned held, with the lease its ref
-/// carries.
+/// The lock is held only through the ref this call created. A live lease is
+/// [`LockAcquired::Busy`] even when it names `request.run_uid`: the lock's holder is the
+/// workflow run, shared by all its jobs, so re-entering it would let two jobs of one run hold it
+/// at once and the first release end the other's critical section (#288 R2-1). A creation
+/// whose answer was lost within this call is settled by the refs adapter, which reads the ref
+/// back; one lost in an earlier call is left to expire with its TTL.
 ///
 /// # Errors
 ///
@@ -104,11 +117,10 @@ pub fn acquire_lock<R: LedgerRefs>(
     };
     let taken = take(refs, attempt, read)?;
     Ok(match taken.held {
-        Some(held) => {
-            let (lock_commit, lease) = held.into_parts(lease);
-            LockAcquired::Held(LockHold { lock_commit, lease })
-        }
-        None => LockAcquired::Busy,
+        Some(Held::Created(lock_commit)) => LockAcquired::Held(LockHold { lock_commit, lease }),
+        // The holder is the workflow run, which all its jobs share: a live lease of this run
+        // may be another job's critical section, so it is busy, never re-entered (#288 R2-1).
+        Some(Held::Already { .. }) | None => LockAcquired::Busy,
     })
 }
 

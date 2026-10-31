@@ -8,8 +8,8 @@ use std::num::NonZeroU64;
 
 use assay_app::{
     CheckFound, CheckName, CheckRun, CheckRunId, CheckState, CheckStatus, CheckUpdate, CommitId,
-    CommitIdentity, CompareAndSetError, Forge, LedgerTime, OpenClock, Reaction, ReactionSubject,
-    Review, TimelineEvent, Upserted,
+    CommitIdentity, CompareAndSetError, Deadline, Forge, LedgerTime, LockedWrite, OpenClock,
+    Reaction, ReactionSubject, Review, TimelineEvent, Upserted,
 };
 
 use crate::lease_fakes::MemoryRefs;
@@ -70,6 +70,7 @@ pub(crate) struct FakeGitHub<'r> {
     lock: String,
     checks: RefCell<Vec<HeldCheck>>,
     calls: RefCell<Vec<ForgeCall>>,
+    deadlines: RefCell<Vec<Deadline>>,
     next_id: Cell<u64>,
     reopen: Cell<Reopen>,
     down: Cell<bool>,
@@ -85,6 +86,7 @@ impl<'r> FakeGitHub<'r> {
             lock: lock.to_owned(),
             checks: RefCell::new(Vec::new()),
             calls: RefCell::new(Vec::new()),
+            deadlines: RefCell::new(Vec::new()),
             next_id: Cell::new(500),
             reopen: Cell::new(Reopen::Accepts),
             down: Cell::new(false),
@@ -154,6 +156,11 @@ impl<'r> FakeGitHub<'r> {
         self.calls.borrow().clone()
     }
 
+    /// The deadline of each check call, in order.
+    pub(crate) fn deadlines(&self) -> Vec<Deadline> {
+        self.deadlines.borrow().clone()
+    }
+
     fn fresh_id(&self) -> CheckRunId {
         let next = self.next_id.get().saturating_add(1);
         self.next_id.set(next);
@@ -185,8 +192,13 @@ impl Forge for FakeGitHub<'_> {
         &self,
         head: &CommitId,
         name: &CheckName,
-        initial: &CheckUpdate,
+        initial: LockedWrite<'_>,
     ) -> Result<CheckFound, GitHubDown> {
+        let LockedWrite {
+            update: initial,
+            deadline,
+        } = initial;
+        self.deadlines.borrow_mut().push(deadline);
         let locked = self.locked();
         let found = self
             .checks
@@ -230,8 +242,10 @@ impl Forge for FakeGitHub<'_> {
         &self,
         id: CheckRunId,
         expected: &str,
-        update: &CheckUpdate,
+        write: LockedWrite<'_>,
     ) -> Result<(), CompareAndSetError<GitHubDown>> {
+        let LockedWrite { update, deadline } = write;
+        self.deadlines.borrow_mut().push(deadline);
         self.calls.borrow_mut().push(ForgeCall::Update {
             id,
             expected: expected.to_owned(),

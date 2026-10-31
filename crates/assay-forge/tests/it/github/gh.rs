@@ -163,6 +163,16 @@ fn a_read_runs_gh_api_with_exactly_its_arguments_and_environment() -> TestResult
 }
 
 #[test]
+fn the_transport_reports_the_timeout_each_request_runs_under() -> TestResult {
+    // A call under a deadline sends only when this much time is left (#290).
+    let fake = FakeGh::exiting(0, OK, b"");
+
+    assert_eq!(api(&fake)?.timeout(), TIMEOUT);
+    assert_eq!(fake.ran.borrow().len(), 0, "asking runs nothing");
+    Ok(())
+}
+
+#[test]
 fn a_calls_debug_shows_no_variable_value() -> TestResult {
     let fake = FakeGh::exiting(0, OK, b"");
     let environment = GhEnvironment::from_vars([(

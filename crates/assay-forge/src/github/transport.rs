@@ -3,7 +3,7 @@
 
 use std::fmt;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// Sends one HTTP request to the GitHub API, authenticated as the transport was built.
 ///
@@ -23,6 +23,11 @@ pub trait Transport {
     ///
     /// [`Self::Error`] when no response was received.
     fn send(&self, request: &Request<'_>) -> Result<Response, Self::Error>;
+
+    /// The longest one [`send`](Self::send) can take before the transport abandons it. A call
+    /// under a [`Deadline`](assay_app::Deadline) sends only when this much time is left before
+    /// it, so a request cannot reach GitHub after the deadline (#290).
+    fn timeout(&self) -> Duration;
 }
 
 impl<T: Transport + ?Sized> Transport for &T {
@@ -30,6 +35,10 @@ impl<T: Transport + ?Sized> Transport for &T {
 
     fn send(&self, request: &Request<'_>) -> Result<Response, Self::Error> {
         (**self).send(request)
+    }
+
+    fn timeout(&self) -> Duration {
+        (**self).timeout()
     }
 }
 
@@ -188,26 +197,40 @@ impl Response {
     }
 }
 
-/// Waits between retries. A seam so that tests observe the waits instead of taking them
-/// (TST-10).
+/// The adapter's clock: waits between retries, and the time now.
+///
+/// A call's [`Deadline`](assay_app::Deadline) is compared with [`now`](Self::now). A seam so
+/// that tests observe the waits instead of taking them, and move the time by them (TST-10).
 pub trait Sleep {
     /// Blocks the calling thread for `duration`.
     fn sleep(&self, duration: Duration);
+
+    /// The time now, on the clock the waits are taken on.
+    fn now(&self) -> SystemTime;
 }
 
 impl<S: Sleep + ?Sized> Sleep for &S {
     fn sleep(&self, duration: Duration) {
         (**self).sleep(duration);
     }
+
+    fn now(&self) -> SystemTime {
+        (**self).now()
+    }
 }
 
-/// [`Sleep`] on the calling thread. The adapter is synchronous, so this blocks no async task.
+/// [`Sleep`] on the calling thread, and the system clock. The adapter is synchronous, so this
+/// blocks no async task.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ThreadSleep;
 
 impl Sleep for ThreadSleep {
     fn sleep(&self, duration: Duration) {
         thread::sleep(duration);
+    }
+
+    fn now(&self) -> SystemTime {
+        SystemTime::now()
     }
 }
 

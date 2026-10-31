@@ -3,7 +3,7 @@
 //! the push record on `synchronize` only (R3-05, R3-07, R3-09, R3-21).
 
 use assay_app::{
-    CheckConclusion, CheckState, CheckStatus, CommitId, LedgerPath, OpenError, OpenPorts,
+    CheckConclusion, CheckState, CheckStatus, CommitId, Deadline, LedgerPath, OpenError, OpenPorts,
     OpenRequest, OpenStep, OpenTrigger, PendingStamp, PushAppended, PushEvent, PushKind,
     ReopenRefused, Stamped, Unlock, UserId, open,
 };
@@ -368,21 +368,22 @@ fn a_busy_lock_is_retried_three_times_then_the_run_aborts_without_a_write() {
 }
 
 #[test]
-fn a_live_lock_of_this_run_is_held_and_its_own_expiry_bounds_the_writes() {
+fn a_live_lock_of_this_run_is_busy_like_any_other_writers() {
+    // Another job of the same workflow run holds it (#288 R2-1): not re-entrant.
     let refs = MemoryRefs::default();
-    refs.holding(&lock_ref(), &lock_line(30, "2026-10-12T09:30:30.000Z"));
+    refs.holding(&lock_ref(), &lock_line(30, "2026-10-12T09:31:00.000Z"));
     let forge = FakeGitHub::new(&refs, &lock_ref());
     let ledger = ledger_with_pushes(1);
-    let clock = FakeClock::reading(&[NOW, "2026-10-12T09:31:00.000Z"]);
+    let clock = FakeClock::reading(&[NOW]);
     let case = Case::new(30, OpenTrigger::Dispatch);
 
     let opened = open(&case.request(), &ports(&forge, &ledger, &refs, &clock));
 
     assert!(
-        matches!(opened, Err(OpenError::LockExpired { .. })),
-        "re-entrant (#288), but the existing lease expires at 09:30:30: {opened:?}"
+        matches!(opened, Err(OpenError::LockBusy { attempts: 4 })),
+        "{opened:?}"
     );
-    assert_eq!(clock.pauses(), Vec::<u8>::new(), "not busy");
+    assert_eq!(clock.pauses(), [1, 2, 3]);
     assert_eq!(forge.calls(), Vec::new());
 }
 
@@ -775,6 +776,21 @@ fn a_completed_check_whose_reopening_github_refuses_is_published_failing_re_deci
         Stamped::ReDeciding(ReopenRefused::Rejected(GitHubDown))
     );
     assert_eq!(shown(&forge), re_deciding());
+}
+
+#[test]
+fn every_forge_call_under_the_lock_is_bounded_by_the_lease_expiry() {
+    // The refused reopen takes all four calls: find, reopen, read back, re-deciding (#290).
+    let refs = MemoryRefs::default();
+    let forge = FakeGitHub::new(&refs, &lock_ref()).reopening(Reopen::Rejects);
+    forge.holding(VERDICT, &"0f".repeat(32), CheckStatus::Completed);
+    let ledger = ledger_with_pushes(1);
+    let clock = FakeClock::reading(&[NOW]);
+    let case = Case::new(30, OpenTrigger::Reopened);
+
+    open(&case.request(), &ports(&forge, &ledger, &refs, &clock)).expect("opened");
+
+    assert_eq!(forge.deadlines(), [Deadline::at(at(EXPIRED)); 4]);
 }
 
 #[test]
