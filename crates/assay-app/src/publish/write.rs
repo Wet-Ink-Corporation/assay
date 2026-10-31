@@ -3,71 +3,113 @@
 
 use std::borrow::Cow;
 
-use assay_domain::{Conclusion, Decision, LlmStage, NotRunReason, Reason, ReasonCode};
+use assay_domain::{
+    Aeu, Conclusion, Decision, DecisionInputs, LlmStage, NotRunReason, PrClass, Reason, ReasonCode,
+    Rubric, Tier,
+};
 
-use super::bundle::{self, BUNDLE_FILE, Contents};
 use super::ports::{
-    BundleStore, CheckConclusion, CheckName, CheckRun, CheckState, CheckStatus, CheckUpdate,
-    EvidenceEntry, EvidencePointer, EvidenceRecord, LlmEvidence, PublishLedger, VerdictForge,
+    CheckConclusion, CheckName, CheckRun, CheckState, CheckStatus, CheckUpdate, EvidenceEntry,
+    EvidencePointer, EvidenceRecord, LlmEvidence, PublishLedger, VerdictForge,
 };
 use super::render::{self, Facts, Projection, SUMMARY_MARKER, Summary};
 use super::waivers;
-use super::{
-    Decided, ForgeStep, PersistFailure, PublishError, PublishOutcome, PublishPorts, Published,
-    Stale, Target, Unlock, Written,
-};
+use super::{ForgeStep, PersistFailure, PublishError, Published, Stale, Target, Unlock, Written};
 use crate::config::Sha256Digest;
 use crate::eligibility::IgnoredApproval;
 
+/// Everything a decision's check update and evidence record are built from: what `decide` holds
+/// in memory, or what `publish_persisted` read back from the bundle.
+pub(super) struct Basis<'w> {
+    /// Rubric v1, for the waivers the decision did not apply.
+    pub(super) rubric: &'w Rubric,
+    /// The decision inputs.
+    pub(super) inputs: &'w DecisionInputs,
+    /// The decision over them.
+    pub(super) decision: &'w Decision,
+    /// The tier the LLM stage ran at.
+    pub(super) tier: Tier,
+    /// The PR's classes: a persist failure fails the check when there is one.
+    pub(super) classes: &'w [PrClass],
+    /// What the LLM stage cost.
+    pub(super) cost: Aeu,
+    /// The approvals ignored for timing.
+    pub(super) ignored_approvals: &'w [IgnoredApproval],
+}
+
+/// The persist step of a decision, run after the first read of the check allows a write and
+/// before the lock: the bundle's digest once it is persisted, or why it is not.
+pub(super) type Persist<'w, L, U> =
+    &'w mut dyn FnMut() -> Result<Sha256Digest, PersistFailure<L, U>>;
+
 /// What one writer publishes.
-pub(super) enum Pending<'w> {
+pub(super) enum Pending<'w, L, U> {
     /// A refusal, whose update is ready.
     Refused(CheckUpdate),
     /// A decision, whose update depends on whether persisting it succeeds.
     Decided {
-        decided: &'w Decided<'w>,
-        decision: &'w Decision,
+        basis: Basis<'w>,
+        persist: Persist<'w, L, U>,
     },
 }
 
-impl Pending<'_> {
+impl<L, U> Pending<'_, L, U> {
     /// The key the check carries once this is published.
     fn key(&self) -> &str {
         match self {
             Self::Refused(update) => &update.external_id,
-            Self::Decided { decision, .. } => &decision.key,
+            Self::Decided { basis, .. } => &basis.decision.key,
         }
     }
 }
 
-/// A pending publication with its bundle uploaded, or why it was not.
-enum Prepared<'w, L, B> {
+/// A pending publication with its bundle persisted, or why it was not.
+enum Prepared<'w, L, U> {
     Refused(CheckUpdate),
     Decided {
-        decided: &'w Decided<'w>,
-        decision: &'w Decision,
-        uploaded: Result<Sha256Digest, PersistFailure<L, B>>,
+        basis: Basis<'w>,
+        persisted: Result<Sha256Digest, PersistFailure<L, U>>,
     },
 }
 
 /// What happened under the lock.
-enum Locked<L, B> {
+enum Locked<L, U> {
     Stale,
     Written {
         state: CheckState,
-        persist: Option<PersistFailure<L, B>>,
+        persist: Option<PersistFailure<L, U>>,
     },
 }
 
 /// What happened under the lock, or the forge call that failed there.
-type UnderLock<F, L, B> = Result<Locked<L, B>, (ForgeStep, F)>;
+type UnderLock<F, L, U> = Result<Locked<L, U>, (ForgeStep, F)>;
+
+/// The ports a writer writes through: two borrows, so it copies whatever `F` and `L` are.
+pub(super) struct Writer<'p, F, L> {
+    pub(super) forge: &'p F,
+    pub(super) ledger: &'p L,
+}
+
+impl<F, L> Clone for Writer<'_, F, L> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<F, L> Copy for Writer<'_, F, L> {}
+
+/// What [`write`] returns: what was published, with `U` the persist step's error.
+pub(super) type WriteOutcome<F, L, U> = Result<
+    Published<<L as PublishLedger>::Error, U>,
+    PublishError<<F as VerdictForge>::Error, <L as PublishLedger>::Error>,
+>;
 
 /// Publishes `pending` when the check is still this run's to write.
-pub(super) fn write<F: VerdictForge, L: PublishLedger, B: BundleStore>(
+pub(super) fn write<F: VerdictForge, L: PublishLedger, U>(
     target: &Target<'_>,
-    ports: &PublishPorts<'_, F, L, B>,
-    pending: Pending<'_>,
-) -> PublishOutcome<F, L, B> {
+    ports: Writer<'_, F, L>,
+    pending: Pending<'_, L::Error, U>,
+) -> WriteOutcome<F, L, U> {
     let event = target.pull_request;
     let name = CheckName::for_base(&event.base_ref, target.default_branch);
     let observed = match observe(target, ports.forge, &name, pending.key())? {
@@ -80,13 +122,12 @@ pub(super) fn write<F: VerdictForge, L: PublishLedger, B: BundleStore>(
             });
         }
     };
-    // Uploaded before the lock: it is slow, and an artifact nothing points to is harmless.
+    // Persisted before the lock: it is slow, and an artifact nothing points to is harmless.
     let prepared = match pending {
         Pending::Refused(update) => Prepared::Refused(update),
-        Pending::Decided { decided, decision } => Prepared::Decided {
-            decided,
-            decision,
-            uploaded: upload(target, decided, decision, ports),
+        Pending::Decided { basis, persist } => Prepared::Decided {
+            basis,
+            persisted: persist(),
         },
     };
     let Some(lease) = ports
@@ -163,39 +204,14 @@ fn is_own_stamp(external_id: &str, target: &Target<'_>) -> bool {
         .is_some_and(|seq| !seq.is_empty() && seq.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-/// Builds and uploads the bundle; its digest when both succeed.
-fn upload<F, L: PublishLedger, B: BundleStore>(
-    target: &Target<'_>,
-    decided: &Decided<'_>,
-    decision: &Decision,
-    ports: &PublishPorts<'_, F, L, B>,
-) -> Result<Sha256Digest, PersistFailure<L::Error, B::Error>> {
-    let bytes = bundle::bundle(&Contents {
-        run_uid: target.run_uid,
-        run: decided.run,
-        inputs: decided.inputs,
-        decision,
-        events: decided.events,
-        carry: decided.carry,
-        github: decided.github,
-    })
-    .map_err(PersistFailure::Bundle)?;
-    let artifact = &decided.run.record().bundle_artifact;
-    ports
-        .bundles
-        .upload(artifact, BUNDLE_FILE, &bytes)
-        .map_err(PersistFailure::Upload)?;
-    Ok(Sha256Digest::of(&bytes))
-}
-
 /// Re-reads the check under the lock and, when it is unchanged, records the evidence and writes
 /// the check and the summary comment.
-fn under_lock<F: VerdictForge, L: PublishLedger, B: BundleStore>(
+fn under_lock<F: VerdictForge, L: PublishLedger, U>(
     target: &Target<'_>,
-    ports: &PublishPorts<'_, F, L, B>,
+    ports: Writer<'_, F, L>,
     (name, observed): (&CheckName, &CheckRun),
-    prepared: Prepared<'_, L::Error, B::Error>,
-) -> UnderLock<F::Error, L::Error, B::Error> {
+    prepared: Prepared<'_, L::Error, U>,
+) -> UnderLock<F::Error, L::Error, U> {
     let event = target.pull_request;
     let current = ports
         .forge
@@ -206,14 +222,10 @@ fn under_lock<F: VerdictForge, L: PublishLedger, B: BundleStore>(
     }
     let (update, persist) = match prepared {
         Prepared::Refused(update) => (update, None),
-        Prepared::Decided {
-            decided,
-            decision,
-            uploaded,
-        } => {
-            let (entry, persist) = match uploaded {
+        Prepared::Decided { basis, persisted } => {
+            let (entry, persist) = match persisted {
                 Ok(digest) => {
-                    let entry = evidence_entry(target, decided, decision, digest);
+                    let entry = evidence_entry(target, &basis, digest);
                     match ports.ledger.record_evidence(&entry) {
                         Ok(()) => (Some(entry), None),
                         Err(error) => (None, Some(PersistFailure::Ledger(error))),
@@ -221,7 +233,7 @@ fn under_lock<F: VerdictForge, L: PublishLedger, B: BundleStore>(
                 }
                 Err(failure) => (None, Some(failure)),
             };
-            let update = decided_update(decided, decision, entry.as_ref(), persist.as_ref());
+            let update = decided_update(&basis, entry.as_ref(), persist.as_ref());
             (update, persist)
         }
     };
@@ -237,12 +249,7 @@ fn under_lock<F: VerdictForge, L: PublishLedger, B: BundleStore>(
 }
 
 /// The evidence pointer and record of an uploaded bundle (02 §5).
-fn evidence_entry(
-    target: &Target<'_>,
-    decided: &Decided<'_>,
-    decision: &Decision,
-    digest: Sha256Digest,
-) -> EvidenceEntry {
+fn evidence_entry(target: &Target<'_>, basis: &Basis<'_>, digest: Sha256Digest) -> EvidenceEntry {
     let run_uid = target.run_uid;
     EvidenceEntry {
         repo_id: run_uid.repo_id,
@@ -255,18 +262,18 @@ fn evidence_entry(
         },
         record: EvidenceRecord {
             // The ledger record owns its copy of the key.
-            evidence_key: decided.inputs.evidence_key.clone(),
+            evidence_key: basis.inputs.evidence_key.clone(),
             bundle_sha256: digest,
-            llm: llm_evidence(decided, decision),
-            tier: decided.run.tier(),
+            llm: llm_evidence(basis),
+            tier: basis.tier,
         },
     }
 }
 
 /// How the LLM stage ran, as the evidence record says it: only a stage that completed with no
 /// degraded role, or a tier without one, is `complete` (R3-17).
-fn llm_evidence(decided: &Decided<'_>, decision: &Decision) -> LlmEvidence {
-    let inputs = decided.inputs;
+fn llm_evidence(basis: &Basis<'_>) -> LlmEvidence {
+    let inputs = basis.inputs;
     match inputs.llm.effective(&inputs.pr) {
         LlmStage::Deferred { .. } => LlmEvidence::Deferred,
         LlmStage::NotRun {
@@ -276,7 +283,7 @@ fn llm_evidence(decided: &Decided<'_>, decision: &Decision) -> LlmEvidence {
         | LlmStage::NotRun {
             reason: NotRunReason::NoLlmTier,
         } => {
-            if decision.degraded.is_empty() {
+            if basis.decision.degraded.is_empty() {
                 LlmEvidence::Complete
             } else {
                 LlmEvidence::Degraded
@@ -287,13 +294,12 @@ fn llm_evidence(decided: &Decided<'_>, decision: &Decision) -> LlmEvidence {
 
 /// The check update for a decision: its conclusion, or `failure persist-error` when persisting
 /// failed on a trust-path or exec-surface PR (S9).
-fn decided_update<L, B>(
-    decided: &Decided<'_>,
-    decision: &Decision,
+fn decided_update<L, U>(
+    basis: &Basis<'_>,
     evidence: Option<&EvidenceEntry>,
-    persist: Option<&PersistFailure<L, B>>,
+    persist: Option<&PersistFailure<L, U>>,
 ) -> CheckUpdate {
-    let classes = &decided.run.tiering().classes;
+    let (decision, classes) = (basis.decision, basis.classes);
     let fail_closed = persist.filter(|_| !classes.is_empty());
     let (conclusion, reasons) = match fail_closed {
         Some(failure) => {
@@ -314,19 +320,18 @@ fn decided_update<L, B>(
         Some(_) => None,
         None => persist.map(PersistFailure::code),
     };
-    let ignored_approvals: Vec<IgnoredApproval> = decided.github.ignored_approvals().collect();
-    let unapplied_waivers = waivers::unapplied(decided.rubric, decided.inputs, decision);
+    let unapplied_waivers = waivers::unapplied(basis.rubric, basis.inputs, decision);
     let summary = render::summary(&Summary {
         conclusion,
         reasons: &reasons,
         facts: Some(Facts {
-            tier: decided.run.tier(),
+            tier: basis.tier,
             classes,
             counts: decision.counts,
             degraded: &decision.degraded,
-            cost: decided.cost,
+            cost: basis.cost,
             reasons_digest: decision.reasons_digest(),
-            ignored_approvals: &ignored_approvals,
+            ignored_approvals: basis.ignored_approvals,
             unapplied_waivers: &unapplied_waivers,
         }),
         warning,
