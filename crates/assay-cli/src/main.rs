@@ -18,8 +18,9 @@
 //! `assay status [--json] [--pr <n>] [--full]` (#126, #273) shows a PR's status, read live
 //! through `gh` with `ASSAY_GITHUB_TOKEN`, from a checkout whose `origin` is on github.com.
 //! `assay status [--json] --local` (#130) shows the local check's result.
-//! `assay open` (#54) reads its run from the Actions environment, refuses a re-run, and then
-//! stops with exit 2: the live transport it writes through is #273's.
+//! `assay open --config <plugins-toml>` (#54, #60 ST-4) refuses a re-run, then opens the
+//! verdict check for the identity `guard` wrote (S0): the opener or push record in the ledger
+//! the config names, and the check stamped `in_progress` under the publish lock.
 //! `assay guard` (#60 ST-2) decides whether the pipeline runs for the event behind the run
 //! and writes the run identity to `GITHUB_OUTPUT`; it exits 1 for an untrusted head (0006).
 //! `assay review --placeholder` (#60 ST-9, D11 A) writes the review job's placeholder outputs
@@ -32,6 +33,7 @@ mod check;
 mod doctor;
 mod gate;
 mod guard_job;
+mod open_job;
 mod reconcile;
 mod review;
 mod self_gate;
@@ -43,9 +45,7 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::SystemTime;
 
-use assay_cli::{
-    Format, OpenCommand, OpenVariables, PrerequisitesArgs, RunVariables, StatusArgs, StatusCommand,
-};
+use assay_cli::{Format, PrerequisitesArgs, RunVariables, StatusArgs, StatusCommand};
 use assay_domain::GateConclusion;
 use assay_forge::github::GhEnvironment;
 
@@ -129,18 +129,39 @@ fn run_self_gate(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     }
 }
 
-/// `assay open` (#54): exit 2 for a re-run or a bad environment, and, until the live
-/// transport (#273) exists, for every run, naming it.
+/// `assay open` (#54, #60 ST-4): exit 0 once the verdict check is open for this run, 2 for a
+/// re-run, a bad environment or anything that stops it.
 fn run_open(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
-    let variables = OpenVariables {
-        run_id: env::var_os("GITHUB_RUN_ID"),
-        run_attempt: env::var_os("GITHUB_RUN_ATTEMPT"),
-        repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
+    let variables = open_job::OpenVariables {
+        run: RunVariables {
+            run_id: env::var_os("GITHUB_RUN_ID"),
+            run_attempt: env::var_os("GITHUB_RUN_ATTEMPT"),
+            repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
+            repository: env::var_os("GITHUB_REPOSITORY"),
+        },
+        needs: env::var_os(open_job::NEEDS),
+        token: env::var_os(status_pr::TOKEN),
+        ledger_token: env::var_os(open_job::LEDGER_TOKEN),
+        app_id: env::var_os(status_pr::APP_ID),
+        bot_id: env::var_os(status_pr::BOT_ID),
+        path: env::var_os("PATH"),
+        gh: GhEnvironment::from_process_env(),
     };
-    match OpenCommand::parse(args, variables) {
-        Ok(_) => report(&"open: the GitHub transport it writes through is not built yet (#273)"),
-        Err(usage) => report(&usage),
+    let ended = open_job::run(args, variables);
+    let mut code = match ended.opened {
+        Ok(line) => {
+            let mut out = io::stdout().lock();
+            match writeln!(out, "{line}").and_then(|()| out.flush()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => report(&error),
+            }
+        }
+        Err(error) => report(&error),
+    };
+    for left in &ended.left {
+        code = report(left);
     }
+    code
 }
 
 /// `assay guard` (#60 ST-2): exit 0 once the outputs are written (`run=true` and the
