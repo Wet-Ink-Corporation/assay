@@ -51,20 +51,19 @@ mod test_job;
 mod tokens;
 mod vendored;
 
-use std::env;
-use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use assay_app::{
-    Adapter, BuildJob, CommitId, GateDocument, GateError, GateJob, GateRun, GateRunner, Plugin,
-    Termination,
+    Adapter, BuildJob, CommitId, GateError, GateJob, GateRun, GateRunner, Plugin, Termination,
 };
-use assay_domain::{Finding, FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind};
+use assay_domain::{Finding, GateConclusion};
 
 pub use closure::{CompileTimeReach, compile_time_reach};
 pub use error::{TemperError, TemperSettingsError};
 pub use ratchet::RatchetDegradation;
+pub use steps::TemperStepSettings;
+pub use test_job::TemperTestAdapter;
 
 use self::baseline::Totals;
 use self::exceptions::Allowlist;
@@ -116,11 +115,10 @@ pub struct TemperPaths {
 pub struct TemperSettings {
     node: PathBuf,
     pinned: PathBuf,
-    head_tree: PathBuf,
     script: String,
     scan_args: Vec<String>,
-    scan_env: Vec<(OsString, OsString)>,
-    run_key: String,
+    /// The head tree, the environment (the scan's and every declared step's) and the run key.
+    steps: TemperStepSettings,
     ratchet: Option<RatchetBase>,
 }
 
@@ -158,23 +156,7 @@ impl TemperSettings {
         let Some(script) = pinned.join(SCRIPT).to_str().map(str::to_owned) else {
             return Err(TemperSettingsError::NonUtf8Pinned { path: pinned });
         };
-        let ceiling = match head_tree.parent() {
-            Some(parent) if head_tree.is_absolute() => parent.as_os_str().to_owned(),
-            _ => return Err(TemperSettingsError::HeadTree { path: head_tree }),
-        };
-        if !search_path_is_absolute(environment) {
-            return Err(TemperSettingsError::RelativeSearchPath);
-        }
-        let run_key = run_key.into();
-        if run_key.is_empty() {
-            return Err(TemperSettingsError::EmptyRunKey);
-        }
-        let mut scan_env = environment.vars().to_vec();
-        scan_env.extend([
-            ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
-            ("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()),
-            ("GIT_CEILING_DIRECTORIES".into(), ceiling),
-        ]);
+        let steps = TemperStepSettings::new(head_tree, environment, run_key)?;
         // The scan's argv keeps its own copy of the script path; `gates-lint` builds its argv
         // from `script`.
         let scan_args = [script.clone()]
@@ -184,11 +166,9 @@ impl TemperSettings {
         Ok(Self {
             node,
             pinned,
-            head_tree,
             script,
             scan_args,
-            scan_env,
-            run_key,
+            steps,
             ratchet: None,
         })
     }
@@ -220,16 +200,6 @@ impl TemperSettings {
         ];
         Some(args.map(str::to_owned).to_vec())
     }
-}
-
-/// Whether every entry of `environment`'s `PATH` is an absolute directory. An empty entry
-/// means the working directory, here the head tree.
-fn search_path_is_absolute(environment: &GateEnvironment) -> bool {
-    environment
-        .vars()
-        .iter()
-        .filter(|(name, _)| name == "PATH")
-        .all(|(_, value)| env::split_paths(value).all(|entry| entry.is_absolute()))
 }
 
 /// The temper adapter, generic over the supervisor that runs the pinned scan and the reader of
@@ -348,26 +318,11 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
         pin: String,
         (conclusion, findings): (GateConclusion, Vec<Finding>),
     ) -> Result<GateRun, ErrorOf<S, R>> {
-        let document = FindingsDocument {
-            schema: FindingsSchema::V1,
-            source: Source {
-                kind: SourceKind::Gate,
-                name: plugin.name().as_str().to_owned(),
-                version: pin,
-                role: None,
-                // The settings keep the key for the next run; the document owns its copy.
-                run_key: self.settings.run_key.clone(),
-            },
-            conclusion: Some(conclusion),
-            findings,
-            stats: None,
-        };
-        let bytes = serde_json::to_vec(&document).map_err(TemperError::Document)?;
-        Ok(GateRun {
-            termination: Termination::Exited(0),
-            document: GateDocument::Written(bytes),
-        })
+        self.settings
+            .steps
+            .document(plugin, pin, (conclusion, findings))
     }
+
     /// Step 1: the baseline diff, counts and crates.
     fn raised(&self) -> Result<Vec<Finding>, ErrorOf<S, R>> {
         let base = self.required(Revision::Base, baseline::PATH)?;
@@ -463,8 +418,8 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
         let spec = ProcessSpec {
             program: &self.settings.node,
             args: &self.settings.scan_args,
-            cwd: &self.settings.head_tree,
-            env: &self.settings.scan_env,
+            cwd: &self.settings.steps.head_tree,
+            env: &self.settings.steps.env,
             timeout,
             max_output_bytes: MAX_SCAN_OUTPUT_BYTES,
         };

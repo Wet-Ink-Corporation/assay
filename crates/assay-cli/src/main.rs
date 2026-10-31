@@ -8,6 +8,9 @@
 //! a working tree (02 §6, #107).
 //! `assay pre-push` (#108) runs that check's CP1 alone, the Weigh-In checkpoint the pre-push
 //! hook in `plugin/hooks/` calls (04 §9).
+//! `assay gate gates-test --config <plugins-toml> --head <dir> --out <dir>` (#67) runs the
+//! `gates-test` job's base-declared steps and `exec` gates and writes their documents
+//! (03 §2.1 step 7); `gates-lint` and `gates-static` are refused until their inputs are wired.
 //! `assay doctor --repository <owner/name> --app <id> --ledger-app <id>` (#75) checks its
 //! arguments and then stops with exit 2: [`assay_cli::run_prerequisites`] runs the repository
 //! checks of 05 §7, but the binary does not wire it to the live `gh` transport (#273) yet.
@@ -22,6 +25,7 @@
 
 mod check;
 mod doctor;
+mod gate;
 mod reconcile;
 mod self_gate;
 mod status_local;
@@ -64,6 +68,9 @@ fn main() -> ExitCode {
     }
     if command == "check" {
         return run_check(args);
+    }
+    if command == "gate" {
+        return run_gate(args);
     }
     if command == "pre-push" {
         return run_pre_push(args);
@@ -111,6 +118,30 @@ fn run_open(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     match OpenCommand::parse(args, variables) {
         Ok(_) => report(&"open: the GitHub transport it writes through is not built yet (#273)"),
         Err(usage) => report(&usage),
+    }
+}
+
+/// `assay gate <job>`: exit 0 once every gate's line is printed and its document written,
+/// whatever the gates concluded (the documents and lines speak, 03 §2); 2 when the job cannot
+/// run, its documents cannot be written, or the scratch directory is left behind.
+fn run_gate(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = gate::GateVariables {
+        run_key: env::var_os(self_gate::RUN_KEY),
+        vars: env::vars_os().collect(),
+    };
+    let ran = match gate::run(args, variables) {
+        Ok(ran) => ran,
+        Err(error) => return report(&error),
+    };
+    if let Err(error) = ran.write_causes(io::stderr().lock()) {
+        return report(&error);
+    }
+    if let Err(error) = ran.write(io::stdout().lock()) {
+        return report(&error);
+    }
+    match &ran.scratch_left {
+        Some(left) => report(left),
+        None => ExitCode::SUCCESS,
     }
 }
 
