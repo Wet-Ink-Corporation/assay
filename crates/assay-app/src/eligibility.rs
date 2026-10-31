@@ -14,6 +14,7 @@ mod approvals;
 mod commands;
 mod error;
 mod grammar;
+mod ledger;
 mod ports;
 mod pushes;
 mod range;
@@ -34,6 +35,7 @@ pub use self::commands::{
 use self::commands::{JudgedCommand, applicability, void_cause};
 pub use self::error::{SnapshotStep, StateError};
 pub use self::grammar::{AckedSet, Command, MAX_COMMAND_REASON_CHARS, Parsed, parse_command};
+pub use self::ledger::{LedgerSnapshot, LedgerSnapshotError};
 pub use self::ports::{CommandComments, LedgerRecords, MAX_COMMENT_BYTES, SnapshotLedger};
 pub use self::pushes::MAX_PUSH_RECORDS;
 use self::pushes::{push_clock, pushed};
@@ -42,7 +44,7 @@ pub use self::range::{
     TreeId, WEB_FLOW,
 };
 use self::range::{MergeCandidate, attribute, merge_candidates};
-pub(crate) use self::record::StateRecord;
+pub(crate) use self::record::{StateRecord, StateRecordIn};
 pub use self::rule::Ineligible;
 use self::rule::{RangeFacts, Rule};
 pub use self::state::{CommitRange, GitHubState};
