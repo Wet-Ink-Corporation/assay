@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::decide::inputs::{
     Authorship, CallFailure, DecisionInputs, Deferral, DegradedReport, GateFinding, GateOutcome,
     GateReport, InfraPolicy, LlmPolicy, LlmStage, NotRunReason, Override, OverrideScope,
-    OwnerApproval, Policy, PullRequest, Readiness, ReviewedFinding, StepAttribution,
+    OwnerApproval, Policy, PullRequest, Readiness, ReviewedFinding, StageRole, StepAttribution,
     SupportOutcome, Waiver, WeighIn,
 };
 use crate::decision::{FindingDisposition, Reason};
@@ -186,6 +186,7 @@ canonical_by_code!(
     Readiness,
     RequiredRole,
     Severity,
+    StageRole,
     Tier,
     VerifierVerdict,
     WeighIn,

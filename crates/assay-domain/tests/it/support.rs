@@ -104,6 +104,22 @@ pub(crate) fn domain_invalid_fixtures(contract: &str) -> io::Result<BTreeMap<Str
     fixtures(contract, "domain-invalid")
 }
 
+/// The contracts under `schemas/fixtures/` that hold a `domain-invalid` directory.
+pub(crate) fn contracts_with_domain_invalid_fixtures() -> io::Result<BTreeSet<String>> {
+    let mut found = BTreeSet::new();
+    for entry in fs::read_dir(repo_root().join("schemas/fixtures"))? {
+        let path = entry?.path();
+        if path.join("domain-invalid").try_exists()? {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| io::Error::other(format!("bad contract dir {}", path.display())))?;
+            found.insert(name.to_owned());
+        }
+    }
+    Ok(found)
+}
+
 /// Inputs that pass every rule: a `lite` PR into a protected `main`, one required gate that
 /// passed, a completed LLM stage in which every specialist role, the coordinator and the
 /// verifier completed (so a test may change the tier or classes), no findings and no commands.

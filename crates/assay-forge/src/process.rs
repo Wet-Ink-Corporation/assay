@@ -232,12 +232,23 @@ impl GroupKiller {
     /// # Errors
     /// [`io::ErrorKind::InvalidInput`] for group 0 or 1, which `kill` reads as this process's
     /// own group and as every process, and for this process's pid or its own group, read from
-    /// `/proc/self/stat` (which failing to read is an error too). Otherwise an error when `/proc` cannot be read (nothing
-    /// is signalled), when the kill program cannot be run, or when a live member is still left
-    /// at the end of the grace: then the group may still be running.
+    /// `/proc/self/stat` (which failing to read is an error too). Otherwise an error when
+    /// `/proc` cannot be read (nothing is signalled), when the kill program cannot be run, or
+    /// when a live member is still left at the end of the grace: then the group may still be
+    /// running.
     pub fn kill_group(&self, group: u32) -> io::Result<()> {
+        self.kill_observed(group, group_alive)
+    }
+
+    /// [`kill_group`](Self::kill_group) with `alive` reporting whether the group has a live
+    /// member ([`group_alive`] outside tests). The target is checked before `alive` is asked.
+    fn kill_observed(
+        &self,
+        group: u32,
+        alive: impl FnOnce(u32) -> io::Result<bool>,
+    ) -> io::Result<()> {
         check_target(group)?;
-        if group_alive(group)? {
+        if alive(group)? {
             self.signal_group(group)
         } else {
             Ok(())
@@ -252,9 +263,12 @@ impl GroupKiller {
     /// once the leader may have been reaped.
     ///
     /// # Errors
-    /// The same as [`kill_group`](Self::kill_group): [`io::ErrorKind::InvalidInput`] for a
-    /// group that names this process or every process, and otherwise an error when the kill
-    /// program cannot be run or a live member is still left at the end of the grace.
+    /// [`io::ErrorKind::InvalidInput`] for group 0 or 1, which `kill` reads as this process's
+    /// own group and as every process, and for this process's pid or its own group, read from
+    /// `/proc/self/stat`; an error when `/proc/self/stat` cannot be read or parsed (nothing is
+    /// signalled). Otherwise an error when the kill program cannot be run, when `/proc` cannot
+    /// be read while verifying that the group is gone, or when a live member is still left at
+    /// the end of the grace: in those cases the group may still be running.
     pub fn kill_led_group(&self, group: u32) -> io::Result<()> {
         check_target(group)?;
         self.signal_group(group)
@@ -457,6 +471,10 @@ fn supervise(
 
 /// Kills what is left of the child's group after `interrupted`, and the child itself.
 /// `alive` reports whether the group has a live member ([`group_alive`] outside tests).
+///
+/// The group is signalled only through [`GroupKiller::kill_led_group`] or
+/// [`GroupKiller::kill_observed`], so the same target check guards every signal, and a group
+/// that check refuses is [`ProcessError::Kill`].
 fn terminate(
     child: &mut Child,
     interrupted: Interrupted,
@@ -469,20 +487,12 @@ fn terminate(
     } = interrupted;
     let group = child.id();
     // Once the leader is reaped the id may be reused: signal only a group seen to be alive.
-    if leader_reaped {
-        match alive(group) {
-            Ok(true) => {}
-            Ok(false) => return cause,
-            Err(source) => {
-                return ProcessError::Kill {
-                    cause: Box::new(cause),
-                    source,
-                };
-            }
-        }
-    }
-    let group_killed = killer.signal_group(group);
-    // Already-exited children report `Ok` here.
+    let group_killed = if leader_reaped {
+        killer.kill_observed(group, alive)
+    } else {
+        killer.kill_led_group(group)
+    };
+    // Already-exited children report `Ok` here, and a reaped one is never signalled again.
     let leader_killed = child.kill();
     match group_killed.and(leader_killed) {
         Ok(()) => cause,
@@ -494,25 +504,17 @@ fn terminate(
 }
 
 /// Fails unless the `/proc/<pid>/stat` file at `stat` names `pid` and has the shape a `/proc`
-/// scan parses ([`in_group`]): a missing `/proc`, one from another pid namespace, or one whose
-/// stat lines the scan cannot read would make every group look empty or every scan fail.
+/// scan parses ([`parse_stat`]): a missing `/proc`, one from another pid namespace, or one
+/// whose stat lines the scan cannot read would make every group look empty or every scan fail.
 fn check_proc(stat: &Path, pid: u32) -> Result<(), KillerError> {
     let line = fs::read(stat).map_err(|error| KillerError::ProcUnavailable {
         cause: ProcFault::Unreadable(error.kind()),
     })?;
-    let malformed = KillerError::ProcUnavailable {
-        cause: ProcFault::Malformed,
-    };
-    if in_group(&line, 0).is_err() {
-        return Err(malformed);
-    }
-    let named: u32 = line
-        .windows(2)
-        .position(|pair| pair == b" (")
-        .and_then(|pid_end| line.get(..pid_end))
-        .and_then(|field| std::str::from_utf8(field).ok())
-        .and_then(|field| field.parse().ok())
-        .ok_or(malformed)?;
+    let named = parse_stat(&line)
+        .map_err(|UnreadableStat| KillerError::ProcUnavailable {
+            cause: ProcFault::Malformed,
+        })?
+        .pid;
     if named == pid {
         Ok(())
     } else {
@@ -600,9 +602,9 @@ fn read_present(read: &mut impl FnMut() -> io::Result<Vec<u8>>) -> io::Result<Op
 struct UnreadableStat;
 
 /// Whether a `/proc/<pid>/stat` line is a live (not zombie or dead) member of `group`; it is
-/// parsed by [`state_and_group`].
+/// parsed by [`parse_stat`].
 fn in_group(stat: &[u8], group: u32) -> Result<bool, UnreadableStat> {
-    let (state, pgrp) = state_and_group(stat)?;
+    let StatFields { state, pgrp, .. } = parse_stat(stat)?;
     Ok(pgrp == group && state != "Z" && state != "X")
 }
 
@@ -618,37 +620,57 @@ fn check_target(group: u32) -> io::Result<()> {
         return refused("the process group is led by this process");
     }
     let stat = fs::read(SELF_STAT)?;
-    let (_, own) = state_and_group(&stat).map_err(|UnreadableStat| {
-        io::Error::new(io::ErrorKind::InvalidData, "unreadable /proc/self/stat")
-    })?;
+    let own = parse_stat(&stat)
+        .map_err(|UnreadableStat| {
+            io::Error::new(io::ErrorKind::InvalidData, "unreadable /proc/self/stat")
+        })?
+        .pgrp;
     if group == own {
         return refused("the process group is this process's own");
     }
     Ok(())
 }
 
-/// The state (field 3) and process group (field 5) of a `/proc/<pid>/stat` line
-/// (`pid (comm) state ppid pgrp ...`). `comm` may contain `) ` and any other bytes, so the
-/// fields start after the last `) `, and only they must be text. A line without the kernel's
-/// trailing `\n` was cut off, possibly inside `pgrp`, and is unreadable.
-fn state_and_group(stat: &[u8]) -> Result<(&str, u32), UnreadableStat> {
+/// The fields of a `/proc/<pid>/stat` line that supervision reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StatFields<'a> {
+    /// Field 1, the process id.
+    pid: u32,
+    /// Field 3, the state (`Z` zombie, `X` dead, ...).
+    state: &'a str,
+    /// Field 5, the process group.
+    pgrp: u32,
+}
+
+/// The pid (field 1), state (field 3) and process group (field 5) of a `/proc/<pid>/stat` line
+/// (`pid (comm) state ppid pgrp ...`), the one parser of that line.
+///
+/// `comm` may contain `) `, newlines and any other bytes, so the pid is what precedes the
+/// first ` (` and the other fields start after the last `) `; only the fields must be text. A
+/// line without the kernel's trailing `\n` was cut off, possibly inside `pgrp`, and is
+/// unreadable.
+fn parse_stat(stat: &[u8]) -> Result<StatFields<'_>, UnreadableStat> {
     let line = stat.strip_suffix(b"\n").ok_or(UnreadableStat)?;
-    let comm_end = line
+    let pid = line
         .windows(2)
-        .rposition(|pair| pair == b") ")
+        .position(|pair| pair == b" (")
+        .and_then(|pid_end| line.get(..pid_end))
+        .and_then(|field| std::str::from_utf8(field).ok())
+        .and_then(|field| field.parse().ok())
         .ok_or(UnreadableStat)?;
-    let fields = line
-        .get(comm_end..)
-        .and_then(|rest| rest.strip_prefix(b") "))
+    // The suffix after the last `) `, found and stripped in one step.
+    let fields = (0..line.len())
+        .rev()
+        .find_map(|start| line.get(start..)?.strip_prefix(b") "))
         .ok_or(UnreadableStat)?;
     let fields = std::str::from_utf8(fields).map_err(|_not_utf8| UnreadableStat)?;
     let mut fields = fields.split_whitespace();
     let state = fields.next().ok_or(UnreadableStat)?;
-    let pgrp: u32 = fields
+    let pgrp = fields
         .nth(1)
         .and_then(|pgrp| pgrp.parse().ok())
         .ok_or(UnreadableStat)?;
-    Ok((state, pgrp))
+    Ok(StatFields { pid, state, pgrp })
 }
 
 /// Calls `probe` until it yields `Some` or `deadline` passes (`None`). The deadline is checked
@@ -694,10 +716,13 @@ mod tests {
     /// A child `install` writes the executable, so no thread of this test binary ever holds it
     /// open for writing: a sibling test's fork would inherit that descriptor until its exec,
     /// and executing the script meanwhile fails with ETXTBSY (#176). Renaming alone would not
-    /// help, as the inode stays the same. The rename only makes `dir/name` appear complete.
+    /// help, as the inode stays the same. The rename only makes `dir/name` appear complete. The
+    /// text and the copy are staged in a directory inside `dir` that is removed on every path,
+    /// a failed `install` or rename included (#249).
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
-        let source = dir.join(format!(".{name}.source"));
-        let staged = dir.join(format!(".{name}.staged"));
+        let staging = tempfile::tempdir_in(dir).expect("a staging directory beside the script");
+        let source = staging.path().join("source");
+        let staged = staging.path().join("staged");
         let path = dir.join(name);
         fs::write(&source, format!("#!/bin/sh\n{body}\n")).expect("write the script's text");
         let installed = Command::new("install")
@@ -711,7 +736,7 @@ mod tests {
             "install copies the script: {installed}"
         );
         fs::rename(&staged, &path).expect("move the script into place");
-        fs::remove_file(&source).expect("drop the script's text");
+        staging.close().expect("drop the script's text");
         path
     }
 
@@ -959,7 +984,10 @@ mod tests {
         });
 
         assert!(
-            matches!(&error, ProcessError::Kill { cause, .. } if matches!(**cause, ProcessError::TimedOut)),
+            matches!(
+                &error,
+                ProcessError::Kill { cause, .. } if matches!(**cause, ProcessError::TimedOut)
+            ),
             "an unobservable group must surface as a kill failure, got {error:?}"
         );
         assert!(
@@ -1088,6 +1116,36 @@ mod tests {
             refused,
             vec![Err(io::ErrorKind::InvalidInput); 8],
             "a kill must never reach assay itself, its group, or every process"
+        );
+        assert!(!marker.exists(), "nothing was signalled");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "reads /proc; Miri isolates the file system")]
+    fn the_reaped_leader_kill_refuses_a_forbidden_group_before_looking_or_signalling() {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let marker = scratch.path().join("killed");
+        let spy = script(
+            scratch.path(),
+            "kill",
+            &format!("touch '{}'", marker.display()),
+        );
+        let killer = GroupKiller::at(&spy, Duration::from_millis(100)).expect("executable");
+        let mut looked = Vec::new();
+
+        let refused = [0, 1, std::process::id(), own_pgrp()].map(|group| {
+            killer
+                .kill_observed(group, |group| {
+                    looked.push(group);
+                    Ok(true)
+                })
+                .map_err(|error| error.kind())
+        });
+
+        assert_eq!(
+            (refused, looked),
+            ([Err(io::ErrorKind::InvalidInput); 4], Vec::new()),
+            "terminate's kill must pass the same target check as kill_group"
         );
         assert!(!marker.exists(), "nothing was signalled");
     }
@@ -1438,6 +1496,62 @@ mod tests {
             in_group(b"garbage", 42),
             Err(UnreadableStat),
             "an unreadable stat line fails closed"
+        );
+    }
+
+    #[test]
+    fn a_command_name_holding_a_newline_does_not_end_the_line() {
+        assert_eq!(
+            in_group(b"46 (a\nb) S 1 42 42 0\n", 42),
+            Ok(true),
+            "only the kernel's final newline ends the line; `comm` may hold one"
+        );
+    }
+
+    #[test]
+    fn a_command_name_holding_bytes_a_newline_and_a_close_paren_is_skipped() {
+        assert_eq!(
+            in_group(b"47 (x) \xff\n) R 1 42 42 0\n", 42),
+            Ok(true),
+            "the fields start after the last `) `, whatever `comm` holds before it"
+        );
+    }
+
+    #[test]
+    fn fields_copied_into_the_command_name_are_not_trusted() {
+        assert_eq!(
+            in_group(b"48 (x) S 1 42 42 ) S 1 7 7 0\n", 42),
+            Ok(false),
+            "a `comm` imitating group 42's fields must not make process 48 a member"
+        );
+    }
+
+    #[test]
+    fn a_stat_line_yields_its_pid_state_and_group() {
+        assert_eq!(
+            parse_stat(b"48 (x) S 1 42 42 ) T 1 7 7 0\n"),
+            Ok(StatFields {
+                pid: 48,
+                state: "T",
+                pgrp: 7,
+            }),
+            "the pid precedes `comm`; state and group follow its last `) `"
+        );
+    }
+
+    #[test]
+    fn a_stat_line_without_a_numeric_pid_is_unreadable() {
+        let unreadable = [
+            &b"(sh) S 1 42 42 0\n"[..],
+            b"x (sh) S 1 42 42 0\n",
+            b"-1 (sh) S 1 42 42 0\n",
+        ]
+        .map(parse_stat);
+
+        assert_eq!(
+            unreadable,
+            [Err(UnreadableStat); 3],
+            "the pid is part of the shape the scan and the preflight rely on"
         );
     }
 }

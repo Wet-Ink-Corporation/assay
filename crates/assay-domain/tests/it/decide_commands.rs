@@ -6,7 +6,7 @@ use std::error::Error;
 use assay_domain::{
     CallFailure, Conclusion, Counts, Decision, DecisionInputs, Deferral, DegradedReport,
     Disposition, FindingDisposition, InfraPolicy, LlmStage, Override, OverrideScope, OwnerApproval,
-    PrClass, ReasonCode, Severity, Tier, Waived, Waiver, decide,
+    PrClass, ReasonCode, Severity, StageRole, Tier, Waived, Waiver, decide,
 };
 
 use crate::support::{attested_gate, clean_inputs, confirmed, fp, gate_finding, reason, rubric_v1};
@@ -201,7 +201,7 @@ fn an_llm_override_neutralises_a_degraded_required_role() -> Result<(), Box<dyn 
     let mut inputs = clean_inputs();
     inputs.policy.on_infra_failure = InfraPolicy::Block;
     inputs.degraded = vec![DegradedReport {
-        role: "bugs".to_owned(),
+        role: StageRole::Bugs,
         reason: CallFailure::Cap,
     }];
     inputs.override_record = Some(override_record(

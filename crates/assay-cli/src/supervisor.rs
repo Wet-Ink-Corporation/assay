@@ -16,8 +16,10 @@ use assay_runner::GroupKill;
 /// As an [`assay_gates::Supervisor`] it runs a gate under [`process::run`], and as an
 /// [`assay_gates::CaptureSupervisor`] it also keeps the process's stdout (the pinned
 /// `temper scan`); as an [`assay_runner::GroupKill`] it kills `claude`'s group with
-/// [`GroupKiller::kill_group`]; as an [`assay_forge::github::GhRunner`] it runs the `gh api`
-/// calls of the GitHub transport, with their stdin and both outputs kept (#273).
+/// [`GroupKiller::kill_led_group`] while `claude` is unreaped (at the timeout or the output
+/// cap) and with [`GroupKiller::kill_group`] after it exited and was reaped; as an
+/// [`assay_forge::github::GhRunner`] it runs the `gh api` calls of the GitHub transport, with
+/// their stdin and both outputs kept (#273).
 #[derive(Debug, Clone)]
 pub struct ForgeSupervisor {
     killer: GroupKiller,
@@ -42,7 +44,7 @@ impl Supervisor for ForgeSupervisor {
     /// Cost: [`process::run`] reads stdout and stderr back into memory before this discards
     /// them, so a run briefly holds up to twice `spec.max_output_bytes` (32 MiB at
     /// `ExecLimits::DEFAULT`). Kept rather than adding a forge variant that skips the
-    /// read-back, since one gate runs at a time (#150 review F4).
+    /// read-back, since one gate runs at a time.
     ///
     /// # Errors
     ///
