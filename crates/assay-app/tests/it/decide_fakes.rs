@@ -7,12 +7,13 @@ use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    AdmitJob, ArtifactDocument, ArtifactJob, AuthenticatedRun, Authentication, CommitId,
-    ContractValidator, CurrentPullRequest, DecideError, DecidePorts, DecideRequest, Fetched,
-    GateJobOutputs, JobResult, PlanJob, PlanRequest, PullOnHead, PullRequestState, Refusal,
-    Reported, ReportedGate, ReviewJob, RunArtifacts, Sha256Digest, TierDegrade, authenticate, plan,
+    AdmitJob, AdmitOutcome, ArtifactDocument, ArtifactJob, AuthenticatedRun, Authentication,
+    CommitId, ContractValidator, CurrentPullRequest, DecideError, DecidePorts, DecideRequest,
+    Fetched, GateJobOutputs, JobResult, PlanJob, PlanRequest, PullOnHead, PullRequestState,
+    Refusal, Reported, ReportedGate, ReviewJob, ReviewStage, RunArtifacts, Sha256Digest,
+    TierDegrade, authenticate, plan,
 };
-use assay_domain::{GateConclusion, RunUid};
+use assay_domain::{Aeu, GateConclusion, RunUid, Tier};
 use serde_json::{Value, json};
 
 use crate::plan_fakes::{BASE, CountingNonces, FakeError, FakePr, HEAD, plugins_toml, request};
@@ -137,9 +138,13 @@ fn passing_request(plan: PlanRequest, plan_job: PlanJob) -> DecideRequest {
         admit: AdmitJob {
             result: JobResult::Success,
             degrade: TierDegrade::None,
+            // The default PR's tier; `authenticate` does not read the admission.
+            admission: AdmitOutcome::Spend { tier: Tier::Micro },
         },
         review: ReviewJob {
             result: JobResult::Success,
+            stage: ReviewStage::NotRun,
+            cost: Aeu::from_micros(0),
             documents: Vec::new(),
         },
         release: JobResult::Success,

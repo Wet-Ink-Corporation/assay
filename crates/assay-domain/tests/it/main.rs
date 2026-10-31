@@ -9,6 +9,7 @@ mod decide_llm;
 mod decide_not_run;
 mod decide_properties;
 mod decide_waive;
+mod decision_key;
 mod finding;
 mod fingerprint;
 mod golden;

@@ -487,6 +487,7 @@ fn a_degrade_from_an_admit_that_did_not_succeed_is_a_plan_mismatch() -> Result<(
     scenario.request.admit = assay_app::AdmitJob {
         result: JobResult::Failure,
         degrade: TierDegrade::FullToLite,
+        ..scenario.request.admit
     };
 
     let refused = refusal(scenario.authenticate()?)?;
