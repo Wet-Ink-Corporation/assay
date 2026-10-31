@@ -187,3 +187,29 @@ fn the_stage_reads_back_from_its_word_and_nothing_else_parses() {
     assert_eq!("".parse::<ReviewStage>(), Err(UnknownReviewStage));
     assert_eq!("completed".parse::<ReviewStage>(), Err(UnknownReviewStage));
 }
+
+#[test]
+fn a_reported_review_is_charged_its_cost_and_any_other_the_run_cap() {
+    let reported = ReviewEnd::Reported(ReviewReport {
+        stage: ReviewStage::NotRun,
+        cost: Aeu::from_micros(512_000),
+    });
+
+    let charged = [
+        reported,
+        ReviewEnd::Failed,
+        ReviewEnd::Cancelled,
+        ReviewEnd::Skipped,
+    ]
+    .map(ReviewCost::from);
+
+    assert_eq!(
+        charged,
+        [
+            ReviewCost::Reported(Aeu::from_micros(512_000)),
+            ReviewCost::RunCap,
+            ReviewCost::Cancelled,
+            ReviewCost::RunCap,
+        ]
+    );
+}

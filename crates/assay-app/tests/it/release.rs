@@ -84,7 +84,7 @@ fn a_failed_review_is_charged_the_run_cap_and_is_not_marked_cancelled() {
             ledger: &ledger,
             refs: &refs,
         },
-        &request(&lease, ReviewCost::Died),
+        &request(&lease, ReviewCost::RunCap),
     )
     .expect("the ledger and refs are up");
 
@@ -198,11 +198,11 @@ fn a_run_with_no_reservation_releases_nothing_and_writes_nothing() {
             ledger: &ledger,
             refs: &refs,
         },
-        &request(&lease, ReviewCost::Died),
+        &request(&lease, ReviewCost::RunCap),
     );
 
     assert!(
-        matches!(refused, Err(ReleaseError::NoReservation)),
+        matches!(refused, Err(ReleaseError::NoReservation { run_uid }) if run_uid == run(1)),
         "{refused:?}"
     );
     assert_eq!(refs.calls(), []);
@@ -214,7 +214,7 @@ fn a_re_run_is_refused_before_any_port_is_called() {
     let ledger = MemoryLedger::default().down();
     let refs = MemoryRefs::default().down();
     let lease = commit('c');
-    let mut request = request(&lease, ReviewCost::Died);
+    let mut request = request(&lease, ReviewCost::RunCap);
     request.run_uid.run_attempt = id(2);
 
     let refused = release(

@@ -13,9 +13,7 @@ use assay_app::{CommitId, UserId};
 
 pub use self::admit::HeldSlot;
 pub use self::gates::{GatesOutputError, gates_from_needs, gates_output};
-pub use self::review::{
-    REVIEW_PLACEHOLDER, ReviewEnd, ReviewReport, ReviewStage, UnknownReviewStage,
-};
+pub use self::review::{REVIEW_PLACEHOLDER, ReviewEnd, ReviewReport};
 use crate::ci::{
     JobName, JobResult, Needs, NeedsError, OutputName, Upstream, canonical_positive, shown,
 };

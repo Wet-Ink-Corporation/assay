@@ -2,11 +2,7 @@
 //! `cost_aeu`, what it spent, in the ledger's form; and `documents`, none until the real review
 //! (M2) writes some.
 
-use std::error::Error;
-use std::fmt;
-use std::str::FromStr;
-
-use assay_app::parse_aeu;
+use assay_app::{ReviewCost, ReviewStage, UnknownReviewStage, parse_aeu};
 use assay_domain::Aeu;
 
 use super::{only_own, written};
@@ -28,48 +24,6 @@ pub const REVIEW_PLACEHOLDER: [(OutputName, &str); 3] = [
     (OutputName::CostAeu, "0"),
     (OutputName::Documents, NO_DOCUMENTS),
 ];
-
-/// How far the review got, as its `stage` output says. Only the placeholder's stage exists
-/// until the real review (M2) adds its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReviewStage {
-    /// `not-run`: the review did not run.
-    NotRun,
-}
-
-impl ReviewStage {
-    /// The stage's word.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::NotRun => "not-run",
-        }
-    }
-}
-
-/// A `stage` output that is not a stage's word.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnknownReviewStage;
-
-impl fmt::Display for UnknownReviewStage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("not a review stage")
-    }
-}
-
-impl Error for UnknownReviewStage {}
-
-impl FromStr for ReviewStage {
-    type Err = UnknownReviewStage;
-
-    /// The stage whose word is exactly `text`.
-    fn from_str(text: &str) -> Result<Self, UnknownReviewStage> {
-        [Self::NotRun]
-            .into_iter()
-            .find(|stage| stage.as_str() == text)
-            .ok_or(UnknownReviewStage)
-    }
-}
 
 /// What a review that succeeded reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +80,18 @@ impl ReviewEnd {
             return Err(invalid(OutputName::Documents));
         }
         Ok(Self::Reported(ReviewReport { stage, cost }))
+    }
+}
+
+impl From<ReviewEnd> for ReviewCost {
+    /// What `release` charges a review that ended so: the cost a successful one reported, the
+    /// run cap for any other, marked cancelled only for a cancelled one (06 §1).
+    fn from(end: ReviewEnd) -> Self {
+        match end {
+            ReviewEnd::Reported(report) => Self::Reported(report.cost),
+            ReviewEnd::Failed | ReviewEnd::Skipped => Self::RunCap,
+            ReviewEnd::Cancelled => Self::Cancelled,
+        }
     }
 }
 

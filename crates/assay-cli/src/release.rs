@@ -9,7 +9,7 @@
 //! with that token, the slot's deletion pushed from an object-only repository in a scratch
 //! directory. [`assay_app::release`] does the rest. A variable's value is never shown.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
@@ -274,11 +274,7 @@ fn prepare(
     let Some(held) = HeldSlot::from_needs(&needs).map_err(ReleaseCliError::Needs)? else {
         return Ok(None);
     };
-    let review = match ReviewEnd::from_needs(&needs).map_err(ReleaseCliError::Needs)? {
-        ReviewEnd::Reported(report) => ReviewCost::Reported(report.cost),
-        ReviewEnd::Failed | ReviewEnd::Skipped => ReviewCost::Died,
-        ReviewEnd::Cancelled => ReviewCost::Cancelled,
-    };
+    let review = ReviewCost::from(ReviewEnd::from_needs(&needs).map_err(ReleaseCliError::Needs)?);
     let ledger = doctor::read_pins(&config)
         .map_err(ReleaseCliError::Config)?
         .assay()
@@ -287,7 +283,7 @@ fn prepare(
         .ok_or(ReleaseCliError::NoLedgerRepo)?
         .parse()
         .map_err(|_not_owner_name| ReleaseCliError::LedgerRepo)?;
-    let token = token(variables.ledger_token.as_ref())?;
+    let token = token(variables.ledger_token.as_deref())?;
     let now = LedgerTime::from_system_time(variables.now).map_err(ReleaseCliError::Clock)?;
     Ok(Some(Prepared {
         run,
@@ -308,7 +304,7 @@ fn config_path(mut args: impl Iterator<Item = OsString>) -> Result<PathBuf, Rele
 }
 
 /// [`LEDGER_TOKEN`] as a token gh may carry.
-fn token(value: Option<&OsString>) -> Result<GhToken, ReleaseCliError> {
+fn token(value: Option<&OsStr>) -> Result<GhToken, ReleaseCliError> {
     let invalid = |problem| ReleaseCliError::Variable {
         variable: Variable::LedgerToken,
         problem,

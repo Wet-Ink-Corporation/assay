@@ -54,7 +54,7 @@ pub enum ReviewCost {
     /// The review ended and reported what it spent.
     Reported(Aeu),
     /// The review failed or was skipped: it is charged the run cap.
-    Died,
+    RunCap,
     /// The review was cancelled: it is charged the run cap, and the record says so.
     Cancelled,
 }
@@ -84,8 +84,16 @@ pub enum ReleaseError<L, R> {
     Costs(#[source] LedgerReadError<L>),
     /// The cost records hold no `reserved` record of the run, so the `final` one has nothing to
     /// settle. Nothing was written.
-    #[error("the cost records hold no reservation of this run")]
-    NoReservation,
+    #[error(
+        "the cost records hold no reservation of run {} attempt {} in repository {}",
+        run_uid.run_id,
+        run_uid.run_attempt,
+        run_uid.repo_id
+    )]
+    NoReservation {
+        /// The run.
+        run_uid: RunUid,
+    },
     /// The slot could not be released; no record was written.
     #[error("slot {slot} could not be released")]
     Slot {
@@ -131,7 +139,9 @@ pub fn release<L: Ledger, R: LedgerRefs>(
         .into_records()
         .into_iter()
         .find(|record| record.run_uid == request.run_uid && record.kind == CostKind::Reserved)
-        .ok_or(ReleaseError::NoReservation)?;
+        .ok_or(ReleaseError::NoReservation {
+            run_uid: request.run_uid,
+        })?;
     let record = settle(reserved, request);
     let slot = release_slot(ports.refs, request.slot, request.lease_commit).map_err(|source| {
         ReleaseError::Slot {
@@ -150,7 +160,7 @@ fn settle(reserved: CostRecord, request: &ReleaseRequest<'_>) -> CostRecord {
         // The review reports its total only, not each stage's (the real review is M2).
         ReviewCost::Reported(aeu) => (aeu, Vec::new()),
         // The run cap: what the reservation holds, stage by stage.
-        ReviewCost::Died | ReviewCost::Cancelled => (reserved.aeu, reserved.roles),
+        ReviewCost::RunCap | ReviewCost::Cancelled => (reserved.aeu, reserved.roles),
     };
     CostRecord {
         roles,

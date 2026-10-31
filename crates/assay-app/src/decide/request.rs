@@ -2,6 +2,8 @@
 //! of the jobs it needs, which steps PR code cannot reach wrote (02 §1). They are trusted; the
 //! artifacts they name are not until their digests match.
 
+use std::str::FromStr;
+
 use assay_domain::{Aeu, GateConclusion, NotRunReason, Tier};
 
 use crate::admit::Deferred;
@@ -167,6 +169,36 @@ pub enum ReviewStage {
     NotRun,
 }
 
+impl ReviewStage {
+    /// Every stage.
+    const ALL: [Self; 1] = [Self::NotRun];
+
+    /// The stage's word, as the `stage` output writes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRun => "not-run",
+        }
+    }
+}
+
+/// A `stage` output that is not exactly a stage's word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("not a review stage")]
+pub struct UnknownReviewStage;
+
+impl FromStr for ReviewStage {
+    type Err = UnknownReviewStage;
+
+    /// The stage whose word is exactly `text`.
+    fn from_str(text: &str) -> Result<Self, UnknownReviewStage> {
+        Self::ALL
+            .into_iter()
+            .find(|stage| stage.as_str() == text)
+            .ok_or(UnknownReviewStage)
+    }
+}
+
 /// The `review` job's outputs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewJob {
@@ -223,5 +255,30 @@ impl DecideRequest {
             .into_iter()
             .find(|(_, result)| *result == JobResult::Cancelled)
             .map(|(job, _)| job)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReviewStage, UnknownReviewStage};
+
+    #[test]
+    fn a_stage_reads_back_from_its_word() {
+        assert_eq!(
+            ReviewStage::NotRun.as_str().parse::<ReviewStage>(),
+            Ok(ReviewStage::NotRun)
+        );
+        assert_eq!(ReviewStage::NotRun.as_str(), "not-run");
+    }
+
+    #[test]
+    fn anything_but_a_stage_s_exact_word_is_refused() {
+        for text in ["", "completed", "Not-Run", "not-run ", "notrun"] {
+            assert_eq!(
+                text.parse::<ReviewStage>(),
+                Err(UnknownReviewStage),
+                "{text:?}"
+            );
+        }
     }
 }
