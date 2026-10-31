@@ -26,7 +26,7 @@ pub use carried::{
     CarryRefused, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, read_carried,
 };
 pub use carry::{CarrySet, OmitReason, Omitted, next_carry};
-pub use prior::{PriorCarry, PriorCarryError, prior_carry, prior_waivers};
+pub use prior::{PriorCarry, PriorCarryError, prior_carry, prior_head, prior_waivers};
 pub use settle::{CarriedOutcome, CarriedState, NotReverified, settle_carried};
 pub use target::{
     Ancestry, Carry, CarryReset, Cumulative, Increment, MAX_RANGE_DIFF_BYTES, PriorHistory,

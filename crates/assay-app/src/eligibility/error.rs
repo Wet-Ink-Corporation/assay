@@ -5,6 +5,7 @@ use std::fmt;
 use thiserror::Error;
 
 use super::commands::MAX_COMMAND_RECORDS;
+use super::identities::RangeError;
 use super::pushes::MAX_PUSH_RECORDS;
 use crate::publish::CommentId;
 
@@ -94,13 +95,21 @@ impl<F, G, L, C> StateError<F, G, L, C> {
         move |source| Self::Forge { step, source }
     }
 
-    /// A closure wrapping a git error of `step`.
-    pub(crate) const fn range(step: SnapshotStep) -> impl Fn(G) -> Self {
-        move |source| Self::Range { step, source }
-    }
-
     /// A closure wrapping a ledger error of `step`.
     pub(crate) const fn ledger(step: SnapshotStep) -> impl Fn(L) -> Self {
         move |source| Self::Ledger { step, source }
+    }
+
+    /// The range reading's failure as the snapshot's: a failed identity read is
+    /// [`SnapshotStep::Identities`]'s.
+    pub(crate) fn of_range(error: RangeError<G, F>) -> Self {
+        match error {
+            RangeError::Range { step, source } => Self::Range { step, source },
+            RangeError::Forge(source) => Self::Forge {
+                step: SnapshotStep::Identities,
+                source,
+            },
+            RangeError::IdentityMismatch => Self::IdentityMismatch,
+        }
     }
 }

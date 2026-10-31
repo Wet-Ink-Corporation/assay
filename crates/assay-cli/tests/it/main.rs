@@ -1,6 +1,11 @@
 //! Integration tests for the `assay` binary and the workspace it is the composition root of,
 //! compiled as one binary (TST-14).
 
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod admit_fakes;
+#[cfg(unix)] // the scene's PATH is one directory
+mod admit_job;
+mod admit_run;
 mod architecture;
 mod binary;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
