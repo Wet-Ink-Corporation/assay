@@ -463,6 +463,15 @@ fn a_degraded_report_reads_every_stage_role_as_its_code() -> Result<(), Box<dyn 
     Ok(())
 }
 
+// #330 F1: `missing()` publishes a required role through `StageRole::code()`, so converting a
+// role must keep its code.
+#[test]
+fn every_required_role_keeps_its_code_as_a_stage_role() {
+    for role in RequiredRole::ALL {
+        assert_eq!(StageRole::from(role).code(), role.code(), "{role:?}");
+    }
+}
+
 #[test]
 fn a_role_reported_degraded_with_a_call_failure_code_parses() -> Result<(), Box<dyn Error>> {
     let parsed = reported_for("cap")?;

@@ -17,6 +17,7 @@ use super::waivers;
 use super::{ForgeStep, PersistFailure, PublishError, Published, Stale, Target, Unlock, Written};
 use crate::config::Sha256Digest;
 use crate::eligibility::IgnoredApproval;
+use crate::forge::{Deadline, LockedWrite};
 
 /// Everything a decision's check update and evidence record are built from: what `decide` holds
 /// in memory, or what `publish_persisted` read back from the bundle.
@@ -137,7 +138,7 @@ pub(super) fn write<F: VerdictForge, L: PublishLedger, U>(
     else {
         return Err(PublishError::LockBusy);
     };
-    let locked = under_lock(target, ports, (&name, &observed), prepared);
+    let locked = under_lock(target, ports, (&name, &observed), (&lease, prepared));
     let unlock = match ports.ledger.release(lease) {
         Ok(()) => Unlock::Released,
         Err(error) => Unlock::Failed(error),
@@ -178,8 +179,9 @@ fn observe<F: VerdictForge, E>(
     name: &CheckName,
     key: &str,
 ) -> Result<Observation, PublishError<F::Error, E>> {
+    // Before the lock: there is no lease to bound it yet.
     let observed = forge
-        .find_check(&target.pull_request.head_sha, name)
+        .find_check(&target.pull_request.head_sha, name, None)
         .map_err(PublishError::Observe)?
         .ok_or(PublishError::CheckMissing)?;
     Ok(if observed.external_id == key {
@@ -204,18 +206,20 @@ fn is_own_stamp(external_id: &str, target: &Target<'_>) -> bool {
         .is_some_and(|seq| !seq.is_empty() && seq.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-/// Re-reads the check under the lock and, when it is unchanged, records the evidence and writes
-/// the check and the summary comment.
+/// Re-reads the check under the lock `lease` and, when it is unchanged, records the evidence and
+/// writes the check and the summary comment. Every call carries the lease's deadline, so none
+/// sends or waits past it, and the evidence is recorded only before it (#290, #332).
 fn under_lock<F: VerdictForge, L: PublishLedger, U>(
     target: &Target<'_>,
     ports: Writer<'_, F, L>,
     (name, observed): (&CheckName, &CheckRun),
-    prepared: Prepared<'_, L::Error, U>,
+    (lease, prepared): (&L::Lease, Prepared<'_, L::Error, U>),
 ) -> UnderLock<F::Error, L::Error, U> {
     let event = target.pull_request;
+    let deadline = ports.ledger.deadline(lease);
     let current = ports
         .forge
-        .find_check(&event.head_sha, name)
+        .find_check(&event.head_sha, name, Some(deadline))
         .map_err(|error| (ForgeStep::ReadCheck, error))?;
     if current.as_ref() != Some(observed) {
         return Ok(Locked::Stale);
@@ -226,7 +230,7 @@ fn under_lock<F: VerdictForge, L: PublishLedger, U>(
             let (entry, persist) = match persisted {
                 Ok(digest) => {
                     let entry = evidence_entry(target, &basis, digest);
-                    match ports.ledger.record_evidence(&entry) {
+                    match ports.ledger.record_evidence(lease, &entry) {
                         Ok(()) => (Some(entry), None),
                         Err(error) => (None, Some(PersistFailure::Ledger(error))),
                     }
@@ -237,11 +241,15 @@ fn under_lock<F: VerdictForge, L: PublishLedger, U>(
             (update, persist)
         }
     };
+    let write = LockedWrite {
+        update: &update,
+        deadline,
+    };
     ports
         .forge
-        .update_check(observed.id, &update)
+        .update_check(observed.id, write)
         .map_err(|error| (ForgeStep::UpdateCheck, error))?;
-    upsert_summary(ports.forge, target, &update.summary)?;
+    upsert_summary(ports.forge, target, (&update.summary, deadline))?;
     Ok(Locked::Written {
         state: update.state,
         persist,
@@ -360,21 +368,22 @@ const fn state_of(conclusion: Conclusion) -> CheckState {
     }
 }
 
-/// Posts the summary comment, or edits it when its body differs (write-if-changed).
+/// Posts the summary comment, or edits it when its body differs (write-if-changed), sending
+/// nothing past `deadline`.
 fn upsert_summary<F: VerdictForge>(
     forge: &F,
     target: &Target<'_>,
-    summary: &str,
+    (summary, deadline): (&str, Deadline),
 ) -> Result<(), (ForgeStep, F::Error)> {
     let number = target.pull_request.number;
     let body = render::comment(summary);
     let found = forge
-        .find_summary(number, SUMMARY_MARKER)
+        .find_summary(number, SUMMARY_MARKER, deadline)
         .map_err(|error| (ForgeStep::FindSummary, error))?;
     let written = match found {
         Some(comment) if comment.body == body => return Ok(()),
-        Some(comment) => forge.update_summary(comment.id, &body),
-        None => forge.create_summary(number, &body),
+        Some(comment) => forge.update_summary(comment.id, &body, deadline),
+        None => forge.create_summary(number, &body, deadline),
     };
     written.map_err(|error| (ForgeStep::WriteSummary, error))
 }

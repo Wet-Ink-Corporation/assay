@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use super::ports::{EvidenceEntry, PublishLedger};
 use crate::config::CommitId;
+use crate::forge::Deadline;
 use crate::ledger::{
     LeaseError, Ledger, LedgerRefs, LedgerWriteError, LockAcquired, LockHold, LockRequest,
     MAX_STATE_ENTRIES, PrState, Released, acquire_lock, release_lock, update_state,
@@ -57,6 +58,13 @@ pub enum LedgerPublishError<L, R, C> {
     /// reaped it, so writes made under it may have overlapped that writer's.
     #[error("the publish lock was no longer held when it was released")]
     NotHeld,
+    /// The lock lease's deadline had come when the evidence was to be recorded, so another
+    /// writer may hold the lock; nothing was written (#332).
+    #[error("the publish lock's lease ran out at {} before the evidence was recorded", deadline.instant())]
+    PastDeadline {
+        /// The lease's `expires_at`.
+        deadline: Deadline,
+    },
     /// The PR's state could not be written.
     #[error("could not record the evidence in the PR's state")]
     State(#[source] LedgerWriteError<L>),
@@ -105,12 +113,22 @@ where
         }
     }
 
-    fn record_evidence(&self, entry: &EvidenceEntry) -> Result<(), Self::Error> {
+    fn deadline(&self, lease: &LockHold) -> Deadline {
+        lease.deadline()
+    }
+
+    fn record_evidence(&self, lease: &LockHold, entry: &EvidenceEntry) -> Result<(), Self::Error> {
         self.own_repository(entry.repo_id)?;
         let pointer = &entry.pointer;
         if (pointer.run_id, pointer.run_attempt) != (self.run_uid.run_id, self.run_uid.run_attempt)
         {
             return Err(LedgerPublishError::OtherRun);
+        }
+        // The write starts only while the lease is live, as `open`'s writes do (R3-09).
+        let deadline = lease.deadline();
+        let now = self.clock.now().map_err(LedgerPublishError::Clock)?;
+        if now >= deadline.instant() {
+            return Err(LedgerPublishError::PastDeadline { deadline });
         }
         update_state(self.ledger, entry.repo_id, entry.pr, |state| {
             Some(with_evidence(state, entry))

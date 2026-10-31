@@ -1,5 +1,9 @@
 //! The ports `decide` publishes through: the verdict check and summary comment on GitHub, the
 //! per-head lock and per-PR state in the ledger, and the run's artifact store (02 §5, 06 §1).
+//!
+//! Every forge call made while holding the per-head lock carries the lock lease's [`Deadline`]:
+//! the adapter sends no request, and waits for no retry, that would not end before it (#290,
+//! #332).
 
 use std::fmt;
 use std::num::NonZeroU64;
@@ -7,6 +11,7 @@ use std::num::NonZeroU64;
 use assay_domain::{Side, Tier};
 
 use crate::config::{CommitId, GateName, Sha256Digest};
+use crate::forge::{Deadline, LockedWrite};
 
 /// The verdict check and the summary comment, written with the `assay-verdict` App's token.
 /// Implemented by the forge adapter (#53).
@@ -17,84 +22,120 @@ pub trait VerdictForge {
     /// The check run named `name` on `head` that the `assay-verdict` App authored, if any. A
     /// same-named check from any other app is never returned.
     ///
+    /// Under the lock, `deadline` is the lease's: nothing is sent, and no retry waited for, that
+    /// would not end before it. `None` only for `decide`'s first read, before the lock is taken.
+    ///
     /// # Errors
     ///
-    /// [`Self::Error`] when the check runs cannot be listed.
+    /// [`Self::Error`] when the check runs cannot be listed, or the next request or wait would
+    /// not end before the deadline (it is not made).
     fn find_check(
         &self,
         head: &CommitId,
         name: &CheckName,
+        deadline: Option<Deadline>,
     ) -> Result<Option<CheckRun>, Self::Error>;
 
-    /// Overwrites the check's status, conclusion, output and `external_id` with `update`. The
-    /// update carries no annotations, so none ever accumulate on the verdict check (R3-11).
+    /// Overwrites the check's status, conclusion, output and `external_id` with `write.update`,
+    /// sending nothing that would not end before `write.deadline`, the lock lease's. The update
+    /// carries no annotations, so none ever accumulate on the verdict check (R3-11).
     ///
     /// # Errors
     ///
-    /// [`Self::Error`] when the check cannot be updated.
-    fn update_check(&self, id: CheckRunId, update: &CheckUpdate) -> Result<(), Self::Error>;
+    /// [`Self::Error`] when the check cannot be updated, or the next request or wait would not
+    /// end before the deadline.
+    fn update_check(&self, id: CheckRunId, write: LockedWrite<'_>) -> Result<(), Self::Error>;
 
     /// The comment on PR `number` that the App authored and whose body contains `marker`, if
-    /// any. A comment by anyone else is never returned, whatever it contains.
+    /// any. A comment by anyone else is never returned, whatever it contains. Nothing is sent
+    /// that would not end before `deadline`, the lock lease's.
     ///
     /// # Errors
     ///
-    /// [`Self::Error`] when the comments cannot be listed.
+    /// [`Self::Error`] when the comments cannot be listed, or the next request or wait would not
+    /// end before the deadline.
     fn find_summary(
         &self,
         number: NonZeroU64,
         marker: &str,
+        deadline: Deadline,
     ) -> Result<Option<SummaryComment>, Self::Error>;
 
-    /// Posts `body` as a new comment on PR `number`.
+    /// Posts `body` as a new comment on PR `number`, sending nothing that would not end before
+    /// `deadline`, the lock lease's.
     ///
     /// # Errors
     ///
-    /// [`Self::Error`] when the comment cannot be posted.
-    fn create_summary(&self, number: NonZeroU64, body: &str) -> Result<(), Self::Error>;
+    /// [`Self::Error`] when the comment cannot be posted, or the next request or wait would not
+    /// end before the deadline.
+    fn create_summary(
+        &self,
+        number: NonZeroU64,
+        body: &str,
+        deadline: Deadline,
+    ) -> Result<(), Self::Error>;
 
-    /// Replaces the body of comment `id` with `body`.
+    /// Replaces the body of comment `id` with `body`, sending nothing that would not end before
+    /// `deadline`, the lock lease's.
     ///
     /// # Errors
     ///
-    /// [`Self::Error`] when the comment cannot be edited.
-    fn update_summary(&self, id: CommentId, body: &str) -> Result<(), Self::Error>;
+    /// [`Self::Error`] when the comment cannot be edited, or the next request or wait would not
+    /// end before the deadline.
+    fn update_summary(
+        &self,
+        id: CommentId,
+        body: &str,
+        deadline: Deadline,
+    ) -> Result<(), Self::Error>;
 }
 
 /// The inline review comments and the per-gate checks, written with the `assay-verdict` App's
-/// token beside the verdict check. Implemented by the forge adapter (#53).
+/// token beside the verdict check, under the per-head lock. Implemented by the forge adapter
+/// (#53).
 pub trait CommentForge: VerdictForge {
     /// The bodies of every review comment on PR `number` that the App authored, across all
     /// pages. A comment by anyone else is never returned, whatever it contains, so no one else
-    /// can mark a fingerprint as posted.
+    /// can mark a fingerprint as posted. Nothing is sent that would not end before `deadline`,
+    /// the lock lease's.
     ///
     /// # Errors
     ///
-    /// [`VerdictForge::Error`] when the review comments cannot be listed.
-    fn app_review_comments(&self, number: NonZeroU64) -> Result<Vec<String>, Self::Error>;
+    /// [`VerdictForge::Error`] when the review comments cannot be listed, or the next request
+    /// or wait would not end before the deadline.
+    fn app_review_comments(
+        &self,
+        number: NonZeroU64,
+        deadline: Deadline,
+    ) -> Result<Vec<String>, Self::Error>;
 
-    /// Posts `comment` on the diff of PR `number`, as a single review comment.
+    /// Posts `comment` on the diff of PR `number`, as a single review comment, sending nothing
+    /// that would not end before `deadline`, the lock lease's.
     ///
     /// # Errors
     ///
-    /// [`VerdictForge::Error`] when the comment cannot be posted.
+    /// [`VerdictForge::Error`] when the comment cannot be posted, or the next request or wait
+    /// would not end before the deadline.
     fn create_review_comment(
         &self,
         number: NonZeroU64,
         comment: &InlineComment<'_>,
+        deadline: Deadline,
     ) -> Result<(), Self::Error>;
 
-    /// Creates the check run `name` on `head` with `update`'s status, conclusion, output and
-    /// `external_id`. Never called for the verdict check, which only `open` creates.
+    /// Creates the check run `name` on `head` with `write.update`'s status, conclusion, output
+    /// and `external_id`, sending nothing that would not end before `write.deadline`, the lock
+    /// lease's. Never called for the verdict check, which only `open` creates.
     ///
     /// # Errors
     ///
-    /// [`VerdictForge::Error`] when the check cannot be created.
+    /// [`VerdictForge::Error`] when the check cannot be created, or the next request or wait
+    /// would not end before the deadline.
     fn create_check(
         &self,
         head: &CommitId,
         name: &CheckName,
-        update: &CheckUpdate,
+        write: LockedWrite<'_>,
     ) -> Result<(), Self::Error>;
 }
 
@@ -143,13 +184,23 @@ pub trait PublishLedger {
     /// [`Self::Error`] when the lock could not be released; it then expires with its TTL.
     fn release(&self, lease: Self::Lease) -> Result<(), Self::Error>;
 
+    /// The deadline of every call made while holding `lease`: its `expires_at`, after which
+    /// another writer may reap the lock (#290, #332).
+    fn deadline(&self, lease: &Self::Lease) -> Deadline;
+
     /// Writes `entry`'s evidence pointer and evidence record into the PR's state
-    /// `state/<repo_id>/<pr>.json`, by compare-and-set on the file.
+    /// `state/<repo_id>/<pr>.json`, by compare-and-set on the file, while holding `lease`. The
+    /// write starts only before the lease's [`deadline`](Self::deadline).
     ///
     /// # Errors
     ///
-    /// [`Self::Error`] when the state file could not be written.
-    fn record_evidence(&self, entry: &EvidenceEntry) -> Result<(), Self::Error>;
+    /// [`Self::Error`] when the state file could not be written, or the lease's deadline has
+    /// come (nothing is written).
+    fn record_evidence(
+        &self,
+        lease: &Self::Lease,
+        entry: &EvidenceEntry,
+    ) -> Result<(), Self::Error>;
 }
 
 /// The run's artifact store, written with the run's token. Implemented by the forge adapter.

@@ -3,7 +3,7 @@
 
 use std::num::NonZeroU64;
 
-use assay_app::{CommentId, InlineComment, SummaryComment, Upserted};
+use assay_app::{CommentId, Deadline, InlineComment, SummaryComment, Upserted};
 use serde_json::{Map, Value};
 
 use super::GitHub;
@@ -12,18 +12,23 @@ use super::dto::{self, IssueCommentDto, ReviewCommentDto, UserDto};
 use super::error::{ForgeError, Operation};
 use super::transport::{Request, Sleep, Transport};
 
+/// Every call here sends nothing, and waits for no retry, that would not end before its
+/// `deadline`, when there is one: the publish lock lease's expiry (#290, #332).
 impl<T: Transport, S: Sleep> GitHub<T, S> {
     /// Every issue comment on PR `number`, oldest first.
     fn issue_comments(
         &self,
         number: NonZeroU64,
+        deadline: Option<Deadline>,
     ) -> Result<Vec<IssueCommentDto>, ForgeError<T::Error>> {
         let operation = Operation::ListComments;
         let path = self.path(
             operation,
             &format!("issues/{number}/comments?per_page={PER_PAGE}"),
         )?;
-        self.api.list::<Vec<IssueCommentDto>>(operation, path, None)
+        self.api
+            .bounded(deadline)
+            .list::<Vec<IssueCommentDto>>(operation, path, None)
     }
 
     /// Whether the App authored `comment`: through the App, as its `[bot]` user.
@@ -50,6 +55,7 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         &self,
         number: NonZeroU64,
         marker: &str,
+        deadline: Option<Deadline>,
     ) -> Result<Option<SummaryComment>, ForgeError<T::Error>> {
         let operation = Operation::ListComments;
         if marker.is_empty() {
@@ -59,7 +65,7 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
             });
         }
         let mut found = None;
-        for comment in self.issue_comments(number)? {
+        for comment in self.issue_comments(number, deadline)? {
             if !self.is_app_comment(&comment) {
                 continue;
             }
@@ -78,20 +84,26 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
     }
 
     /// Posts `body` on PR `number`. Before a retry the App's comments are read again, and a
-    /// comment of exactly `body` means the earlier POST landed.
+    /// comment of exactly `body` means the earlier POST landed. That read is bounded by the same
+    /// deadline.
     pub(crate) fn post_comment(
         &self,
         number: NonZeroU64,
         body: &str,
+        deadline: Option<Deadline>,
     ) -> Result<(), ForgeError<T::Error>> {
         let operation = Operation::CreateComment;
         let payload = encode(operation, &body_only(body))?;
         let path = self.path(operation, &format!("issues/{number}/comments"))?;
         self.api
+            .bounded(deadline)
             .post_once(operation, Request::post(&path, &payload), || {
-                Ok(self.issue_comments(number)?.iter().any(|comment| {
-                    self.is_app_comment(comment) && comment.body.as_deref() == Some(body)
-                }))
+                Ok(self
+                    .issue_comments(number, deadline)?
+                    .iter()
+                    .any(|comment| {
+                        self.is_app_comment(comment) && comment.body.as_deref() == Some(body)
+                    }))
             })
     }
 
@@ -100,11 +112,13 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         &self,
         id: CommentId,
         body: &str,
+        deadline: Option<Deadline>,
     ) -> Result<(), ForgeError<T::Error>> {
         let operation = Operation::UpdateComment;
         let payload = encode(operation, &body_only(body))?;
         let path = self.path(operation, &format!("issues/comments/{}", id.0))?;
         self.api
+            .bounded(deadline)
             .send(operation, Request::patch(&path, &payload))
             .map(drop)
     }
@@ -127,11 +141,14 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
                 detail: "the body does not carry the marker",
             });
         }
-        match self.find_comment(number, marker)? {
-            None => self.post_comment(number, body).map(|()| Upserted::Created),
+        // `Forge::upsert_comment` is not made under the publish lock, so it has no deadline.
+        match self.find_comment(number, marker, None)? {
+            None => self
+                .post_comment(number, body, None)
+                .map(|()| Upserted::Created),
             Some(existing) if existing.body == body => Ok(Upserted::Unchanged),
             Some(existing) => self
-                .edit_comment(existing.id, body)
+                .edit_comment(existing.id, body, None)
                 .map(|()| Upserted::Updated),
         }
     }
@@ -140,6 +157,7 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
     pub(crate) fn review_comments_of(
         &self,
         number: NonZeroU64,
+        deadline: Option<Deadline>,
     ) -> Result<Vec<ReviewCommentDto>, ForgeError<T::Error>> {
         let operation = Operation::ListReviewComments;
         let path = self.path(
@@ -147,6 +165,7 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
             &format!("pulls/{number}/comments?per_page={PER_PAGE}"),
         )?;
         self.api
+            .bounded(deadline)
             .list::<Vec<ReviewCommentDto>>(operation, path, None)
     }
 
@@ -154,9 +173,10 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
     pub(crate) fn app_review_bodies(
         &self,
         number: NonZeroU64,
+        deadline: Option<Deadline>,
     ) -> Result<Vec<String>, ForgeError<T::Error>> {
         Ok(self
-            .review_comments_of(number)?
+            .review_comments_of(number, deadline)?
             .into_iter()
             .filter(|comment| comment.user.as_ref().is_some_and(|user| self.is_bot(user)))
             .map(|comment| comment.body)
@@ -164,18 +184,23 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
     }
 
     /// Posts `comment` on PR `number`'s diff. Before a retry the App's review comments are read
-    /// again, and one of exactly its body means the earlier POST landed.
+    /// again, and one of exactly its body means the earlier POST landed. That read is bounded by
+    /// the same deadline.
     pub(crate) fn post_review_comment(
         &self,
         number: NonZeroU64,
         comment: &InlineComment<'_>,
+        deadline: Option<Deadline>,
     ) -> Result<(), ForgeError<T::Error>> {
         let operation = Operation::CreateReviewComment;
         let payload = encode(operation, &review_comment_body(comment))?;
         let path = self.path(operation, &format!("pulls/{number}/comments"))?;
         self.api
+            .bounded(deadline)
             .post_once(operation, Request::post(&path, &payload), || {
-                Ok(self.app_review_bodies(number)?.contains(&comment.body))
+                Ok(self
+                    .app_review_bodies(number, deadline)?
+                    .contains(&comment.body))
             })
     }
 }
