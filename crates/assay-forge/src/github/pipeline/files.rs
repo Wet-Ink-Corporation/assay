@@ -16,9 +16,22 @@ use serde::Deserialize;
 
 use super::same_pull;
 use crate::github::GitHub;
-use crate::github::api::PER_PAGE;
+use crate::github::api::{MAX_LIST_ITEMS, PER_PAGE};
 use crate::github::error::{ForgeError, Operation};
 use crate::github::transport::{Sleep, Transport};
+
+// Checked when the crate compiles. `list` must keep every file GitHub can list, or it would
+// refuse a complete file list; and today it cuts no later than GitHub does, which is why the
+// `REST_FILE_CAP` guard in `pull_files` cannot trigger (whoever raises `MAX_LIST_ITEMS` drops
+// this line and relies on that guard).
+const _: () = assert!(
+    MAX_LIST_ITEMS >= REST_FILE_CAP,
+    "list would refuse a complete PR file list"
+);
+const _: () = assert!(
+    MAX_LIST_ITEMS <= REST_FILE_CAP,
+    "pull_files' REST_FILE_CAP guard is now reachable: drop this assertion knowingly"
+);
 
 /// A PR's file count.
 #[derive(Debug, Deserialize)]

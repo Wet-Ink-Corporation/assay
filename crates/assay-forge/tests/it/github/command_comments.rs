@@ -69,6 +69,30 @@ fn a_comment_no_app_performed_is_not_via_an_app() {
 }
 
 #[test]
+fn a_comment_that_omits_performed_via_github_app_is_refused() {
+    let recorded = edited(|comment| {
+        comment
+            .as_object_mut()
+            .expect("an object")
+            .remove("performed_via_github_app");
+    });
+    let waits = Waits::default();
+
+    let read = github(&recorded, &waits).comment(CommentId(id(COMMENT)));
+
+    assert!(
+        matches!(
+            read,
+            Err(ForgeError::Malformed {
+                operation: Operation::ReadComment,
+                detail: "a comment does not say whether an app posted it",
+            })
+        ),
+        "{read:?}"
+    );
+}
+
+#[test]
 fn a_deleted_comment_is_none() {
     let recorded = Recorded::default().then(
         Method::Get,

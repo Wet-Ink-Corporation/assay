@@ -18,7 +18,32 @@ struct CommandCommentDto {
     created_at: String,
     updated_at: String,
     body: Option<String>,
-    performed_via_github_app: Option<AppDto>,
+    #[serde(default, deserialize_with = "via_app")]
+    performed_via_github_app: ViaApp,
+}
+
+/// What `performed_via_github_app` says. An absent key says nothing about who posted the
+/// comment, so it is refused rather than read as a human's.
+#[derive(Debug, Default, PartialEq, Eq)]
+enum ViaApp {
+    /// The key is absent (serde's `default`).
+    #[default]
+    Unstated,
+    /// `null`: no app posted it.
+    No,
+    /// An app object: an app posted it.
+    Yes,
+}
+
+/// A present `performed_via_github_app`, `null` or an app (whose shape is still checked).
+fn via_app<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<ViaApp, D::Error> {
+    Option::<AppDto>::deserialize(deserializer).map(|app| {
+        if app.is_some() {
+            ViaApp::Yes
+        } else {
+            ViaApp::No
+        }
+    })
 }
 
 impl<T: Transport, S: Sleep> CommandComments for GitHub<T, S> {
@@ -53,6 +78,13 @@ fn issue_comment<E>(
     if body.len() > MAX_COMMENT_BYTES {
         return Err(malformed("a comment body is over MAX_COMMENT_BYTES"));
     }
+    let via_app = match comment.performed_via_github_app {
+        ViaApp::Yes => true,
+        ViaApp::No => false,
+        ViaApp::Unstated => {
+            return Err(malformed("a comment does not say whether an app posted it"));
+        }
+    };
     let time = |text: &str| {
         text.parse::<Timestamp>()
             .map_err(|_refused| malformed("a comment's time is not an RFC 3339 UTC date-time"))
@@ -63,6 +95,6 @@ fn issue_comment<E>(
         created_at: time(&comment.created_at)?,
         updated_at: time(&comment.updated_at)?,
         body,
-        via_app: comment.performed_via_github_app.is_some(),
+        via_app,
     })
 }

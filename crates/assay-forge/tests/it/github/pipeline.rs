@@ -381,7 +381,7 @@ fn a_push_is_forced_when_after_does_not_contain_before() {
 
 #[test]
 fn a_comparison_that_does_not_add_up_is_refused() {
-    let cases: [(Edit, &str); 4] = [
+    let cases: [(Edit, &str); 2] = [
         (
             |compare| compare["status"] = json!("unrelated"),
             "a comparison's status is not one GitHub documents",
@@ -389,14 +389,6 @@ fn a_comparison_that_does_not_add_up_is_refused() {
         (
             |compare| compare["base_commit"]["sha"] = json!(MAIN),
             "GitHub compared another base",
-        ),
-        (
-            |compare| compare["behind_by"] = json!(1),
-            "a fast-forward comparison is behind its base",
-        ),
-        (
-            |compare| compare["merge_base_commit"]["sha"] = json!(FORK),
-            "a fast-forward comparison's merge base is not its base",
         ),
     ];
     for (edit, expected) in cases {
@@ -413,6 +405,41 @@ fn a_comparison_that_does_not_add_up_is_refused() {
             Some(expected),
             "{expected}"
         );
+    }
+}
+
+#[test]
+fn a_fast_forward_that_does_not_add_up_is_refused() {
+    let comparisons = [
+        ("compare_ahead.json", BASE, MAIN),
+        ("compare_identical.json", MAIN, MAIN),
+    ];
+    let cases: [(Edit, &str); 2] = [
+        (
+            |compare| compare["behind_by"] = json!(1),
+            "a fast-forward comparison is behind its base",
+        ),
+        (
+            |compare| compare["merge_base_commit"]["sha"] = json!(FORK),
+            "a fast-forward comparison's merge base is not its base",
+        ),
+    ];
+    for (name, before, after) in comparisons {
+        for (edit, expected) in cases {
+            let mut compare = fixture_json(name);
+            edit(&mut compare);
+            let recorded =
+                Recorded::default().ok(Method::Get, &compare_path(before, after), json(&compare));
+            let waits = Waits::default();
+
+            let forced = github(&recorded, &waits).forced(&sha(before), &sha(after));
+
+            assert_eq!(
+                malformed(&forced, Operation::CompareCommits),
+                Some(expected),
+                "{name}: {expected}"
+            );
+        }
     }
 }
 
