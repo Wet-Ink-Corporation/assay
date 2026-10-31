@@ -43,13 +43,15 @@ pub enum OutputName {
     CostAeu,
     /// review: `documents`, the review's documents.
     Documents,
-    /// plan: `run_digest`, the sha256 of the `run.json` it wrote.
+    /// plan and admit: `run_digest`, the sha256 of the `run.json` the job wrote (admit's is the
+    /// admitted one).
     RunDigest,
     /// plan: `run_key`, the run's evidence key.
     RunKey,
-    /// plan: `tier`, the run's tier.
+    /// plan and admit: `tier`, the run's tier (admit's is the tier the LLM stage runs at).
     Tier,
-    /// plan: `review`, `true` when the run gets an LLM review.
+    /// plan and admit: `review`, `true` when the run gets an LLM review (admit's: when the
+    /// review job runs).
     Review,
     /// plan: `merge_base`, git's merge base of the pinned base and head (D4 A).
     MergeBase,
@@ -67,6 +69,20 @@ pub enum OutputName {
     ArtifactReview,
     /// plan: `artifact_decide`.
     ArtifactDecide,
+    /// admit: `admission`, what the admission decided.
+    Admission,
+    /// admit: `deferral`, why the LLM stage was deferred; written for a deferral only.
+    Deferral,
+    /// admit: `slot`, the index of the review slot held; written only when one is held.
+    Slot,
+    /// admit: `lease_commit`, the commit the slot's ref points at; written with `slot`.
+    LeaseCommit,
+    /// admit: `reserved_aeu`, what the admission reserved.
+    ReservedAeu,
+    /// admit: `degrade`, whether and from which tier the admission degraded.
+    Degrade,
+    /// admit: `pack_digest`, the sha256 of the admitted `context-pack.json`.
+    PackDigest,
 }
 
 impl OutputName {
@@ -90,6 +106,21 @@ impl OutputName {
 
     /// The outputs `review` writes.
     pub const REVIEW: [Self; 3] = [Self::Stage, Self::CostAeu, Self::Documents];
+
+    /// The outputs `admit` writes (#60 ST-11 writes them; `release` reads `slot` and
+    /// `lease_commit`).
+    pub const ADMIT: [Self; 10] = [
+        Self::Admission,
+        Self::Deferral,
+        Self::Slot,
+        Self::LeaseCommit,
+        Self::ReservedAeu,
+        Self::Tier,
+        Self::Degrade,
+        Self::RunDigest,
+        Self::PackDigest,
+        Self::Review,
+    ];
 
     /// The outputs `plan` writes: the run's facts, then each job's artifact name in
     /// [`ArtifactJob::ALL`]'s order. `draft` is guard's name too.
@@ -154,6 +185,13 @@ impl OutputName {
             Self::ArtifactAdmit => "artifact_admit",
             Self::ArtifactReview => "artifact_review",
             Self::ArtifactDecide => "artifact_decide",
+            Self::Admission => "admission",
+            Self::Deferral => "deferral",
+            Self::Slot => "slot",
+            Self::LeaseCommit => "lease_commit",
+            Self::ReservedAeu => "reserved_aeu",
+            Self::Degrade => "degrade",
+            Self::PackDigest => "pack_digest",
         }
     }
 }
@@ -314,6 +352,27 @@ mod tests {
         let names = OutputName::REVIEW.map(OutputName::as_str);
 
         assert_eq!(names, ["stage", "cost_aeu", "documents"]);
+    }
+
+    #[test]
+    fn admit_writes_the_names_the_workflow_reads() {
+        let names = OutputName::ADMIT.map(OutputName::as_str);
+
+        assert_eq!(
+            names,
+            [
+                "admission",
+                "deferral",
+                "slot",
+                "lease_commit",
+                "reserved_aeu",
+                "tier",
+                "degrade",
+                "run_digest",
+                "pack_digest",
+                "review",
+            ]
+        );
     }
 
     #[test]

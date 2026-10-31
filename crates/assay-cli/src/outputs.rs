@@ -3,29 +3,22 @@
 //! The job that writes them encodes them and the jobs that read them decode them from
 //! `ASSAY_NEEDS`, one pair per job, so producer and consumer cannot drift.
 
+mod admit;
 mod gates;
 mod plan;
+mod review;
 
 use std::num::NonZeroU64;
 
 use assay_app::{CommitId, UserId};
 
+pub use self::admit::HeldSlot;
 pub use self::gates::{GatesOutputError, gates_from_needs, gates_output};
 pub use self::plan::PlanOutputs;
+pub use self::review::{REVIEW_PLACEHOLDER, ReviewEnd, ReviewReport};
 use crate::ci::{
     JobName, JobResult, Needs, NeedsError, OutputName, Upstream, canonical_positive, shown,
 };
-
-/// The review job's outputs while it is a placeholder (#60 ST-9, D11 A).
-///
-/// In [`OutputName::REVIEW`]'s order: the review did not run (`stage=not-run`, so `decide`
-/// applies the LLM-unavailable policy), spent nothing and reported no document. The real
-/// review (M2) replaces it.
-pub const REVIEW_PLACEHOLDER: [(OutputName, &str); 3] = [
-    (OutputName::Stage, "not-run"),
-    (OutputName::CostAeu, "0"),
-    (OutputName::Documents, "[]"),
-];
 
 /// The run identity `guard` resolves from the event (I2): every later job reads it from
 /// `guard`'s outputs, never from the event payload.
@@ -193,6 +186,26 @@ impl<'n> Read<'n> {
                 result: upstream.result(),
             });
         }
+        Self::own(job, upstream, names)
+    }
+
+    /// The outputs of `job` in `needs`, whatever it ended with, which must be only `names`.
+    ///
+    /// # Errors
+    ///
+    /// [`NeedsError::MissingJob`] without `job`; [`NeedsError::UnexpectedOutput`] for an
+    /// output not in `names`.
+    fn any_result(
+        needs: &'n Needs,
+        job: JobName,
+        names: &[OutputName],
+    ) -> Result<Self, NeedsError> {
+        let upstream = needs.job(job).ok_or(NeedsError::MissingJob { job })?;
+        Self::own(job, upstream, names)
+    }
+
+    /// `upstream`'s outputs as `job`'s, refusing the first that is not in `names`.
+    fn own(job: JobName, upstream: &'n Upstream, names: &[OutputName]) -> Result<Self, NeedsError> {
         if let Some((name, _)) = upstream
             .outputs()
             .find(|&(name, _)| !names.iter().any(|own| own.as_str() == name))

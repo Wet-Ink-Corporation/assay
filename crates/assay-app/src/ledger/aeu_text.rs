@@ -11,7 +11,18 @@ const FRACTION_DIGITS: usize = 6;
 
 /// `text` as an amount when it is exactly how [`Aeu`] displays one: whole dollars without a
 /// leading zero (but `0`), then optionally `.` and one to six digits without a trailing zero.
-pub(super) fn parse_aeu(text: &str) -> Option<Aeu> {
+///
+/// Job outputs carrying an amount use the same form (03 §4a).
+///
+/// ```
+/// use assay_app::parse_aeu;
+/// use assay_domain::Aeu;
+///
+/// assert_eq!(parse_aeu("0.74"), Some(Aeu::from_micros(740_000)));
+/// assert_eq!(parse_aeu("0.740"), None);
+/// ```
+#[must_use]
+pub fn parse_aeu(text: &str) -> Option<Aeu> {
     let (whole, fraction) = match text.split_once('.') {
         Some((whole, fraction)) => (whole, Some(fraction)),
         None => (text, None),

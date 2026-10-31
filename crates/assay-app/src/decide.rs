@@ -40,7 +40,7 @@ use self::recompute::AuthenticPlan;
 pub use self::refusal::{Moved, OutputsProblem, PlanMismatch, PlanRefusal, Refusal, Unreadable};
 pub use self::request::{
     AdmitJob, AdmitOutcome, ArtifactDocument, DecideRequest, GateJobOutputs, JobResult, PlanJob,
-    Reported, ReportedGate, ReviewJob, ReviewStage, TierDegrade, UpstreamJob,
+    Reported, ReportedGate, ReviewJob, ReviewStage, TierDegrade, UnknownReviewStage, UpstreamJob,
 };
 use crate::config::{Adapter, AssaySettings, CommitId, PluginsConfig, Sha256Digest};
 use crate::contract::ContractValidator;

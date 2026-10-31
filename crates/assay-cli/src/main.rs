@@ -27,6 +27,8 @@
 //! plan's outputs (03 §4a) to `GITHUB_OUTPUT`.
 //! `assay review --placeholder` (#60 ST-9, D11 A) writes the review job's placeholder outputs
 //! (`stage=not-run`, `cost_aeu=0`, `documents=[]`) to `GITHUB_OUTPUT`.
+//! `assay release --config <plugins-toml>` (#60 ST-10) releases the review slot `admit` holds
+//! by compare-and-set and writes the run's `final` cost record; with no slot it exits 0 at once.
 //! `assay reconcile [--ledger]` (#73) refuses any run attempt but the first (R3-05), then stops
 //! with exit 2 until the live GitHub transport (#273) exists. With no arguments it exits
 //! successfully without doing anything.
@@ -39,6 +41,7 @@ mod guard_job;
 mod open_job;
 mod plan_job;
 mod reconcile;
+mod release;
 mod review;
 mod self_gate;
 mod status_local;
@@ -97,6 +100,9 @@ fn main() -> ExitCode {
     if command == "plan" {
         return run_plan(args);
     }
+    if command == "release" {
+        return run_release(args);
+    }
     if command == "review" {
         return run_review(args);
     }
@@ -108,15 +114,20 @@ fn main() -> ExitCode {
         };
     }
     if command == "reconcile" {
-        return match reconcile::prepare(args, env::var_os(reconcile::RUN_ATTEMPT)) {
-            Ok(sweep) => report(&reconcile::ReconcileRefused::NotBuilt(sweep)),
-            Err(refused) => report(&refused),
-        };
+        return run_reconcile(args);
     }
     if command != "self-gate" {
         return report(&self_gate::SelfGateError::Usage);
     }
     run_self_gate(args)
+}
+
+/// `assay reconcile`: refused until the sweep is built, after its arguments are checked.
+fn run_reconcile(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    match reconcile::prepare(args, env::var_os(reconcile::RUN_ATTEMPT)) {
+        Ok(sweep) => report(&reconcile::ReconcileRefused::NotBuilt(sweep)),
+        Err(refused) => report(&refused),
+    }
 }
 
 /// `assay self-gate`: exit 0 lets the document's conclusion speak and exit 1 fails the gate
@@ -227,6 +238,36 @@ fn run_plan(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     };
     let ended = plan_job::run(args, variables);
     let mut code = match ended.planned {
+        Ok(line) => match writeln!(io::stdout().lock(), "{line}") {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => report(&error),
+        },
+        Err(error) => report(&error),
+    };
+    for left in &ended.left {
+        code = report(left);
+    }
+    code
+}
+
+/// `assay release` (#60 ST-10): exit 0 once the run is settled (or admit held no slot) and its
+/// line printed, 2 when it cannot run or settle, or a scratch directory is left behind.
+fn run_release(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = release::ReleaseVariables {
+        run: RunVariables {
+            run_id: env::var_os("GITHUB_RUN_ID"),
+            run_attempt: env::var_os("GITHUB_RUN_ATTEMPT"),
+            repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
+            repository: env::var_os("GITHUB_REPOSITORY"),
+        },
+        needs: env::var_os(release::NEEDS),
+        ledger_token: env::var_os(release::LEDGER_TOKEN),
+        path: env::var_os("PATH"),
+        gh: GhEnvironment::from_process_env(),
+        now: SystemTime::now(),
+    };
+    let ended = release::run(args, variables);
+    let mut code = match ended.released {
         Ok(line) => match writeln!(io::stdout().lock(), "{line}") {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => report(&error),
