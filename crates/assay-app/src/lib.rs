@@ -93,12 +93,13 @@ pub use coordinate::{
     Ranked, coordinate, merge_mechanically,
 };
 pub use decide::{
-    AdmitJob, ArtifactDocument, AuthenticatedRun, Authentication, CurrentPullRequest, DecideError,
-    DecideFailure, DecidePorts, DecideRequest, Fetched, GateJobOutputs, JobResult,
-    MAX_EVIDENCE_BYTES, MAX_EVIDENCE_FILES, MAX_FETCHED_BYTES, MAX_REVIEW_DOCUMENTS,
-    MAX_SYMBOL_BYTES, Moved, OutputsProblem, PlanJob, PlanMismatch, PlanRefusal, PullOnHead,
-    PullRequestState, Refusal, Reported, ReportedGate, ReviewJob, RunArtifacts, Snapshot,
-    StateStep, TierDegrade, Unreadable, UpstreamJob, authenticate,
+    AdmitJob, AdmitOutcome, ArtifactDocument, AuthenticatedRun, Authentication, CurrentPullRequest,
+    DecideError, DecideFailure, DecidePorts, DecideRequest, Fetched, GateJobOutputs, InputsError,
+    InputsRequest, JobResult, MAX_EVIDENCE_BYTES, MAX_EVIDENCE_FILES, MAX_FETCHED_BYTES,
+    MAX_REVIEW_DOCUMENTS, MAX_SYMBOL_BYTES, Moved, OutputsProblem, PlanJob, PlanMismatch,
+    PlanRefusal, PullOnHead, PullRequestState, Refusal, Reported, ReportedGate, ReviewJob,
+    ReviewStage, RunArtifacts, Snapshot, StateStep, TierDegrade, Unreadable, UpstreamJob,
+    authenticate, decision_inputs,
 };
 pub use eligibility::{
     AckedSet, Command, CommandComments, CommandRejected, CommentAction, CommentEvent, CommitRange,

@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use assay_domain::{Decision, EventPayload, Fingerprint, GateReport, ReasonCode, Waiver};
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 use super::commands::{CommandStatus, SnapshotCommand};
@@ -94,6 +95,15 @@ fn binding_digest(bytes: &[u8]) -> Option<Sha256Digest> {
     }
     let canonical = serde_json::to_vec(&sorted(document)).ok()?;
     Some(Sha256Digest::of(&canonical))
+}
+
+/// `value`'s canonical JSON: compact, with every object's keys in sorted order.
+///
+/// # Errors
+///
+/// serde's error when `value` cannot be written as JSON (a map whose keys are not strings).
+pub(crate) fn canonical_json<T: Serialize>(value: &T) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&sorted(serde_json::to_value(value)?))
 }
 
 /// `value` with every object's keys in sorted order, whatever order the map type keeps.
