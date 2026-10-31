@@ -63,32 +63,28 @@ fn script() -> PathBuf {
 
 /// A per-test directory: `bin/` with the fakes, `ws/` (the workspace), `cargo-home/`.
 struct Sandbox {
-    root: PathBuf,
-    /// Owns `root`, unique to this sandbox, so concurrent runs never share it (#166, #223);
+    /// The sandbox's root, unique to it, so concurrent runs never share it (#166, #223);
     /// removed on drop.
-    _dir: TempDir,
+    dir: TempDir,
 }
 
 impl Sandbox {
     fn new(test: &str) -> io::Result<Self> {
-        let scratch = tempfile::Builder::new()
+        let dir = tempfile::Builder::new()
             .prefix(&format!("warm-target-{test}-"))
             .tempdir_in(env!("CARGO_TARGET_TMPDIR"))?;
-        let root = scratch.path().to_path_buf();
-        for dir in ["bin", "ws", "cargo-home"] {
-            fs::create_dir_all(root.join(dir))?;
+        let root = dir.path();
+        for sub in ["bin", "ws", "cargo-home"] {
+            fs::create_dir_all(root.join(sub))?;
         }
         for (name, text) in [("zstd", FAKE_ZSTD), ("cargo", FAKE_CARGO)] {
             write_executable(&root.join("bin").join(name), text)?;
         }
-        Ok(Self {
-            root,
-            _dir: scratch,
-        })
+        Ok(Self { dir })
     }
 
     fn path(&self, name: &str) -> PathBuf {
-        self.root.join(name)
+        self.dir.path().join(name)
     }
 
     fn write(&self, name: &str, text: &str) -> io::Result<()> {
