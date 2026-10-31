@@ -232,6 +232,11 @@ impl FakeWorld {
 
     /// The deadlines carried by the calls made while the lock was held, and by those made
     /// while it was not, each in order.
+    ///
+    /// Every `Acquire` counts as taking the lock, even one that found it busy (`Ok(None)`) or
+    /// failed: the log does not record the outcome. That is sound only for runs that took the
+    /// lock, as the tests reading this do; after a busy or failed `Acquire` the publisher makes
+    /// no further call, so nothing would be misfiled there either.
     pub(crate) fn bounds_held_and_not(&self) -> (Vec<Bound>, Vec<Bound>) {
         let calls = self.calls.borrow();
         let bounds = self.bounds.borrow();

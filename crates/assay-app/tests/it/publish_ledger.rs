@@ -269,6 +269,23 @@ fn evidence_at_or_past_the_lease_s_deadline_is_refused_unwritten() {
     }
 }
 
+// The comparison is strict: a lease still live by one millisecond records the evidence.
+#[test]
+fn evidence_one_millisecond_before_the_deadline_is_recorded() -> Result<(), Box<dyn Error>> {
+    let (ledger, refs, clock) = (
+        MemoryLedger::default(),
+        MemoryRefs::default(),
+        FakeClock::reading(&[NOW]),
+    );
+    let recorded = entry(7, 'e', 'a');
+
+    publisher(&ledger, &refs, &clock)
+        .record_evidence(&hold("2026-10-12T09:30:00.001Z"), &recorded)?;
+
+    assert_eq!(state(&ledger)?.evidence, Some(recorded.pointer));
+    Ok(())
+}
+
 #[test]
 fn an_unreadable_clock_records_no_evidence() {
     let (ledger, refs, clock) = (

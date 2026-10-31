@@ -128,3 +128,63 @@ fn a_summary_post_whose_retry_would_pass_the_deadline_is_neither_probed_nor_post
         "one POST, no probe, never repeated"
     );
 }
+
+/// A deadline that admits the first POST at 0 s, the 1 s wait and the probe at 1 s, but not
+/// the probe's own 1 s retry wait (1 s + 1 s + the 30 s timeout is past 31.5 s).
+fn probe_deadline() -> Deadline {
+    deadline_after(SEND_TIMEOUT + Duration::from_millis(1_500))
+}
+
+#[test]
+fn the_probe_before_a_summary_post_retry_is_bounded_by_the_same_deadline() {
+    let recorded = Recorded::default()
+        .then(
+            Method::Post,
+            &path("issues/268/comments"),
+            reply(502, &[], Vec::new()),
+        )
+        .then(
+            Method::Get,
+            &path("issues/268/comments?per_page=100"),
+            reply(502, &[], Vec::new()),
+        );
+    let waits = Waits::default();
+
+    let created = github(&recorded, &waits).create_summary(pr(), SUMMARY_MARKER, probe_deadline());
+
+    let error = created.expect_err("the probe's retry would pass the deadline");
+    assert!(past(&error, Operation::ListComments), "{error:?}");
+    assert_eq!(waits.taken(), [Duration::from_secs(1)]);
+    assert_eq!(recorded.sent().len(), 2, "the POST, then the probe");
+}
+
+#[test]
+fn the_probe_before_a_review_comment_post_retry_is_bounded_by_the_same_deadline() {
+    let recorded = Recorded::default()
+        .then(
+            Method::Post,
+            &path("pulls/268/comments"),
+            reply(502, &[], Vec::new()),
+        )
+        .then(
+            Method::Get,
+            &path("pulls/268/comments?per_page=100"),
+            reply(502, &[], Vec::new()),
+        );
+    let waits = Waits::default();
+    let comment = InlineComment {
+        commit_id: &head(),
+        path: "src/lib.rs",
+        line: id(3),
+        start_line: None,
+        side: Side::Right,
+        body: "<!-- assay-finding 0000000000000001 -->".to_owned(),
+    };
+
+    let created = github(&recorded, &waits).create_review_comment(pr(), &comment, probe_deadline());
+
+    let error = created.expect_err("the probe's retry would pass the deadline");
+    assert!(past(&error, Operation::ListReviewComments), "{error:?}");
+    assert_eq!(waits.taken(), [Duration::from_secs(1)]);
+    assert_eq!(recorded.sent().len(), 2, "the POST, then the probe");
+}
