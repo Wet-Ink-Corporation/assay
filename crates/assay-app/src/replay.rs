@@ -370,11 +370,9 @@ pub fn replay_decision<S: BundleSource>(
     if bundle.rubric_version != request.rubric.version() {
         return Err(ReplayError::RubricVersion);
     }
-    let decision = decide(request.rubric, &bundle.inputs);
-    let replayed = serde_json::to_value(&decision).map_err(ReplayError::Encode)?;
-    match diff::first_difference(&bundle.decision, &replayed).map_err(ReplayError::Encode)? {
-        Some(diff) => Ok(Replayed::Mismatch(Mismatch::Decision(diff))),
-        None => Ok(Replayed::Match(Box::new(Matched {
+    match recompute(&bundle, request.rubric).map_err(ReplayError::Encode)? {
+        Err(diff) => Ok(Replayed::Mismatch(Mismatch::Decision(diff))),
+        Ok(decision) => Ok(Replayed::Match(Box::new(Matched {
             decision,
             model: ModelReplay::RecordedOnly {
                 review_documents: bundle
@@ -401,17 +399,44 @@ fn fetch<S: BundleSource>(source: &S, run: RunUid) -> Result<Vec<u8>, ReplayErro
     }
 }
 
+/// The decision `bundle`'s inputs give under `rubric`, when it is the one the bundle records in
+/// canonical encoding; otherwise where the two first differ.
+///
+/// # Errors
+///
+/// A decision could not be encoded: a defect in `decide`'s types.
+pub(crate) fn recompute(
+    bundle: &Bundle,
+    rubric: &Rubric,
+) -> Result<Result<Decision, DecisionDiff>, serde_json::Error> {
+    let decision = decide(rubric, &bundle.inputs);
+    let replayed = serde_json::to_value(&decision)?;
+    Ok(match diff::first_difference(&bundle.decision, &replayed)? {
+        Some(diff) => Err(diff),
+        None => Ok(decision),
+    })
+}
+
 /// Parses authenticated bytes as `assay.run-inputs/1`, refusing a repeated key.
 pub(crate) fn read(bytes: &[u8]) -> Result<Bundle, BundleShape> {
-    let value = parse_json_strict(bytes).map_err(|error| {
+    read_value(bytes).and_then(of_value)
+}
+
+/// `value` as `assay.run-inputs/1`.
+pub(crate) fn of_value(value: Value) -> Result<Bundle, BundleShape> {
+    serde_json::from_value(value).map_err(|_not_run_inputs| BundleShape::Shape)
+}
+
+/// Parses authenticated bytes as JSON, refusing a repeated key.
+pub(crate) fn read_value(bytes: &[u8]) -> Result<Value, BundleShape> {
+    parse_json_strict(bytes).map_err(|error| {
         let (line, column) = (error.line(), error.column());
         match error.classify() {
             Category::Eof => BundleShape::Truncated { line, column },
             Category::Syntax | Category::Io => BundleShape::Syntax { line, column },
             Category::Data => BundleShape::Shape,
         }
-    })?;
-    serde_json::from_value(value).map_err(|_not_run_inputs| BundleShape::Shape)
+    })
 }
 
 /// Where the bundle disagrees with the pointer's `run` or with itself, if anywhere.

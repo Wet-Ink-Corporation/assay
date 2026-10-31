@@ -2,14 +2,17 @@
 //! 02 §5): the eligibility lists judged by, what the range and the push records said, every
 //! standing approval and every command record with what this decision made of it.
 
-use serde::Serialize;
+use std::num::NonZeroU64;
 
-use super::approvals::{Approval, ApprovalStatus};
+use serde::{Deserialize, Serialize};
+
+use super::approvals::{Approval, ApprovalStatus, IgnoredApproval};
 use super::commands::{CommandStatus, JudgedCommand};
 use super::rule::{Ineligible, RangeFacts};
 use super::state::GitHubState;
 use super::timestamp::Timestamp;
 use crate::config::{EligibilityLists, Identity};
+use crate::status::UserId;
 
 /// `github`.
 #[derive(Serialize)]
@@ -74,6 +77,67 @@ struct CommandOut<'a> {
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'static str>,
+}
+
+/// `github` as `publish_persisted` reads it back from a bundle `decide` wrote: the head it is
+/// of and the approvals ignored for timing, which the summary lists. The parts it does not read
+/// are left to the bundle's reader.
+#[derive(Deserialize)]
+pub(crate) struct StateRecordIn {
+    head_sha: String,
+    push_clock: Option<String>,
+    approvals: Vec<ApprovalIn>,
+}
+
+/// One standing approval, as [`ApprovalRecord`] writes it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovalIn {
+    review: NonZeroU64,
+    reviewer: NonZeroU64,
+    submitted_at: Option<String>,
+    status: String,
+    /// Allowed beside an `ineligible` status; not read.
+    #[serde(rename = "reason")]
+    _reason: Option<String>,
+}
+
+/// The statuses [`ApprovalRecord`] writes.
+const APPROVAL_STATUSES: [&str; 5] = [
+    "counted",
+    "before-push",
+    "no-push-clock",
+    "unsubmitted",
+    "ineligible",
+];
+
+impl StateRecordIn {
+    /// The head the snapshot was taken of.
+    pub(crate) fn head_sha(&self) -> &str {
+        &self.head_sha
+    }
+
+    /// The approvals ignored because they predate the push clock, in record order, as
+    /// [`GitHubState::ignored_approvals`] gave them; `None` when an approval's status is not one
+    /// assay writes or an ignored one's times do not read (wi-b5affa).
+    pub(crate) fn ignored_approvals(&self) -> Option<Vec<IgnoredApproval>> {
+        let mut ignored = Vec::new();
+        for approval in &self.approvals {
+            if !APPROVAL_STATUSES.contains(&approval.status.as_str()) {
+                return None;
+            }
+            if approval.status != "before-push" {
+                continue;
+            }
+            ignored.push(IgnoredApproval {
+                reviewer: UserId(approval.reviewer),
+                review: approval.review,
+                at: approval.submitted_at.as_deref()?.parse().ok()?,
+                push_at: self.push_clock.as_deref()?.parse().ok()?,
+            });
+        }
+        Some(ignored)
+    }
 }
 
 impl Ineligible {
