@@ -11,11 +11,12 @@ use std::collections::BTreeSet;
 use assay_domain::{
     Authorship, CallFailure, DecisionInputs, Deferral, DegradedReport, GateReport, LlmStage,
     NotRunReason, OwnerApproval, Policy, PullRequest, Readiness, RequiredRole, ReviewedFinding,
-    Severity, StageRole, SupportOutcome, Tier, Tiering, WeighIn,
+    Severity, StageRole, SupportOutcome, Tier, Tiering,
 };
 
 use super::review::{LocalRole, Reviewed, Stage};
-use crate::config::{Adapter, PluginsConfig};
+use crate::config::PluginsConfig;
+use crate::decide::weigh_in;
 use crate::plan::EvidenceKey;
 
 /// What the decision reads besides the gates and the review.
@@ -140,18 +141,5 @@ const fn support(due: bool) -> SupportOutcome {
         }
     } else {
         SupportOutcome::NotNeeded
-    }
-}
-
-/// The Weigh-In gate does not run locally: when base config requires it, there is no evidence.
-fn weigh_in(plugins: &PluginsConfig) -> WeighIn {
-    let required = plugins
-        .plugins()
-        .iter()
-        .any(|plugin| plugin.required() && matches!(plugin.adapter(), Adapter::WeighIn { .. }));
-    if required {
-        WeighIn::NoEvidence
-    } else {
-        WeighIn::NotRequired
     }
 }

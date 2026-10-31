@@ -22,6 +22,8 @@ mod decide;
 mod decide_evidence;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod decide_fakes;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod decide_inputs;
 mod decide_refusals;
 mod doctor;
 mod doctor_profile;

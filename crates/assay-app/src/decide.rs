@@ -14,6 +14,7 @@
 mod evidence;
 mod fetch;
 mod gates;
+mod inputs;
 mod ports;
 mod recompute;
 mod refusal;
@@ -25,6 +26,7 @@ use std::num::NonZeroU64;
 
 use assay_domain::{
     Authorship, Finding, GateReport, OwnerApproval, Policy, PullRequest, Readiness, Tier, Tiering,
+    WeighIn,
 };
 use thiserror::Error;
 
@@ -32,14 +34,15 @@ pub(crate) use self::evidence::{Anchors, Cited, ReadFailure, Texts, read_texts};
 pub use self::evidence::{MAX_EVIDENCE_BYTES, MAX_EVIDENCE_FILES, MAX_SYMBOL_BYTES};
 pub use self::fetch::MAX_FETCHED_BYTES;
 use self::fetch::{Artifact, Fetch, Fetcher};
+pub use self::inputs::{InputsError, InputsRequest, decision_inputs};
 pub use self::ports::{CurrentPullRequest, Fetched, PullOnHead, PullRequestState, RunArtifacts};
 use self::recompute::AuthenticPlan;
 pub use self::refusal::{Moved, OutputsProblem, PlanMismatch, PlanRefusal, Refusal, Unreadable};
 pub use self::request::{
-    AdmitJob, ArtifactDocument, DecideRequest, GateJobOutputs, JobResult, PlanJob, Reported,
-    ReportedGate, ReviewJob, TierDegrade, UpstreamJob,
+    AdmitJob, AdmitOutcome, ArtifactDocument, DecideRequest, GateJobOutputs, JobResult, PlanJob,
+    Reported, ReportedGate, ReviewJob, ReviewStage, TierDegrade, UpstreamJob,
 };
-use crate::config::{AssaySettings, Sha256Digest};
+use crate::config::{Adapter, AssaySettings, CommitId, PluginsConfig, Sha256Digest};
 use crate::contract::ContractValidator;
 use crate::eligibility::{CommitRange, WaiverBindings};
 use crate::plan::{ArtifactJob, EvidenceKey, PlanError, PullRequestEvent, PullRequestObjects};
@@ -66,10 +69,14 @@ pub enum Authentication {
 #[derive(Debug)]
 pub struct AuthenticatedRun {
     run_key: EvidenceKey,
+    /// The head the run was planned for, which GitHub still shows.
+    head: CommitId,
     artifact_names: BTreeMap<ArtifactJob, String>,
     tiering: Tiering,
     tier: Tier,
     policy: Policy,
+    /// What rule 5 reads of the Weigh-In gate, from base config.
+    weigh_in: WeighIn,
     base_ref: String,
     open_prs_on_head: u32,
     gates: Vec<GateReport>,
@@ -487,8 +494,11 @@ fn run<O: PullRequestObjects, S: PullRequestState, A: RunArtifacts>(
     let record = RunRecord::new(request, bundle_artifact, document, reader.kept);
     Ok(Authentication::Authenticated(Box::new(AuthenticatedRun {
         run_key: recomputed.run_key,
+        // The run owns its head; the request keeps its own.
+        head: event.head_sha.clone(),
         artifact_names,
         policy: policy(recomputed.config.plugins.assay()),
+        weigh_in: weigh_in(&recomputed.config.plugins),
         tiering: recomputed.tiering,
         tier,
         // The run owns its base ref; the request keeps its own.
@@ -601,6 +611,21 @@ fn is_document_name(file: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
     })
+}
+
+/// What rule 5 reads of the Weigh-In gate. Its adapter runs non-required only and never
+/// reports a standing (04 §9, #109), so a base config that requires it holds no evidence for the
+/// change; otherwise the rule never fires.
+pub(crate) fn weigh_in(plugins: &PluginsConfig) -> WeighIn {
+    let required = plugins
+        .plugins()
+        .iter()
+        .any(|plugin| plugin.required() && matches!(plugin.adapter(), Adapter::WeighIn { .. }));
+    if required {
+        WeighIn::NoEvidence
+    } else {
+        WeighIn::NotRequired
+    }
 }
 
 /// Base policy as the rubric reads it.

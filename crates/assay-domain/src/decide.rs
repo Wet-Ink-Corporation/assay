@@ -3,6 +3,7 @@
 
 pub(crate) mod digest;
 pub(crate) mod inputs;
+pub(crate) mod key;
 mod roles;
 mod rules;
 mod waive;

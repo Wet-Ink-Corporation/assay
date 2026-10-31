@@ -2,6 +2,7 @@
 //! head, and the facts the rubric reads from it.
 
 use std::collections::BTreeSet;
+use std::num::NonZeroU64;
 
 use assay_domain::{Authorship, Override, OwnerApproval, Readiness, Waiver};
 
@@ -102,6 +103,18 @@ impl GitHubState {
     #[must_use]
     pub const fn lists(&self) -> &EligibilityLists {
         &self.rule.lists
+    }
+
+    /// Each reviewer's standing approval of the head, by reviewer id: the review, the reviewer
+    /// and whether it counts for `owner_approved(head)`. The decision key's approvals.
+    pub(crate) fn approval_facts(&self) -> impl Iterator<Item = (NonZeroU64, UserId, bool)> + '_ {
+        self.approvals.iter().map(|approval| {
+            (
+                approval.review,
+                approval.reviewer,
+                approval.status == ApprovalStatus::Counted,
+            )
+        })
     }
 
     /// The approvals of the head ignored because they predate the push clock, for the
