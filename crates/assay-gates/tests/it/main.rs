@@ -13,6 +13,7 @@ mod temper_exception;
 mod temper_inventory;
 mod temper_lint;
 mod temper_manifest;
+mod temper_steps_only;
 #[cfg(test)]
 mod temper_support;
 mod temper_test;

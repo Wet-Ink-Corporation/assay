@@ -35,6 +35,6 @@ pub use exec::{
 pub use revision::{EntryKind, Revision, RevisionFiles, TreeEntry};
 pub use temper::{
     CompileTimeReach, RatchetBase, RatchetDegradation, TemperAdapter, TemperError, TemperPaths,
-    TemperSettings, TemperSettingsError, compile_time_reach,
+    TemperSettings, TemperSettingsError, TemperStepSettings, TemperTestAdapter, compile_time_reach,
 };
 pub use weigh_in::{WeighInAdapter, WeighInError, WeighInSettingsError};

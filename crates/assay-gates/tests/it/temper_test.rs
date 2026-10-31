@@ -27,7 +27,7 @@ const TEST: GateJob = GateJob::Build(BuildJob::Test);
 const HEX64: &str = "dc7c1d8e3ccab68cfdb828ce40a446c3913f7172f899ffe3f439839cfd917a8b";
 
 /// The spec's temper plugin: `fmt` in gates-lint, then `tests` and `doctests` in gates-test.
-fn config() -> Result<PluginsConfig, Box<dyn Error>> {
+pub(crate) fn config() -> Result<PluginsConfig, Box<dyn Error>> {
     Ok(format!(
         r#"
 [assay]
@@ -63,7 +63,7 @@ timeout_s = 600
 }
 
 #[derive(Debug)]
-struct FakeError(String);
+pub(crate) struct FakeError(String);
 
 impl fmt::Display for FakeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -74,25 +74,25 @@ impl fmt::Display for FakeError {
 impl Error for FakeError {}
 
 /// Plays the declared steps, keyed by their first argument.
-#[derive(Debug, Default)]
-struct FakeSteps {
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FakeSteps {
     /// How each attempt of a step ends, in order; exit 0 once spent.
     script: BTreeMap<String, VecDeque<Termination>>,
     /// A step the supervisor cannot start.
     cannot_start: Option<String>,
-    seen: Vec<SeenSpec>,
+    pub(crate) seen: Vec<SeenSpec>,
 }
 
 impl FakeSteps {
     /// `step`'s attempts end as `attempts`, in order.
-    fn ends(mut self, step: &str, attempts: &[Termination]) -> Self {
+    pub(crate) fn ends(mut self, step: &str, attempts: &[Termination]) -> Self {
         self.script
             .insert(step.to_owned(), attempts.iter().copied().collect());
         self
     }
 
     /// The first argument of each process run, in order.
-    fn ran(&self) -> Vec<&str> {
+    pub(crate) fn ran(&self) -> Vec<&str> {
         self.seen
             .iter()
             .map(|seen| seen.args.first().map_or("", String::as_str))
