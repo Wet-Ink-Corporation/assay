@@ -1,0 +1,13 @@
+{
+  "status": "diverged",
+  "ahead_by": 217,
+  "behind_by": 1,
+  "total_commits": 217,
+  "base_commit": {
+    "sha": "f5362695c702c25ee3384565d8f792de15142426"
+  },
+  "merge_base_commit": {
+    "sha": "7713555ba994e5c9f226ea0c6cc474f9ddb7323f"
+  },
+  "html_url": "https://github.com/Wet-Ink-Corporation/assay/compare/f5362695c702c25ee3384565d8f792de15142426...61f2abc72590701fd7809d0e31981dcfa56bb491"
+}

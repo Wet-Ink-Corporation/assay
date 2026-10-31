@@ -4,7 +4,7 @@
 
 use std::num::NonZeroU64;
 
-use assay_app::{AppId, CommitId, ParseCommitIdError, UserId};
+use assay_app::{AppId, CommitId, LedgerTime, ParseCommitIdError, UserId};
 use serde::Deserialize;
 
 use super::error::{ForgeError, Operation};
@@ -200,6 +200,24 @@ pub(crate) fn user<E>(
 ) -> Result<Option<UserId>, ForgeError<E>> {
     user.map(|user| nonzero(operation, user.id, "a user id is zero").map(UserId))
         .transpose()
+}
+
+/// GitHub's `YYYY-MM-DDTHH:MM:SSZ` as a ledger time; any other form is refused.
+pub(crate) fn github_time<E>(
+    operation: Operation,
+    text: &str,
+) -> Result<LedgerTime, ForgeError<E>> {
+    let refused = || ForgeError::Malformed {
+        operation,
+        detail: "a time is not YYYY-MM-DDTHH:MM:SSZ",
+    };
+    let seconds = text.strip_suffix('Z').ok_or_else(refused)?;
+    if seconds.contains('.') {
+        return Err(refused());
+    }
+    format!("{seconds}.000Z")
+        .parse()
+        .map_err(|_refused| refused())
 }
 
 /// The app's id, or a refusal when GitHub names none.
