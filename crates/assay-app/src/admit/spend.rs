@@ -2,7 +2,10 @@
 //! the acquisition, since the wait may have lasted ten minutes and other runs may have reserved
 //! in it; then the `reserved` record, the retry grant, the `Admitted` event and the run
 //! description. When the read again defers the run its slot is released by compare-and-set and
-//! the run is `budget-deferred`; when any step fails the slot is released the same way.
+//! the run is `budget-deferred`; when it prices the run above what the lease reserves (a `full`
+//! run degraded before the wait that fits at the slot, a grant recorded during the wait), the
+//! slot is released the same way and the run is `slot-busy`, so no rival's read counts less
+//! than the run reserves (#300); when any step fails the slot is released the same way.
 
 use assay_domain::{Aeu, EventPayload, RunUid};
 
@@ -94,7 +97,7 @@ where
             Err(cause) => return Err(unwind(self.refs, hold, cause.into())),
         };
         match gated {
-            Gate::Spend(priced) => {
+            Gate::Spend(priced) if priced.reservation.total <= hold.lease.reserved_aeu => {
                 let admittable = Admittable {
                     priced,
                     pack,
@@ -102,7 +105,12 @@ where
                 };
                 self.spend(hold, admittable)
             }
-            Gate::Defer => self.give_back(hold, spent),
+            // A lease reserving less than the run would lets a rival's read undercount it until
+            // the `reserved` record lands, and a ref cannot be rewritten by compare-and-set:
+            // the slot goes back and the run waits for a requeue, where the gate prices it
+            // before the lease is written (#300).
+            Gate::Spend(_) => self.give_back(hold, Deferred::SlotBusy, spent),
+            Gate::Defer => self.give_back(hold, Deferred::Budget, spent),
         }
     }
 
@@ -124,10 +132,11 @@ where
         Ok((gated, view.spent))
     }
 
-    /// A run the budget defers once it holds `hold`: the slot released, then the deferral.
+    /// A run deferred once it holds `hold`: the slot released, then the deferral.
     fn give_back(
         mut self,
         hold: SlotHold,
+        deferred: Deferred,
         spent: Aeu,
     ) -> Result<Admitted, AdmitFailure<L, R, B, C, S>> {
         match release_slot(self.refs, hold.slot, &hold.lease_commit) {
@@ -146,7 +155,7 @@ where
                 })));
             }
         }
-        self.deferred(Deferred::Budget, spent)
+        self.deferred(deferred, spent)
     }
 
     /// Holding `hold`: the reservation, the grant and the outputs, releasing the slot when any

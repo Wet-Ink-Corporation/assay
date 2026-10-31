@@ -29,7 +29,8 @@ pub enum Admission {
 pub enum Deferred {
     /// The day's cap or the PR's hourly admissions would be passed (`budget-deferred`).
     Budget,
-    /// Every slot stayed held through the wait (`slot-busy`).
+    /// Every slot stayed held through the wait, or the slot taken reserved less than the budget
+    /// read again at it priced the run, and was given back (`slot-busy`).
     SlotBusy,
 }
 
