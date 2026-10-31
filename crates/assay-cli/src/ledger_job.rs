@@ -1,11 +1,13 @@
-//! The wiring `assay`'s ledger jobs share (#339): `open` and `release` now, `admit` next.
+//! The wiring shared by every job that writes the ledger (#339).
 //!
-//! Each reads `[assay].ledger_repo` from base config ([`ledger_repo`]) and the
-//! `assay-ledger-writer` App's installation token ([`LEDGER_TOKEN`], through [`token`]); then
-//! [`LedgerTransport::open`] builds the ledger's `gh` transport and the object-only repository,
-//! in a scratch directory, that ref deletions are pushed from, and [`LedgerTransport::run`]
-//! hands out the ledger's file and ref adapters and takes everything down after. Each refusal
-//! is a [`LedgerSetupError`] that starts with the job's name. A variable's value is never shown.
+//! A ledger job reads `[assay].ledger_repo` from base config ([`ledger_repo`]) and the
+//! `assay-ledger-writer` App's installation token ([`LEDGER_TOKEN`], through [`token`]), after
+//! its first-attempt check (I1) and before any port exists. Then [`LedgerTransport::open`]
+//! builds the ledger's `gh` transport and the object-only repository, in a scratch directory,
+//! that ref deletions are pushed from, and [`LedgerTransport::run`] hands out the ledger's file
+//! and ref adapters and takes everything down after, recording each directory it could not
+//! remove as a [`Left`]. Each refusal is a [`LedgerSetupError`] that starts with the job's
+//! name. A variable's value is never shown.
 
 use std::error::Error;
 use std::ffi::{OsStr, OsString};

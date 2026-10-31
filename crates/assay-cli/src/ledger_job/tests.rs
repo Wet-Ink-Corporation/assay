@@ -70,19 +70,42 @@ fn a_setup_refusal_reads_as_each_job_wrote_it_before() {
 }
 
 #[test]
-fn a_git_or_remote_refusal_names_the_ledger_push_side() {
-    let remote = Cause::Remote(LedgerRemoteError::Remote(
-        "http://example.com/x.git"
-            .parse::<assay_forge::git::HttpsRemote>()
-            .expect_err("not https"),
-    ));
+fn a_chained_refusal_reads_as_each_job_wrote_it_before() {
+    let cases = [
+        (
+            OPEN,
+            Cause::Killer(KillerError::NotExecutable {
+                path: PathBuf::from("/nowhere/kill"),
+            }),
+            "open: /nowhere/kill is not an executable file",
+        ),
+        (
+            RELEASE,
+            Cause::Gh(GhSetupError::ConfigDir(io::Error::other("denied"))),
+            "release: could not create gh's scratch configuration directory: denied",
+        ),
+        (
+            OPEN,
+            Cause::Git(GitError::DirectoryNotEmpty {
+                git_dir: PathBuf::from("/scratch/ledger.git"),
+            }),
+            "open: the ledger's push repository: /scratch/ledger.git is not empty; the object \
+             repository must start fresh",
+        ),
+        (
+            RELEASE,
+            Cause::Remote(LedgerRemoteError::Remote(
+                "http://example.com/x.git"
+                    .parse::<assay_forge::git::HttpsRemote>()
+                    .expect_err("not https"),
+            )),
+            "release: the ledger's push remote: a remote must be an https:// URL with a host",
+        ),
+    ];
 
-    let line = shown(RELEASE, remote);
-
-    assert!(
-        line.starts_with("release: the ledger's push remote: "),
-        "{line}"
-    );
+    for (job, cause, expected) in cases {
+        assert_eq!(shown(job, cause), expected);
+    }
 }
 
 #[test]
@@ -154,7 +177,11 @@ fn the_ledger_repository_is_read_from_base_config() {
 #[test]
 fn a_config_naming_no_ledger_or_not_owner_name_is_refused() {
     for (extra, expected) in [
-        ("", "release: base config sets no [assay].ledger_repo"),
+        (
+            "",
+            "release: base config sets no [assay].ledger_repo: release settles the run in the \
+             ledger",
+        ),
         (
             "ledger_repo = \"assay-ledger\"\n",
             "release: base config's [assay].ledger_repo is not owner/name",
@@ -166,7 +193,7 @@ fn a_config_naming_no_ledger_or_not_owner_name_is_refused() {
             .expect_err("refused")
             .to_string();
 
-        assert!(refused.starts_with(expected), "{extra}: {refused}");
+        assert_eq!(refused, expected, "{extra}");
     }
 }
 

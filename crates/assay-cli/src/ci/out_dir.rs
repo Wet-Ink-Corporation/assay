@@ -1,5 +1,6 @@
 //! A job's `--out`: a directory that does not exist yet, outside every checkout.
 
+use std::env;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -28,7 +29,19 @@ impl OutDir {
     /// written as its resolved path; [`OutDirError::InCheckout`] when an ancestor holds `.git`;
     /// [`OutDirError::Path`] when a path cannot be made absolute, resolved or inspected.
     pub fn new(path: &Path) -> Result<Self, OutDirError> {
-        let given = path::absolute(path).map_err(OutDirError::at(path))?;
+        // Only a relative path reads the working directory; an empty one is left for
+        // `path::absolute` to refuse, as an absolute one is left as it is.
+        let cwd = if path.is_relative() && !path.as_os_str().is_empty() {
+            env::current_dir().map_err(OutDirError::at(path))?
+        } else {
+            PathBuf::new()
+        };
+        Self::resolve(&cwd, path)
+    }
+
+    /// [`new`](Self::new) with `cwd` as the working directory a relative `path` is taken from.
+    fn resolve(cwd: &Path, path: &Path) -> Result<Self, OutDirError> {
+        let given = path::absolute(cwd.join(path)).map_err(OutDirError::at(path))?;
         match fs::symlink_metadata(&given) {
             Ok(_) => return Err(OutDirError::Exists(given)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -262,27 +275,19 @@ mod tests {
 
     #[test]
     fn a_relative_path_is_taken_from_the_working_directory() {
-        // A checkout of its own under the working directory, named relative to it: the nearest
-        // `.git` is the marker, whether or not the working directory is in a checkout. The
-        // working directory is not changed (it is the whole process's).
-        let checkout = tempfile::Builder::new()
-            .prefix(".out-dir-test-")
-            .tempdir_in(".")
-            .expect("a scratch directory in the working directory");
-        fs::create_dir(checkout.path().join(".git")).expect("a .git marker");
-        let name = checkout
-            .path()
-            .file_name()
-            .expect("a named scratch directory");
-        let relative = Path::new(name).join("does-not-exist-plan-out");
+        // `new` resolves a relative path from `env::current_dir()` through `resolve`; here the
+        // working directory is a scratch checkout, so the result holds whether or not the test
+        // itself runs inside one, and the process's working directory is never changed.
+        let (_dir, root) = scratch();
+        let cwd = root.join("checkout");
+        fs::create_dir_all(cwd.join(".git")).expect("a checkout");
 
-        let out = OutDir::new(&relative);
+        let out = OutDir::resolve(&cwd, Path::new("does-not-exist-plan-out"));
 
-        let cwd = fs::canonicalize(".").expect("the working directory resolves");
         assert_matches!(
             out,
-            Err(OutDirError::InCheckout { out, checkout: found })
-                if out == cwd.join(&relative) && found == cwd.join(name)
+            Err(OutDirError::InCheckout { out, checkout })
+                if out == cwd.join("does-not-exist-plan-out") && checkout == cwd
         );
     }
 }
