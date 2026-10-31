@@ -67,7 +67,8 @@ impl ReviewEnd {
             JobResult::Cancelled => return Ok(Self::Cancelled),
             JobResult::Skipped => return Ok(Self::Skipped),
         }
-        let read = Read::succeeded(needs, REVIEW, &OutputName::REVIEW)?;
+        // The entry is found and succeeded: only its outputs are left to read.
+        let read = Read::own(REVIEW, review, &OutputName::REVIEW)?;
         let stage = read.parsed(OutputName::Stage, |text| text.parse().ok())?;
         let cost = read.parsed(OutputName::CostAeu, parse_aeu)?;
         read.parsed(OutputName::Documents, |text| {

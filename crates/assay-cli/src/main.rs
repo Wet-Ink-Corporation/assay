@@ -38,6 +38,7 @@ mod check;
 mod doctor;
 mod gate;
 mod guard_job;
+mod ledger_job;
 mod open_job;
 mod plan_job;
 mod reconcile;
@@ -154,16 +155,26 @@ fn run_open(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
             repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
             repository: env::var_os("GITHUB_REPOSITORY"),
         },
-        needs: env::var_os(open_job::NEEDS),
+        needs: env::var_os(ledger_job::NEEDS),
         token: env::var_os(status_pr::TOKEN),
-        ledger_token: env::var_os(open_job::LEDGER_TOKEN),
+        ledger_token: env::var_os(ledger_job::LEDGER_TOKEN),
         app_id: env::var_os(status_pr::APP_ID),
         bot_id: env::var_os(status_pr::BOT_ID),
         path: env::var_os("PATH"),
         gh: GhEnvironment::from_process_env(),
     };
     let ended = open_job::run(args, variables);
-    let mut code = match ended.opened {
+    print_ended(ended.line, &ended.left)
+}
+
+/// Prints a job's `line` on stdout, or reports why there is none, then reports each directory
+/// it `left` behind: exit 0 only when the line is printed and nothing is left behind, 2
+/// otherwise (what the job wrote before stands).
+fn print_ended(
+    line: Result<String, impl std::fmt::Display>,
+    left: &[impl std::fmt::Display],
+) -> ExitCode {
+    let mut code = match line {
         Ok(line) => {
             let mut out = io::stdout().lock();
             match writeln!(out, "{line}").and_then(|()| out.flush()) {
@@ -173,7 +184,7 @@ fn run_open(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         }
         Err(error) => report(&error),
     };
-    for left in &ended.left {
+    for left in left {
         code = report(left);
     }
     code
@@ -220,8 +231,9 @@ fn run_review(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
 }
 
 /// `assay plan --out <dir>` (#60 ST-5): exit 0 once `<dir>/run.json` and plan's outputs are
-/// written and its line printed; 2 when it refuses or cannot write, or a scratch directory is
-/// left behind.
+/// written and its line printed; 2 when it refuses or cannot write, with no output written.
+/// A scratch directory left behind is also exit 2, even after a plan whose `run.json`, outputs
+/// and line are already written, which then stand.
 fn run_plan(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let variables = plan_job::PlanVariables {
         run: RunVariables {
@@ -237,17 +249,7 @@ fn run_plan(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         gh: GhEnvironment::from_process_env(),
     };
     let ended = plan_job::run(args, variables);
-    let mut code = match ended.planned {
-        Ok(line) => match writeln!(io::stdout().lock(), "{line}") {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => report(&error),
-        },
-        Err(error) => report(&error),
-    };
-    for left in &ended.left {
-        code = report(left);
-    }
-    code
+    print_ended(ended.planned, &ended.left)
 }
 
 /// `assay release` (#60 ST-10): exit 0 once the run is settled (or admit held no slot) and its
@@ -260,24 +262,14 @@ fn run_release(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
             repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
             repository: env::var_os("GITHUB_REPOSITORY"),
         },
-        needs: env::var_os(release::NEEDS),
-        ledger_token: env::var_os(release::LEDGER_TOKEN),
+        needs: env::var_os(ledger_job::NEEDS),
+        ledger_token: env::var_os(ledger_job::LEDGER_TOKEN),
         path: env::var_os("PATH"),
         gh: GhEnvironment::from_process_env(),
         now: SystemTime::now(),
     };
     let ended = release::run(args, variables);
-    let mut code = match ended.released {
-        Ok(line) => match writeln!(io::stdout().lock(), "{line}") {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => report(&error),
-        },
-        Err(error) => report(&error),
-    };
-    for left in &ended.left {
-        code = report(left);
-    }
-    code
+    print_ended(ended.line, &ended.left)
 }
 
 /// `assay gate <job>`: exit 0 once every gate's line is printed, its document written and the
