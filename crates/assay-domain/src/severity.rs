@@ -70,6 +70,18 @@ pub enum Provenance {
     PreExisting,
 }
 
+impl Provenance {
+    /// The provenance a finding's `pre_existing` flag names: `true` is [`Self::PreExisting`].
+    #[must_use]
+    pub const fn from_pre_existing(pre_existing: bool) -> Self {
+        if pre_existing {
+            Self::PreExisting
+        } else {
+            Self::Introduced
+        }
+    }
+}
+
 impl Marker {
     /// The marker for a finding of `severity` and `provenance`: a pre-existing finding is 🟣
     /// whatever its severity.
@@ -120,6 +132,13 @@ mod tests {
                 Severity::Blocker
             ]
         );
+    }
+
+    #[test]
+    fn the_pre_existing_flag_names_its_provenance() {
+        let named = [false, true].map(Provenance::from_pre_existing);
+
+        assert_eq!(named, [Provenance::Introduced, Provenance::PreExisting]);
     }
 
     #[test]
