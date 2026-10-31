@@ -35,6 +35,12 @@ pub enum OutputName {
     /// gates-static, gates-lint, gates-test: `gates`, what the job reported for each plugin it
     /// ran, as compact JSON.
     Gates,
+    /// review: `stage`, how far the review got; the placeholder writes `not-run` (D11 A).
+    Stage,
+    /// review: `cost_aeu`, what the review spent.
+    CostAeu,
+    /// review: `documents`, the review's documents.
+    Documents,
 }
 
 impl OutputName {
@@ -56,6 +62,9 @@ impl OutputName {
     /// The outputs each gates job writes.
     pub const GATES: [Self; 1] = [Self::Gates];
 
+    /// The outputs `review` writes.
+    pub const REVIEW: [Self; 3] = [Self::Stage, Self::CostAeu, Self::Documents];
+
     /// The name as the workflow reads it, `needs.<job>.outputs.<name>`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -72,6 +81,9 @@ impl OutputName {
             Self::Before => "before",
             Self::DefaultBranch => "default_branch",
             Self::Gates => "gates",
+            Self::Stage => "stage",
+            Self::CostAeu => "cost_aeu",
+            Self::Documents => "documents",
         }
     }
 }
@@ -225,6 +237,13 @@ mod tests {
             Err(OutputError::Write { name: OutputName::Pr, source })
                 if source.kind() == io::ErrorKind::StorageFull
         );
+    }
+
+    #[test]
+    fn review_writes_stage_cost_and_documents() {
+        let names = OutputName::REVIEW.map(OutputName::as_str);
+
+        assert_eq!(names, ["stage", "cost_aeu", "documents"]);
     }
 
     #[test]
