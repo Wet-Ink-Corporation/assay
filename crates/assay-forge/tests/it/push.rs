@@ -6,8 +6,8 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use assay_forge::git::{
-    BranchRef, CommitSha, DeleteOutcome, GitEnvironment, GitLimits, ObjectRepo, ParseRefError,
-    ParseRemoteError, PushRemote,
+    BranchRef, CommitSha, DeleteOutcome, GitEnvironment, GitLimits, HttpsRemote, LocalRemoteError,
+    ObjectRepo, ParseRefError, ParseRemoteError, PushRemote,
 };
 use tempfile::TempDir;
 
@@ -169,6 +169,23 @@ fn branch_refs_are_only_plain_heads() {
 fn a_local_remote_must_be_an_absolute_path() {
     assert_eq!(
         PushRemote::local_bare(Path::new("ledger.git")).map(drop),
-        Err(ParseRemoteError::NotAbsolute)
+        Err(LocalRemoteError::NotAbsolute)
+    );
+}
+
+#[test]
+fn a_local_remote_with_a_control_character_is_refused() {
+    assert_eq!(
+        PushRemote::local_bare(Path::new("/srv/ledger\n.git")).map(drop),
+        Err(LocalRemoteError::ForbiddenCharacter)
+    );
+}
+
+#[test]
+fn an_https_remote_is_refused_only_as_not_https_or_for_its_characters() {
+    // #288 F9: a relative path is not an https URL, never `NotAbsolute`.
+    assert_eq!(
+        "ledger.git".parse::<HttpsRemote>().map(drop),
+        Err(ParseRemoteError::NotHttps)
     );
 }

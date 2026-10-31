@@ -14,7 +14,8 @@ use assay_forge::github::{ForgeError, Method, Operation};
 use serde_json::json;
 
 use super::recorded::{
-    Recorded, Unscripted, Waits, first_write, fixture, fixture_json, github, id, json, path, reply,
+    Recorded, Unscripted, Waits, first_write, fixture, fixture_json, github, id, json, locked,
+    path, reply,
 };
 
 /// PR 270's head while its run was live.
@@ -298,7 +299,7 @@ fn a_superseded_check_is_written_cancelled_by_compare_and_set() {
         &github(&recorded, &waits),
         CheckRunId(id(117_798_470_001)),
         "pending:39168909542:3",
-        &update,
+        locked(&update),
     );
 
     assert!(written.is_ok(), "{written:?}");

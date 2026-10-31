@@ -16,9 +16,9 @@ use std::collections::VecDeque;
 use std::fs;
 use std::num::NonZeroU64;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use assay_app::{AppId, CommitId, UserId};
+use assay_app::{AppId, CheckUpdate, CommitId, Deadline, LedgerTime, LockedWrite, UserId};
 use assay_forge::github::{Api, AppIdentity, GitHub, Method, Request, Response, Sleep, Transport};
 
 /// The repository the recordings are of.
@@ -124,9 +124,19 @@ impl Transport for Recorded {
             }),
         }
     }
+
+    fn timeout(&self) -> Duration {
+        SEND_TIMEOUT
+    }
 }
 
-/// Waits asked for, never taken.
+/// The timeout [`Recorded`] reports for each request, as `gh api`'s default.
+pub(crate) const SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The instant the [`Waits`] clock starts at: 2026-10-19T04:00:00Z.
+const START_UNIX_SECONDS: u64 = 1_792_382_400;
+
+/// Waits asked for, never taken; its clock reads [`START_UNIX_SECONDS`] plus the waits so far.
 #[derive(Default)]
 pub(crate) struct Waits(RefCell<Vec<Duration>>);
 
@@ -140,6 +150,27 @@ impl Waits {
 impl Sleep for Waits {
     fn sleep(&self, duration: Duration) {
         self.0.borrow_mut().push(duration);
+    }
+
+    fn now(&self) -> SystemTime {
+        let waited: Duration = self.0.borrow().iter().sum();
+        SystemTime::UNIX_EPOCH + Duration::from_secs(START_UNIX_SECONDS) + waited
+    }
+}
+
+/// The deadline `after` the [`Waits`] clock's start.
+pub(crate) fn deadline_after(after: Duration) -> Deadline {
+    let start = Duration::from_secs(START_UNIX_SECONDS) + after;
+    let millis = u64::try_from(start.as_millis()).expect("a test deadline fits");
+    Deadline::at(LedgerTime::from_unix_millis(millis).expect("a test deadline is in range"))
+}
+
+/// `update` as a write under the publish lock whose deadline no test reaches: an hour after
+/// the [`Waits`] clock's start.
+pub(crate) fn locked(update: &CheckUpdate) -> LockedWrite<'_> {
+    LockedWrite {
+        update,
+        deadline: deadline_after(Duration::from_secs(3_600)),
     }
 }
 

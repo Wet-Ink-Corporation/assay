@@ -4,8 +4,8 @@ use std::num::NonZeroU64;
 
 use assay_app::{
     CheckFound, CheckName, CheckRun, CheckRunId, CheckUpdate, CommentForge, CommentId, CommitId,
-    CommitIdentity, CompareAndSetError, Forge, InlineComment, Reaction, ReactionSubject, Review,
-    SummaryComment, TimelineEvent, Upserted, VerdictForge,
+    CommitIdentity, CompareAndSetError, Forge, InlineComment, LockedWrite, Reaction,
+    ReactionSubject, Review, SummaryComment, TimelineEvent, Upserted, VerdictForge,
 };
 
 use super::GitHub;
@@ -20,11 +20,12 @@ impl<T: Transport, S: Sleep> VerdictForge for GitHub<T, S> {
         head: &CommitId,
         name: &CheckName,
     ) -> Result<Option<CheckRun>, Self::Error> {
-        self.find_app_check(head, name)
+        // `decide`'s publish holds its own lease (`PublishLedger`), which names no deadline yet.
+        self.find_app_check(head, name, None)
     }
 
     fn update_check(&self, id: CheckRunId, update: &CheckUpdate) -> Result<(), Self::Error> {
-        self.patch_check(id, update)
+        self.patch_check(id, update, None)
     }
 
     fn find_summary(
@@ -74,7 +75,7 @@ impl<T: Transport, S: Sleep> Forge for GitHub<T, S> {
         &self,
         head: &CommitId,
         name: &CheckName,
-        initial: &CheckUpdate,
+        initial: LockedWrite<'_>,
     ) -> Result<CheckFound, Self::Error> {
         self.find_or_create(head, name, initial)
     }
@@ -83,9 +84,9 @@ impl<T: Transport, S: Sleep> Forge for GitHub<T, S> {
         &self,
         id: CheckRunId,
         expected: &str,
-        update: &CheckUpdate,
+        write: LockedWrite<'_>,
     ) -> Result<(), CompareAndSetError<Self::Error>> {
-        self.compare_and_set(id, expected, update)
+        self.compare_and_set(id, expected, write)
     }
 
     fn upsert_comment(

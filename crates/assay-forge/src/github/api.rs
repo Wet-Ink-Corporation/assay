@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use assay_app::Deadline;
 use serde::de::DeserializeOwned;
 
 use super::error::{ForgeError, Operation};
@@ -33,6 +34,9 @@ const API_ORIGIN: &str = "https://api.github.com/";
 pub struct Api<T, S> {
     transport: T,
     sleeper: S,
+    /// What every request and retry wait must end before, on a [`bounded`](Api::bounded) view;
+    /// `None` on the API itself.
+    deadline: Option<Deadline>,
 }
 
 /// Why one attempt did not succeed.
@@ -67,20 +71,64 @@ impl<T, S> Api<T, S> {
     pub fn into_transport(self) -> T {
         self.transport
     }
+
+    /// A view of this API whose requests and retry waits all end before `deadline`, or before
+    /// this API's own deadline when that is earlier (#290). `None` adds no bound.
+    pub(crate) fn bounded(&self, deadline: Option<Deadline>) -> Api<&T, &S> {
+        let deadline = match (self.deadline, deadline) {
+            (Some(own), Some(given)) => Some(own.min(given)),
+            (own, given) => own.or(given),
+        };
+        Api {
+            transport: &self.transport,
+            sleeper: &self.sleeper,
+            deadline,
+        }
+    }
 }
 
 impl<T: Transport, S: Sleep> Api<T, S> {
     /// The API over `transport`, waiting between retries with `sleeper`.
     pub const fn new(transport: T, sleeper: S) -> Self {
-        Self { transport, sleeper }
+        Self {
+            transport,
+            sleeper,
+            deadline: None,
+        }
     }
 
-    /// Sends `request` once and keeps a 2xx response.
+    /// Whether something that starts now and takes `wait` and then one request still ends
+    /// before the deadline, if there is one.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError::PastDeadline`] when it would not: nothing is to be sent or waited for.
+    fn before_deadline(
+        &self,
+        operation: Operation,
+        wait: Duration,
+    ) -> Result<(), ForgeError<T::Error>> {
+        let Some(deadline) = self.deadline else {
+            return Ok(());
+        };
+        let fits = wait
+            .checked_add(self.transport.timeout())
+            .is_some_and(|span| deadline.admits(self.sleeper.now(), span));
+        if fits {
+            Ok(())
+        } else {
+            Err(ForgeError::PastDeadline { operation })
+        }
+    }
+
+    /// Sends `request` once and keeps a 2xx response. Under a deadline, it is sent only when it
+    /// would end (within the transport's timeout) before it.
     pub(crate) fn attempt(
         &self,
         operation: Operation,
         request: &Request<'_>,
     ) -> Result<Response, Failed<T::Error>> {
+        self.before_deadline(operation, Duration::ZERO)?;
         let response = self
             .transport
             .send(request)
@@ -94,7 +142,9 @@ impl<T: Transport, S: Sleep> Api<T, S> {
     /// # Errors
     ///
     /// [`ForgeError::Exhausted`] when every attempt was retryable, or a wait would pass
-    /// [`MAX_WAIT`]; the attempt's own error when it stopped.
+    /// [`MAX_WAIT`]; [`ForgeError::PastDeadline`] when the wait and the request after it would
+    /// not end before the deadline (the wait is not taken); the attempt's own error when it
+    /// stopped.
     pub(crate) fn retrying<V>(
         &self,
         operation: Operation,
@@ -120,6 +170,7 @@ impl<T: Transport, S: Sleep> Api<T, S> {
                 Some(wait) if wait <= MAX_WAIT => wait,
                 _ => return Err(exhausted),
             };
+            self.before_deadline(operation, wait)?;
             self.sleeper.sleep(wait);
             index = attempts;
         }

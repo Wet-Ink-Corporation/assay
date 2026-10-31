@@ -11,8 +11,8 @@ use assay_forge::github::{ForgeError, Method, Operation};
 use serde_json::{Value, json};
 
 use super::recorded::{
-    HEAD, Recorded, Waits, first_write, fixture, fixture_json, github, head, id, json, path, reply,
-    write_bodies,
+    HEAD, Recorded, Waits, first_write, fixture, fixture_json, github, head, id, json, locked,
+    path, reply, write_bodies,
 };
 
 /// The PATCH body of [`decision`].
@@ -208,7 +208,7 @@ fn a_compare_and_set_conflict_writes_nothing() {
     let written = github(&recorded, &waits).update_check_if(
         app_check().id,
         "pending:39168909542:2",
-        &decision(),
+        locked(&decision()),
     );
 
     assert!(
@@ -231,7 +231,7 @@ fn a_compare_and_set_on_another_apps_check_writes_nothing() {
     let written = github(&recorded, &waits).update_check_if(
         foreign,
         "d2defc3b-9472-58da-bec7-4caf3d4b8da8",
-        &decision(),
+        locked(&decision()),
     );
 
     assert!(
@@ -263,7 +263,7 @@ fn a_compare_and_set_with_the_read_stamp_writes() {
     let written = github(&recorded, &waits).update_check_if(
         app_check().id,
         "pending:39168909542:3",
-        &decision(),
+        locked(&decision()),
     );
 
     assert_eq!(written.expect("written"), ());
@@ -292,7 +292,7 @@ fn opens_restamp_of_an_existing_check_never_sends_started_at() {
     let written = github(&recorded, &waits).update_check_if(
         app_check().id,
         "pending:39168909542:3",
-        &pending(),
+        locked(&pending()),
     );
 
     assert_eq!(written.expect("written"), ());
@@ -312,7 +312,8 @@ fn an_empty_expected_stamp_is_refused_unasked() {
     let recorded = Recorded::default();
     let waits = Waits::default();
 
-    let written = github(&recorded, &waits).update_check_if(app_check().id, "", &decision());
+    let written =
+        github(&recorded, &waits).update_check_if(app_check().id, "", locked(&decision()));
 
     assert!(
         matches!(
@@ -350,7 +351,8 @@ fn a_check_create_the_probe_does_not_find_is_posted_again() {
         );
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_or_create_check(&head(), &verdict(), &pending());
+    let found =
+        github(&recorded, &waits).find_or_create_check(&head(), &verdict(), locked(&pending()));
 
     assert_eq!(found.expect("created"), CheckFound::Created(app_check()));
     assert_eq!(
@@ -408,7 +410,8 @@ fn a_check_create_failing_four_times_with_probes_is_a_publish_error() {
     }
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_or_create_check(&head(), &verdict(), &pending());
+    let found =
+        github(&recorded, &waits).find_or_create_check(&head(), &verdict(), locked(&pending()));
 
     assert!(
         matches!(
@@ -462,7 +465,8 @@ fn find_or_create_returns_the_apps_check_without_writing() {
     );
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_or_create_check(&head(), &verdict(), &pending());
+    let found =
+        github(&recorded, &waits).find_or_create_check(&head(), &verdict(), locked(&pending()));
 
     assert_eq!(found.expect("found"), CheckFound::Found(app_check()));
     assert_eq!(recorded.writes(), Vec::new(), "nothing created");
@@ -483,7 +487,8 @@ fn find_or_create_creates_the_apps_check_beside_another_apps() {
         );
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_or_create_check(&head(), &verdict(), &pending());
+    let found =
+        github(&recorded, &waits).find_or_create_check(&head(), &verdict(), locked(&pending()));
 
     assert_eq!(found.expect("created"), CheckFound::Created(app_check()));
     assert_eq!(first_write(&recorded), Some(pending_body()));
@@ -506,7 +511,8 @@ fn a_created_check_another_app_answers_for_is_refused() {
         );
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_or_create_check(&head(), &verdict(), &pending());
+    let found =
+        github(&recorded, &waits).find_or_create_check(&head(), &verdict(), locked(&pending()));
 
     assert!(
         matches!(found, Err(ForgeError::ForeignCheck { .. })),
@@ -534,7 +540,8 @@ fn a_create_that_landed_before_a_5xx_is_not_posted_again() {
         );
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_or_create_check(&head(), &verdict(), &pending());
+    let found =
+        github(&recorded, &waits).find_or_create_check(&head(), &verdict(), locked(&pending()));
 
     assert_eq!(found.expect("created"), CheckFound::Created(app_check()));
     assert_eq!(recorded.writes().len(), 1, "one POST only");

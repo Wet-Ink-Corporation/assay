@@ -4,9 +4,9 @@
 use std::num::NonZeroU64;
 
 use crate::config::CommitId;
-use crate::forge::CompareAndSetError;
+use crate::forge::{CompareAndSetError, LockedWrite};
 use crate::ledger::LedgerTime;
-use crate::publish::{CheckRunId, CheckStatus, CheckUpdate};
+use crate::publish::{CheckRunId, CheckStatus};
 
 /// One consumer repository as its reconcile sees it. Implemented by the forge adapter (#53);
 /// every text it returns is untrusted.
@@ -54,19 +54,22 @@ pub trait ReconcileForge {
     /// [`Self::Error`] when the PR cannot be read.
     fn pull_head(&self, number: NonZeroU64) -> Result<PullHead, Self::Error>;
 
-    /// Overwrites check `id` with `update` only when its `external_id` is still `expected`, as
-    /// [`Forge::update_check_if`](crate::Forge::update_check_if): a compare-and-set only for
-    /// writers that hold the per-head publish lock.
+    /// Overwrites check `id` with `write.update` only when its `external_id` is still
+    /// `expected`, as [`Forge::update_check_if`](crate::Forge::update_check_if): a
+    /// compare-and-set only for writers that hold the per-head publish lock, so nothing is sent,
+    /// and no retry waited for, unless it ends before `write.deadline`, the lock lease's
+    /// `expires_at` (#290).
     ///
     /// # Errors
     ///
     /// [`CompareAndSetError::Conflict`] when the check carries another `external_id`;
-    /// [`CompareAndSetError::Forge`] when it cannot be read or written.
+    /// [`CompareAndSetError::Forge`] when it cannot be read or written, or the next request or
+    /// wait would not end before the deadline.
     fn update_check_if(
         &self,
         id: CheckRunId,
         expected: &str,
-        update: &CheckUpdate,
+        write: LockedWrite<'_>,
     ) -> Result<(), CompareAndSetError<Self::Error>>;
 }
 

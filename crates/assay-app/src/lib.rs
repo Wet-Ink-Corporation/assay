@@ -120,8 +120,9 @@ pub use eval::{
 pub use events::{EventSink, NoEvents};
 pub use finding_text::{clip_chars, plain_name};
 pub use forge::{
-    Actor, CheckFound, CommitIdentity, CompareAndSetError, Forge, Reaction, ReactionContent,
-    ReactionSubject, Review, ReviewCommentId, ReviewState, TimelineEvent, TimelineKind, Upserted,
+    Actor, CheckFound, CommitIdentity, CompareAndSetError, Deadline, Forge, LockedWrite, Reaction,
+    ReactionContent, ReactionSubject, Review, ReviewCommentId, ReviewState, TimelineEvent,
+    TimelineKind, Upserted,
 };
 pub use gate::{
     BuildJob, GateDocument, GateError, GateJob, GateJobOutcome, GateJobReport, GateRun, GateRunner,
