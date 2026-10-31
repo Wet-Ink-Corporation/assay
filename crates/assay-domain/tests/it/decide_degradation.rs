@@ -7,8 +7,8 @@ use std::error::Error;
 
 use assay_domain::{
     CallFailure, Conclusion, Decision, DecisionInputs, Deferral, DegradedReport, DegradedRole,
-    LlmStage, OwnerApproval, PrClass, ReasonCode, RequiredRole, Severity, SupportOutcome, Tier,
-    VerifierVerdict, decide,
+    LlmStage, OwnerApproval, PrClass, ReasonCode, RequiredRole, Severity, StageRole,
+    SupportOutcome, Tier, VerifierVerdict, decide,
 };
 use serde_json::Value;
 
@@ -18,11 +18,8 @@ fn decided(inputs: &DecisionInputs) -> Result<Decision, Box<dyn Error>> {
     Ok(decide(&rubric_v1()?, inputs))
 }
 
-fn reported(role: &str, reason: CallFailure) -> DegradedReport {
-    DegradedReport {
-        role: role.to_owned(),
-        reason,
-    }
+fn reported(role: StageRole, reason: CallFailure) -> DegradedReport {
+    DegradedReport { role, reason }
 }
 
 fn degraded(role: &str, reason: &str) -> DegradedRole {
@@ -74,7 +71,7 @@ fn a_role_completed_on_one_shard_and_degraded_on_another_is_degraded_once()
 -> Result<(), Box<dyn Error>> {
     let mut inputs = clean_inputs();
     inputs.completed_roles = BTreeSet::from([RequiredRole::Combined]);
-    inputs.degraded = vec![reported("combined", CallFailure::Cap)];
+    inputs.degraded = vec![reported(StageRole::Combined, CallFailure::Cap)];
 
     let decision = decided(&inputs)?;
 
@@ -91,7 +88,7 @@ fn a_role_completed_on_one_shard_and_degraded_on_another_is_degraded_once()
 fn a_required_role_reported_degraded_is_not_also_missing() -> Result<(), Box<dyn Error>> {
     let mut inputs = clean_inputs();
     inputs.completed_roles = BTreeSet::new();
-    inputs.degraded = vec![reported("combined", CallFailure::Turns)];
+    inputs.degraded = vec![reported(StageRole::Combined, CallFailure::Turns)];
 
     let decision = decided(&inputs)?;
 
@@ -107,8 +104,8 @@ fn a_support_call_reported_degraded_is_not_also_missing() -> Result<(), Box<dyn 
     inputs.verifier = SupportOutcome::NotNeeded;
     inputs.findings = vec![confirmed("00000000000000b1", Severity::Blocker)];
     inputs.degraded = vec![
-        reported("coordinator", CallFailure::Cap),
-        reported("verifier", CallFailure::Turns),
+        reported(StageRole::Coordinator, CallFailure::Cap),
+        reported(StageRole::Verifier, CallFailure::Turns),
     ];
 
     let decision = decided(&inputs)?;
@@ -250,8 +247,8 @@ fn minor_findings_need_no_verifier() -> Result<(), Box<dyn Error>> {
 fn a_role_degraded_for_two_reasons_is_listed_once_with_both() -> Result<(), Box<dyn Error>> {
     let mut inputs = full_trust_path();
     inputs.degraded = vec![
-        reported("bugs", CallFailure::Timeout),
-        reported("bugs", CallFailure::Cap),
+        reported(StageRole::Bugs, CallFailure::Timeout),
+        reported(StageRole::Bugs, CallFailure::Cap),
     ];
 
     let decision = decided(&inputs)?;
@@ -273,7 +270,7 @@ fn a_support_call_reported_degraded_and_failed_is_listed_once() -> Result<(), Bo
     inputs.verifier = SupportOutcome::Failed {
         reason: CallFailure::Turns,
     };
-    inputs.degraded = vec![reported("verifier", CallFailure::Turns)];
+    inputs.degraded = vec![reported(StageRole::Verifier, CallFailure::Turns)];
 
     let decision = decided(&inputs)?;
 
@@ -345,9 +342,9 @@ fn degraded_roles_are_listed_sorted_and_once() -> Result<(), Box<dyn Error>> {
         reason: CallFailure::Cap,
     };
     inputs.degraded = vec![
-        reported("security", CallFailure::Timeout),
-        reported("bugs", CallFailure::Cap),
-        reported("security", CallFailure::Timeout),
+        reported(StageRole::Security, CallFailure::Timeout),
+        reported(StageRole::Bugs, CallFailure::Cap),
+        reported(StageRole::Security, CallFailure::Timeout),
     ];
 
     let decision = decided(&inputs)?;
@@ -390,21 +387,37 @@ fn the_inputs_digest_changes_with_each_role_run() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-/// `inputs` as JSON with one role reported degraded for `reason`, parsed back.
-fn reported_for(reason: &str) -> Result<serde_json::Result<DecisionInputs>, Box<dyn Error>> {
+/// `inputs` as JSON with `role` reported degraded for `reason`, parsed back.
+fn reported_as(
+    role: &str,
+    reason: &str,
+) -> Result<serde_json::Result<DecisionInputs>, Box<dyn Error>> {
     let mut json = serde_json::to_value(clean_inputs())?;
     *json
         .get_mut("degraded")
         .ok_or("the inputs carry `degraded`")? =
-        serde_json::json!([{ "role": "bugs", "reason": reason }]);
+        serde_json::json!([{ "role": role, "reason": reason }]);
     Ok(serde_json::from_value(json))
+}
+
+/// `inputs` as JSON with one role reported degraded for `reason`, parsed back.
+fn reported_for(reason: &str) -> Result<serde_json::Result<DecisionInputs>, Box<dyn Error>> {
+    reported_as("bugs", reason)
+}
+
+/// Asserts that `parsed` is a data error whose message holds `fragment`.
+fn assert_refused_with(parsed: &serde_json::Result<DecisionInputs>, fragment: &str) {
+    assert!(
+        matches!(parsed, Err(e) if e.is_data() && e.to_string().contains(fragment)),
+        "expected a data error holding {fragment:?}, got {parsed:?}"
+    );
 }
 
 #[test]
 fn a_role_reported_degraded_with_an_empty_reason_is_refused() -> Result<(), Box<dyn Error>> {
     let parsed = reported_for("")?;
 
-    assert!(parsed.is_err(), "an empty reason parsed: {parsed:?}");
+    assert_refused_with(&parsed, "unknown variant ``, expected one of `cap`");
     Ok(())
 }
 
@@ -412,7 +425,41 @@ fn a_role_reported_degraded_with_an_empty_reason_is_refused() -> Result<(), Box<
 fn a_role_reported_degraded_with_an_unknown_reason_is_refused() -> Result<(), Box<dyn Error>> {
     let parsed = reported_for("tired")?;
 
-    assert!(parsed.is_err(), "an unknown reason parsed: {parsed:?}");
+    assert_refused_with(&parsed, "unknown variant `tired`, expected one of `cap`");
+    Ok(())
+}
+
+// #259 F1: the role is typed like the reason, so `decision-1`'s non-empty `degraded[].role`
+// cannot be broken by a report the inputs carried.
+#[test]
+fn a_degraded_report_with_an_empty_role_is_refused() -> Result<(), Box<dyn Error>> {
+    let parsed = reported_as("", "cap")?;
+
+    assert_refused_with(&parsed, "unknown variant ``, expected one of `bugs`");
+    Ok(())
+}
+
+#[test]
+fn a_degraded_report_with_a_role_outside_the_stage_is_refused() -> Result<(), Box<dyn Error>> {
+    let parsed = reported_as("auditor", "cap")?;
+
+    assert_refused_with(&parsed, "unknown variant `auditor`, expected one of `bugs`");
+    Ok(())
+}
+
+#[test]
+fn a_degraded_report_reads_every_stage_role_as_its_code() -> Result<(), Box<dyn Error>> {
+    for role in StageRole::ALL {
+        let parsed = reported_as(role.code(), "cap")?.map(|inputs| {
+            inputs
+                .degraded
+                .into_iter()
+                .map(|d| d.role)
+                .collect::<Vec<_>>()
+        });
+
+        assert_eq!(parsed.ok(), Some(vec![role]), "{}", role.code());
+    }
     Ok(())
 }
 

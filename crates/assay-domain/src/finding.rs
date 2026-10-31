@@ -159,12 +159,10 @@ impl Finding {
     /// `pre_existing` flag.
     #[must_use]
     pub const fn marker(&self) -> Marker {
-        let provenance = if self.pre_existing {
-            Provenance::PreExisting
-        } else {
-            Provenance::Introduced
-        };
-        Marker::of(self.severity, provenance)
+        Marker::of(
+            self.severity,
+            Provenance::from_pre_existing(self.pre_existing),
+        )
     }
 
     /// Where this finding sits for its fingerprint and the dismissal match: its class and

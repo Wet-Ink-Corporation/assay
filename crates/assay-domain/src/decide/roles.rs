@@ -3,11 +3,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::decide::inputs::{DecisionInputs, LlmStage, SupportOutcome};
+use crate::decide::inputs::{DecisionInputs, LlmStage, StageRole, SupportOutcome};
 use crate::decision::DegradedRole;
 use crate::severity::Severity;
 use crate::tier::Tier;
-use crate::tiering::{RequiredRole, required_roles};
+use crate::tiering::required_roles;
 
 /// The reason a role is listed with when it was due but never reported.
 const MISSING: &str = "missing";
@@ -22,16 +22,17 @@ const REASON_SEPARATOR: &str = ", ";
 /// A role degraded for several reasons (two shards, or a reported and a failed outcome) keeps
 /// all of them, distinct, sorted and joined with `", "`, so no cause is dropped from the summary.
 pub(super) fn degraded_roles(inputs: &DecisionInputs) -> Vec<DegradedRole> {
+    // Keyed by wire code, so the roles come out sorted as the decision lists them.
     let mut reasons: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    let mut add = |role, reason| {
-        reasons.entry(role).or_default().insert(reason);
+    let mut add = |role: StageRole, reason| {
+        reasons.entry(role.code()).or_default().insert(reason);
     };
     for reported in &inputs.degraded {
-        add(reported.role.as_str(), reported.reason.code());
+        add(reported.role, reported.reason.code());
     }
     for (role, outcome) in [
-        ("coordinator", &inputs.coordinator),
-        ("verifier", &inputs.verifier),
+        (StageRole::Coordinator, &inputs.coordinator),
+        (StageRole::Verifier, &inputs.verifier),
     ] {
         if let SupportOutcome::Failed { reason } = outcome {
             add(role, reason.code());
@@ -57,20 +58,21 @@ pub(super) fn degraded_roles(inputs: &DecisionInputs) -> Vec<DegradedRole> {
 /// - on `full`, a coordinator that did not run although there are reviewer findings (wi-98c82b);
 /// - on `full` or `lite`, a verifier that did not run although a blocker or major, a candidate
 ///   of 04 §3, was raised (`micro` has no verifier).
-fn missing(inputs: &DecisionInputs) -> Vec<&'static str> {
+fn missing(inputs: &DecisionInputs) -> Vec<StageRole> {
     let pr = &inputs.pr;
-    let reported = |code: &str| inputs.degraded.iter().any(|d| d.role == code);
-    let mut missing: Vec<&'static str> = required_roles(pr.tier, !pr.classes.is_empty())
+    let reported = |role: StageRole| inputs.degraded.iter().any(|d| d.role == role);
+    let mut missing: Vec<StageRole> = required_roles(pr.tier, !pr.classes.is_empty())
         .into_iter()
-        .filter(|role| !inputs.completed_roles.contains(role) && !reported(role.code()))
-        .map(RequiredRole::code)
+        .filter(|role| !inputs.completed_roles.contains(role))
+        .map(StageRole::from)
+        .filter(|&role| !reported(role))
         .collect();
     let ungrouped = pr.tier == Tier::Full
         && inputs.coordinator == SupportOutcome::NotNeeded
         && !inputs.findings.is_empty()
-        && !reported("coordinator");
+        && !reported(StageRole::Coordinator);
     if ungrouped {
-        missing.push("coordinator");
+        missing.push(StageRole::Coordinator);
     }
     let unverified = matches!(pr.tier, Tier::Full | Tier::Lite)
         && inputs.verifier == SupportOutcome::NotNeeded
@@ -78,9 +80,9 @@ fn missing(inputs: &DecisionInputs) -> Vec<&'static str> {
             .findings
             .iter()
             .any(|f| f.severity >= Severity::Major)
-        && !reported("verifier");
+        && !reported(StageRole::Verifier);
     if unverified {
-        missing.push("verifier");
+        missing.push(StageRole::Verifier);
     }
     missing
 }
