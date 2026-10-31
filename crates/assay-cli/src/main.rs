@@ -19,6 +19,8 @@
 //! `assay status [--json] --local` (#130) shows the local check's result.
 //! `assay open` (#54) reads its run from the Actions environment, refuses a re-run, and then
 //! stops with exit 2: the live transport it writes through is #273's.
+//! `assay guard` (#60 ST-2) decides whether the pipeline runs for the event behind the run
+//! and writes the run identity to `GITHUB_OUTPUT`; it exits 1 for an untrusted head (0006).
 //! `assay reconcile [--ledger]` (#73) refuses any run attempt but the first (R3-05), then stops
 //! with exit 2 until the live GitHub transport (#273) exists. With no arguments it exits
 //! successfully without doing anything.
@@ -26,6 +28,7 @@
 mod check;
 mod doctor;
 mod gate;
+mod guard_job;
 mod reconcile;
 mod self_gate;
 mod status_local;
@@ -36,7 +39,9 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::SystemTime;
 
-use assay_cli::{Format, OpenCommand, OpenVariables, PrerequisitesArgs, StatusArgs, StatusCommand};
+use assay_cli::{
+    Format, OpenCommand, OpenVariables, PrerequisitesArgs, RunVariables, StatusArgs, StatusCommand,
+};
 use assay_domain::GateConclusion;
 use assay_forge::github::GhEnvironment;
 
@@ -78,6 +83,9 @@ fn main() -> ExitCode {
     if command == "open" {
         return run_open(args);
     }
+    if command == "guard" {
+        return run_guard(args);
+    }
     if command == "status" {
         return match StatusCommand::parse(args) {
             Ok(StatusCommand::Local(format)) => run_local_status(format),
@@ -94,12 +102,16 @@ fn main() -> ExitCode {
     if command != "self-gate" {
         return report(&self_gate::SelfGateError::Usage);
     }
+    run_self_gate(args)
+}
+
+/// `assay self-gate`: exit 0 lets the document's conclusion speak and exit 1 fails the gate
+/// (03 §2); only a pass exits 0.
+fn run_self_gate(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let variables = self_gate::GateVariables {
         findings_out: env::var_os(self_gate::FINDINGS_OUT),
         run_key: env::var_os(self_gate::RUN_KEY),
     };
-    // Exit 0 lets the document's conclusion speak and exit 1 fails the gate (03 §2); only a
-    // pass exits 0.
     match self_gate::run(args, variables) {
         Ok(GateConclusion::Pass) => ExitCode::SUCCESS,
         Ok(GateConclusion::Fail | GateConclusion::Neutral) => ExitCode::FAILURE,
@@ -118,6 +130,38 @@ fn run_open(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     match OpenCommand::parse(args, variables) {
         Ok(_) => report(&"open: the GitHub transport it writes through is not built yet (#273)"),
         Err(usage) => report(&usage),
+    }
+}
+
+/// `assay guard` (#60 ST-2): exit 0 once the outputs are written (`run=true` and the
+/// identity, or `run=false` alone), 1 for a refused event (an untrusted head, a closed PR,
+/// 0006), 2 when it cannot decide or write.
+fn run_guard(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = guard_job::GuardVariables {
+        run: RunVariables {
+            run_id: env::var_os("GITHUB_RUN_ID"),
+            run_attempt: env::var_os("GITHUB_RUN_ATTEMPT"),
+            repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
+            repository: env::var_os("GITHUB_REPOSITORY"),
+        },
+        event_name: env::var_os(guard_job::EVENT_NAME),
+        event_path: env::var_os(guard_job::EVENT_PATH),
+        output: env::var_os(guard_job::OUTPUT),
+        dispatch: guard_job::DispatchVariables {
+            token: env::var_os(guard_job::RUN_TOKEN),
+            path: env::var_os("PATH"),
+            gh: GhEnvironment::from_process_env(),
+        },
+    };
+    match guard_job::run(args, variables) {
+        Ok(guard_job::Ended::Written) => ExitCode::SUCCESS,
+        Ok(guard_job::Ended::Refused(refusal)) => {
+            // As in `report`: stderr is the last channel, and the exit code still refuses.
+            match writeln!(io::stderr().lock(), "assay: {refusal}") {
+                Ok(()) | Err(_) => ExitCode::FAILURE,
+            }
+        }
+        Err(error) => report(&error),
     }
 }
 
