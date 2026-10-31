@@ -75,6 +75,7 @@ mod prerequisites_fakes;
 mod prerequisites_reads;
 mod prompt_bundle;
 mod publish;
+mod publish_deadline;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod publish_fakes;
 mod publish_findings;

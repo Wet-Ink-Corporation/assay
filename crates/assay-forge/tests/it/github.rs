@@ -21,6 +21,7 @@ mod ledger_refs;
 mod ledger_refusals;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod pipeline;
+mod publish_deadline;
 mod pulls;
 mod reads;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns

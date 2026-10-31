@@ -1,15 +1,18 @@
 //! A stateful fake of GitHub, the ledger and the artifact store behind `publish`'s ports
 //! (TST-09): one check run per (head, name, app) with GitHub's accumulating annotations, App and
 //! user comments, a lock ref that one writer holds at a time, the PR's ledger state and the
-//! uploaded artifacts. Every port call is logged so a test can tell reads from writes.
+//! uploaded artifacts. Every port call is logged so a test can tell reads from writes, with the
+//! deadline it carried; a lease can be made to run out after a given call, after which every
+//! call bound by a deadline is refused, as the adapter refuses it (#290, #332).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
     BundleStore, CheckName, CheckRun, CheckRunId, CheckStatus, CheckUpdate, CommentForge,
-    CommentId, CommitId, EvidenceEntry, InlineComment, PublishLedger, SummaryComment, VerdictForge,
+    CommentId, CommitId, Deadline, EvidenceEntry, InlineComment, LedgerTime, LockedWrite,
+    ParseLedgerTimeError, PublishLedger, SummaryComment, VerdictForge,
 };
 use assay_domain::Side;
 
@@ -108,9 +111,28 @@ pub(crate) struct Failing {
     pub(crate) nth: usize,
 }
 
+/// The instant, in Unix milliseconds, lease 0 would expire at; lease `n` expires `n` ms later.
+const LEASE_EPOCH_MILLIS: u64 = 1_791_000_000_000;
+
+/// The deadline of lease `n`: distinct per lease, so a test can tell which lease a call ran
+/// under.
+pub(crate) fn lease_deadline(n: u64) -> Result<Deadline, ParseLedgerTimeError> {
+    LedgerTime::from_unix_millis(LEASE_EPOCH_MILLIS.saturating_add(n)).map(Deadline::at)
+}
+
+/// A lease of the fake lock: its number and its deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FakeLease {
+    pub(crate) n: u64,
+    pub(crate) deadline: Deadline,
+}
+
 /// Runs inside `acquire`, before the lock is taken: another writer acting between this
 /// writer's first read and its lock.
 pub(crate) type Interleave = Box<dyn FnOnce(&FakeWorld)>;
+
+/// A call and the deadline it carried.
+pub(crate) type Bound = (Call, Option<Deadline>);
 
 /// Everything the publisher can see and touch.
 #[derive(Default)]
@@ -126,7 +148,12 @@ pub(crate) struct FakeWorld {
     /// Every upload: artifact, file, bytes.
     pub(crate) uploads: RefCell<Vec<(String, String, Vec<u8>)>>,
     pub(crate) calls: RefCell<Vec<Call>>,
+    /// The deadline each forge call and evidence record carried, in order.
+    pub(crate) bounds: RefCell<Vec<Bound>>,
     pub(crate) failing: RefCell<Vec<Failing>>,
+    /// The call after which the lease's deadline has passed.
+    expire_after: Cell<Option<Failing>>,
+    expired: Cell<bool>,
     pub(crate) interleave: RefCell<Option<Interleave>>,
 }
 
@@ -198,23 +225,67 @@ impl FakeWorld {
         self.failing.borrow_mut().push(Failing { call, nth });
     }
 
+    /// Makes the lease's deadline pass right after the `nth` occurrence of `call`.
+    pub(crate) fn expire_after(&self, call: Call, nth: usize) {
+        self.expire_after.set(Some(Failing { call, nth }));
+    }
+
+    /// The deadlines carried by the calls made while the lock was held, and by those made
+    /// while it was not, each in order.
+    pub(crate) fn bounds_held_and_not(&self) -> (Vec<Bound>, Vec<Bound>) {
+        let calls = self.calls.borrow();
+        let bounds = self.bounds.borrow();
+        let mut bound = bounds.iter();
+        let mut held = false;
+        let (mut inside, mut outside) = (Vec::new(), Vec::new());
+        for call in calls.iter() {
+            match call {
+                Call::Acquire => held = true,
+                Call::Release => held = false,
+                Call::Upload => {}
+                _ => {
+                    let side = if held { &mut inside } else { &mut outside };
+                    side.extend(bound.next().copied());
+                }
+            }
+        }
+        (inside, outside)
+    }
+
     /// Logs `call` and fails it when told to.
     fn record(&self, call: Call) -> Result<(), FakeError> {
         let mut calls = self.calls.borrow_mut();
         calls.push(call);
         let nth = calls.iter().filter(|made| **made == call).count();
+        if self.expire_after.get() == Some(Failing { call, nth }) {
+            self.expired.set(true);
+        }
         if self.failing.borrow().contains(&Failing { call, nth }) {
             return Err(FakeError);
         }
         Ok(())
+    }
+
+    /// Logs `call` with the `deadline` it carried, and refuses it, as the adapter does, when
+    /// that deadline has passed.
+    fn record_by(&self, call: Call, deadline: Option<Deadline>) -> Result<(), FakeError> {
+        self.bounds.borrow_mut().push((call, deadline));
+        let past = deadline.is_some() && self.expired.get();
+        self.record(call)?;
+        if past { Err(FakeError) } else { Ok(()) }
     }
 }
 
 impl VerdictForge for FakeWorld {
     type Error = FakeError;
 
-    fn find_check(&self, head: &CommitId, name: &CheckName) -> Result<Option<CheckRun>, FakeError> {
-        self.record(Call::FindCheck)?;
+    fn find_check(
+        &self,
+        head: &CommitId,
+        name: &CheckName,
+        deadline: Option<Deadline>,
+    ) -> Result<Option<CheckRun>, FakeError> {
+        self.record_by(Call::FindCheck, deadline)?;
         Ok(self
             .checks
             .borrow()
@@ -231,8 +302,9 @@ impl VerdictForge for FakeWorld {
             }))
     }
 
-    fn update_check(&self, id: CheckRunId, update: &CheckUpdate) -> Result<(), FakeError> {
-        self.record(Call::UpdateCheck)?;
+    fn update_check(&self, id: CheckRunId, write: LockedWrite<'_>) -> Result<(), FakeError> {
+        let LockedWrite { update, deadline } = write;
+        self.record_by(Call::UpdateCheck, Some(deadline))?;
         for check in self
             .checks
             .borrow_mut()
@@ -253,8 +325,9 @@ impl VerdictForge for FakeWorld {
         &self,
         _number: NonZeroU64,
         marker: &str,
+        deadline: Deadline,
     ) -> Result<Option<SummaryComment>, FakeError> {
-        self.record(Call::FindSummary)?;
+        self.record_by(Call::FindSummary, Some(deadline))?;
         Ok(self
             .comments
             .borrow()
@@ -266,8 +339,13 @@ impl VerdictForge for FakeWorld {
             }))
     }
 
-    fn create_summary(&self, _number: NonZeroU64, body: &str) -> Result<(), FakeError> {
-        self.record(Call::CreateSummary)?;
+    fn create_summary(
+        &self,
+        _number: NonZeroU64,
+        body: &str,
+        deadline: Deadline,
+    ) -> Result<(), FakeError> {
+        self.record_by(Call::CreateSummary, Some(deadline))?;
         let mut comments = self.comments.borrow_mut();
         let next = u64::try_from(comments.len())
             .unwrap_or(u64::MAX)
@@ -280,8 +358,13 @@ impl VerdictForge for FakeWorld {
         Ok(())
     }
 
-    fn update_summary(&self, id: CommentId, body: &str) -> Result<(), FakeError> {
-        self.record(Call::UpdateSummary)?;
+    fn update_summary(
+        &self,
+        id: CommentId,
+        body: &str,
+        deadline: Deadline,
+    ) -> Result<(), FakeError> {
+        self.record_by(Call::UpdateSummary, Some(deadline))?;
         for comment in self.comments.borrow_mut().iter_mut().filter(|c| c.id == id) {
             body.clone_into(&mut comment.body);
         }
@@ -290,8 +373,12 @@ impl VerdictForge for FakeWorld {
 }
 
 impl CommentForge for FakeWorld {
-    fn app_review_comments(&self, _number: NonZeroU64) -> Result<Vec<String>, FakeError> {
-        self.record(Call::ReadReviewComments)?;
+    fn app_review_comments(
+        &self,
+        _number: NonZeroU64,
+        deadline: Deadline,
+    ) -> Result<Vec<String>, FakeError> {
+        self.record_by(Call::ReadReviewComments, Some(deadline))?;
         Ok(self
             .review_comments
             .borrow()
@@ -305,8 +392,9 @@ impl CommentForge for FakeWorld {
         &self,
         _number: NonZeroU64,
         comment: &InlineComment<'_>,
+        deadline: Deadline,
     ) -> Result<(), FakeError> {
-        self.record(Call::CreateReviewComment)?;
+        self.record_by(Call::CreateReviewComment, Some(deadline))?;
         self.review_comments.borrow_mut().push(FakeReviewComment {
             author: Author::App,
             commit_id: comment.commit_id.as_str().to_owned(),
@@ -323,9 +411,10 @@ impl CommentForge for FakeWorld {
         &self,
         head: &CommitId,
         name: &CheckName,
-        update: &CheckUpdate,
+        write: LockedWrite<'_>,
     ) -> Result<(), FakeError> {
-        self.record(Call::CreateCheck)?;
+        let LockedWrite { update, deadline } = write;
+        self.record_by(Call::CreateCheck, Some(deadline))?;
         let mut checks = self.checks.borrow_mut();
         let next = u64::try_from(checks.len())
             .unwrap_or(u64::MAX)
@@ -349,9 +438,13 @@ impl CommentForge for FakeWorld {
 
 impl PublishLedger for FakeWorld {
     type Error = FakeError;
-    type Lease = u64;
+    type Lease = FakeLease;
 
-    fn acquire(&self, _repo_id: NonZeroU64, _head: &CommitId) -> Result<Option<u64>, FakeError> {
+    fn acquire(
+        &self,
+        _repo_id: NonZeroU64,
+        _head: &CommitId,
+    ) -> Result<Option<FakeLease>, FakeError> {
         // Taken out first, so the other writer can run every port itself.
         let interleave = self.interleave.borrow_mut().take();
         if let Some(other) = interleave {
@@ -365,20 +458,29 @@ impl PublishLedger for FakeWorld {
         let mut leases = self.leases.borrow_mut();
         *leases = leases.saturating_add(1);
         *lock = Some(*leases);
-        Ok(Some(*leases))
+        // `FakeError` carries no cause; the instant is in range for any lease a test takes.
+        let deadline = lease_deadline(*leases).map_err(|_out_of_range| FakeError)?;
+        Ok(Some(FakeLease {
+            n: *leases,
+            deadline,
+        }))
     }
 
-    fn release(&self, lease: u64) -> Result<(), FakeError> {
+    fn release(&self, lease: FakeLease) -> Result<(), FakeError> {
         self.record(Call::Release)?;
         let mut lock = self.lock.borrow_mut();
-        if *lock == Some(lease) {
+        if *lock == Some(lease.n) {
             *lock = None;
         }
         Ok(())
     }
 
-    fn record_evidence(&self, entry: &EvidenceEntry) -> Result<(), FakeError> {
-        self.record(Call::RecordEvidence)?;
+    fn deadline(&self, lease: &FakeLease) -> Deadline {
+        lease.deadline
+    }
+
+    fn record_evidence(&self, lease: &FakeLease, entry: &EvidenceEntry) -> Result<(), FakeError> {
+        self.record_by(Call::RecordEvidence, Some(lease.deadline))?;
         self.evidence.borrow_mut().push(entry.clone());
         Ok(())
     }

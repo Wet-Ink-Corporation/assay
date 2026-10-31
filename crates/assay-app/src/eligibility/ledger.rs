@@ -13,8 +13,9 @@ use crate::publish::CommentId;
 /// The snapshot's ledger port for one repository.
 ///
 /// A listing holds at most `max` records; past it the adapter answers
-/// [`LedgerRecords::TooMany`] having kept at most `max + 1` (H-13). The ledger's own reader bounds
-/// the file it reads (`MAX_LEDGER_FILE_BYTES`).
+/// [`LedgerRecords::TooMany`]. The ledger's strict reader parses every record of the stream
+/// before the count is compared, so what bounds the memory it uses is the file's size, refused
+/// over [`MAX_LEDGER_FILE_BYTES`](crate::MAX_LEDGER_FILE_BYTES) unparsed (H-13), not `max`.
 #[derive(Debug)]
 pub struct LedgerSnapshot<'a, L> {
     /// The ledger's files.

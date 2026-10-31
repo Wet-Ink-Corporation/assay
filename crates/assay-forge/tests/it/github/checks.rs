@@ -92,7 +92,7 @@ fn a_same_named_check_from_another_app_is_ignored() {
     );
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_check(&head(), &verdict());
+    let found = github(&recorded, &waits).find_check(&head(), &verdict(), None);
 
     assert_eq!(found.expect("listed"), Some(app_check()));
 }
@@ -106,7 +106,7 @@ fn only_another_apps_check_is_no_check() {
     );
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_check(&head(), &verdict());
+    let found = github(&recorded, &waits).find_check(&head(), &verdict(), None);
 
     assert_eq!(found.expect("listed"), None);
 }
@@ -117,7 +117,7 @@ fn two_app_checks_of_one_name_are_refused() {
         Recorded::default().ok(Method::Get, &listing(), fixture("check_runs_two_app.json"));
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_check(&head(), &verdict());
+    let found = github(&recorded, &waits).find_check(&head(), &verdict(), None);
 
     assert!(
         matches!(
@@ -153,7 +153,7 @@ fn the_listing_follows_the_next_page() {
         .ok(Method::Get, &next, json(&page));
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_check(&head(), &verdict());
+    let found = github(&recorded, &waits).find_check(&head(), &verdict(), None);
 
     assert_eq!(found.expect("listed"), Some(app_check()));
     assert_eq!(recorded.unused(), 0, "both pages read");
@@ -172,7 +172,7 @@ fn a_next_page_off_the_api_is_refused() {
     );
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_check(&head(), &verdict());
+    let found = github(&recorded, &waits).find_check(&head(), &verdict(), None);
 
     assert!(
         matches!(found, Err(ForgeError::Malformed { detail, .. }) if detail == "next page is not on api.github.com"),
@@ -190,7 +190,7 @@ fn an_update_overwrites_status_conclusion_output_and_external_id_without_annotat
     let waits = Waits::default();
 
     github(&recorded, &waits)
-        .update_check(app_check().id, &decision())
+        .update_check(app_check().id, locked(&decision()))
         .expect("updated");
 
     assert_eq!(first_write(&recorded), Some(decision_body()));
@@ -382,7 +382,7 @@ fn a_gate_check_the_probe_does_not_find_is_posted_again() {
         );
     let waits = Waits::default();
 
-    let created = github(&recorded, &waits).create_check(&head(), &verdict(), &pending());
+    let created = github(&recorded, &waits).create_check(&head(), &verdict(), locked(&pending()));
 
     assert_eq!(created.expect("created"), ());
     assert_eq!(
@@ -446,7 +446,7 @@ fn a_next_page_that_is_a_url_in_disguise_is_refused() {
         );
         let waits = Waits::default();
 
-        let found = github(&recorded, &waits).find_check(&head(), &verdict());
+        let found = github(&recorded, &waits).find_check(&head(), &verdict(), None);
 
         assert!(
             matches!(found, Err(ForgeError::Malformed { detail, .. }) if detail == "next page is not an API path"),

@@ -15,7 +15,7 @@ use assay_domain::{
 };
 
 use crate::plan_fakes::{BASE, FakeError, HEAD, run_uid};
-use crate::publish_fakes::{Author, Call, FakeCheck, FakeReviewComment, FakeWorld};
+use crate::publish_fakes::{Author, Call, FakeCheck, FakeReviewComment, FakeWorld, lease_deadline};
 use crate::publish_support::{DEFAULT_BRANCH, KEY, NAME};
 
 type Outcome = Result<FindingsPublished<FakeError>, FindingsError<FakeError, FakeError>>;
@@ -664,5 +664,29 @@ fn an_in_progress_gate_check_of_this_decision_is_completed() -> Result<(), Box<d
     );
     assert!(world.writes().contains(&Call::UpdateCheck));
     assert!(!world.writes().contains(&Call::CreateCheck));
+    Ok(())
+}
+
+// #332: the reads and writes made under the lock carry its lease's deadline (#290).
+#[test]
+fn every_call_under_the_lock_carries_the_lease_s_deadline() -> Result<(), Box<dyn Error>> {
+    let world = decided_world()?;
+
+    written(Inputs::new()?.publish(&world)?)?;
+
+    let by = Some(lease_deadline(1)?);
+    let (held, not_held) = world.bounds_held_and_not();
+    assert_eq!(
+        held,
+        [
+            (Call::FindCheck, by),
+            (Call::ReadReviewComments, by),
+            (Call::FindCheck, by),
+            (Call::CreateCheck, by),
+            (Call::CreateReviewComment, by),
+            (Call::CreateReviewComment, by),
+        ]
+    );
+    assert_eq!(not_held, [], "nothing is called outside the lock");
     Ok(())
 }

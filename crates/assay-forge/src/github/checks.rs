@@ -161,17 +161,18 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         self.create(CheckTarget { head, name }, &creation)
     }
 
-    /// Posts check `name` on `head`: a per-gate check, which the caller looked for first.
+    /// Posts check `name` on `head` from `write.update`: a per-gate check, which the caller looked
+    /// for first, sending nothing that would not end before `write.deadline`.
     pub(crate) fn create_check(
         &self,
         head: &CommitId,
         name: &CheckName,
-        update: &CheckUpdate,
+        write: LockedWrite<'_>,
     ) -> Result<(), ForgeError<T::Error>> {
         let creation = Creation {
-            update,
+            update: write.update,
             lookup: Lookup::BeforeRetry,
-            deadline: None,
+            deadline: Some(write.deadline),
         };
         self.create(CheckTarget { head, name }, &creation).map(drop)
     }
