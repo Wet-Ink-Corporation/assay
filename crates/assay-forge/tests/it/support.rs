@@ -327,3 +327,27 @@ pub(crate) fn within_bound<T: Send>(
         }
     })
 }
+
+/// Writes `text` as an executable (mode 0755) at `path`, which must not exist.
+///
+/// A child `install` writes the executable, so no thread of this test binary ever holds it
+/// open for writing: a sibling test's fork would inherit that descriptor until its exec, and
+/// executing the file meanwhile fails with ETXTBSY (#176). The text goes to a `.source` file
+/// beside `path` and the copy to a `.staged` one, renamed into place, so `path` is complete
+/// whenever it exists.
+pub(crate) fn write_executable(path: &Path, text: &str) -> Result<(), Box<dyn Error>> {
+    let source = path.with_extension("source");
+    let staged = path.with_extension("staged");
+    fs::write(&source, text)?;
+    let installed = Command::new("install")
+        .args(["-m", "0755"])
+        .arg(&source)
+        .arg(&staged)
+        .status()?;
+    if !installed.success() {
+        return Err(format!("install {} failed: {installed}", staged.display()).into());
+    }
+    fs::rename(&staged, path)?;
+    fs::remove_file(&source)?;
+    Ok(())
+}
