@@ -16,7 +16,10 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::support::{domain_invalid_fixtures, invalid_fixtures, valid_fixtures};
+use crate::support::{
+    contracts_with_domain_invalid_fixtures, domain_invalid_fixtures, invalid_fixtures,
+    valid_fixtures,
+};
 
 /// Each invalid event fixture, and a fragment of the message the domain refuses it with.
 const EVENT_REJECTIONS: [(&str, &str); 15] = [
@@ -221,4 +224,15 @@ fn data_on_a_field_less_kind_is_refused_by_the_domain() -> Result<(), Box<dyn Er
 
     assert_eq!(on_disk, listed, "domain-invalid event fixtures");
     assert_refused::<Event>(&fixtures, &EVENT_DOMAIN_REJECTIONS)
+}
+
+/// #278 F1: only the event contract's `domain-invalid` fixtures are checked (here and in
+/// `assay-app`'s `contract.rs`), so a `domain-invalid` directory beside another contract's
+/// fixtures would be read by nothing. Adding one means adding its checks to both tests.
+#[test]
+fn only_the_event_contract_has_domain_invalid_fixtures() -> Result<(), Box<dyn Error>> {
+    let contracts = contracts_with_domain_invalid_fixtures()?;
+
+    assert_eq!(contracts, BTreeSet::from(["event".to_owned()]));
+    Ok(())
 }
