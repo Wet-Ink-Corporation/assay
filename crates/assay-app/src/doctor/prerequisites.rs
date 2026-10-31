@@ -26,7 +26,7 @@ use workflows::WorkflowFile;
 
 use thiserror::Error;
 
-pub use identities::{IdentityListError, IdentityLists, MAX_LISTED};
+pub use identities::IdentityLists;
 pub use port::{
     Access, AppliedRule, BranchPolicy, BypassActor, Collaborator, Conditions, DeploymentBranches,
     DirectoryEntry, Enforcement, EntryType, PolicyKind, PrerequisiteForge, RequiredCheck,
@@ -36,7 +36,7 @@ pub use report::{Prerequisite, PrerequisiteFailure, PrerequisiteReport, Prerequi
 pub use workflow::{Holding, WorkflowError};
 pub use yaml::{YamlError, YamlRefusal};
 
-use crate::config::{ConfigError, PluginsConfig};
+use crate::config::{ConfigError, ListsError, PluginsConfig};
 use crate::status::AppId;
 
 /// Base `.assay/plugins.toml`.
@@ -108,7 +108,7 @@ pub enum BaseError<E> {
     Config(#[source] ConfigError),
     /// `.assay/owners` or `.assay/agents` was refused.
     #[error("{OWNERS_PATH} or {AGENTS_PATH} was refused")]
-    Identities(#[source] IdentityListError),
+    Identities(#[source] ListsError),
 }
 
 /// Reads the default branch's `.assay/plugins.toml`, `.assay/owners` and `.assay/agents`.

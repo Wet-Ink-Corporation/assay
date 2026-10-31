@@ -122,12 +122,13 @@ fn a_list_that_does_not_parse_exactly_is_refused_with_its_file() {
         (AGENTS, "not toml"),
     ];
     for (path, text) in cases {
-        let file = if path == OWNERS {
-            ListFile::Owners
+        // Every other list is present, so each owners case is refused for its own defect.
+        let (file, text) = if path == OWNERS {
+            (ListFile::Owners, format!("{text}{OTHER_OWNERS_LISTS}"))
         } else {
-            ListFile::Agents
+            (ListFile::Agents, text.to_owned())
         };
-        let refused = refusal(&[(path, text)]);
+        let refused = refusal(&[(path, &text)]);
 
         assert!(
             matches!(
@@ -173,34 +174,56 @@ fn a_zero_id_or_a_login_github_would_not_give_is_refused() {
     }
 }
 
+/// What an id listed twice is refused as.
+#[derive(Debug, PartialEq, Eq)]
+enum Twice {
+    MaintainerPrivileged(u64),
+    OwnerApprover(u64),
+    Repeated(ListName, u64),
+}
+
 /// An id twice in one file, in one list or two, is refused; #305 names each case.
 #[test]
 fn an_id_listed_twice_is_refused() {
-    let id = |refused: &BaseIdentitiesError<_>| match refused {
-        BaseIdentitiesError::Lists(
-            ListsError::MaintainerPrivileged { id }
-            | ListsError::OwnerApprover { id }
-            | ListsError::Repeated {
-                list: ListName::Owners | ListName::Agents,
-                id,
-            },
-        ) => Some(id.0.get()),
+    let twice = |refused: &BaseIdentitiesError<_>| match refused {
+        BaseIdentitiesError::Lists(ListsError::MaintainerPrivileged { id }) => {
+            Some(Twice::MaintainerPrivileged(id.0.get()))
+        }
+        BaseIdentitiesError::Lists(ListsError::OwnerApprover { id }) => {
+            Some(Twice::OwnerApprover(id.0.get()))
+        }
+        BaseIdentitiesError::Lists(ListsError::Repeated { list, id }) => {
+            Some(Twice::Repeated(*list, id.0.get()))
+        }
         _ => None,
     };
-    for text in [
-        "owners = [{ id = 11, login = \"a\" }]\napprovers = []\nmaintainers = [{ id = 11, login = \"a\" }]\n",
-        "owners = [{ id = 11, login = \"a\" }]\napprovers = [{ id = 11, login = \"a\" }]\nmaintainers = []\n",
-        "owners = [{ id = 11, login = \"a\" }, { id = 11, login = \"b\" }]\napprovers = []\nmaintainers = []\n",
-    ] {
-        let refused = refusal(&[(OWNERS, text)]);
+    let cases = [
+        (
+            OWNERS,
+            "owners = [{ id = 11, login = \"a\" }]\napprovers = []\nmaintainers = [{ id = 11, login = \"a\" }]\n",
+            Twice::MaintainerPrivileged(11),
+        ),
+        (
+            OWNERS,
+            "owners = [{ id = 11, login = \"a\" }]\napprovers = [{ id = 11, login = \"a\" }]\nmaintainers = []\n",
+            Twice::OwnerApprover(11),
+        ),
+        (
+            OWNERS,
+            "owners = [{ id = 11, login = \"a\" }, { id = 11, login = \"b\" }]\napprovers = []\nmaintainers = []\n",
+            Twice::Repeated(ListName::Owners, 11),
+        ),
+        (
+            AGENTS,
+            "agents = [{ id = 13, login = \"a\" }, { id = 13, login = \"a\" }]\n",
+            Twice::Repeated(ListName::Agents, 13),
+        ),
+    ];
+    for (path, text, expected) in cases {
+        let refused = refusal(&[(path, text)]);
 
-        assert_eq!(id(&refused), Some(11), "{text:?}: {refused:?}");
+        assert_eq!(twice(&refused), Some(expected), "{text:?}: {refused:?}");
     }
-    let agents = refusal(&[(
-        AGENTS,
-        "agents = [{ id = 13, login = \"a\" }, { id = 13, login = \"a\" }]\n",
-    )]);
-    assert_eq!(id(&agents), Some(13), "{agents:?}");
 }
 
 #[test]

@@ -5,7 +5,8 @@
 //! account, which may author and push but is never eligible; `agents` lists agent identities.
 //! Numeric ids are authoritative; logins are for display. A file whose lists contradict each
 //! other is refused rather than read one way or the other (wi-b5affa). This is the one parser of
-//! both files: `status`'s `base_identities` reads them through it too (#305).
+//! both files (#305): `status`'s `base_identities` reads them through it too, and `doctor` through
+//! `parse_unjudged`, which reports a privileged maintainer or agent as a failed prerequisite.
 
 use std::collections::BTreeSet;
 use std::num::NonZeroU64;
@@ -193,6 +194,24 @@ impl EligibilityLists {
     /// # Ok::<(), assay_app::ListsError>(())
     /// ```
     pub fn parse(owners: Option<&str>, agents: Option<&str>) -> Result<Self, ListsError> {
+        let lists = Self::parse_unjudged(owners, agents)?;
+        if let Some(id) = lists.first_privileged_in(&lists.maintainers) {
+            return Err(ListsError::MaintainerPrivileged { id });
+        }
+        if let Some(id) = lists.first_privileged_in(&lists.agents) {
+            return Err(ListsError::AgentPrivileged { id });
+        }
+        Ok(lists)
+    }
+
+    /// [`Self::parse`] without its two contradiction checks, a maintainer or an agent who is
+    /// privileged: every other rule applies. Only `doctor` reads the lists this way, so it can
+    /// report those contradictions as failed prerequisites (05 §7) rather than refuse the base;
+    /// no eligibility decision may use what this returns.
+    pub(crate) fn parse_unjudged(
+        owners: Option<&str>,
+        agents: Option<&str>,
+    ) -> Result<Self, ListsError> {
         let mut lists = Self::default();
         if let Some(text) = owners {
             let dto: OwnersDto = read(ListFile::Owners, text)?;
@@ -211,12 +230,6 @@ impl EligibilityLists {
             .find(|&id| find(&lists.approvers, id).is_some())
         {
             return Err(ListsError::OwnerApprover { id });
-        }
-        if let Some(id) = lists.first_privileged_in(&lists.maintainers) {
-            return Err(ListsError::MaintainerPrivileged { id });
-        }
-        if let Some(id) = lists.first_privileged_in(&lists.agents) {
-            return Err(ListsError::AgentPrivileged { id });
         }
         Ok(lists)
     }
