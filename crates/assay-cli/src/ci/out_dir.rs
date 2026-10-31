@@ -262,13 +262,27 @@ mod tests {
 
     #[test]
     fn a_relative_path_is_taken_from_the_working_directory() {
-        let out = OutDir::new(Path::new("does-not-exist-plan-out"));
+        // A checkout of its own under the working directory, named relative to it: the nearest
+        // `.git` is the marker, whether or not the working directory is in a checkout. The
+        // working directory is not changed (it is the whole process's).
+        let checkout = tempfile::Builder::new()
+            .prefix(".out-dir-test-")
+            .tempdir_in(".")
+            .expect("a scratch directory in the working directory");
+        fs::create_dir(checkout.path().join(".git")).expect("a .git marker");
+        let name = checkout
+            .path()
+            .file_name()
+            .expect("a named scratch directory");
+        let relative = Path::new(name).join("does-not-exist-plan-out");
+
+        let out = OutDir::new(&relative);
 
         let cwd = fs::canonicalize(".").expect("the working directory resolves");
-        // The crate's own directory is inside this repository's checkout.
         assert_matches!(
             out,
-            Err(OutDirError::InCheckout { out, .. }) if out == cwd.join("does-not-exist-plan-out")
+            Err(OutDirError::InCheckout { out, checkout: found })
+                if out == cwd.join(&relative) && found == cwd.join(name)
         );
     }
 }

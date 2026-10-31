@@ -6,14 +6,12 @@
 //! Only then are the ports built: forge's `GitHub` through `gh` with `ASSAY_GITHUB_TOKEN` (the
 //! `assay-verdict` App's), and the ledger's files and refs through `gh` with
 //! `ASSAY_LEDGER_TOKEN` (the `assay-ledger-writer` App's), whose lock deletions are pushed from
-//! an object-only repository in a scratch directory. [`assay_cli::run_open`] does the rest.
-//! A variable's value is never shown.
+//! an object-only repository in a scratch directory ([`crate::ledger_job`]).
+//! [`assay_cli::run_open`] does the rest. A variable's value is never shown.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io;
 use std::num::NonZeroU64;
-use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -23,37 +21,32 @@ use assay_app::{
 };
 use assay_cli::outputs::Identity;
 use assay_cli::{
-    ForgeSupervisor, JobName, Needs, NeedsError, OpenCommand, OpenJob, OpenRunError, OpenUsage,
-    RunVariables, run_open,
+    JobName, Needs, NeedsError, OpenCommand, OpenJob, OpenRunError, OpenUsage, RunVariables,
+    run_open,
 };
-use assay_forge::git::{GitEnvironment, GitError, GitLimits, ObjectRepo, PushRemote};
 use assay_forge::github::{
-    Api, AppIdentity, ForgeError, GhApi, GhEnvironment, GhError, GhSetupError, GhToken, GitHub,
-    LedgerRefsError, LedgerRefsRepo, LedgerRemoteError, LedgerRepo, LedgerRepoError, Repository,
-    ThreadSleep, ledger_push_remote,
+    Api, AppIdentity, ForgeError, GhEnvironment, GhError, GhToken, GitHub, LedgerRefsError,
+    LedgerRepoError, Repository, ThreadSleep,
 };
-use assay_forge::process::{GroupKiller, KillerError};
 
-use crate::check::on_path;
-use crate::doctor::{self, DoctorCliError, write_chain};
+use crate::doctor::write_chain;
+use crate::ledger_job::{
+    self, LEDGER_TOKEN, LedgerJob, LedgerPorts, LedgerSetupError, LedgerTransport, Left, NEEDS,
+    Problem, Programs, VariableRefusal, ledger_repo,
+};
 use crate::status_pr::{APP_ID, BOT_ID, TOKEN};
 
-/// `guard`'s outputs, `${{ toJSON(needs) }}`.
-pub(crate) const NEEDS: &str = "ASSAY_NEEDS";
-/// The `assay-ledger-writer` App's installation token.
-pub(crate) const LEDGER_TOKEN: &str = "ASSAY_LEDGER_TOKEN";
-
-/// A lock deletion's push: a few refs to one remote, well inside the lock's lease (H-13).
-const PUSH_LIMITS: GitLimits = GitLimits {
-    timeout: Duration::from_secs(60),
-    max_output_bytes: 1 << 20,
+/// The open job, as its refusals name it.
+const OPEN: LedgerJob = LedgerJob {
+    name: "open",
+    purpose: "open records the push in the ledger",
 };
 
 /// The environment `assay open` reads, gathered by `main` (ARC-11).
 pub(crate) struct OpenVariables {
     /// The run.
     pub(crate) run: RunVariables,
-    /// [`NEEDS`].
+    /// [`NEEDS`]: guard's outputs.
     pub(crate) needs: Option<OsString>,
     /// [`TOKEN`], the `assay-verdict` App's token.
     pub(crate) token: Option<OsString>,
@@ -69,17 +62,6 @@ pub(crate) struct OpenVariables {
     pub(crate) gh: GhEnvironment,
 }
 
-/// What is wrong with a variable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Problem {
-    /// It is not set.
-    Missing,
-    /// It holds something it may not; its value is never shown.
-    Invalid,
-}
-
-/// `gh` through the shared supervisor.
-type Gh = GhApi<ForgeSupervisor>;
 /// What [`run_open`] fails with over the live ports.
 type LiveFailure = OpenRunError<
     ForgeError<GhError>,
@@ -103,24 +85,8 @@ pub(crate) enum OpenCliError {
     },
     /// `guard`'s outputs were refused.
     Needs(NeedsError),
-    /// Base config could not be read or was refused.
-    Config(DoctorCliError),
-    /// Base config names no ledger repository.
-    NoLedgerRepo,
-    /// `[assay].ledger_repo` is not `owner/name`.
-    LedgerRepo,
-    /// No `gh` on `PATH`.
-    NoGh,
-    /// No process-group killer for `gh` and git.
-    Killer(KillerError),
-    /// gh's scratch configuration could not be prepared.
-    Gh(GhSetupError),
-    /// The scratch directory could not be made.
-    Scratch(io::Error),
-    /// The object-only repository lock deletions push from could not be made.
-    Git(GitError),
-    /// The ledger's push remote could not be built.
-    Remote(LedgerRemoteError),
+    /// Base config, or the ports' setup.
+    Setup(LedgerSetupError),
     /// The check could not be opened.
     Open(Box<LiveFailure>),
 }
@@ -137,41 +103,19 @@ impl fmt::Display for OpenCliError {
                     APP_ID => "the assay-verdict App's id, a positive decimal number",
                     _ => "the id of the assay-verdict App's bot user, a positive decimal number",
                 };
-                match problem {
-                    Problem::Missing => write!(f, "open: {name} is not set: it holds {holds}"),
-                    Problem::Invalid => write!(f, "open: {name} is not {holds}"),
+                VariableRefusal {
+                    job: OPEN.name,
+                    name,
+                    holds,
+                    problem: *problem,
                 }
+                .fmt(f)
             }
             Self::Needs(source) => {
                 write!(f, "open: {NEEDS}: ")?;
                 write_chain(f, source)
             }
-            Self::Config(source) => write!(f, "open: {source}"),
-            Self::NoLedgerRepo => f.write_str(
-                "open: base config sets no [assay].ledger_repo: open records the push in the \
-                 ledger",
-            ),
-            Self::LedgerRepo => {
-                f.write_str("open: base config's [assay].ledger_repo is not owner/name")
-            }
-            Self::NoGh => f.write_str("open: no gh on PATH: open reaches GitHub through gh"),
-            Self::Killer(source) => {
-                f.write_str("open: ")?;
-                write_chain(f, source)
-            }
-            Self::Gh(source) => {
-                f.write_str("open: ")?;
-                write_chain(f, source)
-            }
-            Self::Scratch(source) => write!(f, "open: the scratch directory: {source}"),
-            Self::Git(source) => {
-                f.write_str("open: the ledger's push repository: ")?;
-                write_chain(f, source)
-            }
-            Self::Remote(source) => {
-                f.write_str("open: the ledger's push remote: ")?;
-                write_chain(f, source)
-            }
+            Self::Setup(source) => source.fmt(f),
             Self::Open(source) => {
                 f.write_str("open: ")?;
                 write_chain(f, source.as_ref())
@@ -180,36 +124,8 @@ impl fmt::Display for OpenCliError {
     }
 }
 
-/// A scratch directory that could not be removed.
-#[derive(Debug)]
-pub(crate) enum Left {
-    /// gh's scratch configuration directory, of the named token's transport.
-    Gh(&'static str, io::Error),
-    /// The ledger push repository's scratch directory.
-    Scratch(io::Error),
-}
-
-impl fmt::Display for Left {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Gh(token, source) => write!(
-                f,
-                "could not remove gh's scratch configuration directory ({token}): {source}"
-            ),
-            Self::Scratch(source) => {
-                write!(f, "could not remove open's scratch directory: {source}")
-            }
-        }
-    }
-}
-
-/// How `assay open` ended: the line to print or why there is none, and what was left behind.
-pub(crate) struct Ended {
-    /// The check opened, as one line.
-    pub(crate) opened: Result<String, OpenCliError>,
-    /// The scratch directories that could not be removed.
-    pub(crate) left: Vec<Left>,
-}
+/// How `assay open` ended: the check opened, as one line, or why it was not.
+pub(crate) type Ended = ledger_job::Ended<OpenCliError>;
 
 /// The system clock for the lock's lease, and a real pause between lock attempts.
 struct SystemClock;
@@ -245,9 +161,9 @@ struct Prepared {
 /// Runs `assay open` with `args` and `variables`.
 pub(crate) fn run(args: impl Iterator<Item = OsString>, variables: OpenVariables) -> Ended {
     let mut left = Vec::new();
-    let opened =
+    let line =
         prepare(args, &variables).and_then(|prepared| connect(prepared, variables, &mut left));
-    Ended { opened, left }
+    Ended { line, left }
 }
 
 /// Everything open reads before a port exists, the run first (I1).
@@ -256,53 +172,31 @@ fn prepare(
     variables: &OpenVariables,
 ) -> Result<Prepared, OpenCliError> {
     let command = OpenCommand::parse(args, &variables.run).map_err(OpenCliError::Usage)?;
-    let needs = variables.needs.as_ref().ok_or(OpenCliError::Variable {
-        name: NEEDS,
-        problem: Problem::Missing,
-    })?;
+    let needs = variables
+        .needs
+        .as_ref()
+        .ok_or_else(|| refused(NEEDS)(Problem::Missing))?;
     let needs =
         Needs::parse(needs.as_encoded_bytes(), &[JobName::Guard]).map_err(OpenCliError::Needs)?;
     let identity = Identity::from_needs(&needs).map_err(OpenCliError::Needs)?;
-    let config = doctor::read_pins(&command.config).map_err(OpenCliError::Config)?;
-    let ledger = config
-        .assay()
-        .ledger_repo
-        .as_deref()
-        .ok_or(OpenCliError::NoLedgerRepo)?
-        .parse()
-        .map_err(|_not_owner_name| OpenCliError::LedgerRepo)?;
+    let ledger = ledger_repo(OPEN, &command.config).map_err(OpenCliError::Setup)?;
     Ok(Prepared {
         command,
         identity,
         ledger,
-        token: token(TOKEN, variables.token.as_ref())?,
-        ledger_token: token(LEDGER_TOKEN, variables.ledger_token.as_ref())?,
+        token: ledger_job::token(variables.token.as_deref()).map_err(refused(TOKEN))?,
+        ledger_token: ledger_job::token(variables.ledger_token.as_deref())
+            .map_err(refused(LEDGER_TOKEN))?,
         app: AppIdentity {
-            app: AppId(id(APP_ID, variables.app_id.as_ref())?),
-            bot: UserId(id(BOT_ID, variables.bot_id.as_ref())?),
+            app: AppId(id(APP_ID, variables.app_id.as_deref())?),
+            bot: UserId(id(BOT_ID, variables.bot_id.as_deref())?),
         },
     })
 }
 
-/// How `gh` runs, for both transports.
-struct GhSetup {
-    supervisor: ForgeSupervisor,
-    program: PathBuf,
-    environment: GhEnvironment,
-}
-
-impl GhSetup {
-    /// A transport authenticated as `token`.
-    fn transport(&self, token: GhToken) -> Result<Gh, OpenCliError> {
-        // Each transport stores its own handle, program and environment.
-        GhApi::new(
-            self.supervisor.clone(),
-            self.program.clone(),
-            token,
-            self.environment.clone(),
-        )
-        .map_err(OpenCliError::Gh)
-    }
+/// Refuses variable `name` with a problem.
+fn refused(name: &'static str) -> impl Fn(Problem) -> OpenCliError {
+    move |problem| OpenCliError::Variable { name, problem }
 }
 
 /// Builds the ports in a scratch directory, opens the check, and removes the directories,
@@ -310,38 +204,6 @@ impl GhSetup {
 fn connect(
     prepared: Prepared,
     variables: OpenVariables,
-    left: &mut Vec<Left>,
-) -> Result<String, OpenCliError> {
-    let program = on_path("gh", variables.path.as_ref()).ok_or(OpenCliError::NoGh)?;
-    let path = variables.path.ok_or(OpenCliError::NoGh)?;
-    let killer = GroupKiller::system().map_err(OpenCliError::Killer)?;
-    let remote = ledger_push_remote(&prepared.ledger, &prepared.ledger_token)
-        .map_err(OpenCliError::Remote)?;
-    let scratch = tempfile::tempdir().map_err(OpenCliError::Scratch)?;
-    // The repository and the supervisor each keep a handle on the killer.
-    let pusher = ObjectRepo::init(
-        scratch.path().join("ledger.git"),
-        GitEnvironment::new(path, killer.clone()),
-        PUSH_LIMITS,
-    )
-    .map_err(OpenCliError::Git);
-    let gh = GhSetup {
-        supervisor: ForgeSupervisor::new(killer),
-        program,
-        environment: variables.gh,
-    };
-    let opened = pusher.and_then(|pusher| with_ledger(prepared, &gh, (pusher, remote), left));
-    if let Err(error) = scratch.close() {
-        left.push(Left::Scratch(error));
-    }
-    opened
-}
-
-/// Opens the check with the ledger's transport, closing it after.
-fn with_ledger(
-    prepared: Prepared,
-    gh: &GhSetup,
-    (pusher, remote): (ObjectRepo, PushRemote),
     left: &mut Vec<Left>,
 ) -> Result<String, OpenCliError> {
     let Prepared {
@@ -352,37 +214,46 @@ fn with_ledger(
         ledger_token,
         app,
     } = prepared;
-    let ledger_gh = gh.transport(ledger_token)?;
-    let opened = gh.transport(token).and_then(|app_gh| {
-        // The adapter stores the repository; the command keeps it for the job.
-        let github = GitHub::new(
-            Api::new(app_gh, ThreadSleep),
-            command.run.run_env().repo.clone(),
-            app,
-        );
-        // The file and ref adapters each store the ledger repository.
-        let files = LedgerRepo::new(Api::new(&ledger_gh, ThreadSleep), ledger.clone());
-        let refs = LedgerRefsRepo::new(Api::new(&ledger_gh, ThreadSleep), ledger, pusher, remote);
-        let job = OpenJob {
-            run: &command.run,
-            identity: &identity,
-        };
-        let ports = OpenPorts {
-            forge: &github,
-            ledger: &files,
-            refs: &refs,
-            clock: &SystemClock,
-        };
-        let opened = run_open(job, &github, &ports)
-            .map(|opened| line(&opened))
-            .map_err(|error| OpenCliError::Open(Box::new(error)));
-        if let Err(error) = github.into_api().into_transport().close() {
-            left.push(Left::Gh(TOKEN, error));
-        }
-        opened
-    });
-    if let Err(error) = ledger_gh.close() {
-        left.push(Left::Gh(LEDGER_TOKEN, error));
+    let programs = Programs {
+        path: variables.path,
+        gh: variables.gh,
+    };
+    LedgerTransport::open(OPEN, (ledger, ledger_token), programs, left)
+        .map_err(OpenCliError::Setup)?
+        .run(left, |ports, left| {
+            let job = OpenJob {
+                run: &command.run,
+                identity: &identity,
+            };
+            open_check(job, (token, app), &ports, left)
+        })
+}
+
+/// Opens the check with the App's transport, authenticated as `token`, closing it after.
+fn open_check(
+    job: OpenJob<'_>,
+    (token, app): (GhToken, AppIdentity),
+    ledger: &LedgerPorts<'_, '_>,
+    left: &mut Vec<Left>,
+) -> Result<String, OpenCliError> {
+    let app_gh = ledger.gh.transport(token).map_err(OpenCliError::Setup)?;
+    // The adapter stores the repository; the command keeps it for the job.
+    let github = GitHub::new(
+        Api::new(app_gh, ThreadSleep),
+        job.run.run_env().repo.clone(),
+        app,
+    );
+    let ports = OpenPorts {
+        forge: &github,
+        ledger: ledger.files,
+        refs: ledger.refs,
+        clock: &SystemClock,
+    };
+    let opened = run_open(job, &github, &ports)
+        .map(|opened| line(&opened))
+        .map_err(|error| OpenCliError::Open(Box::new(error)));
+    if let Err(error) = github.into_api().into_transport().close() {
+        left.push(Left::Gh(TOKEN, error));
     }
     opened
 }
@@ -434,24 +305,13 @@ impl fmt::Display for Chain<'_> {
     }
 }
 
-/// Variable `name` as a token; its value is never shown.
-fn token(name: &'static str, value: Option<&OsString>) -> Result<GhToken, OpenCliError> {
-    let refused = |problem| OpenCliError::Variable { name, problem };
-    let text = value
-        .ok_or_else(|| refused(Problem::Missing))?
-        .to_str()
-        .ok_or_else(|| refused(Problem::Invalid))?;
-    GhToken::new(text).map_err(|_invalid| refused(Problem::Invalid))
-}
-
 /// Variable `name` as an id in canonical decimal.
-fn id(name: &'static str, value: Option<&OsString>) -> Result<NonZeroU64, OpenCliError> {
-    let refused = |problem| OpenCliError::Variable { name, problem };
+fn id(name: &'static str, value: Option<&OsStr>) -> Result<NonZeroU64, OpenCliError> {
     value
-        .ok_or_else(|| refused(Problem::Missing))?
+        .ok_or_else(|| refused(name)(Problem::Missing))?
         .to_str()
         .and_then(canonical_id)
-        .ok_or_else(|| refused(Problem::Invalid))
+        .ok_or_else(|| refused(name)(Problem::Invalid))
 }
 
 /// `text` as a positive number: ASCII digits, the first not `0`, within `u64`.
