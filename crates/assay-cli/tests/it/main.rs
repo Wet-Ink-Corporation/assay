@@ -20,6 +20,8 @@ mod exec_surface;
 #[cfg(unix)] // drives a bash script and sets Unix file modes
 mod fetch_by_digest;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod gate;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod gh;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod layering;

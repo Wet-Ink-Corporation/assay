@@ -59,11 +59,11 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
                 other => return Ok(stopped(other)),
             }
         }
-        let out = self.settings.head_tree.join(FINDINGS_OUT);
-        remove_stale(&self.settings.head_tree, Path::new(FINDINGS_OUT))?;
+        let out = self.settings.steps.head_tree.join(FINDINGS_OUT);
+        remove_stale(&self.settings.steps.head_tree, Path::new(FINDINGS_OUT))?;
         let run = capture(
             &mut self.supervisor,
-            &self.settings,
+            &self.settings.steps,
             (BASELINE_CHECK, &self.settings.node, &args),
             plugin.timeout(),
         )?;
