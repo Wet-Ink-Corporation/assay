@@ -13,6 +13,11 @@ use crate::ci::{
 
 /// The run identity `guard` resolves from the event (I2): every later job reads it from
 /// `guard`'s outputs, never from the event payload.
+///
+/// The fields are public and `base_ref` and `default_branch` are plain strings, so the
+/// producer must pass branch names it has already validated: non-empty, with no control
+/// character, as `assay_forge::github::EventPayload::read` returns them.
+/// [`Identity::from_needs`] refuses any other branch name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     /// The PR number.
@@ -77,6 +82,10 @@ impl Identity {
     /// `guard`'s outputs for this identity, in [`OutputName::GUARD`]'s order: `run=true`
     /// (an identity exists only for an event the pipeline runs for), then each field;
     /// `before` only for [`Trigger::Synchronize`].
+    ///
+    /// The branch names are written as given, so they must already be valid (non-empty, no
+    /// control character; see [`Identity`]). [`Outputs::write`](crate::Outputs::write) still
+    /// refuses a line break, and [`Identity::from_needs`] refuses any other invalid name.
     #[must_use]
     pub fn outputs(&self) -> Vec<(OutputName, String)> {
         let flag = |value: bool| if value { "true" } else { "false" }.to_owned();

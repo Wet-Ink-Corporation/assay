@@ -211,16 +211,105 @@ fn refuses_a_pull_request_payload_read_as_a_dispatch() {
 
 /// The opened fixture after `edit`.
 fn opened_with(edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
+    fixture_with("event_opened.json", edit)
+}
+
+/// Fixture `name` after `edit`.
+fn fixture_with(name: &str, edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
     let mut value: serde_json::Value =
-        serde_json::from_slice(&fixture("events/event_opened.json")).expect("JSON");
+        serde_json::from_slice(&fixture(&format!("events/{name}"))).expect("JSON");
     edit(&mut value);
     serde_json::to_vec(&value).expect("JSON")
 }
 
 #[test]
+fn refuses_an_edited_payload_without_changes() {
+    for changes in [None, Some(serde_json::Value::Null)] {
+        let body = fixture_with("event_edited_title.json", |v| {
+            let event = v.as_object_mut().expect("an object");
+            match &changes {
+                None => event.remove("changes"),
+                Some(null) => event.insert("changes".to_owned(), null.clone()),
+            };
+        });
+
+        assert_matches!(
+            EventPayload::read(EventName::PullRequestTarget, body.as_slice()),
+            Err(EventPayloadError::Field("changes")),
+            "{changes:?}"
+        );
+    }
+}
+
+#[test]
+fn refuses_an_edited_payload_whose_base_change_is_null() {
+    let body = fixture_with("event_edited_base.json", |v| {
+        v["changes"]["base"] = serde_json::Value::Null;
+    });
+
+    assert_matches!(
+        EventPayload::read(EventName::PullRequestTarget, body.as_slice()),
+        Err(EventPayloadError::Field("changes.base"))
+    );
+}
+
+#[test]
+fn refuses_an_edited_payload_whose_base_change_is_not_an_object() {
+    let body = fixture_with("event_edited_base.json", |v| {
+        v["changes"]["base"] = "develop".into();
+    });
+
+    assert_matches!(
+        EventPayload::read(EventName::PullRequestTarget, body.as_slice()),
+        Err(EventPayloadError::Shape(_))
+    );
+}
+
+#[test]
+fn refuses_a_synchronize_whose_before_is_not_a_full_commit_id() {
+    let body = fixture_with("event_synchronize.json", |v| {
+        v["before"] = "9049f12".into();
+    });
+
+    assert_matches!(
+        EventPayload::read(EventName::PullRequestTarget, body.as_slice()),
+        Err(EventPayloadError::Field("before"))
+    );
+}
+
+#[test]
+fn refuses_a_dispatch_with_an_empty_default_branch() {
+    let body = fixture_with("event_dispatch.json", |v| {
+        v["repository"]["default_branch"] = "".into();
+    });
+
+    assert_matches!(
+        EventPayload::read(EventName::WorkflowDispatch, body.as_slice()),
+        Err(EventPayloadError::Field("repository.default_branch"))
+    );
+}
+
+#[test]
 fn refuses_a_field_that_does_not_parse_by_its_path() {
     type Edit = fn(&mut serde_json::Value);
-    let cases: [(Edit, &str); 6] = [
+    let cases: [(Edit, &str); 11] = [
+        (
+            |v| v["pull_request"]["base"]["sha"] = "F95F852".into(),
+            "pull_request.base.sha",
+        ),
+        (
+            |v| v["pull_request"]["base"]["repo"] = serde_json::Value::Null,
+            "pull_request.base.repo",
+        ),
+        (|v| v["repository"]["id"] = 0.into(), "repository.id"),
+        (
+            |v| v["pull_request"]["head"]["repo"]["id"] = 0.into(),
+            "pull_request.head.repo.id",
+        ),
+        (
+            |v| v["repository"]["default_branch"] = "".into(),
+            "repository.default_branch",
+        ),
         (|v| v["number"] = 3.into(), "number"),
         (
             |v| v["pull_request"]["head"]["sha"] = "abc".into(),

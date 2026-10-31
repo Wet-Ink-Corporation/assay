@@ -3,7 +3,6 @@
 //! which is a closed set (R3-14).
 
 use serde::Deserialize;
-use serde::de::IgnoredAny;
 use serde_json::{Map, Value};
 
 use super::{
@@ -51,10 +50,35 @@ pub(super) struct PullDto {
     base: EndDto,
 }
 
-/// An `edited` event's changes; only whether `base` is present is read.
+/// An `edited` event's changes; only what `base` says is read.
 #[derive(Debug, Deserialize)]
 pub(super) struct ChangesDto {
-    base: Option<IgnoredAny>,
+    #[serde(default, deserialize_with = "base_change")]
+    base: BaseChange,
+}
+
+/// What `changes.base` says. Only an object is a base change; a present `null` is refused
+/// rather than read as no change (wi-b5affa).
+#[derive(Debug, Default, PartialEq, Eq)]
+enum BaseChange {
+    /// The key is absent (serde's `default`): the edit did not change the base.
+    #[default]
+    Absent,
+    /// `null`, which GitHub does not document.
+    Null,
+    /// An object: the base changed.
+    Changed,
+}
+
+/// A present `changes.base`: `null`, or an object (its fields are not read).
+fn base_change<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<BaseChange, D::Error> {
+    Option::<Map<String, Value>>::deserialize(deserializer).map(|base| {
+        if base.is_some() {
+            BaseChange::Changed
+        } else {
+            BaseChange::Null
+        }
+    })
 }
 
 /// A `pull_request_target` payload.
@@ -90,12 +114,19 @@ impl PullRequestEventDto {
             }
             "reopened" => PullRequestAction::Reopened,
             "ready_for_review" => PullRequestAction::ReadyForReview,
-            "edited" => PullRequestAction::Edited {
-                base_changed: self
+            "edited" => {
+                let changes = self
                     .changes
                     .as_ref()
-                    .is_some_and(|changes| changes.base.is_some()),
-            },
+                    .ok_or(EventPayloadError::Field("changes"))?;
+                PullRequestAction::Edited {
+                    base_changed: match changes.base {
+                        BaseChange::Absent => false,
+                        BaseChange::Changed => true,
+                        BaseChange::Null => return Err(EventPayloadError::Field("changes.base")),
+                    },
+                }
+            }
             other => return Err(EventPayloadError::Action(shown(other))),
         })
     }
