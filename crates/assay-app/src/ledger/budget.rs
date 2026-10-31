@@ -135,4 +135,10 @@ impl CostWindow {
     pub fn records(&self) -> &[CostRecord] {
         &self.records
     }
+
+    /// Every cost record read, in file order, the earlier month first, given up by the window.
+    #[must_use]
+    pub fn into_records(self) -> Vec<CostRecord> {
+        self.records
+    }
 }
