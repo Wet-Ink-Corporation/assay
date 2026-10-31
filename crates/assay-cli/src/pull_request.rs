@@ -1,7 +1,8 @@
 //! `assay-forge`'s object-only repository, lent to the `plan` use case as the PR's objects
 //! (`assay_app::PullRequestObjects`), to `check_local` as the change's patches
 //! (`assay_app::ChangePatches`) and to the eligibility snapshot as the PR range
-//! (`assay_app::RangeObjects`, #58).
+//! (`assay_app::RangeObjects`, #58), and to admit's re-review target as the PR's history
+//! (`assay_app::PriorHistory`, #60 ST-11).
 
 use std::error::Error;
 use std::fmt;
@@ -10,12 +11,14 @@ use std::time::Duration;
 
 use assay_app::{
     ChangePatches, ChangedFiles, CommitId, EntryKind, FilePatch, Hunk, LineSpan, MergeTree,
-    PatchBudget, PullRequestObjects, RangeCommit, RangeListing, RangeObjects, TreeEntry, TreeId,
+    PatchBudget, PriorHistory, PullRequestObjects, RangeCommit, RangeDiffListing, RangeListing,
+    RangeObjects, TreeEntry, TreeId,
 };
 use assay_domain::{FileChange, FileKind, Lines};
 use assay_forge::git::{
     self, Ancestry, ChangeListing, ChangedFile, CommitSha, GitError, LineCount, MergeOutcome,
-    ObjectRepo, ParseShaError, RangeCommits, TreeLimits,
+    ObjectRepo, ParseShaError, RANGE_DIFF_TIMEOUT, RangeCommits, RangeDiffCommits,
+    RangeDiffOutcome, TreeLimits,
 };
 use assay_forge::process::ProcessError;
 
@@ -174,6 +177,57 @@ impl RangeObjects for ForgePullRequest<'_> {
     /// [`ForgeObjectsError`] when git cannot answer, `of` included.
     fn is_ancestor(&self, ancestor: &CommitId, of: &CommitId) -> Result<bool, ForgeObjectsError> {
         Ok(self.repo.ancestry(&sha(ancestor)?, &sha(of)?)? == Ancestry::Ancestor)
+    }
+}
+
+impl PriorHistory for ForgePullRequest<'_> {
+    type Error = ForgeObjectsError;
+
+    /// forge's `ancestry`: `rev-parse --verify` for the previous head's presence, then
+    /// `merge-base --is-ancestor`.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeObjectsError`] when git cannot answer, `head` missing included.
+    fn ancestry(
+        &self,
+        previous: &CommitId,
+        head: &CommitId,
+    ) -> Result<assay_app::Ancestry, ForgeObjectsError> {
+        Ok(match self.repo.ancestry(&sha(previous)?, &sha(head)?)? {
+            Ancestry::Ancestor => assay_app::Ancestry::Ancestor,
+            Ancestry::Rewritten => assay_app::Ancestry::Rewritten,
+            Ancestry::Unreachable => assay_app::Ancestry::Unreachable,
+        })
+    }
+
+    /// forge's `range_diff`, cut off at [`RANGE_DIFF_TIMEOUT`].
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeObjectsError`] when git cannot run or fails.
+    fn range_diff(
+        &self,
+        commits: assay_app::RangeDiffCommits<'_>,
+        limit: usize,
+    ) -> Result<RangeDiffListing, ForgeObjectsError> {
+        let (base, previous, head) = (
+            sha(commits.base)?,
+            sha(commits.previous)?,
+            sha(commits.head)?,
+        );
+        let commits = RangeDiffCommits {
+            base: &base,
+            previous: &previous,
+            head: &head,
+        };
+        Ok(
+            match self.repo.range_diff(commits, limit, RANGE_DIFF_TIMEOUT)? {
+                RangeDiffOutcome::Listed(text) => RangeDiffListing::Listed(text),
+                RangeDiffOutcome::TooLarge => RangeDiffListing::TooLarge,
+                RangeDiffOutcome::TooSlow => RangeDiffListing::TooSlow,
+            },
+        )
     }
 }
 

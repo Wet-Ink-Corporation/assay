@@ -134,10 +134,9 @@ where
     }
     let planned =
         Planned::read(validator, request.plan, request.run_uid).map_err(AdmitError::Plan)?;
-    let tier = match (planned.draft, SpendTier::of(planned.tier)) {
-        (true, _) => return Ok(no_spend(request.plan, NotRunReason::Draft)),
-        (false, None) => return Ok(no_spend(request.plan, NotRunReason::NoLlmTier)),
-        (false, Some(tier)) => tier,
+    let tier = match spend_tier(&planned) {
+        Ok(tier) => tier,
+        Err(reason) => return Ok(no_spend(request.plan, reason)),
     };
     let AdmitPorts {
         ledger,
@@ -160,6 +159,45 @@ where
         planned,
     };
     run.admit(tier)
+}
+
+/// What [`admit`] makes of the plan before it reads any port (#60 ST-11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanStage {
+    /// The run has no LLM stage (a draft, `trivial` or `needs-split`): what [`admit`] outputs
+    /// for it, the plan's document unchanged, with nothing read or taken.
+    NoSpend(Box<Admitted>),
+    /// The run's LLM stage would spend: [`admit`] reads the ledger.
+    Spends,
+}
+
+/// Whether [`admit`] would read any port for `plan`, the plan's `run.json` for `run_uid`.
+///
+/// It reads the plan as [`admit`] reads it and applies [`admit`]'s rule, so a caller reads
+/// nothing it would need only for a run that spends.
+///
+/// # Errors
+///
+/// [`PlanDocument`] when [`admit`] would refuse the plan's document.
+pub fn plan_stage(
+    validator: &ContractValidator,
+    plan: &[u8],
+    run_uid: RunUid,
+) -> Result<PlanStage, PlanDocument> {
+    let planned = Planned::read(validator, plan, run_uid)?;
+    Ok(match spend_tier(&planned) {
+        Ok(_tier) => PlanStage::Spends,
+        Err(reason) => PlanStage::NoSpend(Box::new(no_spend(plan, reason))),
+    })
+}
+
+/// The tier `planned`'s LLM stage spends at, or why it has none.
+const fn spend_tier(planned: &Planned) -> Result<SpendTier, NotRunReason> {
+    match (planned.draft, SpendTier::of(planned.tier)) {
+        (true, _) => Err(NotRunReason::Draft),
+        (false, None) => Err(NotRunReason::NoLlmTier),
+        (false, Some(tier)) => Ok(tier),
+    }
 }
 
 /// The plan's document unchanged: a run with no LLM stage has nothing to admit.

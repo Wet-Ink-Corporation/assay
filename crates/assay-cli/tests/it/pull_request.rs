@@ -1,7 +1,8 @@
 //! `ForgePullRequest` as local mode's `ChangePatches` (#219 R2): one file's diff past forge's
 //! output cap is "not shown", like a text over the patch budget, instead of failing the check.
 //! And as the eligibility snapshot's `RangeObjects` (#58): an "Update branch" merge's parents,
-//! tree and conflict-free merge, read from git objects.
+//! tree and conflict-free merge, read from git objects. And as admit's `PriorHistory` (#60
+//! ST-11): how the previous completed run's head stands to head, and the range-diff between them.
 
 use std::env;
 use std::error::Error;
@@ -11,8 +12,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use assay_app::{
-    ChangePatches, CommitId, FilePatch, MergeTree, PatchBudget, RangeCommit, RangeListing,
-    RangeObjects,
+    Ancestry, ChangePatches, CommitId, FilePatch, MergeTree, PatchBudget, PriorHistory,
+    RangeCommit, RangeDiffCommits, RangeDiffListing, RangeListing, RangeObjects,
 };
 use assay_cli::ForgePullRequest;
 use assay_domain::{FileChange, FileKind, Lines};
@@ -221,5 +222,62 @@ fn an_update_branch_merge_reads_as_a_clean_merge_of_its_parents() -> Result<(), 
         "the PR commit is not on the base"
     );
     assert_eq!(objects.range(&base, &merge, 2)?, RangeListing::TooMany);
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn the_previous_head_reads_as_an_ancestor_a_rewrite_or_unreachable() -> Result<(), Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    let work = scratch.path().join("work");
+    fs::create_dir(&work)?;
+    plain_git(&work, &["init", "--quiet", "--initial-branch=main"])?;
+    fs::write(work.join("lib.rs"), "fn one() {}\n")?;
+    let base = commit(&work, "base")?;
+    plain_git(&work, &["checkout", "--quiet", "-b", "pr"])?;
+    fs::write(work.join("pr.rs"), "fn pr() {}\n")?;
+    let previous = commit(&work, "first")?;
+    fs::write(work.join("pr.rs"), "fn pr() { two() }\n")?;
+    let head = commit(&work, "second")?;
+    plain_git(&work, &["checkout", "--quiet", "-b", "rewritten", "main"])?;
+    fs::write(work.join("pr.rs"), "fn pr() { other() }\n")?;
+    let rewritten = commit(&work, "rewritten")?;
+    let git_dir = scratch.path().join("objects.git");
+    let repo = ObjectRepo::init(
+        &git_dir,
+        GitEnvironment::from_process_env()?,
+        GitLimits::default(),
+    )?;
+    let destination = git_dir.to_str().ok_or("scratch path is not UTF-8")?;
+    plain_git(&work, &["push", "--quiet", destination, "pr", "rewritten"])?;
+    let objects = ForgePullRequest::new(&repo, TreeLimits::default(), Duration::from_secs(60));
+    let absent: CommitId = "e".repeat(40).parse()?;
+    let commits = RangeDiffCommits {
+        base: &base,
+        previous: &previous,
+        head: &head,
+    };
+
+    let ancestries = [
+        objects.ancestry(&previous, &head)?,
+        objects.ancestry(&rewritten, &head)?,
+        objects.ancestry(&absent, &head)?,
+    ];
+    let listing = objects.range_diff(commits, 1 << 20)?;
+    let capped = objects.range_diff(commits, 1)?;
+
+    assert_eq!(
+        ancestries,
+        [
+            Ancestry::Ancestor,
+            Ancestry::Rewritten,
+            Ancestry::Unreachable
+        ]
+    );
+    let RangeDiffListing::Listed(text) = listing else {
+        return Err(format!("range-diff did not list: {listing:?}").into());
+    };
+    assert!(!text.is_empty(), "the second commit is new since the first");
+    assert_eq!(capped, RangeDiffListing::TooLarge);
     Ok(())
 }

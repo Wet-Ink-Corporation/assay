@@ -45,11 +45,27 @@ impl RangeIdentities {
                 }
             }
         }
+        Self::attributed(users, unattributed, clean_merges)
+    }
+
+    /// The identities clause (b)'s one range reading attributed: `users` made a counted commit,
+    /// and `unattributed` says whether one has an author or committer that is no GitHub user. As
+    /// for [`Self::of`], a range with no counted commit counts as unattributed.
+    pub(crate) fn attributed(
+        users: BTreeSet<UserId>,
+        unattributed: bool,
+        clean_merges: HashSet<CommitId>,
+    ) -> Self {
         Self {
             unattributed: unattributed || users.is_empty(),
             users,
             clean_merges,
         }
+    }
+
+    /// A range too large to attribute: it leaves no identity eligible (fail closed).
+    pub(crate) fn unattributable() -> Self {
+        Self::attributed(BTreeSet::new(), true, HashSet::new())
     }
 
     /// Whether `user` authored or committed a counted commit of the range.

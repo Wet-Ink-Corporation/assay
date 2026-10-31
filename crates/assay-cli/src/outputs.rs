@@ -12,7 +12,7 @@ use std::num::NonZeroU64;
 
 use assay_app::{CommitId, UserId};
 
-pub use self::admit::HeldSlot;
+pub use self::admit::{AdmitOutputs, HeldSlot};
 pub use self::gates::{GatesOutputError, gates_from_needs, gates_output};
 pub use self::plan::PlanOutputs;
 pub use self::review::{REVIEW_PLACEHOLDER, ReviewEnd, ReviewReport};

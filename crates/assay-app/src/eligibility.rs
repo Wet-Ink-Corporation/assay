@@ -14,6 +14,7 @@ mod approvals;
 mod commands;
 mod error;
 mod grammar;
+mod identities;
 mod ledger;
 mod ports;
 mod pushes;
@@ -35,6 +36,8 @@ pub use self::commands::{
 use self::commands::{JudgedCommand, applicability, void_cause};
 pub use self::error::{SnapshotStep, StateError};
 pub use self::grammar::{AckedSet, Command, MAX_COMMAND_REASON_CHARS, Parsed, parse_command};
+pub use self::identities::{RangeError, RangeRequest, range_identities};
+use self::identities::{ReadRange, read_range};
 pub use self::ledger::{LedgerSnapshot, LedgerSnapshotError};
 pub use self::ports::{CommandComments, LedgerRecords, MAX_COMMENT_BYTES, SnapshotLedger};
 pub use self::pushes::MAX_PUSH_RECORDS;
@@ -43,7 +46,6 @@ pub use self::range::{
     MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, RangeCommit, RangeListing, RangeObjects,
     TreeId, WEB_FLOW,
 };
-use self::range::{MergeCandidate, attribute, merge_candidates};
 pub(crate) use self::record::{StateRecord, StateRecordIn};
 pub use self::rule::Ineligible;
 use self::rule::{RangeFacts, Rule};
@@ -53,7 +55,6 @@ pub(crate) use self::waive::canonical_json;
 pub use self::waive::{PriorWaivers, WaiverBindings, waiver_events};
 use crate::config::{CommitId, EligibilityLists};
 use crate::forge::Forge;
-use crate::ledger::PushRecord;
 use crate::status::UserId;
 
 /// What the snapshot is taken of.
@@ -121,7 +122,13 @@ where
         .map_err(StateError::ledger(SnapshotStep::PushRecords))?
         .within(MAX_PUSH_RECORDS)
         .ok_or(StateError::TooManyPushRecords)?;
-    let ReadRange { facts, merges } = read_range(ports, request, &pushes)?;
+    let range = RangeRequest {
+        base_sha: request.base_sha,
+        head_sha: request.head_sha,
+        pushes: &pushes,
+    };
+    let ReadRange { facts, merges } =
+        read_range(ports.objects, ports.forge, &range).map_err(StateError::of_range)?;
     let commits = match facts {
         RangeFacts::TooLarge => CommitRange::NeedsSplit,
         RangeFacts::Attributed { .. } => CommitRange::Within,
@@ -155,81 +162,6 @@ where
         approvals,
         commands,
     })
-}
-
-/// What [`read_range`] found.
-struct ReadRange {
-    /// What the range says about (b).
-    facts: RangeFacts,
-    /// The clean merges from base of the range, each with its first parent.
-    merges: BTreeMap<CommitId, CommitId>,
-}
-
-/// Lists, attributes and classifies the range.
-fn read_range<F, G, L, C>(
-    ports: &StatePorts<'_, F, G, L, C>,
-    request: &StateRequest<'_>,
-    pushes: &[PushRecord],
-) -> Result<ReadRange, PortsError<F, G, L, C>>
-where
-    F: Forge,
-    G: RangeObjects,
-    L: SnapshotLedger,
-    C: CommandComments,
-{
-    let listing = ports
-        .objects
-        .range(request.base_sha, request.head_sha, MAX_RANGE_COMMITS)
-        .map_err(StateError::range(SnapshotStep::RangeList))?;
-    let commits = match listing {
-        RangeListing::Listed(commits) if commits.len() <= MAX_RANGE_COMMITS => commits,
-        RangeListing::Listed(_) | RangeListing::TooMany => {
-            return Ok(ReadRange {
-                facts: RangeFacts::TooLarge,
-                merges: BTreeMap::new(),
-            });
-        }
-    };
-    let mut merges = BTreeMap::new();
-    for candidate in merge_candidates(&commits, pushes) {
-        if is_clean_merge(ports.objects, request.base_sha, candidate)
-            .map_err(StateError::range(SnapshotStep::MergeCheck))?
-        {
-            // The map outlives `commits`' borrow: it keys the push records' exemption.
-            merges.insert(candidate.commit.clone(), candidate.ours.clone());
-        }
-    }
-    // The port takes the ids alone; at most 250 of them.
-    let ids: Vec<CommitId> = commits.iter().map(|commit| commit.commit.clone()).collect();
-    let identities = ports
-        .forge
-        .commit_identities(&ids)
-        .map_err(StateError::forge(SnapshotStep::Identities))?;
-    let attribution = attribute(&commits, &identities, &merges)
-        .map_err(|_mismatch| StateError::IdentityMismatch)?;
-    Ok(ReadRange {
-        facts: RangeFacts::Attributed {
-            users: attribution.users,
-            unattributed: attribution.unattributed,
-        },
-        merges,
-    })
-}
-
-/// Whether `candidate` is a clean merge from base: its second parent is an ancestor of `base`
-/// and its tree is the conflict-free `git merge-tree --write-tree` of its parents.
-fn is_clean_merge<G: RangeObjects>(
-    objects: &G,
-    base: &CommitId,
-    candidate: MergeCandidate<'_>,
-) -> Result<bool, G::Error> {
-    if !objects.is_ancestor(candidate.theirs, base)? {
-        return Ok(false);
-    }
-    match objects.merge_tree(candidate.ours, candidate.theirs)? {
-        MergeTree::Clean(merged) => Ok(objects.tree(candidate.commit)? == merged),
-        MergeTree::Conflicted => Ok(false),
-    }
 }
 
 /// Whether `push` pushed a clean merge from base onto its first parent.

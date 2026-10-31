@@ -339,7 +339,7 @@ fn an_unjudged_carry_set_keeps_every_finding_as_last_verified() -> Result<(), Bo
 }
 
 /// A published run carrying `set`: its bundle's bytes and the pointer to them.
-fn published(set: CarrySet) -> Result<(Run, Vec<u8>, EvidencePointer), Box<dyn Error>> {
+pub(crate) fn published(set: CarrySet) -> Result<(Run, Vec<u8>, EvidencePointer), Box<dyn Error>> {
     let mut run = Run::new()?;
     run.carry = set;
     let world = stamped()?;
@@ -380,7 +380,7 @@ fn prior(
 }
 
 /// Two carried findings, one with a verdict and a line range.
-fn two_carried() -> Result<CarrySet, Box<dyn Error>> {
+pub(crate) fn two_carried() -> Result<CarrySet, Box<dyn Error>> {
     let first = [carried(0, Severity::Blocker)?, carried(1, Severity::Minor)?];
     let runner = Scripted::answering([
         (verdict("confirmed", "still unguarded"), 1),
