@@ -348,25 +348,29 @@ impl World {
 
     /// decide-only granted a retry of `role` on the PR's head.
     pub(crate) fn granting(self, role: Role) -> Self {
-        let grant = RetryGrant {
-            run_uid: RunUid {
-                repo_id: nz(REPO_ID),
-                run_id: nz(8),
-                run_attempt: nz(1),
-            },
-            repo: REPO.to_owned(),
-            pr: nz(PR),
-            head_sha: head().parse().expect("40 hex digits"),
-            role,
-            at: at("2026-10-19T11:00:00.000Z"),
-        };
-        grant_retry(&self.refs, &grant).expect("the fake refs take the grant");
+        grant_retry(&self.refs, &retry_grant(role)).expect("the fake refs take the grant");
         self
     }
 
     /// The names of the refs held now.
     pub(crate) fn refs_held(&self) -> Vec<String> {
         self.refs.names()
+    }
+}
+
+/// The retry grant decide-only records for `role` on the PR's head.
+pub(crate) fn retry_grant(role: Role) -> RetryGrant {
+    RetryGrant {
+        run_uid: RunUid {
+            repo_id: nz(REPO_ID),
+            run_id: nz(8),
+            run_attempt: nz(1),
+        },
+        repo: REPO.to_owned(),
+        pr: nz(PR),
+        head_sha: head().parse().expect("40 hex digits"),
+        role,
+        at: at("2026-10-19T11:00:00.000Z"),
     }
 }
 

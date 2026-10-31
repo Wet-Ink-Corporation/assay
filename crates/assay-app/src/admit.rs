@@ -10,7 +10,9 @@
 //! by compare-and-set before waiting up to ten minutes (R3-06); holding it, read the costs and
 //! slots again (its own lease left out) and apply the budget gate again, so reservations made
 //! during the wait count, releasing the slot by compare-and-set and deferring for budget if that
-//! defers (R3-27); write the `reserved` record;
+//! defers (R3-27); a price above what the lease reserves spends at the price the lease was taken
+//! for while that still fits, and otherwise releases the slot and defers with `slot-busy` (#300);
+//! write the `reserved` record;
 //! consume a waiting retry grant (R3-14); and output the run description with `budget`.
 //!
 //! A deferral (`budget-deferred` or `slot-busy`, never one for the other) writes the ledger's
@@ -260,6 +262,7 @@ where
                     hold,
                     reaped: taken.reaped,
                     tier,
+                    leased: priced,
                     pack,
                 };
                 self.after_slot(holding)
