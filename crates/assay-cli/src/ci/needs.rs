@@ -120,6 +120,18 @@ impl fmt::Display for JobResult {
     }
 }
 
+impl From<JobResult> for assay_app::JobResult {
+    /// The same result, as `decide` reads it.
+    fn from(result: JobResult) -> Self {
+        match result {
+            JobResult::Success => Self::Success,
+            JobResult::Failure => Self::Failure,
+            JobResult::Cancelled => Self::Cancelled,
+            JobResult::Skipped => Self::Skipped,
+        }
+    }
+}
+
 /// One upstream job: its result and the outputs it wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upstream {

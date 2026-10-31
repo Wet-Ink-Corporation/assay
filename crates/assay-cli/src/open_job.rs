@@ -12,12 +12,10 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::num::NonZeroU64;
-use std::thread;
-use std::time::{Duration, SystemTime};
 
 use assay_app::{
-    AppId, LedgerTime, OpenClock, OpenError, OpenPorts, Opened, ParseLedgerTimeError, PushAppended,
-    PushKind, Stamped, Unlock, UserId,
+    AppId, OpenError, OpenPorts, Opened, ParseLedgerTimeError, PushAppended, PushKind, Stamped,
+    Unlock, UserId,
 };
 use assay_cli::outputs::Identity;
 use assay_cli::{
@@ -32,7 +30,7 @@ use assay_forge::github::{
 use crate::doctor::write_chain;
 use crate::ledger_job::{
     self, LEDGER_TOKEN, LedgerJob, LedgerPorts, LedgerSetupError, LedgerTransport, Left, NEEDS,
-    Problem, Programs, VariableRefusal, ledger_repo,
+    Problem, Programs, SystemClock, VariableRefusal, ledger_repo,
 };
 use crate::status_pr::{APP_ID, BOT_ID, TOKEN};
 
@@ -126,27 +124,6 @@ impl fmt::Display for OpenCliError {
 
 /// How `assay open` ended: the check opened, as one line, or why it was not.
 pub(crate) type Ended = ledger_job::Ended<OpenCliError>;
-
-/// The system clock for the lock's lease, and a real pause between lock attempts.
-struct SystemClock;
-
-impl OpenClock for SystemClock {
-    type Error = ParseLedgerTimeError;
-
-    fn now(&self) -> Result<LedgerTime, ParseLedgerTimeError> {
-        LedgerTime::from_system_time(SystemTime::now())
-    }
-
-    /// 2, 4 and then 8 seconds: 14 in all, well under the lock's 2-minute TTL.
-    fn pause(&self, retry: u8) {
-        let seconds = match retry {
-            0 | 1 => 2,
-            2 => 4,
-            _ => 8,
-        };
-        thread::sleep(Duration::from_secs(seconds));
-    }
-}
 
 /// What open reads before it builds a port.
 struct Prepared {
@@ -307,19 +284,5 @@ impl fmt::Display for Chain<'_> {
 
 /// Variable `name` as an id in canonical decimal.
 fn id(name: &'static str, value: Option<&OsStr>) -> Result<NonZeroU64, OpenCliError> {
-    value
-        .ok_or_else(|| refused(name)(Problem::Missing))?
-        .to_str()
-        .and_then(canonical_id)
-        .ok_or_else(|| refused(name)(Problem::Invalid))
-}
-
-/// `text` as a positive number: ASCII digits, the first not `0`, within `u64`.
-fn canonical_id(text: &str) -> Option<NonZeroU64> {
-    let canonical = text
-        .bytes()
-        .next()
-        .is_some_and(|first| matches!(first, b'1'..=b'9'))
-        && text.bytes().all(|byte| byte.is_ascii_digit());
-    if canonical { text.parse().ok() } else { None }
+    ledger_job::id(value).map_err(refused(name))
 }

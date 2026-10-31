@@ -83,9 +83,17 @@ pub enum OutputName {
     Degrade,
     /// admit: `pack_digest`, the sha256 of the admitted `context-pack.json`.
     PackDigest,
+    /// decide: `bundle`, `true` when it wrote `run-inputs.json` for the upload step.
+    Bundle,
+    /// decide: `bundle_digest`, the sha256 of the `run-inputs.json` it wrote; written with
+    /// `bundle=true` only.
+    BundleDigest,
 }
 
 impl OutputName {
+    /// The outputs `decide` writes (#60 ST-14), in order.
+    pub const DECIDE: [Self; 2] = [Self::Bundle, Self::BundleDigest];
+
     /// The outputs `guard` writes.
     pub const GUARD: [Self; 11] = [
         Self::Run,
@@ -192,6 +200,8 @@ impl OutputName {
             Self::ReservedAeu => "reserved_aeu",
             Self::Degrade => "degrade",
             Self::PackDigest => "pack_digest",
+            Self::Bundle => "bundle",
+            Self::BundleDigest => "bundle_digest",
         }
     }
 }

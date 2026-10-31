@@ -32,6 +32,11 @@
 //! writes the admitted documents into `<dir>` and admit's outputs to `GITHUB_OUTPUT`.
 //! `assay release --config <plugins-toml>` (#60 ST-10) releases the review slot `admit` holds
 //! by compare-and-set and writes the run's `final` cost record; with no slot it exits 0 at once.
+//! `assay decide --config <plugins-toml> --artifacts <dir> --out <dir>` (#60 ST-14) refuses a
+//! re-run, authenticates the run's artifacts and writes its state and, for an authenticated
+//! run, its `run-inputs.json` bundle into `<dir>` and decide's outputs to `GITHUB_OUTPUT`;
+//! `assay publish --config <plugins-toml> --state <dir>` then publishes that state after the
+//! upload step, confirming the upload by sha256 before the evidence pointer is written (D5 A).
 //! `assay reconcile [--ledger]` (#73) refuses any run attempt but the first (R3-05), then stops
 //! with exit 2 until the live GitHub transport (#273) exists. With no arguments it exits
 //! successfully without doing anything.
@@ -39,12 +44,14 @@
 mod admit_job;
 mod bundle;
 mod check;
+mod decide_job;
 mod doctor;
 mod gate;
 mod guard_job;
 mod ledger_job;
 mod open_job;
 mod plan_job;
+mod publish_job;
 mod reconcile;
 mod release;
 mod review;
@@ -95,6 +102,12 @@ fn main() -> ExitCode {
     }
     if command == "release" {
         return run_release(args);
+    }
+    if command == "decide" {
+        return run_decide(args);
+    }
+    if command == "publish" {
+        return run_publish(args);
     }
     if command == "review" {
         return run_review(args);
@@ -266,6 +279,57 @@ fn run_admit(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         gh: GhEnvironment::from_process_env(),
     };
     let ended = admit_job::run(args, variables);
+    print_ended(ended.line, &ended.left)
+}
+
+/// The tokens and ids `assay decide` and `assay publish` both read.
+fn decide_variables() -> decide_job::CommonVariables {
+    use decide_job::Variable;
+    decide_job::CommonVariables {
+        needs: env::var_os(Variable::Needs.name()),
+        token: env::var_os(Variable::Token.name()),
+        ledger_token: env::var_os(Variable::LedgerToken.name()),
+        run_token: env::var_os(Variable::RunToken.name()),
+        app_id: env::var_os(Variable::AppId.name()),
+        bot_id: env::var_os(Variable::BotId.name()),
+        path: env::var_os("PATH"),
+        gh: GhEnvironment::from_process_env(),
+    }
+}
+
+/// The run's variables.
+fn run_variables() -> RunVariables {
+    RunVariables {
+        run_id: env::var_os("GITHUB_RUN_ID"),
+        run_attempt: env::var_os("GITHUB_RUN_ATTEMPT"),
+        repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
+        repository: env::var_os("GITHUB_REPOSITORY"),
+    }
+}
+
+/// `assay decide` (#60 ST-14): exit 0 once decide's state (and, for a decided run, its bundle)
+/// and its outputs are written and its line printed; 2 when it refuses, cannot decide or cannot
+/// write, or a scratch directory is left behind. A refusal of the run is a state, not exit 2.
+fn run_decide(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = decide_job::DecideVariables {
+        run: run_variables(),
+        output: env::var_os(decide_job::Variable::Output.name()),
+        common: decide_variables(),
+    };
+    let ended = decide_job::run(args, variables);
+    print_ended(ended.line, &ended.left)
+}
+
+/// `assay publish` (#60 ST-14): exit 0 once what decide wrote is published (or, for a silent
+/// run, nothing is) and its line printed; 2 when it refuses or cannot publish, or a scratch
+/// directory is left behind.
+fn run_publish(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = publish_job::PublishVariables {
+        run: run_variables(),
+        persist: env::var_os(decide_job::Variable::Persist.name()),
+        common: decide_variables(),
+    };
+    let ended = publish_job::run(args, variables);
     print_ended(ended.line, &ended.left)
 }
 
