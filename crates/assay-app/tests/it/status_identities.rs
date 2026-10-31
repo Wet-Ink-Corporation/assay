@@ -1,18 +1,23 @@
 //! The base P10 identity lists `assay status` reports the viewer against (#273, 03 §1):
 //! `.assay/owners` and `.assay/agents` read at a base commit, absent files naming nobody, and
-//! anything else refused rather than guessed at (wi-b5affa).
+//! anything else refused rather than guessed at (wi-b5affa). The files are parsed by
+//! `EligibilityLists::parse` (#305), whose own rules `eligibility_lists.rs` pins; these tests pin
+//! that `base_identities` refuses at least what it refused with its former parser.
 
 use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    BaseIdentitiesError, CommitId, Identities, IdentitiesConfigError, UserId, base_identities,
+    BaseIdentitiesError, CommitId, Identities, ListFile, ListName, ListsError, UserId,
+    base_identities,
 };
 
 use crate::plan_fakes::{BASE, FakePr};
 
 const OWNERS: &str = ".assay/owners";
 const AGENTS: &str = ".assay/agents";
+/// The lists `.assay/owners` must hold besides `owners`.
+const OTHER_OWNERS_LISTS: &str = "approvers = []\nmaintainers = []\n";
 
 /// The base commit.
 fn base() -> CommitId {
@@ -55,7 +60,7 @@ maintainers = [{ id = 124330161, login = "Ryan-Britton" }]
         ),
         (
             AGENTS,
-            r#"agents = [{ id = 124330161, login = "Ryan-Britton" }, { id = 13, login = "helper[bot]" }]"#,
+            r#"agents = [{ id = 124330161, login = "Ryan-Britton" }, { id = 13, login = "helper" }]"#,
         ),
     ]);
 
@@ -71,19 +76,29 @@ maintainers = [{ id = 124330161, login = "Ryan-Britton" }]
     );
 }
 
+/// #305: the former parser read a missing list as empty; the one parser requires every list of
+/// a present file, the stricter rule, so an empty file is refused too.
 #[test]
-fn a_list_may_be_left_out() {
-    let pr = with(&[(OWNERS, "approvers = [{ id = 12, login = \"approver\" }]\n")]);
+fn a_list_left_out_of_a_present_file_is_refused() {
+    for (path, text, file) in [
+        (
+            OWNERS,
+            "approvers = [{ id = 12, login = \"approver\" }]\n",
+            ListFile::Owners,
+        ),
+        (OWNERS, "", ListFile::Owners),
+        (AGENTS, "", ListFile::Agents),
+    ] {
+        let refused = refusal(&[(path, text)]);
 
-    let identities = base_identities(&pr, &base());
-
-    assert_eq!(
-        identities.expect("read"),
-        Identities {
-            privileged: users(&[12]),
-            agents: BTreeSet::new(),
-        }
-    );
+        assert!(
+            matches!(
+                &refused,
+                BaseIdentitiesError::Lists(ListsError::Toml { file: refused, .. }) if *refused == file
+            ),
+            "{path}: {text:?}: {refused:?}"
+        );
+    }
 }
 
 /// What `base_identities` says about a base holding `files`.
@@ -107,21 +122,25 @@ fn a_list_that_does_not_parse_exactly_is_refused_with_its_file() {
         (AGENTS, "not toml"),
     ];
     for (path, text) in cases {
+        let file = if path == OWNERS {
+            ListFile::Owners
+        } else {
+            ListFile::Agents
+        };
         let refused = refusal(&[(path, text)]);
 
         assert!(
             matches!(
                 &refused,
-                BaseIdentitiesError::Config {
-                    path: file,
-                    source: IdentitiesConfigError::Syntax(_),
-                } if *file == path
+                BaseIdentitiesError::Lists(ListsError::Toml { file: refused, .. }) if *refused == file
             ),
             "{path}: {text:?}: {refused:?}"
         );
     }
 }
 
+/// A zero id is refused by the id's type (`Toml`), a bad login by the login rule; #305 adds the
+/// `[bot]` suffix the former parser accepted.
 #[test]
 fn a_zero_id_or_a_login_github_would_not_give_is_refused() {
     let cases = [
@@ -130,74 +149,75 @@ fn a_zero_id_or_a_login_github_would_not_give_is_refused() {
         ("owners = [{ id = 11, login = \"-a\" }]\n", "login"),
         ("owners = [{ id = 11, login = \"a b\" }]\n", "login"),
         ("owners = [{ id = 11, login = \"a[bot]x\" }]\n", "login"),
+        ("owners = [{ id = 11, login = \"helper[bot]\" }]\n", "login"),
         (
             "owners = [{ id = 11, login = \"a1234567890123456789012345678901234567890\" }]\n",
             "login",
         ),
     ];
     for (text, what) in cases {
-        let refused = refusal(&[(OWNERS, text)]);
+        let refused = refusal(&[(OWNERS, &format!("{text}{OTHER_OWNERS_LISTS}"))]);
 
         let expected = match &refused {
-            BaseIdentitiesError::Config {
-                source: IdentitiesConfigError::ZeroId,
+            BaseIdentitiesError::Lists(ListsError::Toml {
+                file: ListFile::Owners,
                 ..
-            } => "0",
-            BaseIdentitiesError::Config {
-                source: IdentitiesConfigError::Login { .. },
-                ..
-            } => "login",
+            }) => "0",
+            BaseIdentitiesError::Lists(ListsError::Login {
+                list: ListName::Owners,
+                id,
+            }) if id.0.get() == 11 => "login",
             _ => "something else",
         };
         assert_eq!(expected, what, "{text:?}: {refused:?}");
     }
 }
 
+/// An id twice in one file, in one list or two, is refused; #305 names each case.
 #[test]
 fn an_id_listed_twice_is_refused() {
+    let id = |refused: &BaseIdentitiesError<_>| match refused {
+        BaseIdentitiesError::Lists(
+            ListsError::MaintainerPrivileged { id }
+            | ListsError::OwnerApprover { id }
+            | ListsError::Repeated {
+                list: ListName::Owners | ListName::Agents,
+                id,
+            },
+        ) => Some(id.0.get()),
+        _ => None,
+    };
     for text in [
-        "owners = [{ id = 11, login = \"a\" }]\nmaintainers = [{ id = 11, login = \"a\" }]\n",
-        "owners = [{ id = 11, login = \"a\" }]\napprovers = [{ id = 11, login = \"a\" }]\n",
-        "owners = [{ id = 11, login = \"a\" }, { id = 11, login = \"b\" }]\n",
+        "owners = [{ id = 11, login = \"a\" }]\napprovers = []\nmaintainers = [{ id = 11, login = \"a\" }]\n",
+        "owners = [{ id = 11, login = \"a\" }]\napprovers = [{ id = 11, login = \"a\" }]\nmaintainers = []\n",
+        "owners = [{ id = 11, login = \"a\" }, { id = 11, login = \"b\" }]\napprovers = []\nmaintainers = []\n",
     ] {
         let refused = refusal(&[(OWNERS, text)]);
 
-        assert!(
-            matches!(
-                refused,
-                BaseIdentitiesError::Config {
-                    path: OWNERS,
-                    source: IdentitiesConfigError::Repeated { id: 11 },
-                }
-            ),
-            "{text:?}: {refused:?}"
-        );
+        assert_eq!(id(&refused), Some(11), "{text:?}: {refused:?}");
     }
     let agents = refusal(&[(
         AGENTS,
         "agents = [{ id = 13, login = \"a\" }, { id = 13, login = \"a\" }]\n",
     )]);
-    assert!(
-        matches!(
-            agents,
-            BaseIdentitiesError::Config {
-                path: AGENTS,
-                source: IdentitiesConfigError::Repeated { id: 13 },
-            }
-        ),
-        "{agents:?}"
-    );
+    assert_eq!(id(&agents), Some(13), "{agents:?}");
 }
 
 #[test]
 fn an_agent_that_is_privileged_is_refused() {
     let refused = refusal(&[
-        (OWNERS, "approvers = [{ id = 12, login = \"approver\" }]\n"),
+        (
+            OWNERS,
+            "owners = []\napprovers = [{ id = 12, login = \"approver\" }]\nmaintainers = []\n",
+        ),
         (AGENTS, "agents = [{ id = 12, login = \"approver\" }]\n"),
     ]);
 
     assert!(
-        matches!(refused, BaseIdentitiesError::AgentPrivileged { id: 12 }),
+        matches!(
+            &refused,
+            BaseIdentitiesError::Lists(ListsError::AgentPrivileged { id }) if id.0.get() == 12
+        ),
         "{refused:?}"
     );
 }
@@ -248,7 +268,7 @@ fn a_config_directory_that_is_a_symlink_or_submodule_is_refused() {
 
 #[test]
 fn a_list_over_the_cap_is_refused_unread_and_one_at_it_is_read() {
-    let text = "approvers = [{ id = 12, login = \"approver\" }]\n";
+    let text = "owners = []\napprovers = [{ id = 12, login = \"approver\" }]\nmaintainers = []\n";
     let mut at = FakePr::new();
     at.write_listed_as((BASE, OWNERS), text.as_bytes(), 65_536);
     let mut over = FakePr::new();

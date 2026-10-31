@@ -4,7 +4,8 @@
 //! `owners` and `approvers` list privileged identities only; `maintainers` lists the owner's daily
 //! account, which may author and push but is never eligible; `agents` lists agent identities.
 //! Numeric ids are authoritative; logins are for display. A file whose lists contradict each
-//! other is refused rather than read one way or the other (wi-b5affa).
+//! other is refused rather than read one way or the other (wi-b5affa). This is the one parser of
+//! both files: `status`'s `base_identities` reads them through it too (#305).
 
 use std::collections::BTreeSet;
 use std::num::NonZeroU64;
@@ -118,6 +119,13 @@ pub enum ListsError {
         /// The id the login belongs to.
         id: UserId,
     },
+    /// An id is in both `owners` and `approvers`: a file that lists one account twice is
+    /// refused rather than read one way (wi-b5affa).
+    #[error("user {} is in both `owners` and `approvers`", id.0)]
+    OwnerApprover {
+        /// The id.
+        id: UserId,
+    },
     /// An id is a maintainer and also in `owners` or `approvers` (05 §7).
     #[error("user {} is a maintainer and also privileged", id.0)]
     MaintainerPrivileged {
@@ -171,8 +179,9 @@ impl EligibilityLists {
     ///
     /// # Errors
     ///
-    /// [`ListsError`] for a file over [`MAX_LISTS_BYTES`], one that does not parse, a list over
-    /// [`MAX_LIST_ENTRIES`], a repeated id, a login GitHub would not accept, or a maintainer or
+    /// [`ListsError`] for a file over [`MAX_LISTS_BYTES`], one that does not parse (an empty
+    /// file included: every list is required), a list over [`MAX_LIST_ENTRIES`], a repeated id,
+    /// a login GitHub would not accept, an owner who is also an approver, or a maintainer or
     /// agent that is also in `owners` or `approvers`.
     ///
     /// # Examples
@@ -194,6 +203,14 @@ impl EligibilityLists {
         if let Some(text) = agents {
             let dto: AgentsDto = read(ListFile::Agents, text)?;
             lists.agents = identities(ListName::Agents, dto.agents)?;
+        }
+        if let Some(id) = lists
+            .owners
+            .iter()
+            .map(|identity| identity.id)
+            .find(|&id| find(&lists.approvers, id).is_some())
+        {
+            return Err(ListsError::OwnerApprover { id });
         }
         if let Some(id) = lists.first_privileged_in(&lists.maintainers) {
             return Err(ListsError::MaintainerPrivileged { id });
@@ -306,9 +323,11 @@ fn identities(list: ListName, entries: Vec<IdentityDto>) -> Result<Vec<Identity>
     Ok(identities)
 }
 
-/// Whether `login` is 1 to 39 ASCII letters, digits and hyphens, as GitHub allows.
+/// Whether `login` is 1 to 39 ASCII letters, digits and hyphens, not starting with a hyphen, as
+/// GitHub allows a user's login (an App's `[bot]` login is refused: agents are users, 0005).
 fn is_login(login: &str) -> bool {
     (1..=MAX_LOGIN_CHARS).contains(&login.len())
+        && !login.starts_with('-')
         && login
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')

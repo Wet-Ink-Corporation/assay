@@ -205,7 +205,8 @@ const VARIABLES: [(&str, &str); 3] = [
     ("ASSAY_VERDICT_BOT_ID", BOT_ID),
 ];
 
-const OWNERS: &str = "owners = [{ id = 11, login = \"owner\" }]\n";
+const OWNERS: &str =
+    "owners = [{ id = 11, login = \"owner\" }]\napprovers = []\nmaintainers = []\n";
 
 #[test]
 fn the_named_prs_status_is_read_through_gh_as_a_valid_document() -> Result<(), Box<dyn Error>> {

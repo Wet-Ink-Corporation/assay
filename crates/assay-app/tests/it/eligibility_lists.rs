@@ -138,6 +138,93 @@ fn a_login_github_would_not_accept_is_refused() {
     );
 }
 
+/// The login rule both former parsers held (#305): 1 to 39 ASCII letters, digits and hyphens,
+/// not starting with a hyphen, and no `[bot]` suffix (03 §1).
+#[test]
+fn every_login_github_would_not_give_a_listed_user_is_refused() {
+    for login in [
+        "",
+        "-a",
+        "a b",
+        "a[bot]x",
+        "helper[bot]",
+        "a1234567890123456789012345678901234567890",
+    ] {
+        let agents = format!("agents = [{{ id = 5, login = \"{login}\" }}]");
+
+        let parsed = EligibilityLists::parse(None, Some(&agents));
+
+        assert!(
+            matches!(&parsed, Err(ListsError::Login {
+                list: ListName::Agents,
+                id
+            }) if *id == user(5)),
+            "{login:?}: {parsed:?}"
+        );
+    }
+}
+
+#[test]
+fn an_owner_who_is_also_an_approver_is_refused() {
+    let owners = r#"
+owners = [{ id = 11, login = "a" }]
+approvers = [{ id = 11, login = "a" }]
+maintainers = []
+"#;
+
+    let parsed = EligibilityLists::parse(Some(owners), None);
+
+    assert!(
+        matches!(&parsed, Err(ListsError::OwnerApprover { id }) if *id == user(11)),
+        "{parsed:?}"
+    );
+}
+
+/// Moved from `status_identities.rs` with `config/identities.rs` (#305): each file is read
+/// exactly, and an empty one names no list, so it is refused rather than read as empty.
+#[test]
+fn a_file_that_does_not_parse_exactly_is_refused_with_its_file() {
+    let cases = [
+        (ListFile::Owners, "admins = []\n"),
+        (ListFile::Owners, ""),
+        (
+            ListFile::Owners,
+            "approvers = []\nmaintainers = []\nowners = [{ id = 11 }]\n",
+        ),
+        (
+            ListFile::Owners,
+            "approvers = []\nmaintainers = []\nowners = [{ id = 11, login = \"a\", name = \"A\" }]\n",
+        ),
+        (
+            ListFile::Owners,
+            "approvers = []\nmaintainers = []\nowners = [{ id = -1, login = \"a\" }]\n",
+        ),
+        (
+            ListFile::Owners,
+            "approvers = []\nmaintainers = []\nowners = \"11\"\n",
+        ),
+        (
+            ListFile::Owners,
+            "owners = []\nowners = []\napprovers = []\nmaintainers = []\n",
+        ),
+        (ListFile::Agents, ""),
+        (ListFile::Agents, "owners = [{ id = 11, login = \"a\" }]\n"),
+        (ListFile::Agents, "agents = [11]\n"),
+        (ListFile::Agents, "not toml"),
+    ];
+    for (file, text) in cases {
+        let parsed = match file {
+            ListFile::Owners => EligibilityLists::parse(Some(text), None),
+            ListFile::Agents => EligibilityLists::parse(None, Some(text)),
+        };
+
+        assert!(
+            matches!(&parsed, Err(ListsError::Toml { file: refused, .. }) if *refused == file),
+            "{file:?}: {text:?}: {parsed:?}"
+        );
+    }
+}
+
 #[test]
 fn a_list_past_its_cap_is_refused() {
     let entries: Vec<String> = (1..=65)

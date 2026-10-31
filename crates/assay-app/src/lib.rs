@@ -78,10 +78,10 @@ pub use check::{
 pub use config::{
     Adapter, Argv, AssaySettings, BuiltinAllowlist, BuiltinKind, BuiltinsError, CommitId,
     ConfigError, DEFAULT_TIMEOUT_SECS, EligibilityLists, ExactVersion, GateName, GlobsConfigError,
-    IdentitiesConfigError, Identity, ListFile, ListName, ListsError, MAX_BUILTIN_NAME_BYTES,
-    MAX_BUILTINS, MAX_LIST_ENTRIES, MAX_LISTS_BYTES, MAX_TIMEOUT_SECS, ParseCommitIdError,
-    ParseDigestError, ParsePinError, Pin, Plugin, PluginsConfig, RunnerKind, Sha256Digest, Step,
-    TomlError, parse_globs,
+    Identity, ListFile, ListName, ListsError, MAX_BUILTIN_NAME_BYTES, MAX_BUILTINS,
+    MAX_LIST_ENTRIES, MAX_LISTS_BYTES, MAX_TIMEOUT_SECS, ParseCommitIdError, ParseDigestError,
+    ParsePinError, Pin, Plugin, PluginsConfig, RunnerKind, Sha256Digest, Step, TomlError,
+    parse_globs,
 };
 pub use contract::{
     Contract, ContractSchemaError, ContractValidator, MAX_DOCUMENT_BYTES, ReadContractError,
@@ -195,10 +195,10 @@ pub use specialists::{
 pub use status::{
     AppId, BaseIdentitiesError, BundleProblem, CheckView, Detail, FetchedAt, Identities,
     InvalidFetchedAt, LocalStatusError, LocalStatusRequest, MAX_CHECK_RUNS, MAX_FINDINGS,
-    MAX_IDENTITY_FILE_BYTES, MAX_REASONS, ObservedConclusion, PullSelector, PullView,
-    ReviewCommentView, StatusError, StatusFailure, StatusForge, StatusPorts, StatusReport,
-    StatusRepository, StatusRequest, StatusStep, StatusUnreadable, StoredLocalReport, UserId,
-    Viewer, base_identities, is_tree_id, local_status, read_pull, status,
+    MAX_REASONS, ObservedConclusion, PullSelector, PullView, ReviewCommentView, StatusError,
+    StatusFailure, StatusForge, StatusPorts, StatusReport, StatusRepository, StatusRequest,
+    StatusStep, StatusUnreadable, StoredLocalReport, UserId, Viewer, base_identities, is_tree_id,
+    local_status, read_pull, status,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};

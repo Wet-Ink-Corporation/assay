@@ -26,7 +26,7 @@ use assay_domain::Rubric;
 use thiserror::Error;
 
 pub use self::fetched_at::{FetchedAt, InvalidFetchedAt};
-pub use self::identities::{BaseIdentitiesError, MAX_IDENTITY_FILE_BYTES, base_identities};
+pub use self::identities::{BaseIdentitiesError, base_identities};
 pub use self::local::{
     LocalStatusError, LocalStatusRequest, StoredLocalReport, is_tree_id, local_status,
 };
