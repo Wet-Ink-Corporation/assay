@@ -60,7 +60,7 @@ pub(crate) fn run(
         return Err(ReviewCliError::Usage);
     }
     let path = output.ok_or(ReviewCliError::OutputVariable)?;
-    let file = open_output(path).map_err(ReviewCliError::OutputFile)?;
+    let file = open_output(&path).map_err(ReviewCliError::OutputFile)?;
     let mut outputs = Outputs::new(file);
     for (name, value) in REVIEW_PLACEHOLDER {
         outputs.write(name, value).map_err(ReviewCliError::Output)?;

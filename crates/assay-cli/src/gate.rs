@@ -284,7 +284,7 @@ pub(crate) fn run(
     let output = variables.output.ok_or(GateCliError::OutputVariable)?;
     let Placed { config, head, out } =
         refuse_paths(&args.config, &args.head, &absolute(&args.out)?)?;
-    let output = open_output(output).map_err(GateCliError::OutputFile)?;
+    let output = open_output(&output).map_err(GateCliError::OutputFile)?;
     let config = doctor::read_pins(&config).map_err(GateCliError::Config)?;
     let validator = ContractValidator::new().map_err(GateCliError::Validator)?;
     let killer = GroupKiller::system().map_err(GateCliError::Killer)?;

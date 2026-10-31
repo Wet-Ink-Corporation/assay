@@ -3,6 +3,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use assay_domain::ContentHash;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -44,6 +45,13 @@ impl Sha256Digest {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl From<ContentHash> for Sha256Digest {
+    /// The hash as the digest it displays as, `sha256:<hex>`.
+    fn from(hash: ContentHash) -> Self {
+        Self(hash.to_string())
     }
 }
 
@@ -159,7 +167,7 @@ pub struct ParseDigestError;
 
 #[cfg(test)]
 mod tests {
-    use super::Sha256Digest;
+    use super::{ContentHash, Sha256Digest};
 
     #[test]
     fn the_digest_of_bytes_is_their_sha256_in_lowercase_hex() {
@@ -173,6 +181,18 @@ mod tests {
                 "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             ]
             .map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn a_content_hash_reads_as_the_digest_it_displays() {
+        let hash = ContentHash::of_files([("a", b"x".as_slice())]);
+
+        let digest = Sha256Digest::from(hash);
+
+        assert_eq!(
+            (digest.as_str().parse::<Sha256Digest>(), digest.to_string()),
+            (Ok(digest.clone()), hash.to_string())
         );
     }
 }

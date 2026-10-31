@@ -79,6 +79,34 @@ impl ObjectRepo {
         }
     }
 
+    /// `git merge-base <one> <other>`: their best common ancestor, the commit `base...head`
+    /// diffs from; with several (a criss-cross history), the one git picks, which is the one
+    /// that diff uses. `None` when they share no history.
+    ///
+    /// # Errors
+    /// [`GitError`] when git cannot run, fails other than by answering none (exit 1: a missing
+    /// commit is an error, not an answer), or prints anything but one commit id.
+    pub fn merge_base(
+        &self,
+        one: &CommitSha,
+        other: &CommitSha,
+    ) -> Result<Option<CommitSha>, GitError> {
+        let args = [one.as_str(), other.as_str()];
+        let captured = match self.run(self.call(GitOperation::MergeBase, &args)) {
+            Err(GitError::Failed { status, .. }) if status.code() == Some(1) => return Ok(None),
+            ran => ran?,
+        };
+        str::from_utf8(&captured.stdout)
+            .ok()
+            .and_then(|text| text.strip_suffix('\n'))
+            .and_then(|sha| sha.parse().ok())
+            .map(Some)
+            .ok_or(GitError::Malformed {
+                operation: GitOperation::MergeBase,
+                detail: "merge-base did not print one commit id",
+            })
+    }
+
     /// `git range-diff <base> <previous> <head>`: the commits `previous` added on `base` paired
     /// with those `head` adds, without notes, colour, external diff drivers or textconv. Its
     /// output holds the commits' messages as well as their diffs.

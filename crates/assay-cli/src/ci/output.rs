@@ -6,6 +6,8 @@ use std::error::Error;
 use std::fmt;
 use std::io::{self, Write};
 
+use assay_app::ArtifactJob;
+
 /// The outputs a pipeline job writes, by the job that writes them. Each story adds its job's
 /// names (03 §4a).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -41,6 +43,30 @@ pub enum OutputName {
     CostAeu,
     /// review: `documents`, the review's documents.
     Documents,
+    /// plan: `run_digest`, the sha256 of the `run.json` it wrote.
+    RunDigest,
+    /// plan: `run_key`, the run's evidence key.
+    RunKey,
+    /// plan: `tier`, the run's tier.
+    Tier,
+    /// plan: `review`, `true` when the run gets an LLM review.
+    Review,
+    /// plan: `merge_base`, git's merge base of the pinned base and head (D4 A).
+    MergeBase,
+    /// plan: `artifact_plan`, the plan artifact's name.
+    ArtifactPlan,
+    /// plan: `artifact_gates_static`.
+    ArtifactGatesStatic,
+    /// plan: `artifact_gates_lint`.
+    ArtifactGatesLint,
+    /// plan: `artifact_gates_test`.
+    ArtifactGatesTest,
+    /// plan: `artifact_admit`.
+    ArtifactAdmit,
+    /// plan: `artifact_review`.
+    ArtifactReview,
+    /// plan: `artifact_decide`.
+    ArtifactDecide,
 }
 
 impl OutputName {
@@ -65,6 +91,38 @@ impl OutputName {
     /// The outputs `review` writes.
     pub const REVIEW: [Self; 3] = [Self::Stage, Self::CostAeu, Self::Documents];
 
+    /// The outputs `plan` writes: the run's facts, then each job's artifact name in
+    /// [`ArtifactJob::ALL`]'s order. `draft` is guard's name too.
+    pub const PLAN: [Self; 13] = [
+        Self::RunDigest,
+        Self::RunKey,
+        Self::Tier,
+        Self::Draft,
+        Self::Review,
+        Self::MergeBase,
+        Self::ArtifactPlan,
+        Self::ArtifactGatesStatic,
+        Self::ArtifactGatesLint,
+        Self::ArtifactGatesTest,
+        Self::ArtifactAdmit,
+        Self::ArtifactReview,
+        Self::ArtifactDecide,
+    ];
+
+    /// The output carrying `job`'s artifact name.
+    #[must_use]
+    pub const fn artifact(job: ArtifactJob) -> Self {
+        match job {
+            ArtifactJob::Plan => Self::ArtifactPlan,
+            ArtifactJob::GatesStatic => Self::ArtifactGatesStatic,
+            ArtifactJob::GatesLint => Self::ArtifactGatesLint,
+            ArtifactJob::GatesTest => Self::ArtifactGatesTest,
+            ArtifactJob::Admit => Self::ArtifactAdmit,
+            ArtifactJob::Review => Self::ArtifactReview,
+            ArtifactJob::Decide => Self::ArtifactDecide,
+        }
+    }
+
     /// The name as the workflow reads it, `needs.<job>.outputs.<name>`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -84,6 +142,18 @@ impl OutputName {
             Self::Stage => "stage",
             Self::CostAeu => "cost_aeu",
             Self::Documents => "documents",
+            Self::RunDigest => "run_digest",
+            Self::RunKey => "run_key",
+            Self::Tier => "tier",
+            Self::Review => "review",
+            Self::MergeBase => "merge_base",
+            Self::ArtifactPlan => "artifact_plan",
+            Self::ArtifactGatesStatic => "artifact_gates_static",
+            Self::ArtifactGatesLint => "artifact_gates_lint",
+            Self::ArtifactGatesTest => "artifact_gates_test",
+            Self::ArtifactAdmit => "artifact_admit",
+            Self::ArtifactReview => "artifact_review",
+            Self::ArtifactDecide => "artifact_decide",
         }
     }
 }
@@ -259,5 +329,43 @@ mod tests {
                 .all(|name| name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')),
             "{names:?}"
         );
+    }
+
+    #[test]
+    fn plan_writes_the_runs_facts_then_one_artifact_name_per_job() {
+        let names = OutputName::PLAN.map(OutputName::as_str);
+
+        assert_eq!(
+            names,
+            [
+                "run_digest",
+                "run_key",
+                "tier",
+                "draft",
+                "review",
+                "merge_base",
+                "artifact_plan",
+                "artifact_gates_static",
+                "artifact_gates_lint",
+                "artifact_gates_test",
+                "artifact_admit",
+                "artifact_review",
+                "artifact_decide",
+            ],
+            "03 §4a and the workflow's `needs.plan.outputs.<name>` read these names"
+        );
+    }
+
+    #[test]
+    fn each_artifact_jobs_output_is_named_after_the_job() {
+        for job in ArtifactJob::ALL {
+            let name = OutputName::artifact(job).as_str();
+
+            assert_eq!(
+                name,
+                format!("artifact_{}", job.name().replace('-', "_")),
+                "{job:?}"
+            );
+        }
     }
 }
