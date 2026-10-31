@@ -3,10 +3,13 @@
 
 use assay_app::{
     Access, BaseError, BranchPolicy, BypassActor, Collaborator, DeploymentBranches, DirectoryEntry,
-    Enforcement, EntryType, Holding, IdentityListError, IdentityLists, MAX_LISTED, PolicyKind,
-    Prerequisite, PrerequisiteFailure, PrerequisiteReport, Rule, RulesetTarget, WorkflowError,
-    prerequisites, read_base,
+    Enforcement, EntryType, Holding, IdentityLists, ListFile, ListName, ListsError,
+    MAX_LIST_ENTRIES, PolicyKind, Prerequisite, PrerequisiteFailure, PrerequisiteReport, Rule,
+    RulesetTarget, WorkflowError, prerequisites, read_base,
 };
+
+/// The lists `.assay/owners` must hold besides `owners`.
+const OTHER_OWNERS_LISTS: &str = "approvers = []\nmaintainers = []\n";
 
 use crate::plan_fakes::FakeError;
 use crate::prerequisites_fakes::{
@@ -411,7 +414,7 @@ fn a_push_ruleset_only_evaluated_restricts_nothing() {
 fn an_agent_in_owners_fails_the_identity_lists() {
     let (mut repository, ledger) = healthy();
     let owners = format!(
-        "owners = [{{ id = {DAILY}, login = \"Ryan-Britton\" }}]\napprovers = [{{ id = {APPROVER}, login = \"a\" }}]\n"
+        "owners = [{{ id = {DAILY}, login = \"Ryan-Britton\" }}]\napprovers = [{{ id = {APPROVER}, login = \"a\" }}]\nmaintainers = []\n"
     );
     repository.put(MAIN, ".assay/owners", &owners);
     // The ledger's only collaborator is no longer an owner either.
@@ -449,7 +452,7 @@ fn no_approver_fails_loudly_as_on_this_repository_today() {
     let (mut repository, ledger) = healthy();
     // docs/decisions/0005: the approver is deferred to #81, so `approvers` is empty.
     let owners = format!(
-        "owners = [{{ id = {OWNER}, login = \"o\" }}]\nmaintainers = [{{ id = {DAILY}, login = \"Ryan-Britton\" }}]\n"
+        "owners = [{{ id = {OWNER}, login = \"o\" }}]\napprovers = []\nmaintainers = [{{ id = {DAILY}, login = \"Ryan-Britton\" }}]\n"
     );
     repository.put(MAIN, ".assay/owners", &owners);
 
@@ -802,55 +805,32 @@ fn the_identity_lists_are_read_by_id() {
 }
 
 /// What an identity-list refusal must be.
-type Expected = fn(&IdentityListError) -> bool;
+type Expected = fn(&ListsError) -> bool;
 
-#[test]
-fn identity_lists_that_cannot_be_trusted_are_refused() {
-    let agents = crate::prerequisites_fakes::AGENTS;
-    let many: Vec<String> = (1..=MAX_LISTED + 1)
-        .map(|id| format!("{{ id = {id}, login = \"u{id}\" }}"))
-        .collect();
-    let too_many = format!("owners = [{}]", many.join(", "));
-    let cases: [(&str, &str, Expected); 6] = [
-        (
-            "owners = [{ id = 1, login = \"a\", role = \"x\" }]",
-            agents,
-            |error| matches!(error, IdentityListError::Syntax(_)),
-        ),
-        ("admins = []", agents, |error| {
-            matches!(error, IdentityListError::Syntax(_))
-        }),
-        ("owners = [{ id = 0, login = \"a\" }]", agents, |error| {
-            matches!(error, IdentityListError::ZeroId { list: "owners" })
-        }),
-        ("owners = [{ id = 1, login = \"\" }]", agents, |error| {
-            matches!(
-                error,
-                IdentityListError::NoLogin {
-                    list: "owners",
-                    id: 1
-                }
-            )
-        }),
-        (
-            "",
-            "agents = [{ id = 7, login = \"a\" }, { id = 7, login = \"b\" }]",
-            |error| {
-                matches!(
-                    error,
-                    IdentityListError::Repeated {
-                        list: "agents",
-                        id: 7
-                    }
-                )
-            },
-        ),
-        (&too_many, agents, |error| {
-            matches!(error, IdentityListError::TooMany { list: "owners" })
-        }),
-    ];
+/// `.assay/owners` with `owners` set to `owners` and the other lists empty.
+fn owners_file(owners: &str) -> String {
+    format!("owners = [{owners}]\n{OTHER_OWNERS_LISTS}")
+}
 
-    for (owners, agents, expected) in cases {
+/// Whether `error` refuses `.assay/owners` as TOML.
+fn owners_toml(error: &ListsError) -> bool {
+    matches!(
+        error,
+        ListsError::Toml {
+            file: ListFile::Owners,
+            ..
+        }
+    )
+}
+
+/// Whether `error` refuses user 1's login in `owners`.
+fn owner_login(error: &ListsError) -> bool {
+    matches!(error, ListsError::Login { list: ListName::Owners, id } if id.0.get() == 1)
+}
+
+/// Asserts `IdentityLists::parse` refuses each case as expected.
+fn assert_refused(cases: &[(&str, &str, Expected)]) {
+    for &(owners, agents, expected) in cases {
         let parsed = IdentityLists::parse(owners, agents);
 
         assert!(
@@ -858,4 +838,58 @@ fn identity_lists_that_cannot_be_trusted_are_refused() {
             "{owners} / {agents}: {parsed:?}"
         );
     }
+}
+
+/// doctor reads the lists with `EligibilityLists`' parser (#305): doctor's own cases.
+#[test]
+fn identity_lists_that_cannot_be_trusted_are_refused() {
+    let agents = crate::prerequisites_fakes::AGENTS;
+    let many: Vec<String> = (1..=MAX_LIST_ENTRIES + 1)
+        .map(|id| format!("{{ id = {id}, login = \"u{id}\" }}"))
+        .collect();
+    let too_many = owners_file(&many.join(", "));
+    let unknown_field = owners_file("{ id = 1, login = \"a\", role = \"x\" }");
+    let zero = owners_file("{ id = 0, login = \"a\" }");
+    let no_login = owners_file("{ id = 1, login = \"\" }");
+    let repeated_agent = "agents = [{ id = 7, login = \"a\" }, { id = 7, login = \"b\" }]";
+
+    assert_refused(&[
+        (&unknown_field, agents, owners_toml),
+        ("admins = []", agents, owners_toml),
+        (&zero, agents, owners_toml),
+        (&no_login, agents, owner_login),
+        (
+            crate::prerequisites_fakes::OWNERS,
+            repeated_agent,
+            |error| matches!(error, ListsError::Repeated { list: ListName::Agents, id } if id.0.get() == 7),
+        ),
+        (&too_many, agents, |error| {
+            matches!(
+                error,
+                ListsError::TooMany {
+                    list: ListName::Owners
+                }
+            )
+        }),
+    ]);
+}
+
+/// #305: what every run refuses and doctor's former parser let through, so doctor passed it.
+#[test]
+fn identity_lists_a_run_refuses_are_refused_by_doctor_too() {
+    let agents = crate::prerequisites_fakes::AGENTS;
+    let owner_approver = "owners = [{ id = 1, login = \"a\" }]\napprovers = [{ id = 1, login = \"a\" }]\nmaintainers = []\n";
+    let bot = owners_file("{ id = 1, login = \"a[bot]\" }");
+    let hyphen = owners_file("{ id = 1, login = \"-a\" }");
+
+    assert_refused(&[
+        ("owners = []\nmaintainers = []\n", agents, owners_toml),
+        (
+            owner_approver,
+            agents,
+            |error| matches!(error, ListsError::OwnerApprover { id } if id.0.get() == 1),
+        ),
+        (&bot, agents, owner_login),
+        (&hyphen, agents, owner_login),
+    ]);
 }

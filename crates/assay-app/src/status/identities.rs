@@ -1,14 +1,13 @@
 //! The base P10 identity lists `status` reports the viewer against (#273, 03 §1): base
 //! `.assay/owners` and `.assay/agents`, read through the same object port `plan` reads base
-//! config through. An absent file names nobody; anything else is read exactly or refused
-//! (wi-b5affa).
-
-use std::collections::BTreeSet;
+//! config through, and parsed by [`EligibilityLists::parse`], the one parser of those files
+//! (#305), so status and eligibility cannot read them differently. An absent file names nobody;
+//! anything else is read exactly or refused (wi-b5affa).
 
 use thiserror::Error;
 
-use super::{Identities, UserId};
-use crate::config::{CommitId, IdentitiesConfigError, parse_agents, parse_owners};
+use super::Identities;
+use crate::config::{CommitId, EligibilityLists, ListsError, MAX_LISTS_BYTES};
 use crate::plan::{EntryKind, PullRequestObjects, TreeEntry};
 
 /// The base config directory, which holds the lists.
@@ -17,9 +16,6 @@ const CONFIG_DIR: &str = ".assay";
 const OWNERS: &str = ".assay/owners";
 /// The agent identities.
 const AGENTS: &str = ".assay/agents";
-
-/// The largest list read, in bytes; a larger one is refused unread (H-13).
-pub const MAX_IDENTITY_FILE_BYTES: u64 = 64 << 10;
 
 /// Why the base identity lists could not be read. They come from the protected base, so
 /// messages may name their paths.
@@ -41,8 +37,8 @@ pub enum BaseIdentitiesError<E> {
         /// The list's path.
         path: &'static str,
     },
-    /// A list is larger than [`MAX_IDENTITY_FILE_BYTES`].
-    #[error("{path} in the base is {size} bytes, over {MAX_IDENTITY_FILE_BYTES}")]
+    /// A list is larger than [`MAX_LISTS_BYTES`]; it was not read.
+    #[error("{path} in the base is {size} bytes, over {MAX_LISTS_BYTES}")]
     TooLarge {
         /// The list's path.
         path: &'static str,
@@ -61,21 +57,9 @@ pub enum BaseIdentitiesError<E> {
         /// The list's path.
         path: &'static str,
     },
-    /// A list does not parse.
-    #[error("{path} in the base was refused")]
-    Config {
-        /// The list's path.
-        path: &'static str,
-        /// Why.
-        #[source]
-        source: IdentitiesConfigError,
-    },
-    /// An agent identity is also privileged, which 03 §1 forbids (agents are never owners).
-    #[error("id {id} is both an agent and an owner or approver")]
-    AgentPrivileged {
-        /// The id.
-        id: u64,
-    },
+    /// The lists were refused by [`EligibilityLists::parse`], which names the file or list.
+    #[error("the base identity lists were refused")]
+    Lists(#[source] ListsError),
 }
 
 /// The base P10 identity lists at `base`: `.assay/owners`' `owners` and `approvers` as the
@@ -84,8 +68,8 @@ pub enum BaseIdentitiesError<E> {
 /// # Errors
 ///
 /// [`BaseIdentitiesError`] when the base cannot be read, `.assay` is a symlink or submodule, a
-/// list is not a regular UTF-8 file of at most [`MAX_IDENTITY_FILE_BYTES`] that parses
-/// exactly, or an agent is privileged.
+/// list is not a regular UTF-8 file of at most [`MAX_LISTS_BYTES`], or
+/// [`EligibilityLists::parse`] refuses the lists.
 ///
 /// # Examples
 ///
@@ -123,24 +107,19 @@ pub fn base_identities<O: PullRequestObjects>(
     if entries.iter().any(|entry| entry.path == CONFIG_DIR) {
         return Err(BaseIdentitiesError::NotADirectory { path: CONFIG_DIR });
     }
-    let privileged = match read_list(objects, &entries, OWNERS)? {
-        Some(text) => parse_owners(&text).map_err(|source| BaseIdentitiesError::Config {
-            path: OWNERS,
-            source,
-        })?,
-        None => BTreeSet::new(),
-    };
-    let agents = match read_list(objects, &entries, AGENTS)? {
-        Some(text) => parse_agents(&text).map_err(|source| BaseIdentitiesError::Config {
-            path: AGENTS,
-            source,
-        })?,
-        None => BTreeSet::new(),
-    };
-    if let Some(UserId(id)) = agents.intersection(&privileged).next() {
-        return Err(BaseIdentitiesError::AgentPrivileged { id: id.get() });
-    }
-    Ok(Identities { privileged, agents })
+    let owners = read_list(objects, &entries, OWNERS)?;
+    let agents = read_list(objects, &entries, AGENTS)?;
+    let lists = EligibilityLists::parse(owners.as_deref(), agents.as_deref())
+        .map_err(BaseIdentitiesError::Lists)?;
+    Ok(Identities {
+        privileged: lists
+            .owners()
+            .iter()
+            .chain(lists.approvers())
+            .map(|identity| identity.id)
+            .collect(),
+        agents: lists.agents().iter().map(|identity| identity.id).collect(),
+    })
 }
 
 /// The text of the list at `path` among the base's `.assay` `entries`, or `None` when the base
@@ -168,7 +147,7 @@ fn read_list<O: PullRequestObjects>(
     let size = entry
         .size
         .ok_or(BaseIdentitiesError::NotARegularFile { path })?;
-    if size > MAX_IDENTITY_FILE_BYTES {
+    if usize::try_from(size).map_or(true, |size| size > MAX_LISTS_BYTES) {
         return Err(BaseIdentitiesError::TooLarge { path, size });
     }
     let blobs = objects

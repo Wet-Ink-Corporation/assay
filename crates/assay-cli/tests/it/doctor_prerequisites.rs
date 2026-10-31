@@ -303,7 +303,8 @@ fn a_failed_prerequisite_writes_its_reason_and_fails() {
     let mut repository = Fake::repository();
     repository.files.insert(
         ".assay/owners",
-        "owners = [{ id = 1001, login = \"break-glass\" }]\n".to_owned(),
+        "owners = [{ id = 1001, login = \"break-glass\" }]\napprovers = []\nmaintainers = []\n"
+            .to_owned(),
     );
 
     let (passed, out) = written(&repository);
