@@ -11,10 +11,10 @@ use assay_app::{
     CommitId, LeaseRef, LedgerRefs, LockListing, MAX_LEASE_MESSAGE_BYTES, RefCreation, RefDeletion,
     RefTip, Released, Slot, release_slot,
 };
-use assay_forge::git::{GitEnvironment, GitLimits, ObjectRepo, PushRemote};
+use assay_forge::git::{Authorization, GitEnvironment, GitLimits, ObjectRepo, PushRemote};
 use assay_forge::github::{
-    Access, Api, ForgeError, InstallationId, LedgerRefsError, LedgerRefsRepo, Method, Operation,
-    Permission, TokenScope, ledger_push_remote,
+    Access, Api, ForgeError, GhToken, InstallationId, LedgerRefsError, LedgerRefsRepo, Method,
+    Operation, Permission, TokenScope, ledger_push_remote,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -447,8 +447,9 @@ fn the_ledger_remote_is_its_https_url_with_the_token_kept_out_of_sight()
             (Permission::PullRequests, Access::Write),
         ],
     )?;
-    let token = Api::new(&recorded, &waits)
+    let minted = Api::new(&recorded, &waits)
         .mint_installation_token(InstallationId(super::recorded::id(172_801_043)), &scope)?;
+    let token = GhToken::new(minted.secret())?;
 
     let remote = ledger_push_remote(&LEDGER_REPOSITORY.parse()?, &token)?;
 
@@ -457,7 +458,31 @@ fn the_ledger_remote_is_its_https_url_with_the_token_kept_out_of_sight()
         shown.contains("\"https://github.com/Wet-Ink-Corporation/assay-ledger.git\""),
         "{shown}"
     );
-    assert!(!shown.contains(token.secret()), "{shown}");
+    assert!(!shown.contains(minted.secret()), "{shown}");
+    Ok(())
+}
+
+#[test]
+fn the_ledger_remote_is_built_from_an_externally_minted_token() -> Result<(), Box<dyn Error>> {
+    // D9: actions/create-github-app-token mints it; assay only receives it.
+    let token = GhToken::new("ghs_minted-by-the-workflow")?;
+    // `x-access-token:ghs_minted-by-the-workflow` in standard base64.
+    let credentials = "eC1hY2Nlc3MtdG9rZW46Z2hzX21pbnRlZC1ieS10aGUtd29ya2Zsb3c=";
+
+    let remote = ledger_push_remote(&LEDGER_REPOSITORY.parse()?, &token)?;
+
+    assert_eq!(
+        remote,
+        PushRemote::https(
+            "https://github.com/Wet-Ink-Corporation/assay-ledger.git".parse()?,
+            Authorization::new(format!("Authorization: basic {credentials}"))?,
+        )
+    );
+    let shown = format!("{remote:?}");
+    assert!(
+        !shown.contains("ghs_") && !shown.contains(credentials),
+        "{shown}"
+    );
     Ok(())
 }
 

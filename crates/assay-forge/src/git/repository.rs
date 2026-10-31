@@ -12,6 +12,7 @@ use super::attributes::{
 use super::changes::{self, ChangeListing};
 use super::command::{GitEnvironment, GitOperation, Scope, git_in};
 use super::numstat::{self, DiffOutcome, FileChange};
+use super::push::Authorization;
 use super::sha::{CommitSha, HttpsRemote};
 use super::tree::{self, BlobRef, TreeEntry, TreeLimits};
 use super::{GitError, Malformed};
@@ -115,8 +116,48 @@ impl ObjectRepo {
     /// [`GitError`] when the fetch cannot run, fails (including fsck rejecting an object), or
     /// leaves no commit with that name.
     pub fn fetch(&self, remote: &HttpsRemote, commit: &CommitSha) -> Result<(), GitError> {
+        self.fetch_by_sha(remote, None, commit)
+    }
+
+    /// [`fetch`](Self::fetch) from a private repository: `authorization` is sent to `remote`'s
+    /// exact URL only, as `http.<remote>.extraHeader` in the process environment (never on the
+    /// command line), and no redirect is followed, so the credential reaches no other URL.
+    ///
+    /// # Errors
+    /// As [`fetch`](Self::fetch); a refused credential is [`GitError::Failed`].
+    pub fn fetch_authorized(
+        &self,
+        remote: &HttpsRemote,
+        authorization: &Authorization,
+        commit: &CommitSha,
+    ) -> Result<(), GitError> {
+        self.fetch_by_sha(remote, Some(authorization), commit)
+    }
+
+    /// Fetches `commit` from `remote`, sending `authorization` to it when given, then checks
+    /// the commit arrived. Only an authorized fetch carries a header.
+    fn fetch_by_sha(
+        &self,
+        remote: &HttpsRemote,
+        authorization: Option<&Authorization>,
+        commit: &CommitSha,
+    ) -> Result<(), GitError> {
         let refspec = format!("{commit}:{FETCHED_REF_PREFIX}{commit}");
-        self.run(self.call(GitOperation::Fetch, &[remote.as_str(), &refspec]))?;
+        let args = [remote.as_str(), refspec.as_str()];
+        let (operation, header) = match authorization {
+            None => (GitOperation::Fetch, None),
+            Some(authorization) => (
+                GitOperation::FetchAuthorized,
+                Some(authorization.header(remote)),
+            ),
+        };
+        self.run(Call {
+            scope: Scope {
+                header,
+                ..Scope::default()
+            },
+            ..self.call(operation, &args)
+        })?;
         let object = format!("{commit}^{{commit}}");
         match self.run(self.call(GitOperation::VerifyCommit, &[&object])) {
             Err(GitError::Failed { .. }) => Err(GitError::MissingCommit {
