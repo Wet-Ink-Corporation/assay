@@ -6,11 +6,14 @@ use std::error::Error;
 use std::time::Duration;
 
 use assay_forge::git::{
-    Ancestry, CommitSha, GitError, GitOperation, MAX_RANGE_DIFF_COMMITS, RANGE_DIFF_TIMEOUT,
-    RangeDiffCommits, RangeDiffOutcome,
+    Ancestry, CommitSha, GitEnvironment, GitError, GitLimits, GitOperation, MAX_RANGE_DIFF_COMMITS,
+    ObjectRepo, RANGE_DIFF_TIMEOUT, RangeDiffCommits, RangeDiffOutcome,
 };
 
-use crate::support::{Fixture, Forced, fixture, forced_fixture, long_fixture};
+use crate::support::{
+    Fixture, Forced, commit, fixture, forced_fixture, forked_fixture, long_fixture, plain_git,
+    write,
+};
 
 #[test]
 fn a_previous_head_the_push_built_on_is_an_ancestor() -> Result<(), Box<dyn Error>> {
@@ -72,6 +75,81 @@ fn a_missing_head_is_an_error_not_an_answer() -> Result<(), Box<dyn Error>> {
             })
         ),
         "{ancestry:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_merge_base_of_a_forked_pr_is_its_fork_point() -> Result<(), Box<dyn Error>> {
+    let fixture = forked_fixture(
+        &[("docs/landed.md", b"on main after the fork\n")],
+        &[("src/lib.rs", b"pub fn one() -> u8 {\n    2\n}\n")],
+    )?;
+    // The base commit sits directly on the fork point.
+    let fork: CommitSha = plain_git(
+        &fixture.git_dir(),
+        &["rev-parse", &format!("{}^", fixture.base)],
+    )?
+    .trim()
+    .parse()?;
+
+    let merge_base = fixture.repo.merge_base(&fixture.base, &fixture.head)?;
+
+    assert_eq!(merge_base, Some(fork));
+    Ok(())
+}
+
+#[test]
+fn commits_without_common_history_have_no_merge_base() -> Result<(), Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    let work = scratch.path().join("work");
+    plain_git(scratch.path(), &["init", "--quiet", "work"])?;
+    write(&work, "README.md", b"# one\n")?;
+    let one = commit(&work, "one")?;
+    plain_git(&work, &["checkout", "--quiet", "--orphan", "other"])?;
+    write(&work, "README.md", b"# other\n")?;
+    let other = commit(&work, "other")?;
+    let git_dir = scratch.path().join("objects.git");
+    let repo = ObjectRepo::init(
+        &git_dir,
+        GitEnvironment::from_process_env()?,
+        GitLimits::default(),
+    )?;
+    let destination = git_dir.to_str().ok_or("scratch path is not UTF-8")?;
+    let one_ref = format!("{one}:refs/heads/one");
+    plain_git(
+        &work,
+        &[
+            "push",
+            "--quiet",
+            destination,
+            &one_ref,
+            "other:refs/heads/other",
+        ],
+    )?;
+
+    let merge_base = repo.merge_base(&one, &other)?;
+
+    assert_eq!(merge_base, None);
+    Ok(())
+}
+
+#[test]
+fn a_merge_base_with_a_missing_commit_is_an_error_not_an_answer() -> Result<(), Box<dyn Error>> {
+    let fixture = fixture(&[("src/lib.rs", b"pub fn one() -> u8 {\n    2\n}\n")])?;
+    let missing: CommitSha = "1111111111111111111111111111111111111111".parse()?;
+
+    let merge_base = fixture.repo.merge_base(&fixture.base, &missing);
+
+    assert!(
+        matches!(
+            merge_base,
+            Err(GitError::Failed {
+                operation: GitOperation::MergeBase,
+                ..
+            })
+        ),
+        "{merge_base:?}"
     );
     Ok(())
 }

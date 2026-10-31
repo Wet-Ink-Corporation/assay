@@ -22,9 +22,10 @@ pub const DAY_CAP: Aeu = Aeu::from_micros(40_000_000);
 /// How many times one PR may be admitted in an hour before it is deferred (06 §1, T12).
 pub const ADMISSIONS_PER_HOUR: usize = 3;
 
-/// A tier whose LLM stage spends: the only tiers `admit` reserves for.
+/// A tier whose LLM stage spends: the only tiers `admit` reserves for, and the only ones
+/// `plan` reports as reviewed (`crate::plan::reviewed`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum SpendTier {
+pub(crate) enum SpendTier {
     /// The full roster, the coordinator and the five-call verifier.
     Full,
     /// `combined` and the three-call verifier.
@@ -35,7 +36,7 @@ pub(super) enum SpendTier {
 
 impl SpendTier {
     /// The tier `tier` spends at; `None` for `trivial` and `needs-split`, which have no LLM stage.
-    pub(super) const fn of(tier: Tier) -> Option<Self> {
+    pub(crate) const fn of(tier: Tier) -> Option<Self> {
         match tier {
             Tier::Full => Some(Self::Full),
             Tier::Lite => Some(Self::Lite),

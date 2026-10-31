@@ -37,7 +37,7 @@ use std::num::NonZeroU64;
 
 use assay_domain::{Aeu, EventPayload, NotRunReason, RunUid};
 
-use self::budget::SpendTier;
+pub(crate) use self::budget::SpendTier;
 pub use self::budget::{ADMISSIONS_PER_HOUR, DAY_CAP};
 pub use self::dismissals::MAX_DISMISSALS;
 use self::dismissals::{Eligible, valid_dismissals};
