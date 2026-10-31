@@ -6,9 +6,9 @@ use std::rc::Rc;
 
 use assay_app::{
     CheckConclusion, CheckRunId, CheckState, CheckStatus, ChecksReconcileError,
-    ChecksReconcileRequest, ChecksReconciled, ClosedCheck, Closure, CommitId, LedgerPath, Listing,
-    LostLock, MAX_HEAD_CHECKS, MAX_OPEN_PULLS, MAX_SUPERSEDED_HEADS, PullHead, ReconcilePorts,
-    RunProgress, Skip, SkippedCheck, reconcile_checks,
+    ChecksReconcileRequest, ChecksReconciled, ClosedCheck, Closure, CommitId, Deadline, LedgerPath,
+    Listing, LostLock, MAX_HEAD_CHECKS, MAX_OPEN_PULLS, MAX_SUPERSEDED_HEADS, PullHead,
+    ReconcilePorts, RunProgress, Skip, SkippedCheck, reconcile_checks,
 };
 use assay_domain::RunUid;
 
@@ -188,6 +188,18 @@ fn a_stuck_verdict_check_is_closed_as_a_publish_error_while_its_lock_is_held() {
     assert_eq!(write.update.text, "");
     assert_eq!(write.update.external_id, "reconcile:5000");
     assert_eq!(refs.names(), Vec::<String>::new(), "and released after it");
+}
+
+#[test]
+fn a_close_is_bounded_by_its_locks_lease_expiry() {
+    // The lock is taken at `NOW` for two minutes; the write may not outlast it (#290).
+    let refs = MemoryRefs::default();
+    let forge = stuck();
+
+    sweep(&forge, &MemoryLedger::default(), &refs).expect("the ports are up");
+
+    let deadlines: Vec<_> = forge.writes().iter().map(|write| write.deadline).collect();
+    assert_eq!(deadlines, [Deadline::at(at("2026-10-12T12:02:00.000Z"))]);
 }
 
 #[test]

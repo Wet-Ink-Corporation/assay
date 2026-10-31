@@ -54,7 +54,8 @@ pub(super) enum Held<L> {
     /// This attempt created it with its lease.
     Created(CommitId),
     /// A live lease of the same run already held it: an earlier attempt's creation landed
-    /// though its answer was lost (wi-d55bfe). The ref keeps that lease.
+    /// though its answer was lost (wi-d55bfe). The ref keeps that lease. A slot is held so; the
+    /// publish lock reads it as busy, since a run's jobs share its `run_uid` (#288 R2-1).
     Already {
         /// The commit the ref points at.
         commit: CommitId,

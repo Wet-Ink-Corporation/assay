@@ -3,7 +3,7 @@
 
 use assay_app::{
     CheckConclusion, CheckFound, CheckName, CheckRun, CheckRunId, CheckState, CheckStatus,
-    CheckUpdate, CommitId, CompareAndSetError,
+    CheckUpdate, CommitId, CompareAndSetError, Deadline, LockedWrite,
 };
 use serde_json::{Map, Value, json};
 
@@ -11,7 +11,7 @@ use super::GitHub;
 use super::api::{Failed, PER_PAGE, decode, encode, percent_encode};
 use super::dto::{self, CheckRunDto, CheckRunsPage};
 use super::error::{ForgeError, Operation};
-use super::transport::{Request, Sleep, Transport};
+use super::transport::{ApiPath, Request, Sleep, Transport};
 
 impl super::api::Page for CheckRunsPage {
     type Item = CheckRunDto;
@@ -30,17 +30,27 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         name: Option<&CheckName>,
         stop_at: Option<usize>,
     ) -> Result<Vec<CheckRunDto>, ForgeError<T::Error>> {
-        let operation = Operation::ListChecks;
+        let path = self.checks_path(head, name)?;
+        self.api
+            .list::<CheckRunsPage>(Operation::ListChecks, path, stop_at)
+    }
+
+    /// The listing of the check runs on `head`, named `name` when given.
+    fn checks_path<E>(
+        &self,
+        head: &CommitId,
+        name: Option<&CheckName>,
+    ) -> Result<ApiPath, ForgeError<E>> {
         let mut rest = format!("commits/{head}/check-runs?filter=all&per_page={PER_PAGE}");
         if let Some(name) = name {
             rest.push_str("&check_name=");
             rest.push_str(&percent_encode(name.as_str()));
         }
-        let path = self.path(operation, &rest)?;
-        self.api.list::<CheckRunsPage>(operation, path, stop_at)
+        self.path(Operation::ListChecks, &rest)
     }
 
     /// The App's check named `name` on `head`. Same-named checks of other apps are skipped.
+    /// Nothing is sent that would not end before `deadline`, when there is one.
     ///
     /// # Errors
     ///
@@ -49,10 +59,16 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         &self,
         head: &CommitId,
         name: &CheckName,
+        deadline: Option<Deadline>,
     ) -> Result<Option<CheckRun>, ForgeError<T::Error>> {
         let operation = Operation::ListChecks;
         let mut found = None;
-        for check in self.list_checks(head, Some(name), None)? {
+        let path = self.checks_path(head, Some(name))?;
+        let listed = self
+            .api
+            .bounded(deadline)
+            .list::<CheckRunsPage>(operation, path, None)?;
+        for check in listed {
             if dto::app(operation, check.app.as_ref())? != self.identity.app
                 || check.name != name.as_str()
                 || check.head_sha != head.as_str()
@@ -68,34 +84,43 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
     }
 
     /// Check `id` as GitHub has it now.
-    fn read_check(&self, id: CheckRunId) -> Result<CheckRunDto, ForgeError<T::Error>> {
+    fn read_check(
+        &self,
+        id: CheckRunId,
+        deadline: Option<Deadline>,
+    ) -> Result<CheckRunDto, ForgeError<T::Error>> {
         let operation = Operation::ReadCheck;
         let path = self.path(operation, &format!("check-runs/{}", id.0))?;
-        self.api.get(operation, &path)
+        self.api.bounded(deadline).get(operation, &path)
     }
 
     /// Overwrites check `id` with `update`; a PATCH replaces the same fields each time, so it is
-    /// retried as is.
+    /// retried as is, though never past `deadline`, when there is one.
     pub(crate) fn patch_check(
         &self,
         id: CheckRunId,
         update: &CheckUpdate,
+        deadline: Option<Deadline>,
     ) -> Result<(), ForgeError<T::Error>> {
         let operation = Operation::UpdateCheck;
         let body = encode(operation, &check_body(update, None))?;
         let path = self.path(operation, &format!("check-runs/{}", id.0))?;
         self.api
+            .bounded(deadline)
             .send(operation, Request::patch(&path, &body))
             .map(drop)
     }
 
-    /// Writes `update` to check `id` only if it is the App's and still carries `expected`.
+    /// Writes `write.update` to check `id` only if it is the App's and still carries
+    /// `expected`, sending nothing that would not end before `write.deadline`.
     pub(crate) fn compare_and_set(
         &self,
         id: CheckRunId,
         expected: &str,
-        update: &CheckUpdate,
+        write: LockedWrite<'_>,
     ) -> Result<(), CompareAndSetError<ForgeError<T::Error>>> {
+        let LockedWrite { update, deadline } = write;
+        let deadline = Some(deadline);
         // An empty stamp would match a check whose `external_id` was never set.
         if expected.is_empty() {
             return Err(CompareAndSetError::Forge(ForgeError::InvalidRequest {
@@ -103,7 +128,9 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
                 detail: "the expected external_id is empty",
             }));
         }
-        let current = self.read_check(id).map_err(CompareAndSetError::Forge)?;
+        let current = self
+            .read_check(id, deadline)
+            .map_err(CompareAndSetError::Forge)?;
         let app = dto::app(Operation::ReadCheck, current.app.as_ref())
             .map_err(CompareAndSetError::Forge)?;
         if app != self.identity.app {
@@ -114,18 +141,24 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         if found != expected {
             return Err(CompareAndSetError::Conflict { found });
         }
-        self.patch_check(id, update)
+        self.patch_check(id, update, deadline)
             .map_err(CompareAndSetError::Forge)
     }
 
-    /// The App's check named `name` on `head`, created from `update` when absent.
+    /// The App's check named `name` on `head`, created from `initial.update` when absent,
+    /// sending nothing that would not end before `initial.deadline`.
     pub(crate) fn find_or_create(
         &self,
         head: &CommitId,
         name: &CheckName,
-        update: &CheckUpdate,
+        initial: LockedWrite<'_>,
     ) -> Result<CheckFound, ForgeError<T::Error>> {
-        self.create(CheckTarget { head, name }, update, Lookup::First)
+        let creation = Creation {
+            update: initial.update,
+            lookup: Lookup::First,
+            deadline: Some(initial.deadline),
+        };
+        self.create(CheckTarget { head, name }, &creation)
     }
 
     /// Posts check `name` on `head`: a per-gate check, which the caller looked for first.
@@ -135,36 +168,48 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         name: &CheckName,
         update: &CheckUpdate,
     ) -> Result<(), ForgeError<T::Error>> {
-        self.create(CheckTarget { head, name }, update, Lookup::BeforeRetry)
-            .map(drop)
+        let creation = Creation {
+            update,
+            lookup: Lookup::BeforeRetry,
+            deadline: None,
+        };
+        self.create(CheckTarget { head, name }, &creation).map(drop)
     }
 
-    /// Creates `target` from `update`, looking for the App's check first when `lookup` says so.
+    /// Creates `target` from `creation.update`, looking for the App's check first when
+    /// `creation.lookup` says so.
     ///
     /// A POST that failed retryably may still have created the check, so before each retry the
     /// list is read again: a check found then is the one this call created, never a duplicate.
+    /// Under `creation.deadline`, no request is sent and no retry waited for that would not end
+    /// before it.
     fn create(
         &self,
         target: CheckTarget<'_>,
-        update: &CheckUpdate,
-        lookup: Lookup,
+        creation: &Creation<'_>,
     ) -> Result<CheckFound, ForgeError<T::Error>> {
+        let &Creation {
+            update,
+            lookup,
+            deadline,
+        } = creation;
         let CheckTarget { head, name } = target;
         let operation = Operation::CreateCheck;
         let body = encode(operation, &check_body(update, Some(target)))?;
         let path = self.path(operation, "check-runs")?;
         let request = Request::post(&path, &body);
-        self.api.retrying(operation, |attempt| {
+        let api = self.api.bounded(deadline);
+        api.retrying(operation, |attempt| {
             let first = attempt == 0;
             let look = !first || lookup == Lookup::First;
-            if look && let Some(found) = self.find_app_check(head, name)? {
+            if look && let Some(found) = self.find_app_check(head, name, deadline)? {
                 return Ok(if first {
                     CheckFound::Found(found)
                 } else {
                     CheckFound::Created(found)
                 });
             }
-            let response = self.api.attempt(operation, &request)?;
+            let response = api.attempt(operation, &request)?;
             let created: CheckRunDto = decode(operation, &response.body)?;
             if created.name != name.as_str() || created.head_sha != head.as_str() {
                 return Err(Failed::Stop(ForgeError::Malformed {
@@ -259,6 +304,17 @@ fn check_body(update: &CheckUpdate, target: Option<CheckTarget<'_>>) -> Value {
 struct CheckTarget<'a> {
     head: &'a CommitId,
     name: &'a CheckName,
+}
+
+/// How [`GitHub::create`] makes a check: from what, whether it looks first, and by when.
+#[derive(Debug, Clone, Copy)]
+struct Creation<'a> {
+    /// The check's first state.
+    update: &'a CheckUpdate,
+    /// Whether to look for the App's check before the first POST.
+    lookup: Lookup,
+    /// What every request and retry wait must end before, under the publish lock.
+    deadline: Option<Deadline>,
 }
 
 /// Whether [`GitHub::create`] looks for the App's check before its first POST.

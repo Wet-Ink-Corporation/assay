@@ -15,7 +15,7 @@ use super::outcome::{
 };
 use super::ports::{OpenPull, PullHead, ReconcileCheck, ReconcileForge, RunProgress};
 use crate::config::CommitId;
-use crate::forge::CompareAndSetError;
+use crate::forge::{CompareAndSetError, Deadline, LockedWrite};
 use crate::ledger::{
     Ledger, LedgerRefs, LedgerTime, LockAcquired, LockRequest, PushKind, Released, acquire_lock,
     read_pushes, read_state, release_lock,
@@ -307,7 +307,7 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
             done.skipped.push(due.skipped(Skip::LockBusy));
             return Ok(());
         };
-        let written = self.write(&due, expected);
+        let written = self.write(&due, expected, hold.deadline());
         let released = release_lock(self.ports.refs, &hold);
         let skip = match (written, released) {
             (Err(source), released) => {
@@ -333,8 +333,14 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
 
     /// Under the lock: re-reads the PR's head and writes `due`'s closure to its check if the
     /// head still makes it that closure and the check still carries `expected`. `None` when
-    /// written, else why not.
-    fn write(&self, due: &Due, expected: &str) -> Result<Option<Skip>, F::Error> {
+    /// written, else why not. The write sends and waits for nothing past `deadline`, the lock
+    /// lease's expiry (#290).
+    fn write(
+        &self,
+        due: &Due,
+        expected: &str,
+        deadline: Deadline,
+    ) -> Result<Option<Skip>, F::Error> {
         let now = self.ports.forge.pull_head(due.pr)?;
         let on_head = matches!(&now, PullHead::Open(current) if *current == due.head);
         let still = match due.closure {
@@ -345,10 +351,14 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
             return Ok(Some(Skip::HeadMoved));
         }
         let update = closure_update(due.closure, self.request.run_uid);
+        let write = LockedWrite {
+            update: &update,
+            deadline,
+        };
         match self
             .ports
             .forge
-            .update_check_if(due.check.id, expected, &update)
+            .update_check_if(due.check.id, expected, write)
         {
             Ok(()) => Ok(None),
             Err(CompareAndSetError::Conflict { .. }) => Ok(Some(Skip::Moved)),

@@ -8,6 +8,7 @@ mod checks;
 mod comments;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod contents;
+mod deadline;
 #[cfg(unix)] // exit statuses built from raw wait statuses
 mod gh;
 mod identity;

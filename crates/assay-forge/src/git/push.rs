@@ -10,7 +10,7 @@ use std::str::FromStr;
 use super::GitError;
 use super::command::{GitOperation, HttpHeader, Scope};
 use super::repository::{Call, ObjectRepo, failed};
-use super::sha::{CommitSha, HttpsRemote, ParseRemoteError};
+use super::sha::{CommitSha, HttpsRemote};
 
 /// What every [`BranchRef`] starts with.
 const HEADS: &str = "refs/heads/";
@@ -133,23 +133,34 @@ impl PushRemote {
     ///
     /// # Errors
     ///
-    /// [`ParseRemoteError::NotAbsolute`] for a relative path, and
-    /// [`ParseRemoteError::ForbiddenCharacter`] for one that is not UTF-8 or holds a control
+    /// [`LocalRemoteError::NotAbsolute`] for a relative path, and
+    /// [`LocalRemoteError::ForbiddenCharacter`] for one that is not UTF-8 or holds a control
     /// character.
-    pub fn local_bare(path: impl Into<PathBuf>) -> Result<Self, ParseRemoteError> {
+    pub fn local_bare(path: impl Into<PathBuf>) -> Result<Self, LocalRemoteError> {
         let path = path.into();
         if !path.is_absolute() {
-            return Err(ParseRemoteError::NotAbsolute);
+            return Err(LocalRemoteError::NotAbsolute);
         }
         let text = path
             .into_os_string()
             .into_string()
-            .map_err(|_not_utf8| ParseRemoteError::ForbiddenCharacter)?;
+            .map_err(|_not_utf8| LocalRemoteError::ForbiddenCharacter)?;
         if text.chars().any(char::is_control) {
-            return Err(ParseRemoteError::ForbiddenCharacter);
+            return Err(LocalRemoteError::ForbiddenCharacter);
         }
         Ok(Self(Target::Local(text)))
     }
+}
+
+/// Why a path is not a local bare remote ([`PushRemote::local_bare`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum LocalRemoteError {
+    /// A relative path, which could read as an option or depend on the working directory.
+    #[error("a local remote must be an absolute path")]
+    NotAbsolute,
+    /// A path that is not UTF-8 or holds a control character.
+    #[error("a local remote must be UTF-8 with no control characters")]
+    ForbiddenCharacter,
 }
 
 /// What a compare-and-set deletion did.

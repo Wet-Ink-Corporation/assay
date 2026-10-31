@@ -325,6 +325,12 @@ impl<R: GhRunner> Transport for GhApi<R> {
         let captured = self.runner.run(&call).map_err(GhError::Run)?;
         read(captured, path == "graphql", &self.token)
     }
+
+    /// The per-request timeout gh runs under ([`GH_TIMEOUT`] unless
+    /// [`with_timeout`](Self::with_timeout) set another).
+    fn timeout(&self) -> Duration {
+        self.timeout
+    }
 }
 
 /// Whether gh would fill something into `path`: `{...}` anywhere, or `:owner`, `:repo` or

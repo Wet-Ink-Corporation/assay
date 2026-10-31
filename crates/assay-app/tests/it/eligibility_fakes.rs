@@ -6,9 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
 use assay_app::{
-    Actor, CheckFound, CheckName, CheckRunId, CheckUpdate, CommandComments, CommentAction,
-    CommentEvent, CommentId, CommitId, CommitIdentity, CompareAndSetError, EligibilityLists, Forge,
-    GitHubState, IssueComment, LedgerRecords, LedgerTime, MergeTree, PushDraft, PushKind,
+    Actor, CheckFound, CheckName, CheckRunId, CommandComments, CommentAction, CommentEvent,
+    CommentId, CommitId, CommitIdentity, CompareAndSetError, EligibilityLists, Forge, GitHubState,
+    IssueComment, LedgerRecords, LedgerTime, LockedWrite, MergeTree, PushDraft, PushKind,
     PushRecord, RangeCommit, RangeListing, RangeObjects, Reaction, ReactionSubject, Review,
     ReviewState, Sha256Digest, SnapshotCommand, SnapshotLedger, SnapshotStep, StateError,
     StatePorts, StateRequest, TimelineEvent, Timestamp, TreeId, Upserted, UserId, github_state,
@@ -328,7 +328,7 @@ impl Forge for World {
         &self,
         _head: &CommitId,
         _name: &CheckName,
-        _initial: &CheckUpdate,
+        _initial: LockedWrite<'_>,
     ) -> Result<CheckFound, Self::Error> {
         Err(FakeError::NotFaked)
     }
@@ -337,7 +337,7 @@ impl Forge for World {
         &self,
         _id: CheckRunId,
         _expected: &str,
-        _update: &CheckUpdate,
+        _write: LockedWrite<'_>,
     ) -> Result<(), CompareAndSetError<Self::Error>> {
         Err(CompareAndSetError::Forge(FakeError::NotFaked))
     }
