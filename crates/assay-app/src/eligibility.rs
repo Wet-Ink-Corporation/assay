@@ -47,6 +47,7 @@ pub use self::rule::Ineligible;
 use self::rule::{RangeFacts, Rule};
 pub use self::state::{CommitRange, GitHubState};
 pub use self::timestamp::{InvalidTimestamp, Timestamp};
+pub(crate) use self::waive::canonical_json;
 pub use self::waive::{PriorWaivers, WaiverBindings, waiver_events};
 use crate::config::{CommitId, EligibilityLists};
 use crate::forge::Forge;

@@ -2,8 +2,9 @@
 //! of the jobs it needs, which steps PR code cannot reach wrote (02 §1). They are trusted; the
 //! artifacts they name are not until their digests match.
 
-use assay_domain::GateConclusion;
+use assay_domain::{Aeu, GateConclusion, NotRunReason, Tier};
 
+use crate::admit::Deferred;
 use crate::config::Sha256Digest;
 use crate::gate::GateError;
 use crate::plan::PlanRequest;
@@ -121,13 +122,32 @@ pub enum TierDegrade {
     FullToLite,
 }
 
+/// What `admit` reported it decided for the LLM stage (its `admission` output, D10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdmitOutcome {
+    /// The run has no LLM stage to admit: a draft, `trivial` or `needs-split`.
+    NoSpend(NotRunReason),
+    /// A complete evidence record stands in for the LLM stage. Rebuilding the stage from the
+    /// reused bundle is not built yet, so `decide` reads it as an unavailable LLM (fail closed).
+    Reused,
+    /// The LLM stage is deferred, for budget or for a slot.
+    Deferred(Deferred),
+    /// The run holds a slot and may spend, at `tier`.
+    Spend {
+        /// The tier the LLM stage runs at: `lite` after a full-to-lite degrade.
+        tier: Tier,
+    },
+}
+
 /// The `admit` job's outputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdmitJob {
-    /// How the job ended; a degrade counts only from a successful `admit`.
+    /// How the job ended; a degrade and an admission count only from a successful `admit`.
     pub result: JobResult,
     /// Its tier degrade.
     pub degrade: TierDegrade,
+    /// What it admitted.
+    pub admission: AdmitOutcome,
 }
 
 /// One document of the `review` artifact and its digest.
@@ -139,11 +159,23 @@ pub struct ArtifactDocument {
     pub digest: Sha256Digest,
 }
 
+/// How far the `review` job's LLM stage got (its `stage` output, D10, D11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReviewStage {
+    /// The stage did not run: what the placeholder review reports until M2's review exists
+    /// (D11). On a run admitted to spend, `decide` reads it as an unavailable LLM.
+    NotRun,
+}
+
 /// The `review` job's outputs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewJob {
     /// How the job ended.
     pub result: JobResult,
+    /// How far its LLM stage got.
+    pub stage: ReviewStage,
+    /// What it reported spending, for the `release` job's `final` cost record.
+    pub cost: Aeu,
     /// Every document it uploaded.
     pub documents: Vec<ArtifactDocument>,
 }
