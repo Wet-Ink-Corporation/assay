@@ -7,11 +7,11 @@ use std::assert_matches;
 use std::error::Error;
 
 use assay_app::{
-    BUNDLE_FILE, BundleRefused, CheckConclusion, CheckState, CheckStatus, CheckUpdate, Decided,
-    EvidenceEntry, MAX_BUNDLE_BYTES, PersistFailure, PersistOutcome, Persisted, PersistedError,
-    PersistedOutcome, PersistedPorts, PrepareError, PreparedBundle, Published, ReviewState,
-    RunField, Sha256Digest, Target, Unconfirmed, UnknownPersistOutcome, Written, prepare,
-    publish_persisted,
+    BUNDLE_FILE, BundleRefused, BundleShape, CheckConclusion, CheckState, CheckStatus, CheckUpdate,
+    Decided, EvidenceEntry, MAX_BUNDLE_BYTES, PersistFailure, PersistOutcome, Persisted,
+    PersistedError, PersistedOutcome, PersistedPorts, PrepareError, PreparedBundle, Published,
+    ReviewState, RunField, Sha256Digest, Target, Unconfirmed, UnknownPersistOutcome, Written,
+    prepare, publish_persisted,
 };
 use assay_domain::{FileChange, Lines, Override, OverrideScope, PrClass, Tier, decide};
 use serde_json::Value;
@@ -526,6 +526,21 @@ fn a_bundle_whose_decision_or_rubric_does_not_recompute_is_refused() -> Result<(
         refused(&run, run.target(), (&not_bundle, &not_bundle_digest))?,
         BundleRefused::Unreadable(_)
     );
+    Ok(())
+}
+
+#[test]
+fn a_bundle_whose_github_snapshot_holds_a_field_assay_never_writes_is_unreadable()
+-> Result<(), Box<dyn Error>> {
+    let run = Run::new()?;
+    let bundle = prepared(&run)?;
+    let (extra, extra_digest) = edited(&bundle, |value| {
+        value["github"]["extra"] = Value::Null;
+    })?;
+
+    let outcome = refused(&run, run.target(), (&extra, &extra_digest))?;
+
+    assert_matches!(outcome, BundleRefused::Unreadable(BundleShape::Shape));
     Ok(())
 }
 

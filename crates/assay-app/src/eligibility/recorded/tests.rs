@@ -191,14 +191,15 @@ fn approval() -> impl Strategy<Value = Approval> {
         })
 }
 
-/// `approval` as `approvals` could judge it under push clock `clock`: an approval is before
-/// the push only when it has a time and the head a clock, which it names.
+/// `approval` as `approvals` judges it under push clock `clock`: an ineligible reviewer's
+/// keeps its reason; an eligible one's status follows from its time and the clock.
 fn consistent(approval: Approval, clock: Option<Timestamp>) -> Approval {
     let status = match (approval.status, approval.submitted_at, clock) {
-        (ApprovalStatus::BeforePush(_), None, _) => ApprovalStatus::Unsubmitted,
-        (ApprovalStatus::BeforePush(_), Some(_), None) => ApprovalStatus::NoPushClock,
-        (ApprovalStatus::BeforePush(_), Some(_), Some(clock)) => ApprovalStatus::BeforePush(clock),
-        (status, _, _) => status,
+        (status @ ApprovalStatus::Ineligible(_), _, _) => status,
+        (_, None, _) => ApprovalStatus::Unsubmitted,
+        (_, Some(_), None) => ApprovalStatus::NoPushClock,
+        (_, Some(at), Some(clock)) if at <= clock => ApprovalStatus::BeforePush(clock),
+        (_, Some(_), Some(_)) => ApprovalStatus::Counted,
     };
     Approval { status, ..approval }
 }
@@ -357,12 +358,20 @@ fn fixed() -> GitHubState {
         commits: CommitRange::Within,
         clock: Some("2026-10-13T09:00:00Z".parse().expect("a time")),
         pushes: Vec::new(),
-        approvals: vec![Approval {
-            review: NonZeroU64::MIN,
-            reviewer: id(2),
-            submitted_at: Some("2026-10-13T09:05:00Z".parse().expect("a time")),
-            status: ApprovalStatus::Ineligible(Ineligible::Pusher),
-        }],
+        approvals: vec![
+            Approval {
+                review: NonZeroU64::MIN,
+                reviewer: id(2),
+                submitted_at: Some("2026-10-13T09:05:00Z".parse().expect("a time")),
+                status: ApprovalStatus::Ineligible(Ineligible::Pusher),
+            },
+            Approval {
+                review: NonZeroU64::new(2).expect("two"),
+                reviewer: id(1),
+                submitted_at: Some("2026-10-13T08:59:00Z".parse().expect("a time")),
+                status: ApprovalStatus::BeforePush("2026-10-13T09:00:00Z".parse().expect("a time")),
+            },
+        ],
         commands: vec![JudgedCommand {
             record: SnapshotCommand {
                 comment_id: CommentId(NonZeroU64::MIN),
@@ -390,8 +399,9 @@ fn the_fixed_snapshot_reads_before_any_edit() {
 
 #[test]
 fn a_record_the_writer_never_writes_is_refused() {
+    let mut accepted = Vec::new();
     for (pointer, key, edit) in refused_edits() {
-        let case = format!("{pointer}/{key} = {edit:?}");
+        let case = format!("{pointer}/{key}");
         let mut value = written(&fixed());
         let object = value
             .pointer_mut(pointer)
@@ -402,18 +412,45 @@ fn a_record_the_writer_never_writes_is_refused() {
             None => object.remove(key),
         };
 
-        assert!(RecordedState::read(&value).is_none(), "{case}");
+        if RecordedState::read(&value).is_some() {
+            accepted.push(case);
+        }
     }
+
+    assert_eq!(accepted, Vec::<String>::new(), "edits read as written");
 }
 
 /// Each edit that makes [`fixed`]'s record one the writer never writes: an unknown field in
 /// every object, an unknown status or code, a reason where none is written or none where one
 /// is, a command line the ledger's reader refuses (another word, `recheck`, arguments that do
-/// not parse), an id that is zero and a time that is none.
-fn refused_edits() -> [Edit; 18] {
+/// not parse), an id that is zero and a time that is none; lists `parse` refuses (an owner
+/// who is also an approver, a privileged maintainer or agent, an id twice in one list, a login
+/// GitHub refuses, a list over its cap), an id twice in the pushers or the range's users; and
+/// an approval whose status does not fit its times (before the push with no time or no push
+/// clock, no push clock beside one).
+fn refused_edits() -> Vec<Edit> {
     let null = || Some(Value::Null);
     let text = |text: &str| Some(Value::from(text));
-    [
+    let entries = |ids: &[u64]| {
+        let list = ids
+            .iter()
+            .map(|id| serde_json::json!({ "id": id, "login": format!("u{id}") }))
+            .collect::<Vec<_>>();
+        Some(Value::from(list))
+    };
+    let crowded: Vec<u64> = (100..165).collect();
+    vec![
+        ("/lists", "approvers", entries(&[1, 2])),
+        ("/lists", "maintainers", entries(&[1, 3])),
+        ("/lists", "agents", entries(&[2, 4])),
+        ("/lists", "owners", entries(&[1, 1])),
+        ("/lists/owners/0", "login", text("-bad")),
+        ("/lists", "agents", entries(&crowded)),
+        ("", "pushers", Some(vec![8, 8].into())),
+        ("/range", "users", Some(vec![9, 9].into())),
+        ("/approvals/1", "submitted_at", null()),
+        ("", "push_clock", null()),
+        ("/approvals/1", "status", text("no-push-clock")),
         ("", "extra", null()),
         ("/lists", "extra", null()),
         ("/lists/owners/0", "extra", null()),
@@ -433,4 +470,9 @@ fn refused_edits() -> [Edit; 18] {
         ("", "author", Some(0.into())),
         ("", "push_clock", text("yesterday")),
     ]
+}
+
+#[test]
+fn the_crowded_list_is_one_over_the_cap() {
+    assert_eq!((100..165).count(), crate::config::MAX_LIST_ENTRIES + 1);
 }

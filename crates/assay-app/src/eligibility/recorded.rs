@@ -170,7 +170,11 @@ impl StateRecordIn {
             None => None,
             Some(text) => Some(text.parse().ok()?),
         };
-        if !self.approvals.iter().all(ApprovalIn::is_written) {
+        if !self
+            .approvals
+            .iter()
+            .all(|approval| approval.is_written(clock))
+        {
             return None;
         }
         if !self.commands.iter().all(CommandIn::is_written) {
@@ -216,15 +220,33 @@ impl StateRecordIn {
 }
 
 impl ApprovalIn {
-    /// Whether the writer writes this approval: its time reads, and only an ineligible one
-    /// has a reason, one of [`Ineligible::code`]'s.
-    fn is_written(&self) -> bool {
-        absent_or_time(self.submitted_at.as_deref())
-            && match (self.status, self.reason.as_deref()) {
-                (ApprovalStatusIn::Ineligible, Some(code)) => ineligible(code).is_some(),
-                (ApprovalStatusIn::Ineligible, None) => false,
-                (_, reason) => reason.is_none(),
-            }
+    /// Whether the writer writes this approval under push clock `clock`: its time reads, only
+    /// an ineligible one has a reason (one of [`Ineligible::code`]'s), and its status is the
+    /// one `approvals` gives its time and the clock (an eligible reviewer's approval is
+    /// unsubmitted without a time, has no push clock without a clock, and is before the push
+    /// at or before the clock, counted after it).
+    fn is_written(&self, clock: Option<Timestamp>) -> bool {
+        let submitted = match self.submitted_at.as_deref() {
+            None => None,
+            Some(text) => match text.parse::<Timestamp>() {
+                Ok(at) => Some(at),
+                Err(_) => return false,
+            },
+        };
+        let reason = match (self.status, self.reason.as_deref()) {
+            (ApprovalStatusIn::Ineligible, Some(code)) => ineligible(code).is_some(),
+            (ApprovalStatusIn::Ineligible, None) => false,
+            (_, reason) => reason.is_none(),
+        };
+        let shape = match (self.status, submitted, clock) {
+            (ApprovalStatusIn::Ineligible, _, _)
+            | (ApprovalStatusIn::Unsubmitted, None, _)
+            | (ApprovalStatusIn::NoPushClock, Some(_), None) => true,
+            (ApprovalStatusIn::BeforePush, Some(at), Some(clock)) => at <= clock,
+            (ApprovalStatusIn::Counted, Some(at), Some(clock)) => at > clock,
+            _ => false,
+        };
+        reason && shape
     }
 }
 
@@ -250,11 +272,6 @@ impl CommandIn {
             && self.head_sha.parse::<CommitId>().is_ok()
             && self.body_sha256.parse::<Sha256Digest>().is_ok()
     }
-}
-
-/// Whether `text`, when present, reads as a time.
-fn absent_or_time(text: Option<&str>) -> bool {
-    text.is_none_or(|text| text.parse::<Timestamp>().is_ok())
 }
 
 /// The ids of a set the writer writes in order, `None` when one repeats.

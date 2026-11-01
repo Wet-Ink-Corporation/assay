@@ -213,6 +213,32 @@ fn a_push_to_another_head_after_the_clock_is_pushed_since() -> Result<(), Box<dy
 }
 
 #[test]
+fn a_push_record_after_evidence_with_no_push_clock_is_pushed_since() -> Result<(), Box<dyn Error>> {
+    let mut world = contributor_pr();
+    world.pushes.clear();
+    let evidence = evidence(&world, |_| Ok(()))?;
+    assert_eq!(evidence.recorded().push_clock(), None);
+    world.push((HEAD_COMMIT, 'c'), CONTRIBUTOR, 9);
+
+    let outcome = redecided(&world, &evidence, &lists());
+
+    assert_matches!(outcome, Err(RedecideStateError::PushedSince));
+    Ok(())
+}
+
+#[test]
+fn a_head_with_no_push_clock_and_no_push_record_is_judged() -> Result<(), Box<dyn Error>> {
+    let mut world = contributor_pr();
+    world.pushes.clear();
+    let evidence = evidence(&world, |_| Ok(()))?;
+
+    let state = redecided(&world, &evidence, &lists())?;
+
+    assert_eq!(state.push_clock(), None);
+    Ok(())
+}
+
+#[test]
 fn the_lists_are_narrowed_not_replaced_by_the_tip() -> Result<(), Box<dyn Error>> {
     let world = contributor_pr();
     let evidence = evidence(&world, |_| Ok(()))?;

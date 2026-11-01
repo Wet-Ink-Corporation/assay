@@ -47,7 +47,7 @@ pub struct RedecideRequest<'a> {
 #[derive(Debug, Error)]
 pub enum RedecideStateError<F, L, C> {
     /// A push record moved the head's push clock, or pushed another head, since the evidence
-    /// run: the recorded range and pushers no longer describe the PR, so a new run decides.
+    /// run (any record, when the head had no clock): the recorded range and pushers no longer describe the PR, so a new run decides.
     #[error("the PR was pushed since its evidence run")]
     PushedSince,
     /// The PR's reviews could not be listed.
@@ -92,8 +92,9 @@ type PortsError<F, L, C> = RedecideStateError<
 /// [narrowed](EligibilityLists::narrowed_to) by `request.tip`, so a removal at the tip takes
 /// effect at once and an addition waits for a new run (R3-26). The push records are re-read
 /// first: when the head's push clock is not the recorded one, or a record is later than it
-/// (another head was pushed), the snapshot is [`RedecideStateError::PushedSince`] and nothing
-/// else is read. Reviews and command records are read fresh and judged as `github_state`
+/// (another head was pushed), or the head had no clock and any record exists (none can be
+/// dated against it), the snapshot is [`RedecideStateError::PushedSince`] and nothing else is
+/// read. Reviews and command records are read fresh and judged as `github_state`
 /// judges them.
 ///
 /// Calls: one ledger read of each kind (capped), one review listing and one comment fetch per
@@ -152,15 +153,17 @@ where
     })
 }
 
-/// Whether `pushes` say the PR moved since `recorded`: the head's clock is not `clock`, or a
-/// record is later than it.
+/// Whether `pushes` say the PR moved since `recorded`: the head's clock is not `clock`, a
+/// record is later than it, or there is no clock and some record.
 fn pushed_since(pushes: &[PushRecord], recorded: &RecordedState, clock: Option<Timestamp>) -> bool {
-    push_clock(pushes, recorded.head()) != clock
-        || clock.is_some_and(|clock| {
-            pushes
-                .iter()
-                .any(|record| Timestamp::from(record.push.at) > clock)
-        })
+    let Some(clock) = clock else {
+        // With no clock, no record can be dated against the evidence run: fail closed.
+        return !pushes.is_empty();
+    };
+    push_clock(pushes, recorded.head()) != Some(clock)
+        || pushes
+            .iter()
+            .any(|record| Timestamp::from(record.push.at) > clock)
 }
 
 impl<F, L, C> RedecideStateError<F, L, C> {
