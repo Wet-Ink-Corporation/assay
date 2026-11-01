@@ -118,6 +118,7 @@ mod redecide_inputs;
 mod redecide_state;
 mod release;
 mod replay;
+mod replay_chain;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod replay_fakes;
 mod rereview_anchor;

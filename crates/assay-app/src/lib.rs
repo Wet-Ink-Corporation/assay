@@ -265,8 +265,10 @@ pub use provenance::{
 };
 mod redecide;
 pub use redecide::{
-    Absence, DECISION_FILE, DecisionBundle, DecisionBundleError, DecisionReadBack, DecisionTarget,
+    Absence, ChainError, ChainMatched, ChainMismatch, ChainPorts, ChainReplayed, ChainRequest,
+    DECISION_FILE, DecisionBundle, DecisionBundleError, DecisionReadBack, DecisionTarget,
     DecisionTrigger, EvidenceBundle, EvidenceError, EvidenceRead, EvidenceRequest, Forgery,
-    MAX_DECISION_BUNDLE_BYTES, PrepareDecisionError, Redecided, RedecisionRequest, TriggerCommand,
-    prepare_decision, read_decision_bundle, read_evidence, redecision_inputs,
+    InputsField, MAX_DECISION_BUNDLE_BYTES, PrepareDecisionError, Redecided, RedecisionRequest,
+    TriggerCommand, prepare_decision, read_decision_bundle, read_evidence, redecision_inputs,
+    replay_chain,
 };

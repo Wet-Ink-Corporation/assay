@@ -42,6 +42,28 @@ pub(crate) fn evidence_of(
     world: &World,
     edit: impl FnOnce(&mut Run) -> Result<(), Box<dyn Error>>,
 ) -> Result<EvidenceBundle, Box<dyn Error>> {
+    Ok(stored_evidence(scenario, world, edit)?.bundle)
+}
+
+/// An evidence bundle as the artifact store holds it, and as decide-only reads it.
+#[derive(Debug)]
+pub(crate) struct StoredEvidence {
+    /// The bundle's bytes, as uploaded.
+    pub(crate) bytes: Vec<u8>,
+    /// The evidence pointer the pipeline recorded for them.
+    pub(crate) pointer: EvidencePointer,
+    /// The pipeline's `pull_request_target` run that uploaded them.
+    pub(crate) run: WorkflowRunFacts,
+    /// The bundle, read back by `read_evidence`.
+    pub(crate) bundle: EvidenceBundle,
+}
+
+/// Like [`evidence_of`], keeping the bytes, the pointer and the run beside the bundle.
+pub(crate) fn stored_evidence(
+    scenario: &Scenario,
+    world: &World,
+    edit: impl FnOnce(&mut Run) -> Result<(), Box<dyn Error>>,
+) -> Result<StoredEvidence, Box<dyn Error>> {
     let mut run = Run::of(scenario)?;
     run.github = world.state()?;
     edit(&mut run)?;
@@ -60,7 +82,7 @@ pub(crate) fn evidence_of(
         run_attempt: NonZeroU64::MIN,
         sha256: Sha256Digest::of(&bytes),
     };
-    let provenance = PipelineRun(WorkflowRunFacts {
+    let facts = WorkflowRunFacts {
         run_id: run_uid.run_id,
         repo_id: run_uid.repo_id,
         path: ".github/workflows/assay.yml".to_owned(),
@@ -68,7 +90,7 @@ pub(crate) fn evidence_of(
         head_branch: "feature".to_owned(),
         head_repo: Some(run_uid.repo_id),
         run_attempt: NonZeroU64::MIN,
-    });
+    };
     let rubric = rubric_v1()?;
     let request = EvidenceRequest {
         repo_id: run_uid.repo_id,
@@ -76,12 +98,18 @@ pub(crate) fn evidence_of(
         default_branch: "main",
         rubric: &rubric,
     };
-    match read_evidence(
+    let read = read_evidence(
         &request,
-        &provenance,
-        &FakeBundles::new(Stored::Bytes(bytes)),
-    )? {
-        EvidenceRead::Authentic(bundle) => Ok(*bundle),
+        &PipelineRun(facts.clone()),
+        &FakeBundles::new(Stored::Bytes(bytes.clone())),
+    )?;
+    match read {
+        EvidenceRead::Authentic(bundle) => Ok(StoredEvidence {
+            bytes,
+            pointer,
+            run: facts,
+            bundle: *bundle,
+        }),
         other => Err(format!("authentic evidence, got {other:?}").into()),
     }
 }
