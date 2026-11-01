@@ -42,7 +42,7 @@
     "aeu": { "$ref": "#/$defs/aeu" },
     "kind": { "enum": ["reserved", "final"] },
     "cancelled": {
-      "description": "A `final` record charged at the run cap: the review died, was cancelled, or was back-filled. Never true on a `reserved` record.",
+      "description": "A `final` record charged at the run cap because the review job was cancelled, or back-filled by the ledger-side reconcile for a run whose release never ran. A review that failed is also charged the run cap, with `cancelled: false`. Never true on a `reserved` record.",
       "type": "boolean"
     },
     "at": { "$ref": "#/$defs/time" }
