@@ -13,9 +13,12 @@ use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, SystemTime};
 
+use assay_app::{LedgerTime, OpenClock, ParseLedgerTimeError};
 use assay_cli::ForgeSupervisor;
 use assay_forge::git::{GitEnvironment, GitError, GitLimits, ObjectRepo, PushRemote};
 use assay_forge::github::{
@@ -201,6 +204,45 @@ pub(crate) fn token(value: Option<&OsStr>) -> Result<GhToken, Problem> {
         .to_str()
         .ok_or(Problem::Invalid)?;
     GhToken::new(text).map_err(|_invalid| Problem::Invalid)
+}
+
+/// `value` as an id in canonical decimal: ASCII digits, the first not `0`, within `u64`; its
+/// value is never shown.
+pub(crate) fn id(value: Option<&OsStr>) -> Result<NonZeroU64, Problem> {
+    let text = value
+        .ok_or(Problem::Missing)?
+        .to_str()
+        .ok_or(Problem::Invalid)?;
+    let canonical = text
+        .bytes()
+        .next()
+        .is_some_and(|first| matches!(first, b'1'..=b'9'))
+        && text.bytes().all(|byte| byte.is_ascii_digit());
+    canonical
+        .then(|| text.parse().ok())
+        .flatten()
+        .ok_or(Problem::Invalid)
+}
+
+/// The system clock for the publish lock's lease, and a real pause between lock attempts.
+pub(crate) struct SystemClock;
+
+impl OpenClock for SystemClock {
+    type Error = ParseLedgerTimeError;
+
+    fn now(&self) -> Result<LedgerTime, ParseLedgerTimeError> {
+        LedgerTime::from_system_time(SystemTime::now())
+    }
+
+    /// 2, 4 and then 8 seconds: 14 in all, well under the lock's 2-minute TTL.
+    fn pause(&self, retry: u8) {
+        let seconds = match retry {
+            0 | 1 => 2,
+            2 => 4,
+            _ => 8,
+        };
+        thread::sleep(Duration::from_secs(seconds));
+    }
 }
 
 /// The ledger repository base config at `config` names in `[assay].ledger_repo`, for `job`.

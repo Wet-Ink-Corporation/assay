@@ -116,22 +116,7 @@ pub fn run_plan<N: NonceSource>(
         nonces,
         validator,
     } = ports;
-    let request = PlanRequest {
-        pull_request: PullRequestEvent {
-            repo: run.repo.to_string(),
-            number: identity.pr,
-            base_sha: identity.base_sha,
-            head_sha: identity.head_sha,
-            base_ref: identity.base_ref,
-            draft: identity.draft,
-        },
-        run_uid: run.run_uid,
-        rest_files,
-        base_packages: None,
-        head_packages: None,
-        include_targets: IncludeTargets::NotScanned,
-        prompt_bundle,
-    };
+    let request = plan_request(run, identity, rest_files, prompt_bundle);
     let planned = plan(&request, objects, nonces, validator).map_err(PlanRunError::Plan)?;
     let event = &request.pull_request;
     let merge_base = objects
@@ -141,6 +126,41 @@ pub fn run_plan<N: NonceSource>(
     write_document(out, planned.json())?;
     let digest = Sha256Digest::of(planned.json());
     Ok(PlanOutputs::new(&planned, digest, event.draft, merge_base))
+}
+
+/// The plan request for `identity`'s PR in `run`: what `plan` plans and `decide` recomputes,
+/// built here only, so the two cannot drift (#60 Risks). GitHub's file list is `rest_files`
+/// and the prompt bundle's hash `prompt_bundle`; there are no package sets (D2 B) and no
+/// include-target scan, as local mode's.
+#[must_use]
+pub(crate) fn plan_request(
+    run: &RunEnv,
+    identity: Identity,
+    rest_files: RestFiles,
+    prompt_bundle: ContentHash,
+) -> PlanRequest {
+    PlanRequest {
+        pull_request: pull_request_event(run, identity),
+        run_uid: run.run_uid,
+        rest_files,
+        base_packages: None,
+        head_packages: None,
+        include_targets: IncludeTargets::NotScanned,
+        prompt_bundle,
+    }
+}
+
+/// `identity`'s PR in `run`'s repository, as the run was planned for it.
+#[must_use]
+pub(crate) fn pull_request_event(run: &RunEnv, identity: Identity) -> PullRequestEvent {
+    PullRequestEvent {
+        repo: run.repo.to_string(),
+        number: identity.pr,
+        base_sha: identity.base_sha,
+        head_sha: identity.head_sha,
+        base_ref: identity.base_ref,
+        draft: identity.draft,
+    }
 }
 
 /// Creates `out` (refusing one that exists by now) and writes `json` as its only file.

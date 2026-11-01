@@ -14,6 +14,12 @@ mod check;
 mod check_local_events;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod check_weigh_in;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod decide_fakes;
+mod decide_job;
+mod decide_run;
+#[cfg(unix)] // Unix symlinks
+mod dir_artifacts;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod doctor;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
@@ -58,6 +64,8 @@ mod plan_job;
 mod plan_run;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod pre_push;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod publish_run;
 #[cfg(unix)] // process groups, through forge's git
 mod pull_request;
 mod reconcile;

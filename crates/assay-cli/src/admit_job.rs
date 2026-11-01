@@ -425,11 +425,14 @@ fn line(out: &OutDir, outputs: &AdmitOutputs) -> String {
     )
 }
 
-/// Fetches pinned commits from the repository with the run token.
-struct Fetcher<'a> {
-    repo: &'a ObjectRepo,
-    remote: &'a HttpsRemote,
-    authorization: &'a Authorization,
+/// Fetches pinned commits from the repository with the run token (admit's and decide's).
+pub(crate) struct Fetcher<'a> {
+    /// The object-only repository they are fetched into.
+    pub(crate) repo: &'a ObjectRepo,
+    /// The repository's https remote.
+    pub(crate) remote: &'a HttpsRemote,
+    /// The run token, as git's header.
+    pub(crate) authorization: &'a Authorization,
 }
 
 impl FetchCommits for Fetcher<'_> {

@@ -18,20 +18,18 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use assay_app::{
-    AdmitPorts, AdmitRequest, Admitted, BundleSource, Carry, Clock, CommandComments, CommitId,
-    ContractValidator, EntryKind, EvidencePointer, Forge, Ledger, LedgerRefs, MAX_SUPPRESS_BYTES,
-    NoEvents, PlanStage, PriorCarry, PullRequestObjects, RangeRequest, Sha256Digest, TargetRequest,
-    admit, base_identities, plan_stage, prior_head, range_identities, read_pushes, read_state,
-    review_target,
+    AdmitPorts, AdmitRequest, Admitted, BundleSource, Clock, CommandComments, CommitId,
+    ContractValidator, EntryKind, Forge, Ledger, LedgerRefs, MAX_SUPPRESS_BYTES, NoEvents,
+    PlanStage, PullRequestObjects, RangeRequest, Sha256Digest, admit, base_identities, plan_stage,
+    range_identities, read_pushes,
 };
-use assay_forge::git::GitError;
-use assay_forge::process::ProcessError;
 
 pub use self::error::{AdmitRunError, AdmitRunFailure, FetchedSide, SuppressError};
 use crate::ci::{FirstAttempt, OutDir};
 use crate::outputs::{AdmitOutputs, Identity, PlanOutputs};
 use crate::plan::RUN_FILE;
-use crate::pull_request::{ForgeObjectsError, ForgePullRequest};
+use crate::prior::prior;
+use crate::pull_request::ForgePullRequest;
 
 /// The context pack's file name in `--out`, beside [`RUN_FILE`]; written for a spend only.
 pub const PACK_FILE: &str = "context-pack.json";
@@ -175,12 +173,18 @@ where
         },
     )
     .map_err(AdmitRunError::Range)?;
-    let decided = carry::<L, R, B, C, F, H>(job, objects, ports.ledger, ports.bundles)?;
+    let prior = prior(
+        (job.run.run_env(), identity),
+        objects,
+        ports.ledger,
+        ports.bundles,
+    )
+    .map_err(AdmitRunError::from)?;
     let request = AdmitRequest {
         run_uid,
         plan: job.document,
-        carry: decided.carry,
-        prior: decided.prior.as_ref(),
+        carry: prior.carry,
+        prior: prior.state.evidence.as_ref(),
         identities: &identities,
         author: identity.author,
         range: &range,
@@ -196,73 +200,6 @@ where
         events: &mut NoEvents,
     };
     admit(ports, &request, job.validator).map_err(|error| AdmitRunError::Admit(Box::new(error)))
-}
-
-/// The carry and the ledger's evidence pointer it was decided on, which `admit` checks the
-/// state it reads against.
-struct Decided {
-    carry: Carry,
-    prior: Option<EvidencePointer>,
-}
-
-/// Whether the previous completed run's open findings carry (04 §7): its head is read from its
-/// bundle through the ledger's evidence pointer (D6 A), and [`review_target`] decides.
-///
-/// The previous head is not fetched: when it is an ancestor of head, head's fetch brought it,
-/// and otherwise the carry resets whether it is rewritten or unreachable.
-fn carry<L, R, B, C, F, H>(
-    job: AdmitJob<'_>,
-    objects: &ForgePullRequest<'_>,
-    ledger: &L,
-    bundles: &B,
-) -> Result<Decided, AdmitRunFailure<L, R, B, C, F, H>>
-where
-    L: Ledger,
-    R: LedgerRefs,
-    B: BundleSource,
-    C: CommandComments,
-    F: Forge,
-    H: FetchCommits,
-{
-    let (run, identity) = (job.run.run_env(), job.identity);
-    let state =
-        read_state(ledger, run.run_uid.repo_id, identity.pr).map_err(AdmitRunError::State)?;
-    let previous = match &state.evidence {
-        None => None,
-        Some(pointer) => {
-            let repository = run.repo.to_string();
-            let prior = PriorCarry {
-                repo_id: run.run_uid.repo_id,
-                pointer,
-                repository: &repository,
-            };
-            Some(prior_head(&prior, bundles).map_err(AdmitRunError::PriorHead)?)
-        }
-    };
-    let request = TargetRequest {
-        base: &identity.base_sha,
-        head: &identity.head_sha,
-        previous: previous.as_ref(),
-    };
-    let target = review_target(&request, objects).map_err(AdmitRunError::Target)?;
-    if target.range_diff_failure().is_some_and(group_may_run) {
-        return Err(AdmitRunError::RangeDiffKilled);
-    }
-    Ok(Decided {
-        carry: target.carry(),
-        prior: state.evidence,
-    })
-}
-
-/// Whether `error` leaves a git process group that may still be running: the job must stop.
-const fn group_may_run(error: &ForgeObjectsError) -> bool {
-    matches!(
-        error,
-        ForgeObjectsError::Git(GitError::Process {
-            source: ProcessError::Kill { .. },
-            ..
-        })
-    )
 }
 
 /// The text of base `.assay/suppress.toml` at `base`, or `None` when the base has none.

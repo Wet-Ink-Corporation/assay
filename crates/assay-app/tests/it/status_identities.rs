@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    BaseIdentitiesError, CommitId, Identities, ListFile, ListName, ListsError, UserId,
-    base_identities,
+    BaseIdentitiesError, CommitId, EligibilityLists, Identities, ListFile, ListName, ListsError,
+    UserId, base_identities, base_lists,
 };
 
 use crate::plan_fakes::{BASE, FakePr};
@@ -73,6 +73,27 @@ maintainers = [{ id = 124330161, login = "Ryan-Britton" }]
             agents: users(&[13, 124_330_161]),
         },
         "a maintainer is not privileged, and may be an agent (0005)"
+    );
+}
+
+/// #60 ST-14: decide's GitHub state snapshot judges eligibility by the same reading of the
+/// base lists `status` reports: the lists `EligibilityLists::parse` gives for the base files.
+#[test]
+fn the_base_lists_are_the_files_as_the_one_parser_reads_them() {
+    let owners = "owners = [{ id = 11, login = \"break-glass\" }]\n\
+                  approvers = []\nmaintainers = [{ id = 7, login = \"daily\" }]\n";
+    let agents = "agents = [{ id = 13, login = \"helper\" }]";
+    let pr = with(&[(OWNERS, owners), (AGENTS, agents)]);
+
+    let lists = base_lists(&pr, &base());
+
+    assert_eq!(
+        lists.expect("read"),
+        EligibilityLists::parse(Some(owners), Some(agents)).expect("valid lists")
+    );
+    assert_eq!(
+        base_lists(&FakePr::new(), &base()).expect("read"),
+        EligibilityLists::default()
     );
 }
 

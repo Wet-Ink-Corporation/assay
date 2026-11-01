@@ -13,6 +13,7 @@ use assay_app::{
 
 use super::FetchCommits;
 use crate::outputs::HeldSlot;
+use crate::prior::PriorError;
 use crate::pull_request::ForgeObjectsError;
 
 /// Which pinned commit a fetch was for.
@@ -140,6 +141,18 @@ impl<L, R, B, C, F, H> AdmitRunError<L, R, B, C, F, H> {
             | Self::PriorHead(_)
             | Self::Target(_)
             | Self::RangeDiffKilled => None,
+        }
+    }
+}
+
+impl<L, R, B, C, F, H> From<PriorError<L, B>> for AdmitRunError<L, R, B, C, F, H> {
+    /// The previous run's reading failure, as admit reports it.
+    fn from(error: PriorError<L, B>) -> Self {
+        match error {
+            PriorError::State(source) => Self::State(source),
+            PriorError::PriorHead(source) => Self::PriorHead(source),
+            PriorError::Target(source) => Self::Target(source),
+            PriorError::RangeDiffKilled => Self::RangeDiffKilled,
         }
     }
 }
