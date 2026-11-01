@@ -268,9 +268,9 @@ fn every_job_holding_a_token_that_writes_or_a_secret_runs_on_the_first_attempt_o
 }
 
 /// Every raw line of `text` that GitHub reads as a step's `run:` text, as `(line number, line)`:
-/// a one-line `run:` value, and every line of a `run: |` block (comment and blank lines
-/// included, since GitHub expands an expression on any of them) up to the first line indented
-/// no deeper than its `run` key. Only `run:` keys inside a `steps:` block count, so a job output
+/// the `run:` key's own line and, whatever its header (`|`, `>+`, `| # note` or a one-line
+/// value), every following line up to the first one indented no deeper than the key (comment
+/// and blank lines included, since GitHub expands an expression on any of them). Only `run:` keys inside a `steps:` block count, so a job output
 /// named `run` is not one. Unlike [`jobs`], it drops nothing.
 fn raw_run_lines(text: &str) -> Vec<(usize, &str)> {
     let mut lines = Vec::new();
@@ -301,13 +301,11 @@ fn raw_run_lines(text: &str) -> Vec<(usize, &str)> {
         let dash = line.trim_start().strip_prefix("- ");
         let key_indent = indent.saturating_add(if dash.is_some() { 2 } else { 0 });
         let key = dash.unwrap_or_else(|| line.trim_start());
-        if let Some(value) = key.strip_prefix("run:") {
-            let value = value.trim();
-            if value == "|" || value == ">" || value.starts_with("|-") || value.starts_with(">-") {
-                block = Some(key_indent);
-            } else {
-                lines.push((number, line));
-            }
+        if key.starts_with("run:") {
+            // Whatever the header (`|`, `>+`, `| # note`, or a one-line value), every line
+            // indented deeper than the key belongs to the value, so all of them are read.
+            lines.push((number, line));
+            block = Some(key_indent);
         }
     }
     lines
@@ -333,16 +331,21 @@ fn no_run_holds_an_expression_on_any_line_comments_included() -> io::Result<()> 
 
 #[test]
 fn a_run_block_s_comment_line_is_read_as_run_text() {
-    let text = "jobs:\n  a:\n    steps:\n      - run: |\n          # ${{ x }}\n          echo\n        env:\n          A: ${{ y }}\n      - run: echo ${{ z }}\n";
+    let text = "jobs:\n  a:\n    steps:\n      - run: |\n          # ${{ x }}\n          echo\n        env:\n          A: ${{ y }}\n      - run: echo ${{ z }}\n      - run: |+\n          ${{ p }}\n      - run: >- # note\n          ${{ q }}\n";
 
     let runs = raw_run_lines(text);
 
     assert_eq!(
         runs,
         [
+            (4, "      - run: |"),
             (5, "          # ${{ x }}"),
             (6, "          echo"),
             (9, "      - run: echo ${{ z }}"),
+            (10, "      - run: |+"),
+            (11, "          ${{ p }}"),
+            (12, "      - run: >- # note"),
+            (13, "          ${{ q }}"),
         ]
     );
 }
