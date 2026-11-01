@@ -96,7 +96,7 @@ Jobs communicate through (a) job `outputs` for integrity data and small control 
 
 Six crates. Dependencies point inward: `domain ← app ← {forge, runner, gates} ← cli`. Domain depends on `serde`, `thiserror`, `sha2` only. assay **does not** link `weighin-core` or any temper code (P8).
 
-Plugin directory (`plugin/`): `commands/` (`/assay:check`, `/assay:replay`, `/assay:report`), `prompts/` (reviewer bundles, content-addressed, versioned), `hooks/` (pre-push helper, and the assay mod `hooks/register.tsx`, an in-session view over `assay.status/1` and `assay.event/1`, ADR-25). In CI, prompts are delivered with `--append-system-prompt-file` from the base checkout (not `--plugin-dir`). Following temper's own rule, the assay repo carries no root `CLAUDE.md` that duplicates `AGENTS.md`.
+Plugin directory (`plugin/`): `commands/` (`/assay:check`, `/assay:replay`, `/assay:report`), `prompts/` (reviewer bundles, content-addressed, versioned), `hooks/` (pre-push helper). The assay mod, an in-session view over `assay.status/1` and `assay.event/1` (ADR-25), is a separate plugin, `assay-mod`, in `plugin-mod/` (`hooks/register.tsx`), listed in the same marketplace: the desktop app's Chat/Cowork switches off a whole plugin that ships a mod, so `plugin/` ships none. In CI, prompts are delivered with `--append-system-prompt-file` from the base checkout (not `--plugin-dir`). Following temper's own rule, the assay repo carries no root `CLAUDE.md` that duplicates `AGENTS.md`.
 
 ## 3. Trust zones and job classes (P2, P3)
 
@@ -175,7 +175,8 @@ assay/
   AGENTS.md                    charter (temper template), decisions log
   Cargo.toml  rust-toolchain.toml  deny.toml
   crates/{assay-domain,assay-app,assay-forge,assay-runner,assay-gates,assay-cli}
-  plugin/                      Claude Code plugin (commands, prompts, hooks) and the assay mod
+  plugin/                      Claude Code plugin `assay` (commands, prompts, hooks; no mod)
+  plugin-mod/                  plugin `assay-mod`: the assay mod only
                                (hooks/register.tsx, types/, tests/; a view, not a gate, ADR-25)
   workflows/{assay.yml,assay-decide.yml}.tmpl   installed into consumer repos (all actions SHA-pinned)
   rubric/v1.toml
@@ -185,7 +186,7 @@ assay/
   .claude/temper*, .github/workflows/rust.yml   temper CI (dogfood)
 ```
 
-For assay's own repo the trust paths additionally include **all of `crates/**`** (forge decides who counts as an owner and what an approval snapshot contains; runner holds the headless profile; app holds the use cases; domain holds rubric, fingerprint and decide logic; gates hold the adapters), `rubric/**`, `plugin/**`, `schemas/**`, `workflows/**`, the release workflow, `.assay/**` and `deny.toml`; and a deterministic **`assay-self` gate** replays `decide` over the golden corpus and fails on any byte difference unless an owner-approved snapshot update is in the PR (`05` T16).
+For assay's own repo the trust paths additionally include **all of `crates/**`** (forge decides who counts as an owner and what an approval snapshot contains; runner holds the headless profile; app holds the use cases; domain holds rubric, fingerprint and decide logic; gates hold the adapters), `rubric/**`, `plugin/**`, `plugin-mod/**`, `schemas/**`, `workflows/**`, the release workflow, `.assay/**` and `deny.toml`; and a deterministic **`assay-self` gate** replays `decide` over the golden corpus and fails on any byte difference unless an owner-approved snapshot update is in the PR (`05` T16).
 
 *As built (#76).* The trust paths are base `.assay/globs.toml`'s `trust` list: the paths above, plus `corpus/golden/**` and the eval splits `corpus/dev/**`, `corpus/test/**` and `corpus/inject/**` (#230: the replay gate judges prompt and rubric PRs by these cases, so their labels must not be editable by the PR they judge). The gate replays at head, so a rubric or `decide` change that moves a verdict fails it (rule 1) unless the same PR rewrites the affected `decision.json`s; "owner-approved" is then rule 4's, because the rewritten snapshot is itself a trust path whatever caused it (a dependency bump that changes serialisation included). The gate is an `exec` plugin (03 §1, §2), declared in assay's own `.assay/plugins.toml` as
 
