@@ -31,7 +31,10 @@
 //! `assay decide-only decide --config <plugins-toml> --out <dir>` (#61 DO-11) refuses a re-run
 //! and a PR not in guard's `prs`, then decides that PR again from the evidence bundle the
 //! ledger points at, writing its state and, for a new decision, its `run-decision.json` into
-//! `<dir>` and its outputs (`bundle`, `bundle_digest`, `artifact`) to `GITHUB_OUTPUT`.
+//! `<dir>` and its outputs (`bundle`, `bundle_digest`, `artifact`) to `GITHUB_OUTPUT`;
+//! `assay decide-only publish --config <plugins-toml> --state <dir>` (#61 DO-12) then publishes
+//! that state after the upload step over the publication register's claim, confirming the
+//! upload by sha256 before the decision pointer is written (J10).
 //! `assay plan --out <dir>` (#60 ST-5) plans guard's identity into `<dir>/run.json` and writes
 //! plan's outputs (03 §4a) to `GITHUB_OUTPUT`.
 //! `assay review --placeholder` (#60 ST-9, D11 A) writes the review job's placeholder outputs
@@ -65,6 +68,7 @@ mod publish_job;
 mod reconcile;
 mod redecide_job;
 mod release;
+mod republish_job;
 mod review;
 mod self_gate;
 mod status_local;
@@ -243,11 +247,14 @@ fn run_guard(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
 
 /// `assay decide-only guard` (#61 DO-10): exit 0 once the outputs are written (`prs` and
 /// `trigger`, or `prs=[]` alone), 1 for a refused event (an untrusted head, 0006), 2 when it
-/// cannot decide or write, or for a step not built yet. `decide` runs as `run_redecide`.
+/// cannot decide or write. `decide` runs as `run_redecide`, `publish` as `run_republish`.
 fn run_decide_only(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let mut args = args.peekable();
     if args.next_if(|step| step == "decide").is_some() {
         return run_redecide(args);
+    }
+    if args.next_if(|step| step == "publish").is_some() {
+        return run_republish(args);
     }
     let variables = decide_only_job::DecideOnlyVariables {
         run: run_variables(),
@@ -289,6 +296,20 @@ fn run_redecide(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         now: SystemTime::now(),
     };
     let ended = redecide_job::run(args, variables);
+    print_ended(ended.line, &ended.left)
+}
+
+/// `assay decide-only publish` (#61 DO-12): exit 0 once the state is published, or there was
+/// nothing to publish, and its line printed; 2 when it refuses or cannot publish, or a scratch
+/// directory is left behind. A yielded or unclaimed check is not exit 2.
+fn run_republish(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = republish_job::RepublishVariables {
+        run: run_variables(),
+        pr: env::var_os(redecide_job::PR),
+        persist: env::var_os(decide_job::Variable::Persist.name()),
+        common: decide_variables(),
+    };
+    let ended = republish_job::run(args, variables);
     print_ended(ended.line, &ended.left)
 }
 

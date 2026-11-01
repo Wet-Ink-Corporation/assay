@@ -89,6 +89,9 @@ mod redecide_run;
 #[cfg(unix)] // stand-in executables with Unix file modes
 mod release_job;
 mod release_workflow;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod republish_fakes;
+mod republish_job;
 #[cfg(unix)] // a FIFO as GITHUB_OUTPUT
 mod review;
 #[cfg(unix)] // process groups, through `ForgeSupervisor`

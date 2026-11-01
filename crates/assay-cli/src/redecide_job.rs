@@ -247,7 +247,7 @@ fn prepare(
 }
 
 /// guard's outputs, from `ASSAY_NEEDS` holding `guard` alone.
-fn guard_outputs(value: Option<&OsString>) -> Result<DecideOnlyGuardOutputs, Common> {
+pub(crate) fn guard_outputs(value: Option<&OsString>) -> Result<DecideOnlyGuardOutputs, Common> {
     let needs = present(value, Variable::Needs)?;
     let needs = Needs::parse(needs.as_encoded_bytes(), &[JobName::Guard]).map_err(Common::Needs)?;
     DecideOnlyGuardOutputs::from_needs(&needs).map_err(Common::Needs)

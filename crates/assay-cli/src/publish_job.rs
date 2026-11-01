@@ -105,6 +105,19 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, PublishCliErr
     }
 }
 
+/// How the upload step ended, from [`Variable::Persist`]: exactly one of GitHub's four words.
+pub(crate) fn upload_outcome(value: Option<&OsString>) -> Result<PersistOutcome, Common> {
+    present(value, Variable::Persist).and_then(|value| {
+        value
+            .to_str()
+            .and_then(|text| text.parse().ok())
+            .ok_or(Common::Variable {
+                variable: Variable::Persist,
+                problem: Problem::Invalid,
+            })
+    })
+}
+
 /// Everything publish can refuse before it starts a process, the arguments and the run first.
 fn prepare(
     args: impl Iterator<Item = OsString>,
@@ -113,17 +126,7 @@ fn prepare(
     let args = parse(args)?;
     let run = first_attempt(&variables.run).map_err(PublishCliError::Common)?;
     let needs = decide_needs(variables.common.needs.as_ref()).map_err(PublishCliError::Common)?;
-    let upload = present(variables.persist.as_ref(), Variable::Persist)
-        .and_then(|value| {
-            value
-                .to_str()
-                .and_then(|text| text.parse().ok())
-                .ok_or(Common::Variable {
-                    variable: Variable::Persist,
-                    problem: Problem::Invalid,
-                })
-        })
-        .map_err(PublishCliError::Common)?;
+    let upload = upload_outcome(variables.persist.as_ref()).map_err(PublishCliError::Common)?;
     let rubric =
         read_rubric(RUBRIC).map_err(|error| PublishCliError::Common(Common::Rubric(error)))?;
     let ledger = ledger_repo(PUBLISH, &args.config)
@@ -239,7 +242,7 @@ fn line<L: Error + 'static>(published: &PublishRun<L, BundleFetchError>) -> Stri
 }
 
 /// What became of a publication, as a clause.
-fn what<L: Error + 'static, B: Error + 'static>(published: &Published<L, B>) -> String {
+pub(crate) fn what<L: Error + 'static, B: Error + 'static>(published: &Published<L, B>) -> String {
     let unlock = |unlock: &Unlock<L>| match unlock {
         Unlock::NotTaken | Unlock::Released => String::new(),
         Unlock::Failed(error) => {

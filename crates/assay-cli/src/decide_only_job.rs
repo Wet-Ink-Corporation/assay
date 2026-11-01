@@ -1,7 +1,6 @@
 //! `assay decide-only <step>` (#61, D9 A): the decide-only workflow's steps, like
-//! `assay gate <job>`. `guard` (DO-10) is here; `decide` (DO-11) is `crate::redecide_job`,
-//! which `main` dispatches to before this module; `publish` (DO-12) is refused until it is
-//! built.
+//! `assay gate <job>`. `guard` (DO-10) is here; `decide` (DO-11) is `crate::redecide_job` and
+//! `publish` (DO-12) `crate::republish_job`, which `main` dispatches to before this module.
 //!
 //! `guard` is the workflow's first job and holds no secret (0006, J3). It reads the run from the
 //! Actions variables, the `assay-verdict` App's ids (`ASSAY_VERDICT_APP_ID`,
@@ -81,13 +80,6 @@ pub(crate) enum Ended {
 pub(crate) enum DecideOnlyCliError {
     /// The arguments are not `guard`.
     Usage,
-    /// A step that is not built yet.
-    NotBuilt {
-        /// The step.
-        step: &'static str,
-        /// The story that builds it.
-        story: &'static str,
-    },
     /// The run variables are missing or invalid.
     Run(RunEnvError),
     /// A variable is missing or invalid; its value is never shown.
@@ -118,9 +110,6 @@ impl fmt::Display for DecideOnlyCliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Usage => f.write_str(USAGE),
-            Self::NotBuilt { step, story } => {
-                write!(f, "decide-only {step} is not built yet (#61 {story})")
-            }
             Self::Run(source) => write_chain(f, source),
             Self::Variable { name, problem } => match problem {
                 Problem::Missing => write!(f, "{name} is not set"),
@@ -212,12 +201,6 @@ pub(crate) fn run(
 ) -> Result<Ended, DecideOnlyCliError> {
     match (args.next(), args.next()) {
         (Some(step), None) if step == "guard" => {}
-        (Some(step), None) if step == "publish" => {
-            return Err(DecideOnlyCliError::NotBuilt {
-                step: "publish",
-                story: "DO-12",
-            });
-        }
         _ => return Err(DecideOnlyCliError::Usage),
     }
     let RunEnv { run_uid, repo } =
