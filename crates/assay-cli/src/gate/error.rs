@@ -232,8 +232,9 @@ pub(crate) enum PinnedError {
     HeadTree(GitError),
     /// The checkout could not be walked, or a file of it read.
     CheckoutRead { path: PathBuf, source: io::Error },
-    /// The checkout holds more entries than a tree listing may.
-    CheckoutTooLarge { max: usize },
+    /// The checkout holds more entries that are not directories than a tree listing may, or
+    /// more directories than the tree implies plus the untracked allowance.
+    CheckoutTooLarge { files: usize, directories: usize },
     /// The checkout at `checkout` is not `head`'s tree (#348).
     Checkout {
         checkout: PathBuf,
@@ -273,8 +274,12 @@ impl fmt::Display for PinnedError {
                     "{flag} {path} is inside the head tree, which the PR controls"
                 );
             }
-            Self::CheckoutTooLarge { max } => {
-                return write!(f, "the head checkout holds more than {max} entries");
+            Self::CheckoutTooLarge { files, directories } => {
+                return write!(
+                    f,
+                    "the head checkout holds more than {files} files, symlinks and submodules, \
+                     or more than {directories} directories"
+                );
             }
             Self::Checkout {
                 checkout,

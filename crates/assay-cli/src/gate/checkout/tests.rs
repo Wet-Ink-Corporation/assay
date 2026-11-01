@@ -35,9 +35,24 @@ fn differs(path: &str, difference: Difference) -> Result<Vec<String>, Mismatch> 
     })
 }
 
-/// [`walk`] of `checkout` well within the entry cap; its error as text.
+/// Room for 100 files and 100 directories.
+const ROOMY: Caps = Caps {
+    files: 100,
+    directories: 100,
+};
+
+/// [`walk`] of `checkout` well within the caps; its stop as text.
 fn walked(checkout: &Path, tree: &[TreeEntry]) -> Result<BTreeMap<String, OnDisk>, Box<dyn Error>> {
-    walk(checkout, tree, 100).map_err(|error| error.to_string().into())
+    walk(checkout, tree, ROOMY).map_err(|stop| format!("{stop:?}").into())
+}
+
+/// Whether `walked` stopped at a cap of `caps`.
+fn too_large(walked: &Result<BTreeMap<String, OnDisk>, Stop>, caps: Caps) -> bool {
+    matches!(
+        walked,
+        Err(Stop::Refused(PinnedError::CheckoutTooLarge { files, directories }))
+            if *files == caps.files && *directories == caps.directories
+    )
 }
 
 /// [`compare`]'s verdict, with the paths it leaves to compare by bytes.
@@ -211,19 +226,172 @@ fn a_submodule_directory_is_recorded_as_empty_or_not_and_never_entered()
 }
 
 #[test]
-fn the_walk_stops_past_the_entry_cap() -> Result<(), Box<dyn Error>> {
+fn the_walk_stops_past_the_file_cap_inside_one_large_directory() -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
-    for name in ["a", "b", "c"] {
-        fs::write(dir.path().join(name), "z")?;
+    for name in 0..10 {
+        fs::write(dir.path().join(name.to_string()), "z")?;
     }
+    let at_cap = Caps {
+        files: 10,
+        directories: 0,
+    };
+    let below = Caps {
+        files: 3,
+        directories: 0,
+    };
 
-    let at_cap = walk(dir.path(), &[], 3).map(|found| found.len());
-    let past = walk(dir.path(), &[], 2);
+    let whole = walk(dir.path(), &[], at_cap).map(|found| found.len());
+    let past = walk(dir.path(), &[], below);
 
-    assert!(matches!(at_cap, Ok(3)), "{at_cap:?}");
+    assert!(matches!(whole, Ok(10)), "{whole:?}");
+    assert!(too_large(&past, below), "{past:?}");
+    Ok(())
+}
+
+#[test]
+fn the_walk_stops_past_the_directory_cap() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    fs::create_dir_all(dir.path().join("a/b/c"))?;
+    let at_cap = Caps {
+        files: 0,
+        directories: 3,
+    };
+    let below = Caps {
+        files: 0,
+        directories: 2,
+    };
+
+    let whole = walk(dir.path(), &[], at_cap).map(|found| found.len());
+    let past = walk(dir.path(), &[], below);
+
     assert!(
-        matches!(past, Err(PinnedError::CheckoutTooLarge { max: 2 })),
-        "{past:?}"
+        matches!(whole, Ok(0)),
+        "empty directories are no content: {whole:?}"
+    );
+    assert!(too_large(&past, below), "{past:?}");
+    Ok(())
+}
+
+#[test]
+fn the_caps_admit_the_listing_cap_of_files_and_every_directory_the_tree_implies() {
+    let tree = [
+        entry("a/b/c/d/file", EntryKind::File, Some(1)),
+        entry("a/other", EntryKind::File, Some(1)),
+        entry("vendor/sub", EntryKind::Submodule, None),
+    ];
+
+    assert_eq!(
+        Caps::for_tree(&tree, 7),
+        Caps {
+            files: 7,
+            directories: 5 + UNTRACKED_DIRECTORIES
+        },
+        "a, a/b, a/b/c, a/b/c/d and vendor, plus the untracked allowance"
+    );
+}
+
+#[test]
+fn a_deep_tree_within_the_listing_cap_is_not_refused() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    fs::create_dir_all(dir.path().join("a/b/c/d"))?;
+    fs::write(dir.path().join("a/b/c/d/file"), "z")?;
+    let tree = [entry("a/b/c/d/file", EntryKind::File, Some(1))];
+
+    let found = walk(dir.path(), &tree, Caps::for_tree(&tree, 1)).map(|found| found.len());
+
+    assert!(
+        matches!(found, Ok(1)),
+        "directories are not counted as entries: {found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_name_that_is_not_utf8_is_untracked_even_beside_its_lossy_twin() -> Result<(), Box<dyn Error>> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = tempfile::tempdir()?;
+    fs::write(dir.path().join("a\u{FFFD}"), "z")?;
+    fs::write(dir.path().join(OsStr::from_bytes(b"a\xff")), "z")?;
+    let tree = [entry("a\u{FFFD}", EntryKind::File, Some(1))];
+
+    let walked = walk(dir.path(), &tree, ROOMY);
+
+    assert!(
+        matches!(
+            &walked,
+            Err(Stop::Differs(Mismatch { path, difference: Difference::Untracked }))
+                if path == "a\u{FFFD}"
+        ),
+        "{walked:?}"
+    );
+    Ok(())
+}
+
+/// Runs git in `cwd`, isolated from the machine's config. Test setup only.
+fn git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+    let output = std::process::Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "fixture")
+        .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+        .env("GIT_COMMITTER_NAME", "fixture")
+        .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
+        .output()?;
+    if output.status.success() {
+        Ok(String::from_utf8(output.stdout)?)
+    } else {
+        Err(format!("git {args:?}: {}", output.status).into())
+    }
+}
+
+#[test]
+fn bytes_are_compared_in_batches_and_a_difference_in_the_last_batch_is_found()
+-> Result<(), Box<dyn Error>> {
+    use assay_forge::git::{GitEnvironment, GitLimits};
+
+    let dir = tempfile::tempdir()?;
+    let work = dir.path().join("work");
+    git(dir.path(), &["init", "--quiet", "work"])?;
+    for name in ["a", "b", "c"] {
+        fs::write(work.join(name), "four")?;
+    }
+    git(&work, &["add", "--all"])?;
+    git(&work, &["commit", "--quiet", "-m", "head"])?;
+    let objects = dir.path().join("objects.git");
+    let repo = ObjectRepo::init(
+        &objects,
+        GitEnvironment::from_process_env()?,
+        GitLimits::default(),
+    )?;
+    let destination = objects.to_str().ok_or("a UTF-8 path")?;
+    git(
+        &work,
+        &["push", "--quiet", destination, "HEAD:refs/heads/pr"],
+    )?;
+    let head: CommitSha = git(&work, &["rev-parse", "HEAD"])?.trim().parse()?;
+    // Two four-byte blobs per batch: `c` is read in a second batch.
+    let limits = TreeLimits {
+        max_entries: 100,
+        max_total_bytes: 8,
+    };
+    let tree = repo.list_tree(&head, None, limits)?;
+    let blobs: Vec<&TreeEntry> = tree.iter().collect();
+
+    let clean = same_bytes(&repo, &work, &blobs, limits).map_err(|e| e.to_string())?;
+    fs::write(work.join("c"), "FOUR")?;
+    let changed = same_bytes(&repo, &work, &blobs, limits).map_err(|e| e.to_string())?;
+
+    assert_eq!(clean, None);
+    assert_eq!(
+        changed,
+        Some(Mismatch {
+            path: "c".to_owned(),
+            difference: Difference::Content
+        })
     );
     Ok(())
 }

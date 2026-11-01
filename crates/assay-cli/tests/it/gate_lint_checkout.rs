@@ -93,6 +93,25 @@ fn a_tracked_file_made_executable_is_refused() -> Result<(), Box<dyn Error>> {
 
 #[test]
 #[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn a_tracked_symlink_retargeted_to_a_path_of_the_same_length_is_refused()
+-> Result<(), Box<dyn Error>> {
+    let scene = Scene::lint_with_links(
+        &[],
+        &[("docs-link", "src/lib.rs")],
+        &temper(&[("fmt", "lint", "touch fmt-ran")]),
+    )?;
+    let link = scene.head.join("docs-link");
+    fs::remove_file(&link)?;
+    // `Cargo.tom_` and `src/lib.rs` are both ten bytes: only the target's text tells them apart.
+    std::os::unix::fs::symlink("Cargo.tom_", &link)?;
+
+    let output = scene.run(|_| {})?;
+
+    refused(&scene, &output, "docs-link")
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
 fn an_untracked_file_in_the_checkout_is_refused() -> Result<(), Box<dyn Error>> {
     let scene = scene()?;
     fs::create_dir(scene.head.join(".cargo"))?;

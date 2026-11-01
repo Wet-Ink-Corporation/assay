@@ -56,6 +56,9 @@ fn static_plugins() -> String {
     )
 }
 
+/// `(path, text)` files or `(path, target)` symlinks the head commits.
+type Pairs<'a> = &'a [(&'a str, &'a str)];
+
 /// A gates-static or gates-lint job's scratch, with the fixture PR's commits.
 pub(crate) struct Scene {
     _dir: TempDir,
@@ -71,18 +74,28 @@ pub(crate) struct Scene {
 impl Scene {
     /// A gates-static job over a PR whose head writes `head` over a clean base.
     pub(crate) fn new(head: &[(&str, &str)]) -> Result<Self, Box<dyn Error>> {
-        Self::staged("gates-static", head, &static_plugins())
+        Self::staged("gates-static", (head, &[]), &static_plugins())
     }
 
     /// A gates-lint job over a PR whose head writes `head` over a clean base, with `plugins`
     /// after base config's `[assay]` table. The base is the merge base (one line of history).
     pub(crate) fn lint(head: &[(&str, &str)], plugins: &str) -> Result<Self, Box<dyn Error>> {
-        Self::staged("gates-lint", head, plugins)
+        Self::staged("gates-lint", (head, &[]), plugins)
+    }
+
+    /// As [`Scene::lint`], the head also committing each `(path, target)` of `links` as a
+    /// symlink.
+    pub(crate) fn lint_with_links(
+        head: &[(&str, &str)],
+        links: &[(&str, &str)],
+        plugins: &str,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::staged("gates-lint", (head, links), plugins)
     }
 
     fn staged(
         job: &'static str,
-        head: &[(&str, &str)],
+        (head, links): (Pairs<'_>, Pairs<'_>),
         plugins: &str,
     ) -> Result<Self, Box<dyn Error>> {
         let dir = tempfile::tempdir()?;
@@ -104,6 +117,9 @@ impl Scene {
         let base_sha = commit(&work, "base")?;
         for (path, text) in head {
             write(&work, path, text)?;
+        }
+        for (path, target) in links {
+            std::os::unix::fs::symlink(target, work.join(path))?;
         }
         let head_sha = commit(&work, "head")?;
         fs::write(
