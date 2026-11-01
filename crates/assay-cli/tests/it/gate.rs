@@ -1,7 +1,7 @@
 //! `assay gate <job>` (#67): the entry point a Z2b job runs. In `gates-test` it runs the base's
 //! declared `test` steps and `exec` gates through `run_gates`, writes each concluded gate's
-//! document as `<out>/<plugin>.json` and prints one line per gate; `gates-lint` and
-//! `gates-static` are refused until their inputs are wired.
+//! document as `<out>/<plugin>.json` and prints one line per gate; `gates-lint` is refused
+//! until its inputs are wired, and `gates-static` is `gate_static.rs`'s.
 //!
 //! The steps are `/bin/sh -c` scripts run from the head tree, so no cargo runs here.
 
@@ -344,17 +344,15 @@ fn a_missing_or_empty_run_key_is_refused() -> Result<(), Box<dyn Error>> {
 
 #[test]
 #[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
-fn gates_lint_and_gates_static_are_refused_until_their_inputs_are_wired()
--> Result<(), Box<dyn Error>> {
+fn gates_lint_is_refused_until_its_inputs_are_wired() -> Result<(), Box<dyn Error>> {
+    // gates-static runs since #60 ST-7 (`gate_static.rs`; D13, approved for gates-static only).
     let job = Job::new(&temper(&[("fmt", "lint", "touch fmt-ran")]))?;
 
-    for name in ["gates-lint", "gates-static"] {
-        let output = job.run(name)?;
+    let output = job.run("gates-lint")?;
 
-        assert_eq!(output.status.code(), Some(2), "{name}: {output:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("not wired yet"), "{name}: {stderr}");
-    }
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not wired yet"), "{stderr}");
     assert!(!job.ran("fmt-ran"));
     assert!(!job.out.exists());
     Ok(())
