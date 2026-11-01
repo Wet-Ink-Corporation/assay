@@ -8,8 +8,10 @@
 //! decision bundle decide-only persists (D5, `assay.run-decision/1`): built by
 //! [`prepare_decision`] and read by [`read_decision_bundle`], one file, [`DECISION_FILE`], in an
 //! artifact named `assay-decision-<pr>-<nonce>`, one per PR, since one run may decide several.
+//! [`replay_chain`] replays such a bundle through the evidence bundle it names (J10).
 
 mod bundle;
+mod chain;
 mod evidence;
 mod inputs;
 mod read;
@@ -17,6 +19,10 @@ mod read;
 pub use self::bundle::{
     DecisionReadBack, DecisionTarget, DecisionTrigger, PrepareDecisionError, Redecided,
     TriggerCommand, prepare_decision,
+};
+pub use self::chain::{
+    ChainError, ChainMatched, ChainMismatch, ChainPorts, ChainReplayed, ChainRequest, InputsField,
+    replay_chain,
 };
 pub use self::evidence::{
     Absence, EvidenceBundle, EvidenceError, EvidenceRead, EvidenceRequest, Forgery, read_evidence,

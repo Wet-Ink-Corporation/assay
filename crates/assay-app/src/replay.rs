@@ -480,10 +480,10 @@ pub(crate) fn read_value(bytes: &[u8]) -> Result<Value, BundleShape> {
     })
 }
 
-/// Where the bundle disagrees with the pointer's `run` or with itself, if anywhere.
-pub(crate) fn inconsistency(bundle: &Bundle, run: RunUid) -> Option<Mismatch> {
-    let recorded = bundle.run_uid;
-    let field = if recorded.repo_id != run.repo_id {
+/// The first field of the run a bundle `recorded` that is not the pointer's `run`'s, if any.
+/// One rule for both bundle contracts.
+pub(crate) fn other_run(recorded: RunUid, run: RunUid) -> Option<RunField> {
+    if recorded.repo_id != run.repo_id {
         Some(RunField::RepoId)
     } else if recorded.run_id != run.run_id {
         Some(RunField::RunId)
@@ -491,8 +491,12 @@ pub(crate) fn inconsistency(bundle: &Bundle, run: RunUid) -> Option<Mismatch> {
         Some(RunField::RunAttempt)
     } else {
         None
-    };
-    if let Some(field) = field {
+    }
+}
+
+/// Where the bundle disagrees with the pointer's `run` or with itself, if anywhere.
+pub(crate) fn inconsistency(bundle: &Bundle, run: RunUid) -> Option<Mismatch> {
+    if let Some(field) = other_run(bundle.run_uid, run) {
         return Some(Mismatch::Run(field));
     }
     let tampered = bundle.documents.iter().position(|document| {
