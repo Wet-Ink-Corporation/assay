@@ -18,7 +18,7 @@ use thiserror::Error;
 use super::MAX_DECISION_BUNDLE_BYTES;
 use super::bundle::{DecisionTrigger, EVENT_JOB, EVENT_STAGE, MAX_DECISION_EVENTS};
 use crate::config::{CommitId, Sha256Digest};
-use crate::eligibility::{IgnoredApproval, RecordedState, StateRecordIn, Timestamp};
+use crate::eligibility::{IgnoredApproval, RecordedState, Timestamp};
 use crate::publish::{CommentId, EvidencePointer};
 use crate::replay::{self, BundleShape, DecisionDiff};
 use crate::status::UserId;
@@ -202,10 +202,7 @@ impl DecisionBundleIn {
             },
             TriggerIn::Schedule {} => DecisionTrigger::Schedule,
         };
-        let recorded = RecordedState::read_narrowed(&self.github)?;
-        let ignored_approvals = StateRecordIn::deserialize(&self.github)
-            .ok()?
-            .ignored_approvals()?;
+        let (recorded, ignored_approvals) = RecordedState::read_narrowed(&self.github)?;
         let void = void_records(&self.github)?;
         let bundle = DecisionBundle {
             run_uid: self.run_uid,

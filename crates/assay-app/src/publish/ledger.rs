@@ -145,6 +145,9 @@ where
         self.own_register(entry.repo_id, &entry.register, lease)?;
         self.live(lease)?;
         self.claimed((entry.repo_id, entry.pr), entry.over.as_ref(), |state| {
+            if entry.over.is_none() && names_later_head(state, &entry.register) {
+                return;
+            }
             // The state stores its register.
             state.published = Some(entry.register.clone());
         })
@@ -244,6 +247,16 @@ impl<L, R, C> LedgerPublish<'_, L, R, C> {
             Err(LedgerPublishError::OtherRepository { repo_id })
         }
     }
+}
+
+/// Whether `state`'s register names another head than `register`'s, written by a later run: a
+/// pipeline run that publishes late for an older head leaves it, as [`with_evidence`] leaves a
+/// later run's pointer (run ids grow).
+fn names_later_head(state: &PrState, register: &PublicationRegister) -> bool {
+    state
+        .published
+        .as_ref()
+        .is_some_and(|kept| kept.head_sha != register.head_sha && kept.run_id > register.run_id)
 }
 
 /// `state` with `entry` recorded: the pointer moved to it unless it names a later run (run ids

@@ -122,11 +122,11 @@ impl RecordedState {
 
     /// `github` of an `assay.run-decision/1` bundle read strictly: as [`Self::read`], with the
     /// lists decide-only narrowed to the base tip's (R3-26), so up to 128 maintainers and
-    /// agents.
-    pub(crate) fn read_narrowed(github: &Value) -> Option<Self> {
-        StateRecordIn::deserialize(github)
-            .ok()?
-            .recorded(RecordedFrom::Narrowed)
+    /// agents; with the approvals it ignored for timing, in record order, from the same read.
+    pub(crate) fn read_narrowed(github: &Value) -> Option<(Self, Vec<IgnoredApproval>)> {
+        let record = StateRecordIn::deserialize(github).ok()?;
+        let ignored = record.ignored_approvals()?;
+        Some((record.recorded(RecordedFrom::Narrowed)?, ignored))
     }
 
     /// The lists the evidence run judged by: base `.assay/owners` and `.assay/agents` at its

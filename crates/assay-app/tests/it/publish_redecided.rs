@@ -13,14 +13,15 @@ use assay_app::{
     Absence, CheckConclusion, CheckState, CheckStatus, Claim, DecisionBundleSource, DecisionTarget,
     DecisionTrigger, EvidenceBundle, PersistFailure, PersistOutcome, PublicationRegister,
     PublishError, Published, RedecideRefusal, RedecideTarget, Redecided, RedecidedError,
-    RedecidedPersisted, RedecidedPorts, RedecidedRefused, RedecisionRequest, Sha256Digest, Stale,
-    StoredBundle, Unconfirmed, Unlock, UnusableEvidence, prepare_decision,
+    RedecidedPersisted, RedecidedPorts, RedecidedRefused, RedecisionRequest, ReviewState,
+    Sha256Digest, Stale, StoredBundle, Unconfirmed, Unlock, UnusableEvidence, prepare_decision,
     publish_redecide_refusal, publish_redecided, redecision_inputs,
 };
 use assay_domain::{FileChange, Lines, RunUid};
+use serde_json::Value;
 
 use crate::decide_fakes::Scenario;
-use crate::eligibility_fakes::{CONTRIBUTOR, World, lists};
+use crate::eligibility_fakes::{APPROVER, By, CONTRIBUTOR, FIRST, World, lists};
 use crate::plan_fakes::{FakeError, FakePr, HEAD};
 use crate::publish_fakes::{Call, FakeWorld};
 use crate::publish_support::{HEAD_COMMIT, NAME};
@@ -92,7 +93,11 @@ struct Case {
 impl Case {
     /// The scheduled re-decision of `scenario`'s head, unchanged since the evidence run.
     fn of(scenario: &Scenario) -> Result<Self, Box<dyn Error>> {
-        let world = World::opened_at(CONTRIBUTOR, HEAD_COMMIT);
+        Self::in_world(scenario, World::opened_at(CONTRIBUTOR, HEAD_COMMIT))
+    }
+
+    /// Like [`Case::of`], over the PR as `world` has it.
+    fn in_world(scenario: &Scenario, world: World) -> Result<Self, Box<dyn Error>> {
         let evidence = evidence_of(scenario, &world, |_| Ok(()))?;
         let state = redecided(&world, &evidence, &lists())?;
         let inputs = redecision_inputs(&RedecisionRequest {
@@ -153,6 +158,17 @@ impl Case {
             },
         )]);
         Self::of(&Scenario::of(pr)?)
+    }
+
+    /// A contributor's PR approved at minute 4 and pushed at minute 5, so the approval is
+    /// ignored.
+    fn approved_before_push() -> Result<Self, Box<dyn Error>> {
+        let mut world = World::opened_by(CONTRIBUTOR);
+        world.commit(HEAD_COMMIT, &[FIRST], By::user(CONTRIBUTOR));
+        world.review(APPROVER, ReviewState::Approved, (HEAD_COMMIT, 4));
+        world.push((FIRST, HEAD_COMMIT), CONTRIBUTOR, 5);
+        world.head(HEAD_COMMIT);
+        Self::in_world(&Scenario::new()?, world)
     }
 
     /// decide-only's run `run_id` on the evidence's head and base.
@@ -496,6 +512,15 @@ fn published_as(
     case: &Case,
     (target, claim, digest): (RedecideTarget<'_>, &Claim, &Sha256Digest),
 ) -> Result<(Outcome, Vec<Call>), Box<dyn Error>> {
+    published_bytes(case, (target, claim), (&case.bundle, digest))
+}
+
+/// Like [`published_as`], with `bundle` handed over in place of `case`'s.
+fn published_bytes(
+    case: &Case,
+    (target, claim): (RedecideTarget<'_>, &Claim),
+    (bundle, digest): (&[u8], &Sha256Digest),
+) -> Result<(Outcome, Vec<Call>), Box<dyn Error>> {
     let rubric = rubric_v1()?;
     let world = case.claimed()?;
     world.calls.borrow_mut().clear();
@@ -504,7 +529,7 @@ fn published_as(
             target,
             claim,
             rubric: &rubric,
-            bundle: &case.bundle,
+            bundle,
             digest,
             upload: PersistOutcome::Success,
         },
@@ -549,6 +574,127 @@ fn a_bundle_that_is_not_this_re_decision_is_refused_before_any_port() -> Result<
     Ok(())
 }
 
+#[test]
+fn a_bundle_of_another_attempt_head_or_base_is_refused_before_any_port()
+-> Result<(), Box<dyn Error>> {
+    let case = Case::plain()?;
+    let rerun = RedecideTarget {
+        run_uid: RunUid {
+            run_attempt: NonZeroU64::new(2).ok_or("not zero")?,
+            ..decide_only_run(99)?
+        },
+        ..case.target(99)?
+    };
+    let other_head = "c".repeat(40).parse()?;
+    let at = |target| published_as(&case, (target, &case.claim, &case.digest));
+    assert_matches!(
+        refused(&at(rerun)?),
+        Some(RedecidedRefused::NotFirstAttempt)
+    );
+    assert_matches!(
+        refused(&at(RedecideTarget {
+            head_sha: &other_head,
+            ..case.target(99)?
+        })?),
+        Some(RedecidedRefused::Head)
+    );
+    assert_matches!(
+        refused(&at(RedecideTarget {
+            base_ref: "release",
+            ..case.target(99)?
+        })?),
+        Some(RedecidedRefused::BaseRef)
+    );
+    Ok(())
+}
+
+#[test]
+fn bytes_that_are_not_this_re_decision_are_refused_before_any_port() -> Result<(), Box<dyn Error>> {
+    let case = Case::plain()?;
+    let given = |bytes: &[u8]| {
+        published_bytes(
+            &case,
+            (case.target(99)?, &case.claim),
+            (bytes, &Sha256Digest::of(bytes)),
+        )
+    };
+    let other_rubric = edited(&case, |bundle| {
+        bundle["rubric_version"] = Value::from("0");
+        bundle["decision"]["rubric_version"] = Value::from("0");
+    })?;
+    let other_decision = edited(&case, |bundle| {
+        bundle["decision"]["conclusion"] = Value::from("failure");
+    })?;
+    let oversize = vec![b' '; assay_app::MAX_DECISION_BUNDLE_BYTES + 1];
+    assert_matches!(
+        refused(&given(&other_rubric)?),
+        Some(RedecidedRefused::RubricVersion)
+    );
+    assert_matches!(
+        refused(&given(&other_decision)?),
+        Some(RedecidedRefused::Decision(_))
+    );
+    assert_matches!(
+        refused(&given(&oversize)?),
+        Some(RedecidedRefused::TooLarge)
+    );
+    assert_matches!(
+        refused(&given(b"not json")?),
+        Some(RedecidedRefused::Unreadable(_))
+    );
+    Ok(())
+}
+
+/// The refusal of a bundle refused before any port call; `None` for any other outcome.
+fn refused((outcome, calls): &(Outcome, Vec<Call>)) -> Option<&RedecidedRefused> {
+    match outcome {
+        Err(RedecidedError::Bundle(refused)) if calls.is_empty() => Some(refused),
+        _ => None,
+    }
+}
+
+/// `case`'s bundle with `edit` applied to its JSON, re-encoded.
+fn edited(case: &Case, edit: impl FnOnce(&mut Value)) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut bundle: Value = serde_json::from_slice(&case.bundle)?;
+    edit(&mut bundle);
+    Ok(serde_json::to_vec(&bundle)?)
+}
+
+#[test]
+fn an_upload_stored_over_its_cap_is_unconfirmed_as_too_large() -> Result<(), Box<dyn Error>> {
+    let case = Case::plain()?;
+    let oversize = vec![b' '; assay_app::MAX_DECISION_BUNDLE_BYTES + 1];
+    for stored in [Stored::TooLarge, Stored::Bytes(oversize)] {
+        let world = case.claimed()?;
+
+        let outcome = case.publish(&world, PersistOutcome::Success, &Uploaded::new(stored))?;
+
+        let Ok(Published::Written(written)) = outcome else {
+            return Err(format!("expected a write, got {outcome:?}").into());
+        };
+        assert_matches!(
+            written.persist,
+            Some(PersistFailure::Upload(Unconfirmed::TooLarge))
+        );
+        assert!(world.decisions.borrow().is_empty());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_re_decision_lists_the_approvals_its_snapshot_ignored() -> Result<(), Box<dyn Error>> {
+    let case = Case::approved_before_push()?;
+    let world = case.claimed()?;
+
+    let outcome = case.publish(&world, PersistOutcome::Success, &case.stored())?;
+
+    assert_matches!(outcome, Ok(Published::Written(_)));
+    let summary = world.app_check(NAME)?.output.ok_or("written")?.summary;
+    assert!(summary.contains("Ignored approvals:"), "{summary}");
+    assert!(summary.contains("(reviewer 1002)"), "{summary}");
+    Ok(())
+}
+
 /// What `publish_redecide_refusal` returns over the fakes.
 type RefusalOutcome =
     Result<Published<FakeError, std::convert::Infallible>, PublishError<FakeError, FakeError>>;
@@ -559,15 +705,119 @@ fn refuse(
     world: &FakeWorld,
     (run_id, refusal, claim): (u64, RedecideRefusal, &Claim),
 ) -> Result<RefusalOutcome, Box<dyn Error>> {
-    Ok(publish_redecide_refusal(
+    Ok(refuse_at(world, (case.target(run_id)?, refusal, claim)))
+}
+
+/// Publishes `refusal` for `target` over `claim`.
+fn refuse_at(
+    world: &FakeWorld,
+    (target, refusal, claim): (RedecideTarget<'_>, RedecideRefusal, &Claim),
+) -> RefusalOutcome {
+    publish_redecide_refusal(
         &UnusableEvidence {
-            target: case.target(run_id)?,
+            target,
             claim,
             refusal,
         },
         world,
         world,
-    ))
+    )
+}
+
+/// The key the refusal of `claim`'s evidence for `target` is published under, over a world
+/// holding `claim`.
+fn refusal_key(
+    case: &Case,
+    (target, refusal, claim): (RedecideTarget<'_>, RedecideRefusal, &Claim),
+) -> Result<String, Box<dyn Error>> {
+    let world = case.claimed()?;
+    // The world's ledger holds its own copy of the claim's pointer.
+    *world.pointer.borrow_mut() = Some(claim.evidence.clone());
+    let outcome = refuse_at(&world, (target, refusal, claim));
+    assert_matches!(outcome, Ok(Published::Written(_)));
+    Ok(world.app_check(NAME)?.external_id)
+}
+
+#[test]
+fn a_refusal_s_key_differs_by_reason_evidence_and_repository() -> Result<(), Box<dyn Error>> {
+    let case = Case::plain()?;
+    // A second claim of its own, the first one kept.
+    let other_evidence = Claim {
+        evidence: assay_app::EvidencePointer {
+            run_id: NonZeroU64::MAX,
+            ..case.claim.evidence.clone()
+        },
+        ..case.claim.clone()
+    };
+    let other_repository = RedecideTarget {
+        run_uid: RunUid {
+            repo_id: NonZeroU64::MAX,
+            ..decide_only_run(99)?
+        },
+        ..case.target(99)?
+    };
+    let forged = (case.target(99)?, RedecideRefusal::Forged, &case.claim);
+
+    let base = refusal_key(&case, forged)?;
+    let keys = [
+        refusal_key(
+            &case,
+            (
+                case.target(99)?,
+                RedecideRefusal::Absent(Absence::Expired),
+                &case.claim,
+            ),
+        )?,
+        refusal_key(
+            &case,
+            (
+                case.target(99)?,
+                RedecideRefusal::Absent(Absence::Missing),
+                &case.claim,
+            ),
+        )?,
+        refusal_key(
+            &case,
+            (case.target(99)?, RedecideRefusal::Forged, &other_evidence),
+        )?,
+        refusal_key(
+            &case,
+            (other_repository, RedecideRefusal::Forged, &case.claim),
+        )?,
+    ];
+
+    assert_eq!(
+        refusal_key(&case, forged)?,
+        base,
+        "the key is deterministic"
+    );
+    for (index, key) in keys.iter().enumerate() {
+        assert_ne!(*key, base, "{index}");
+        assert!(key.starts_with("sha256:"), "{key}");
+    }
+    let [expired, missing, ..] = &keys;
+    assert_ne!(expired, missing, "the detail is keyed");
+    Ok(())
+}
+
+#[test]
+fn a_refusal_for_a_re_run_is_refused_before_any_port() -> Result<(), Box<dyn Error>> {
+    let case = Case::plain()?;
+    let world = case.claimed()?;
+    world.calls.borrow_mut().clear();
+    let rerun = RedecideTarget {
+        run_uid: RunUid {
+            run_attempt: NonZeroU64::new(2).ok_or("not zero")?,
+            ..decide_only_run(99)?
+        },
+        ..case.target(99)?
+    };
+
+    let outcome = refuse_at(&world, (rerun, RedecideRefusal::Forged, &case.claim));
+
+    assert_matches!(outcome, Err(PublishError::NotFirstAttempt));
+    assert_eq!(*world.calls.borrow(), []);
+    Ok(())
 }
 
 #[test]
