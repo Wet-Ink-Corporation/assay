@@ -25,7 +25,7 @@ use serde_json::error::Category;
 use thiserror::Error;
 
 pub use self::diff::DecisionDiff;
-use crate::config::Sha256Digest;
+use crate::config::{CommitId, Sha256Digest};
 use crate::contract::parse_json_strict;
 use crate::publish::{BUNDLE_FILE, EvidencePointer, MAX_BUNDLE_BYTES};
 use crate::rereview::record::CarryIn;
@@ -43,6 +43,27 @@ pub trait BundleSource {
     /// [`Self::Error`] when the artifact store cannot be read; an absent, expired or oversized
     /// file is a [`StoredBundle`] instead.
     fn fetch(&self, run: RunUid, file: &str, limit: usize) -> Result<StoredBundle, Self::Error>;
+}
+
+/// The decision bundles decide-only runs persisted (D5), read to replay a re-decision.
+/// Implemented by the forge adapter.
+pub trait DecisionBundleSource {
+    /// Why the artifact store could not be read.
+    type Error: std::error::Error;
+
+    /// The bytes of [`DECISION_FILE`](crate::DECISION_FILE) in the artifact decide-only run
+    /// `run` uploaded for PR `pr` (`assay-decision-<pr>-<nonce>`), read under `limit` bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::Error`] when the artifact store cannot be read or the run's artifacts for `pr`
+    /// are ambiguous; an absent, expired or oversized file is a [`StoredBundle`] instead.
+    fn fetch_decision(
+        &self,
+        run: RunUid,
+        pr: NonZeroU64,
+        limit: usize,
+    ) -> Result<StoredBundle, Self::Error>;
 }
 
 /// What the artifact store holds for a bundle.
@@ -283,6 +304,12 @@ struct BundleDocument {
 }
 
 impl Bundle {
+    /// The head the bundle's GitHub snapshot was taken of; `None` when its `head_sha` is not
+    /// a commit id.
+    pub(crate) fn snapshot_head(&self) -> Option<CommitId> {
+        self.github.get("head_sha")?.as_str()?.parse().ok()
+    }
+
     /// Each gate document's file and bytes, as its job published them, in bundle order: what a
     /// waiver was bound to on the bundle's head (#59).
     pub(crate) fn gate_documents(&self) -> impl Iterator<Item = (&str, &[u8])> + '_ {

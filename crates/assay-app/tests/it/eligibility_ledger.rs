@@ -5,10 +5,12 @@ use std::assert_matches;
 use std::error::Error;
 
 use assay_app::{
-    CommandRecord, CommentId, LedgerRecords, LedgerSnapshot, LedgerSnapshotError, PushDraft,
-    PushKind, PushRecord, SnapshotLedger, UserId, append_command, append_push, read_pushes,
+    Command, CommandRecord, CommentId, LedgerRecords, LedgerSnapshot, LedgerSnapshotError,
+    PushDraft, PushKind, PushRecord, Sha256Digest, SnapshotCommand, SnapshotLedger, StatePorts,
+    StateRequest, UserId, append_command, append_push, github_state, read_pushes,
 };
 
+use crate::eligibility_fakes::{APPROVER, BASE, CONTRIBUTOR, FIRST, World, comment, sha, user};
 use crate::ledger_fakes::{MemoryLedger, at, commit, digest, id, run};
 
 /// Repository 42's snapshot ledger over `ledger`.
@@ -57,6 +59,7 @@ fn with_commands(count: u64) -> Result<MemoryLedger, Box<dyn Error>> {
                 pr: id(7),
                 comment_id: CommentId(id(comment_id)),
                 actor_id: UserId(id(1001)),
+                head_sha: commit('b'),
                 command: "/assay dismiss 0123456789abcdef not a bug".to_owned(),
                 body_sha256: digest('c'),
                 created_at: at("2026-10-12T09:29:58.000Z"),
@@ -115,17 +118,92 @@ fn command_records_past_the_cap_are_too_many() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn a_command_record_is_refused_because_it_does_not_record_its_head() -> Result<(), Box<dyn Error>> {
-    // `assay.ledger-command/1` has no `head_sha`, which the snapshot judges head-bound commands
-    // by: refused rather than guessed (wi-b5affa) until the contract records it.
+fn command_records_are_read_as_the_snapshot_judges_them() -> Result<(), Box<dyn Error>> {
+    // D16 of #61: `assay.ledger-command/1` now records `head_sha` (D1), so a record is mapped,
+    // its command re-parsed from its canonical line, where it was refused as `HeadUnrecorded`.
     let ledger = with_commands(2)?;
 
-    let listed = snapshot(&ledger).command_records(id(7), 2);
+    let listed = snapshot(&ledger).command_records(id(7), 2)?;
 
-    assert_matches!(
+    let dismissal = |comment_id| -> Result<SnapshotCommand, Box<dyn Error>> {
+        Ok(SnapshotCommand {
+            comment_id: CommentId(id(comment_id)),
+            actor: UserId(id(1001)),
+            created_at: "2026-10-12T09:29:58Z".parse()?,
+            head_sha: commit('b'),
+            body_sha256: digest('c'),
+            command: Command::Dismiss {
+                finding: "0123456789abcdef".parse()?,
+                reason: "not a bug".to_owned(),
+            },
+        })
+    };
+    assert_eq!(
         listed,
-        Err(LedgerSnapshotError::HeadUnrecorded { comment_id }) if comment_id == CommentId(id(1))
+        LedgerRecords::Listed(vec![dismissal(1)?, dismissal(2)?])
     );
+    Ok(())
+}
+
+#[test]
+fn github_state_applies_a_recorded_waive_of_this_head() -> Result<(), Box<dyn Error>> {
+    let mut world = World::opened_by(CONTRIBUTOR);
+    let body = "/assay waive 0123456789abcdef";
+    let posted = comment(40, APPROVER, 5, body);
+    let ledger = MemoryLedger::default();
+    append_push(
+        &ledger,
+        &PushDraft {
+            run_uid: run(1),
+            pr: id(7),
+            kind: PushKind::Opener,
+            after: sha(FIRST),
+            sender_id: user(CONTRIBUTOR),
+            at: at("2026-10-13T09:00:00.000Z"),
+        },
+    )?;
+    append_command(
+        &ledger,
+        &CommandRecord {
+            run_uid: run(9),
+            pr: id(7),
+            comment_id: posted.id,
+            actor_id: user(APPROVER),
+            head_sha: sha(FIRST),
+            command: body.to_owned(),
+            body_sha256: Sha256Digest::of(body.as_bytes()),
+            created_at: at("2026-10-13T09:05:00.000Z"),
+            at: at("2026-10-13T09:05:02.000Z"),
+        },
+    )?;
+    world.comments.insert(posted.id, posted);
+    let base = sha(BASE);
+
+    let state = github_state(
+        &StatePorts {
+            forge: &world,
+            objects: &world,
+            ledger: &snapshot(&ledger),
+            comments: &world,
+        },
+        &StateRequest {
+            number: world.number,
+            author: world.author,
+            base_sha: &base,
+            head_sha: &world.head,
+            lists: &world.lists,
+        },
+    )?;
+
+    assert_eq!(
+        state
+            .waivers()
+            .iter()
+            .map(|waiver| (waiver.fp.to_string(), waiver.by.as_str()))
+            .collect::<Vec<_>>(),
+        [("0123456789abcdef".to_owned(), "approver")]
+    );
+    assert_eq!(state.voided().count(), 0);
     Ok(())
 }
 

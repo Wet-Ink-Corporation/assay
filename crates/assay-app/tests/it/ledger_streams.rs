@@ -6,8 +6,8 @@ use std::error::Error;
 
 use assay_app::{
     Appended, CommandRecord, CommentId, Corruption, LedgerPath, LedgerReadError, LedgerWriteError,
-    PushAppended, PushDraft, PushKind, PushRecord, UserId, WriteOutcome, append_command,
-    append_push, read_commands, read_pushes,
+    MAX_COMMAND_CHARS, PushAppended, PushDraft, PushKind, PushRecord, UserId, WriteOutcome,
+    append_command, append_push, read_commands, read_pushes,
 };
 
 use crate::ledger_fakes::{MemoryLedger, at, commit, digest, id, run};
@@ -186,8 +186,8 @@ fn a_push_line_with_an_escaped_character_is_refused() {
 
 #[test]
 fn a_command_line_with_an_escaped_character_is_refused() {
-    let line = command_line(500, "/assay recheck");
-    let escaped = line.replacen("/assay recheck", r"\/assay recheck", 1);
+    let line = command_line(500, RETRY);
+    let escaped = line.replacen(RETRY, r"\/assay retry bugs", 1);
     assert_ne!(escaped, line, "the command was escaped");
     let ledger = MemoryLedger::default().with_file(&commands(), escaped.as_bytes());
 
@@ -206,12 +206,19 @@ fn a_command_line_with_an_escaped_character_is_refused() {
     );
 }
 
+/// A recorded command's canonical line: a waive.
+const WAIVE: &str = "/assay waive 0123456789abcdef";
+
+/// A recorded command's canonical line: a retry.
+const RETRY: &str = "/assay retry bugs";
+
 fn command(comment_id: u64, text: &str) -> CommandRecord {
     CommandRecord {
         run_uid: run(9),
         pr: id(7),
         comment_id: CommentId(id(comment_id)),
         actor_id: UserId(id(1001)),
+        head_sha: commit('b'),
         command: text.to_owned(),
         body_sha256: digest('c'),
         created_at: at("2026-10-12T09:29:58.000Z"),
@@ -224,11 +231,12 @@ fn command_line(comment_id: u64, text: &str) -> String {
         concat!(
             r#"{{"schema":"assay.ledger-command/1","run_uid":{{"repo_id":42,"run_id":9,"#,
             r#""run_attempt":1}},"pr":7,"comment_id":{comment_id},"actor_id":1001,"#,
-            r#""command":"{text}","body_sha256":"sha256:{body}","#,
+            r#""head_sha":"{head}","command":"{text}","body_sha256":"sha256:{body}","#,
             r#""created_at":"2026-10-12T09:29:58.000Z","at":"2026-10-12T09:30:00.000Z"}}"#,
             "\n"
         ),
         comment_id = comment_id,
+        head = "b".repeat(40),
         text = text,
         body = "c".repeat(64),
     )
@@ -238,34 +246,69 @@ fn command_line(comment_id: u64, text: &str) -> String {
 fn a_command_record_is_appended_once_per_comment() -> Result<(), Box<dyn Error>> {
     let ledger = MemoryLedger::default();
 
-    let first = append_command(&ledger, &command(500, "/assay recheck"))?;
+    let first = append_command(&ledger, &command(500, WAIVE))?;
     let again = append_command(&ledger, &command(500, "/assay override llm"))?;
-    let second = append_command(&ledger, &command(501, "/assay retry bugs"))?;
+    let second = append_command(&ledger, &command(501, RETRY))?;
 
     assert_eq!(first, Appended::Recorded);
-    assert_eq!(
-        again,
-        Appended::AlreadyRecorded(command(500, "/assay recheck"))
-    );
+    assert_eq!(again, Appended::AlreadyRecorded(command(500, WAIVE)));
     assert_eq!(second, Appended::Recorded);
     assert_eq!(commands().as_str(), "commands/42/7.jsonl");
     assert_eq!(
         ledger.text(&commands()),
-        command_line(500, "/assay recheck") + &command_line(501, "/assay retry bugs")
+        command_line(500, WAIVE) + &command_line(501, RETRY)
     );
     assert_eq!(
         read_commands(&ledger, id(42), id(7))?,
-        [
-            command(500, "/assay recheck"),
-            command(501, "/assay retry bugs")
-        ]
+        [command(500, WAIVE), command(501, RETRY)]
     );
     Ok(())
 }
 
+/// Refuses `contents` as PR 7's command file, at `line`, for `problem`.
+fn commands_refused(contents: &str, line: usize, problem: Corruption) {
+    let ledger = MemoryLedger::default().with_file(&commands(), contents.as_bytes());
+
+    let read = read_commands(&ledger, id(42), id(7));
+
+    assert!(
+        matches!(
+            &read,
+            Err(LedgerReadError::Corrupt { line: found, problem: actual, .. })
+                if *found == line && *actual == problem
+        ),
+        "{contents:?}: {read:?}"
+    );
+}
+
+#[test]
+fn a_command_line_without_its_head_is_refused() {
+    let line = command_line(500, WAIVE);
+    let headless = line.replacen(&format!(r#""head_sha":"{}","#, "b".repeat(40)), "", 1);
+    assert_ne!(headless, line, "the head was removed");
+
+    commands_refused(&headless, 1, Corruption::Field("head_sha"));
+}
+
+#[test]
+fn a_command_line_that_is_no_recorded_commands_canonical_line_is_refused() {
+    for text in [
+        // Never recorded: it re-decides and leaves no trace.
+        "/assay recheck",
+        // Not a word of the grammar.
+        "/assay approve",
+        // A known word whose arguments do not parse.
+        "/assay waive nope",
+        // Reads as a waive, but is not the waive's line.
+        r"/assay waive 0123456789abcdef\n/assay recheck",
+    ] {
+        commands_refused(&command_line(500, text), 1, Corruption::Field("command"));
+    }
+}
+
 #[test]
 fn a_command_file_with_a_comment_twice_is_refused() {
-    let lines = command_line(500, "/assay recheck") + &command_line(500, "/assay recheck");
+    let lines = command_line(500, RETRY) + &command_line(500, RETRY);
     let ledger = MemoryLedger::default().with_file(&commands(), lines.as_bytes());
 
     let read = read_commands(&ledger, id(42), id(7));
@@ -287,7 +330,7 @@ fn a_command_file_with_a_comment_twice_is_refused() {
 fn a_command_with_a_control_character_is_never_written() {
     let ledger = MemoryLedger::default();
 
-    let appended = append_command(&ledger, &command(500, "/assay recheck\u{1b}[2J"));
+    let appended = append_command(&ledger, &command(500, "/assay retry bugs\u{1b}[2J"));
 
     assert!(
         matches!(
@@ -306,7 +349,7 @@ fn a_command_with_a_control_character_is_never_written() {
 fn a_command_over_its_length_cap_is_never_written() {
     let ledger = MemoryLedger::default();
 
-    let appended = append_command(&ledger, &command(500, &"x".repeat(257)));
+    let appended = append_command(&ledger, &command(500, &"x".repeat(MAX_COMMAND_CHARS + 1)));
 
     assert!(
         matches!(

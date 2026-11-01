@@ -77,6 +77,22 @@ fn nanos(fraction: &str) -> Option<u32> {
     value.checked_mul(scale)
 }
 
+impl Timestamp {
+    /// The same instant as a [`LedgerTime`], or `None` when it does not fall on a millisecond
+    /// (never rounded: a command record's `created_at` is compared exactly on every read).
+    pub(crate) fn ledger_time(self) -> Option<LedgerTime> {
+        let nanos = u64::from(self.nanos);
+        if nanos % NANOS_PER_MILLI != 0 {
+            return None;
+        }
+        let millis = u64::from(self.date.days_since_epoch())
+            .checked_mul(MILLIS_PER_DAY)?
+            .checked_add(u64::from(self.seconds).checked_mul(MILLIS_PER_SECOND)?)?
+            .checked_add(nanos / NANOS_PER_MILLI)?;
+        LedgerTime::from_unix_millis(millis).ok()
+    }
+}
+
 impl From<LedgerTime> for Timestamp {
     /// The same instant: a ledger time is a UTC instant to the millisecond in the same range.
     fn from(time: LedgerTime) -> Self {

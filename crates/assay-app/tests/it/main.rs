@@ -16,6 +16,8 @@ mod check_events;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod check_fakes;
 mod check_patches;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod command_line;
 mod config;
 mod contract;
 mod coordinate;
@@ -35,11 +37,14 @@ mod doctor_profile_fakes;
 mod domain_model;
 mod eligibility;
 mod eligibility_commands;
+mod eligibility_counter;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod eligibility_fakes;
 mod eligibility_ledger;
 mod eligibility_lists;
 mod eligibility_range;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod eligibility_records;
 mod eligibility_refusals;
 mod eval_compare;
 mod eval_corpus;
@@ -78,6 +83,8 @@ mod prerequisites_fakes;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod prerequisites_reads;
 mod prompt_bundle;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod provenance;
 mod publish;
 mod publish_deadline;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
@@ -95,6 +102,8 @@ mod reconcile_checks;
 mod reconcile_fakes;
 mod reconcile_ledger;
 mod redaction;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod redecide_evidence;
 mod release;
 mod replay;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns

@@ -15,7 +15,8 @@ use super::lines::{Newline, Refusal, check_canonical, check_schema, lines, parse
 use super::port::{Ledger, LedgerPath};
 use super::record::{Appended, field};
 use super::time::LedgerTime;
-use crate::config::Sha256Digest;
+use crate::config::{CommitId, Sha256Digest};
+use crate::eligibility::recorded_command;
 use crate::publish::CommentId;
 use crate::status::UserId;
 
@@ -23,7 +24,10 @@ use crate::status::UserId;
 const COMMAND_SCHEMA: &str = "assay.ledger-command/1";
 
 /// The longest command a record holds, in characters.
-pub const MAX_COMMAND_CHARS: usize = 256;
+///
+/// It leaves room for the longest line of the grammar, 292 characters: an override with a
+/// reason of [`MAX_COMMAND_REASON_CHARS`](crate::MAX_COMMAND_REASON_CHARS) characters.
+pub const MAX_COMMAND_CHARS: usize = 512;
 
 /// A command as decide-only accepted it from a comment's `created` payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,8 +40,11 @@ pub struct CommandRecord {
     pub comment_id: CommentId,
     /// Who posted the comment, by numeric id.
     pub actor_id: UserId,
-    /// The command line as parsed (`/assay recheck`): 1 to [`MAX_COMMAND_CHARS`] characters, no
-    /// control character.
+    /// The PR head the comment was posted on: a head-bound command applies to it alone (04 §5).
+    pub head_sha: CommitId,
+    /// The command as its canonical [`Command::line`](crate::Command::line)
+    /// (`/assay waive 0123456789abcdef`): any command of the grammar but `recheck`, at most
+    /// [`MAX_COMMAND_CHARS`] characters. Every read re-parses it.
     pub command: String,
     /// The sha256 of the comment body at `created`: a later body with another hash voids the
     /// record (T21).
@@ -54,8 +61,8 @@ pub struct CommandRecord {
 /// # Errors
 ///
 /// [`LedgerWriteError`]: the file could not be read or is refused, the write failed or kept
-/// conflicting, the file would pass its cap, or `command` breaks a rule of its contract (an empty
-/// or over-long command, or one with a control character).
+/// conflicting, the file would pass its cap, or `command` breaks a rule of its contract (a
+/// command that is not a recorded command's canonical line, or one over its cap).
 pub fn append_command<L: Ledger>(
     ledger: &L,
     command: &CommandRecord,
@@ -141,6 +148,10 @@ struct CommandLine<'a> {
     pr: NonZeroU64,
     comment_id: NonZeroU64,
     actor_id: NonZeroU64,
+    // Optional on the wire only so that a line without it is `Field("head_sha")`, the record of
+    // a head it does not name, rather than a shapeless line; assay always writes it.
+    #[serde(default)]
+    head_sha: Option<Cow<'a, str>>,
     command: Cow<'a, str>,
     body_sha256: String,
     created_at: String,
@@ -155,6 +166,7 @@ impl<'a> From<&'a CommandRecord> for CommandLine<'a> {
             pr: record.pr,
             comment_id: record.comment_id.0,
             actor_id: record.actor_id.0,
+            head_sha: Some(Cow::Borrowed(record.head_sha.as_str())),
             command: Cow::Borrowed(&record.command),
             body_sha256: record.body_sha256.to_string(),
             created_at: record.created_at.to_string(),
@@ -168,8 +180,12 @@ impl TryFrom<CommandLine<'_>> for CommandRecord {
 
     fn try_from(line: CommandLine<'_>) -> Result<Self, Corruption> {
         check_schema(&line.schema, COMMAND_SCHEMA)?;
+        let head_sha = line.head_sha.ok_or(Corruption::Field("head_sha"))?;
         let chars = line.command.chars().count();
-        if !(1..=MAX_COMMAND_CHARS).contains(&chars) || line.command.chars().any(char::is_control) {
+        if !(1..=MAX_COMMAND_CHARS).contains(&chars)
+            || line.command.chars().any(char::is_control)
+            || recorded_command(&line.command).is_err()
+        {
             return Err(Corruption::Field("command"));
         }
         Ok(Self {
@@ -177,6 +193,7 @@ impl TryFrom<CommandLine<'_>> for CommandRecord {
             pr: line.pr,
             comment_id: CommentId(line.comment_id),
             actor_id: UserId(line.actor_id),
+            head_sha: field(&head_sha, "head_sha")?,
             command: line.command.into_owned(),
             body_sha256: field(&line.body_sha256, "body_sha256")?,
             created_at: field(&line.created_at, "created_at")?,

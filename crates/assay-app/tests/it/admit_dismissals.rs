@@ -58,6 +58,7 @@ fn command(id: u64, actor: u64, body: &str) -> (CommandRecord, IssueComment) {
         pr: nz(PR),
         comment_id: CommentId(nz(id)),
         actor_id: UserId(nz(actor)),
+        head_sha: crate::ledger_fakes::commit('b'),
         command: body.to_owned(),
         body_sha256: Sha256Digest::of(body.as_bytes()),
         created_at: created,
@@ -130,8 +131,8 @@ fn everyone_privileged() -> World {
 /// The ledger and comment store hold the dismissal from the owner (comment 1) and from each
 /// identity or comment state that voids it: the author (2), an agent (3), an edit (4), a deletion
 /// (5), a changed body (6), a pusher (7), a comment created at another time than recorded (9);
-/// and the owner's `/assay recheck` (8). The owner's opener record does not make the owner a
-/// pusher.
+/// and the owner's `/assay waive` (8), a command that is not a dismissal. The owner's opener
+/// record does not make the owner a pusher.
 fn dismissals_of_every_kind(world: &mut World) -> Result<(), Box<dyn Error>> {
     let dismiss = dismiss();
     append_push(
@@ -157,7 +158,7 @@ fn dismissals_of_every_kind(world: &mut World) -> Result<(), Box<dyn Error>> {
         command(5, OWNER, &dismiss),
         command(6, OWNER, &dismiss),
         command(7, PUSHER, &dismiss),
-        command(8, OWNER, "/assay recheck"),
+        command(8, OWNER, &format!("/assay waive {FP}")),
         command(9, OWNER, &dismiss),
     ];
     for (record, mut now) in cases {
