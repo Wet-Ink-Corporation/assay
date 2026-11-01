@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bb6f5eef057cc5344189b9f1d67af8d20cefa0b31b17d554b896753c82606824 # shrinks to state = GitHubState { head: CommitId("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), rule: Rule { lists: EligibilityLists { owners: [], approvers: [], maintainers: [], agents: [] }, author: UserId(1), range: Attributed { users: {}, unattributed: false }, pushers: {} }, commits: Within, clock: None, pushes: [], approvals: [Approval { review: 1, reviewer: UserId(1), submitted_at: None, status: BeforePush(Timestamp { date: CalendarDate { days: 20739 }, seconds: 0, nanos: 0 }) }], commands: [] }

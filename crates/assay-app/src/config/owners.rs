@@ -166,6 +166,16 @@ struct AgentsDto {
     agents: Vec<IdentityDto>,
 }
 
+/// `github.lists` of a bundle's GitHub snapshot: the four lists the snapshot judged by.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RecordedLists {
+    owners: Vec<IdentityDto>,
+    approvers: Vec<IdentityDto>,
+    maintainers: Vec<IdentityDto>,
+    agents: Vec<IdentityDto>,
+}
+
 /// One `{ id, login }`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -194,14 +204,45 @@ impl EligibilityLists {
     /// # Ok::<(), assay_app::ListsError>(())
     /// ```
     pub fn parse(owners: Option<&str>, agents: Option<&str>) -> Result<Self, ListsError> {
-        let lists = Self::parse_unjudged(owners, agents)?;
-        if let Some(id) = lists.first_privileged_in(&lists.maintainers) {
+        Self::parse_unjudged(owners, agents)?.judged()
+    }
+
+    /// The lists a bundle's GitHub snapshot records (`github.lists`), held to every rule of
+    /// [`Self::parse`]: the snapshot's lists were read by it, so a record it would refuse is
+    /// not one assay wrote (wi-b5affa).
+    pub(crate) fn recorded(lists: RecordedLists) -> Result<Self, ListsError> {
+        Self {
+            owners: identities(ListName::Owners, lists.owners)?,
+            approvers: identities(ListName::Approvers, lists.approvers)?,
+            maintainers: identities(ListName::Maintainers, lists.maintainers)?,
+            agents: identities(ListName::Agents, lists.agents)?,
+        }
+        .disjoint()?
+        .judged()
+    }
+
+    /// The lists, refused when a maintainer or an agent is also privileged.
+    fn judged(self) -> Result<Self, ListsError> {
+        if let Some(id) = self.first_privileged_in(&self.maintainers) {
             return Err(ListsError::MaintainerPrivileged { id });
         }
-        if let Some(id) = lists.first_privileged_in(&lists.agents) {
+        if let Some(id) = self.first_privileged_in(&self.agents) {
             return Err(ListsError::AgentPrivileged { id });
         }
-        Ok(lists)
+        Ok(self)
+    }
+
+    /// The lists, refused when an owner is also an approver.
+    fn disjoint(self) -> Result<Self, ListsError> {
+        match self
+            .owners
+            .iter()
+            .map(|identity| identity.id)
+            .find(|&id| find(&self.approvers, id).is_some())
+        {
+            Some(id) => Err(ListsError::OwnerApprover { id }),
+            None => Ok(self),
+        }
     }
 
     /// [`Self::parse`] without its two contradiction checks, a maintainer or an agent who is
@@ -223,15 +264,7 @@ impl EligibilityLists {
             let dto: AgentsDto = read(ListFile::Agents, text)?;
             lists.agents = identities(ListName::Agents, dto.agents)?;
         }
-        if let Some(id) = lists
-            .owners
-            .iter()
-            .map(|identity| identity.id)
-            .find(|&id| find(&lists.approvers, id).is_some())
-        {
-            return Err(ListsError::OwnerApprover { id });
-        }
-        Ok(lists)
+        lists.disjoint()
     }
 
     /// The lists decide-only uses (R3-26): an id stays privileged only if both these lists (at

@@ -35,6 +35,7 @@ pub use self::evidence::{MAX_EVIDENCE_BYTES, MAX_EVIDENCE_FILES, MAX_SYMBOL_BYTE
 pub use self::fetch::MAX_FETCHED_BYTES;
 use self::fetch::{Artifact, Fetch, Fetcher};
 pub use self::inputs::{InputsError, InputsRequest, decision_inputs};
+pub(crate) use self::inputs::{KeyInputs, compose_key};
 pub use self::ports::{CurrentPullRequest, Fetched, PullOnHead, PullRequestState, RunArtifacts};
 use self::recompute::AuthenticPlan;
 pub use self::refusal::{Moved, OutputsProblem, PlanMismatch, PlanRefusal, Refusal, Unreadable};

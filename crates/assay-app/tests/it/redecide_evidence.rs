@@ -17,6 +17,7 @@ use assay_app::{
 use assay_domain::{Decision, Rubric, RunUid};
 use serde_json::Value;
 
+use crate::eligibility_fakes::{CONTRIBUTOR, user};
 use crate::plan_fakes::{FakeError, HEAD};
 use crate::replay_fakes::{FakeBundles, Persisted, Stored};
 use crate::support::rubric_v1;
@@ -184,6 +185,67 @@ fn a_bundle_of_the_pipeline_s_run_is_authentic_after_its_provenance_is_read()
     assert_eq!(bundle.head().as_str(), HEAD);
     assert_eq!(bundle.base_ref(), "main");
     assert_eq!(bundle.inputs().decision_key, decision.key);
+    Ok(())
+}
+
+#[test]
+fn an_authentic_bundle_carries_the_github_facts_its_run_recorded() -> Result<(), Box<dyn Error>> {
+    let persisted = Persisted::new()?;
+    let answer = Answer::Run(pipeline_run(&persisted));
+
+    let (outcome, _) = read(&persisted, answer, stored(&persisted))?;
+
+    let Ok(EvidenceRead::Authentic(bundle)) = outcome else {
+        return Err(format!("authentic, got {outcome:?}").into());
+    };
+    let snapshot = &persisted.run.github;
+    let recorded = bundle.recorded();
+    assert_eq!(recorded.head(), snapshot.head());
+    assert_eq!(recorded.lists(), snapshot.lists());
+    assert_eq!(recorded.author(), user(CONTRIBUTOR));
+    assert_eq!(recorded.commits(), snapshot.commits());
+    assert_eq!(recorded.pushers(), snapshot.pushers());
+    assert_eq!(recorded.push_clock(), snapshot.push_clock());
+    Ok(())
+}
+
+#[test]
+fn a_snapshot_the_writer_never_writes_is_forged() -> Result<(), Box<dyn Error>> {
+    let persisted = Persisted::new()?;
+    let cases: [SnapshotEdit; 3] = [
+        ("an unknown field", |github| {
+            github["extra"] = Value::Null;
+        }),
+        ("an unknown range status", |github| {
+            github["range"]["status"] = Value::from("partial");
+        }),
+        ("no lists", |github| {
+            github
+                .as_object_mut()
+                .expect("the snapshot is an object")
+                .remove("lists");
+        }),
+    ];
+    for (case, edit) in cases {
+        let (bytes, pointer) = tampered(&persisted, |bundle| {
+            edit(&mut bundle["github"]);
+            Ok(())
+        })?;
+        let answer = Answer::Run(pipeline_run(&persisted));
+
+        let (outcome, _) = read_under(
+            &persisted,
+            &pointer,
+            Ports::new(answer, Stored::Bytes(bytes)),
+            &rubric_v1()?,
+        );
+
+        assert_matches!(
+            outcome,
+            Ok(EvidenceRead::Forged(Forgery::Shape(BundleShape::Shape))),
+            "{case}"
+        );
+    }
     Ok(())
 }
 

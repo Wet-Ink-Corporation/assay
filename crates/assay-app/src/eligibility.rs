@@ -21,6 +21,8 @@ mod ports;
 mod pushes;
 mod range;
 mod record;
+mod recorded;
+mod redecided;
 mod rule;
 mod state;
 mod timestamp;
@@ -49,7 +51,10 @@ pub use self::range::{
     MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, RangeCommit, RangeListing, RangeObjects,
     TreeId, WEB_FLOW,
 };
-pub(crate) use self::record::{StateRecord, StateRecordIn};
+pub(crate) use self::record::StateRecord;
+pub use self::recorded::RecordedState;
+pub(crate) use self::recorded::StateRecordIn;
+pub use self::redecided::{RedecidePorts, RedecideRequest, RedecideStateError, redecided_state};
 pub use self::rule::Ineligible;
 use self::rule::{RangeFacts, Rule};
 pub use self::state::{CommitRange, GitHubState};
@@ -58,6 +63,7 @@ pub(crate) use self::waive::canonical_json;
 pub use self::waive::{PriorWaivers, WaiverBindings, waiver_events};
 use crate::config::{CommitId, EligibilityLists};
 use crate::forge::Forge;
+use crate::publish::CommentId;
 use crate::status::UserId;
 
 /// What the snapshot is taken of.
@@ -155,7 +161,13 @@ where
         .reviews(request.number)
         .map_err(StateError::forge(SnapshotStep::Reviews))?;
     let approvals = approvals::approvals(&reviews, request.head_sha, clock, &rule);
-    let commands = judge_commands(ports, request, clock, &rule)?;
+    let sources = CommandSources {
+        number: request.number,
+        ledger: ports.ledger,
+        comments: ports.comments,
+    };
+    let commands = judge_commands(&sources, request.head_sha, clock, &rule)
+        .map_err(StateError::of_commands)?;
     Ok(GitHubState {
         head: request.head_sha.clone(),
         rule,
@@ -172,41 +184,56 @@ fn is_merge_push(merges: &BTreeMap<CommitId, CommitId>, push: &pushes::Pushed<'_
     merges.get(push.after) == Some(push.before)
 }
 
-/// Every command record of the PR, judged: void when its comment no longer stands, else as it
-/// applies to this head.
-fn judge_commands<F, G, L, C>(
-    ports: &StatePorts<'_, F, G, L, C>,
-    request: &StateRequest<'_>,
+/// Why a PR's command records could not be judged.
+enum JudgeError<L, C> {
+    /// The ledger could not be read.
+    Ledger(L),
+    /// More than [`MAX_COMMAND_RECORDS`] records.
+    TooMany,
+    /// Two records name one comment.
+    Repeated(CommentId),
+    /// A comment could not be re-fetched.
+    Comments(C),
+}
+
+/// Where a PR's command records are read, and their comments re-fetched.
+struct CommandSources<'p, L, C> {
+    /// The PR.
+    number: NonZeroU64,
+    /// Its command records.
+    ledger: &'p L,
+    /// The comments behind them.
+    comments: &'p C,
+}
+
+/// Every command record of the PR `sources` names, judged: void when its comment no longer
+/// stands, else as it applies to `head` under `clock` and `rule`. The one judgement of both
+/// snapshots (`github_state` and [`redecided_state`]).
+fn judge_commands<L: SnapshotLedger, C: CommandComments>(
+    sources: &CommandSources<'_, L, C>,
+    head: &CommitId,
     clock: Option<Timestamp>,
     rule: &Rule,
-) -> Result<Vec<JudgedCommand>, PortsError<F, G, L, C>>
-where
-    F: Forge,
-    G: RangeObjects,
-    L: SnapshotLedger,
-    C: CommandComments,
-{
-    let records = ports
+) -> Result<Vec<JudgedCommand>, JudgeError<L::Error, C::Error>> {
+    let records = sources
         .ledger
-        .command_records(request.number, MAX_COMMAND_RECORDS)
-        .map_err(StateError::ledger(SnapshotStep::CommandRecords))?
+        .command_records(sources.number, MAX_COMMAND_RECORDS)
+        .map_err(JudgeError::Ledger)?
         .within(MAX_COMMAND_RECORDS)
-        .ok_or(StateError::TooManyCommandRecords)?;
+        .ok_or(JudgeError::TooMany)?;
     let mut seen = BTreeSet::new();
     let mut judged = Vec::with_capacity(records.len());
     for record in records {
         if !seen.insert(record.comment_id) {
-            return Err(StateError::RepeatedCommand {
-                comment: record.comment_id,
-            });
+            return Err(JudgeError::Repeated(record.comment_id));
         }
-        let comment = ports
+        let comment = sources
             .comments
             .comment(record.comment_id)
-            .map_err(StateError::Comments)?;
+            .map_err(JudgeError::Comments)?;
         let status = match void_cause(&record, comment.as_ref()) {
             Some(cause) => commands::CommandStatus::Void(cause),
-            None => applicability(&record, request.head_sha, clock, rule),
+            None => applicability(&record, head, clock, rule),
         };
         judged.push(JudgedCommand { record, status });
     }
