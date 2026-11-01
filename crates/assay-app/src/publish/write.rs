@@ -1,5 +1,8 @@
-//! Writing the verdict: the two-phase stamp check around the per-head lock (02 §5, R3-09), the
-//! bundle upload and evidence record (S9), the check and the summary comment (S8).
+//! Writing the verdict: the two-phase claim check around the per-head lock (02 §5, R3-09), the
+//! bundle upload, the evidence or decision pointer and the publication register (S9, D2 of
+//! #61), the check and the summary comment (S8).
+
+mod record;
 
 use std::borrow::Cow;
 
@@ -8,6 +11,7 @@ use assay_domain::{
     Rubric, Tier,
 };
 
+pub(super) use self::record::{Claimant, Site};
 use super::ports::{
     CheckConclusion, CheckName, CheckRun, CheckState, CheckStatus, CheckUpdate, EvidenceEntry,
     EvidencePointer, EvidenceRecord, LlmEvidence, PublishLedger, VerdictForge,
@@ -105,15 +109,26 @@ pub(super) type WriteOutcome<F, L, U> = Result<
     PublishError<<F as VerdictForge>::Error, <L as PublishLedger>::Error>,
 >;
 
-/// Publishes `pending` when the check is still this run's to write.
+/// Publishes `pending` when the check is still the pipeline run `target`'s to write: it carries
+/// the run's `pending:` stamp, or the key `pending` publishes under.
 pub(super) fn write<F: VerdictForge, L: PublishLedger, U>(
     target: &Target<'_>,
     ports: Writer<'_, F, L>,
     pending: Pending<'_, L::Error, U>,
 ) -> WriteOutcome<F, L, U> {
-    let event = target.pull_request;
-    let name = CheckName::for_base(&event.base_ref, target.default_branch);
-    let observed = match observe(target, ports.forge, &name, pending.key())? {
+    write_at(&Site::of(target), Claimant::Stamp, ports, pending)
+}
+
+/// Publishes `pending` at `site` when the check is still `claimant`'s to write.
+pub(super) fn write_at<F: VerdictForge, L: PublishLedger, U>(
+    site: &Site<'_>,
+    claimant: Claimant<'_>,
+    ports: Writer<'_, F, L>,
+    pending: Pending<'_, L::Error, U>,
+) -> WriteOutcome<F, L, U> {
+    let key = checked_key((site, claimant), pending.key())?;
+    let name = CheckName::for_base(site.base_ref, site.default_branch);
+    let observed = match observe((site, claimant), ports.forge, &name, &key)? {
         Observation::Writable(observed) => observed,
         Observation::Unchanged => return Ok(Published::Unchanged),
         Observation::Foreign => {
@@ -133,12 +148,17 @@ pub(super) fn write<F: VerdictForge, L: PublishLedger, U>(
     };
     let Some(lease) = ports
         .ledger
-        .acquire(target.run_uid.repo_id, &event.head_sha)
+        .acquire(site.run_uid.repo_id, site.head_sha)
         .map_err(PublishError::Lock)?
     else {
         return Err(PublishError::LockBusy);
     };
-    let locked = under_lock(target, ports, (&name, &observed), (&lease, prepared));
+    let locked = under_lock(
+        (site, claimant, &key),
+        ports,
+        (&name, &observed),
+        (&lease, prepared),
+    );
     let unlock = match ports.ledger.release(lease) {
         Ok(()) => Unlock::Released,
         Err(error) => Unlock::Failed(error),
@@ -161,85 +181,82 @@ pub(super) fn write<F: VerdictForge, L: PublishLedger, U>(
     }
 }
 
+/// `key` as the register records it, before any port call: refused unless it is a digest (a
+/// stamp could be mistaken for it) and, for decide-only, unless the claim is of `site`'s head.
+fn checked_key<F, L>(
+    (site, claimant): (&Site<'_>, Claimant<'_>),
+    key: &str,
+) -> Result<Sha256Digest, PublishError<F, L>> {
+    let key = key
+        .parse()
+        .map_err(|_not_a_digest| PublishError::DecisionKey)?;
+    if claimant
+        .claim()
+        .is_some_and(|claim| &claim.register.head_sha != site.head_sha)
+    {
+        return Err(PublishError::ClaimHead);
+    }
+    Ok(key)
+}
+
 /// What the first read of the check allows.
 enum Observation {
-    /// The check is this run's to write: stamped for it, or carrying `key` but not completed.
+    /// The check is this writer's: carrying its claim, or `key` but not completed.
     Writable(CheckRun),
     /// The check is completed under `key` already: nothing to write.
     Unchanged,
-    /// The check carries neither `key` nor this run's stamp: another run owns it.
+    /// The check carries neither `key` nor the writer's claim: another run owns it.
     Foreign,
 }
 
-/// Reads the App check `name` on the head and judges it against `key` and this run's stamp,
+/// Reads the App check `name` on the head and judges it against `key` and `claimant`'s claim,
 /// before any write or the lock.
 fn observe<F: VerdictForge, E>(
-    target: &Target<'_>,
+    (site, claimant): (&Site<'_>, Claimant<'_>),
     forge: &F,
     name: &CheckName,
-    key: &str,
+    key: &Sha256Digest,
 ) -> Result<Observation, PublishError<F::Error, E>> {
     // Before the lock: there is no lease to bound it yet.
     let observed = forge
-        .find_check(&target.pull_request.head_sha, name, None)
+        .find_check(site.head_sha, name, None)
         .map_err(PublishError::Observe)?
         .ok_or(PublishError::CheckMissing)?;
-    Ok(if observed.external_id == key {
+    Ok(if observed.external_id == key.as_str() {
         if observed.status == CheckStatus::Completed {
             Observation::Unchanged
         } else {
             Observation::Writable(observed)
         }
-    } else if is_own_stamp(&observed.external_id, target) {
+    } else if claimant.owns(&observed.external_id, site) {
         Observation::Writable(observed)
     } else {
         Observation::Foreign
     })
 }
 
-/// Whether `external_id` is `open`'s stamp for this run: `pending:<run_id>:<seq>`, with `seq`
-/// one or more ASCII digits and nothing else.
-fn is_own_stamp(external_id: &str, target: &Target<'_>) -> bool {
-    let prefix = format!("pending:{}:", target.run_uid.run_id);
-    external_id
-        .strip_prefix(&prefix)
-        .is_some_and(|seq| !seq.is_empty() && seq.bytes().all(|byte| byte.is_ascii_digit()))
-}
-
-/// Re-reads the check under the lock `lease` and, when it is unchanged, records the evidence and
-/// writes the check and the summary comment. Every call carries the lease's deadline, so none
-/// sends or waits past it, and the evidence is recorded only before it (#290, #332).
+/// Re-reads the check under the lock `lease` and, when it is unchanged, records the evidence or
+/// decision pointer and the publication register, and writes the check and the summary
+/// comment. Every call carries the lease's deadline, so none sends or waits past it, and the
+/// ledger is written only before it (#290, #332).
 fn under_lock<F: VerdictForge, L: PublishLedger, U>(
-    target: &Target<'_>,
+    (site, claimant, key): (&Site<'_>, Claimant<'_>, &Sha256Digest),
     ports: Writer<'_, F, L>,
     (name, observed): (&CheckName, &CheckRun),
     (lease, prepared): (&L::Lease, Prepared<'_, L::Error, U>),
 ) -> UnderLock<F::Error, L::Error, U> {
-    let event = target.pull_request;
     let deadline = ports.ledger.deadline(lease);
     let current = ports
         .forge
-        .find_check(&event.head_sha, name, Some(deadline))
+        .find_check(site.head_sha, name, Some(deadline))
         .map_err(|error| (ForgeStep::ReadCheck, error))?;
     if current.as_ref() != Some(observed) {
         return Ok(Locked::Stale);
     }
-    let (update, persist) = match prepared {
-        Prepared::Refused(update) => (update, None),
-        Prepared::Decided { basis, persisted } => {
-            let (entry, persist) = match persisted {
-                Ok(digest) => {
-                    let entry = evidence_entry(target, &basis, digest);
-                    match ports.ledger.record_evidence(lease, &entry) {
-                        Ok(()) => (Some(entry), None),
-                        Err(error) => (None, Some(PersistFailure::Ledger(error))),
-                    }
-                }
-                Err(failure) => (None, Some(failure)),
-            };
-            let update = decided_update(&basis, entry.as_ref(), persist.as_ref());
-            (update, persist)
-        }
+    let record::Recorded::Ready { update, persist } =
+        record::record((site, claimant, key), (ports.ledger, lease), prepared)
+    else {
+        return Ok(Locked::Stale);
     };
     let write = LockedWrite {
         update: &update,
@@ -249,7 +266,7 @@ fn under_lock<F: VerdictForge, L: PublishLedger, U>(
         .forge
         .update_check(observed.id, write)
         .map_err(|error| (ForgeStep::UpdateCheck, error))?;
-    upsert_summary(ports.forge, target, (&update.summary, deadline))?;
+    upsert_summary(ports.forge, site.number, (&update.summary, deadline))?;
     Ok(Locked::Written {
         state: update.state,
         persist,
@@ -257,11 +274,11 @@ fn under_lock<F: VerdictForge, L: PublishLedger, U>(
 }
 
 /// The evidence pointer and record of an uploaded bundle (02 §5).
-fn evidence_entry(target: &Target<'_>, basis: &Basis<'_>, digest: Sha256Digest) -> EvidenceEntry {
-    let run_uid = target.run_uid;
+fn evidence_entry(site: &Site<'_>, basis: &Basis<'_>, digest: Sha256Digest) -> EvidenceEntry {
+    let run_uid = site.run_uid;
     EvidenceEntry {
         repo_id: run_uid.repo_id,
-        pr: target.pull_request.number,
+        pr: site.number,
         pointer: EvidencePointer {
             run_id: run_uid.run_id,
             run_attempt: run_uid.run_attempt,
@@ -372,10 +389,9 @@ const fn state_of(conclusion: Conclusion) -> CheckState {
 /// nothing past `deadline`.
 fn upsert_summary<F: VerdictForge>(
     forge: &F,
-    target: &Target<'_>,
+    number: std::num::NonZeroU64,
     (summary, deadline): (&str, Deadline),
 ) -> Result<(), (ForgeStep, F::Error)> {
-    let number = target.pull_request.number;
     let body = render::comment(summary);
     let found = forge
         .find_summary(number, SUMMARY_MARKER, deadline)

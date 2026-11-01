@@ -255,6 +255,12 @@ fn the_state_fixtures_pass_or_fail_schema_and_reader_alike() -> Result<(), Box<d
                 "additionalProperties",
             ),
             ("missing-counters", "", "required"),
+            ("published-pending-key", "/published/key", "pattern"),
+            (
+                "published-unknown-field",
+                "/published",
+                "additionalProperties",
+            ),
             ("unknown-llm", "/evidence_records/0/llm", "enum"),
         ],
     )

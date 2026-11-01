@@ -188,8 +188,10 @@ impl FromStr for PersistOutcome {
     }
 }
 
-/// Why an upload was not confirmed: a [`PersistFailure::Upload`], so no evidence pointer is
-/// written, a trust-path or exec-surface PR fails `persist-error` and any other PR warns.
+/// Why an upload was not confirmed: a [`PersistFailure::Upload`].
+///
+/// No evidence pointer (or, for decide-only, no decision pointer) is written, a trust-path or
+/// exec-surface PR fails `persist-error` and any other PR warns.
 #[derive(Debug, Error)]
 pub enum Unconfirmed<E> {
     /// The upload step did not succeed; the store was not read.
@@ -204,8 +206,9 @@ pub enum Unconfirmed<E> {
     /// The store reports the artifact past its retention.
     #[error("the uploaded bundle has expired")]
     Expired,
-    /// The stored file is over [`MAX_BUNDLE_BYTES`].
-    #[error("the uploaded bundle is larger than {MAX_BUNDLE_BYTES} bytes")]
+    /// The stored file is over its cap: [`MAX_BUNDLE_BYTES`] for a run's bundle,
+    /// [`MAX_DECISION_BUNDLE_BYTES`](crate::MAX_DECISION_BUNDLE_BYTES) for a decision bundle.
+    #[error("the uploaded bundle is larger than its cap")]
     TooLarge,
     /// The stored file does not hash to the bundle's digest.
     #[error("the uploaded bundle does not hash to the bundle's digest")]

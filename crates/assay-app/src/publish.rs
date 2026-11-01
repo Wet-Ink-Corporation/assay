@@ -13,6 +13,7 @@ mod findings;
 mod ledger;
 mod persisted;
 mod ports;
+mod redecided;
 mod refusal;
 mod render;
 mod resolution;
@@ -37,8 +38,14 @@ pub use self::persisted::{
 };
 pub use self::ports::{
     BundleStore, CheckConclusion, CheckName, CheckRun, CheckRunId, CheckState, CheckStatus,
-    CheckUpdate, CommentForge, CommentId, EvidenceEntry, EvidencePointer, EvidenceRecord,
-    InlineComment, LlmEvidence, PublishLedger, SummaryComment, VerdictForge,
+    CheckUpdate, Claim, Claimed, CommentForge, CommentId, DecisionEntry, EvidenceEntry,
+    EvidencePointer, EvidenceRecord, InlineComment, LlmEvidence, PublishLedger, PublishedEntry,
+    SummaryComment, VerdictForge,
+};
+pub use self::redecided::{
+    RedecideRefusal, RedecideTarget, RedecidedError, RedecidedOutcome, RedecidedPersisted,
+    RedecidedPorts, RedecidedRefused, UnusableEvidence, publish_redecide_refusal,
+    publish_redecided,
 };
 pub use self::refusal::{MAX_REFUSAL_DETAIL_BYTES, NotARefusal, RefusalReason, publish_refusal};
 pub use self::render::SUMMARY_MARKER;
@@ -232,6 +239,10 @@ pub enum PublishError<F, L> {
     /// The GitHub state snapshot was taken of another head than the run's.
     #[error("the GitHub state snapshot is not of the run's head")]
     SnapshotHead,
+    /// decide-only's claim names another head's register than the PR's: nothing was read or
+    /// written.
+    #[error("the claimed publication register is of another head")]
+    ClaimHead,
     /// The App's check for the head does not exist: `open` creates it, never `decide`.
     #[error("there is no verdict check for the head")]
     CheckMissing,
@@ -371,7 +382,12 @@ fn upload<L, B: BundleStore>(
 /// The check update for a refusal's `reason`: `failure` with it, keyed by the run and the
 /// reason. A [`Refusal`] and its persisted [`RefusalReason`] both publish through here.
 fn refused(target: &Target<'_>, reason: &Reason) -> CheckUpdate {
-    let key = refusal_key(target.run_uid, reason);
+    refusal_update(refusal_key(target.run_uid, reason), reason)
+}
+
+/// The check update `failure` with the one reason `reason`, keyed `key`: every refusal's, the
+/// pipeline's and decide-only's.
+fn refusal_update(key: String, reason: &Reason) -> CheckUpdate {
     let reasons = std::slice::from_ref(reason);
     CheckUpdate {
         state: CheckState::Completed(CheckConclusion::Failure),
