@@ -196,3 +196,29 @@ fn a_guard_that_did_not_succeed_is_refused() {
         })
     );
 }
+
+#[test]
+fn a_redecision_bundle_writes_its_digest_and_artifact_name() {
+    let digest = Sha256Digest::of(b"run-decision");
+    let nonce: ArtifactNonce = format!("{:032x}", u128::default())
+        .parse()
+        .expect("a nonce");
+
+    let outputs = RedecideOutputs::bundle(pr(352), digest.clone(), &nonce);
+
+    assert_eq!(
+        written(&outputs.outputs()),
+        format!(
+            "bundle=true\nbundle_digest={digest}\n\
+             artifact=assay-decision-352-00000000000000000000000000000000\n"
+        )
+    );
+}
+
+#[test]
+fn no_redecision_bundle_writes_bundle_false_alone() {
+    assert_eq!(
+        written(&RedecideOutputs::NoBundle.outputs()),
+        "bundle=false\n"
+    );
+}

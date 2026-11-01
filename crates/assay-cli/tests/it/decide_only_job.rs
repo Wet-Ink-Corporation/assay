@@ -438,7 +438,10 @@ fn decide_only_takes_guard_alone_and_refuses_the_steps_not_built_yet() -> Result
             &["decide-only", "guard", "--json"][..],
             "usage: assay decide-only guard",
         ),
-        (&["decide-only", "decide"][..], "not built yet"),
+        (
+            &["decide-only", "decide"][..],
+            "usage: assay decide-only decide --config <plugins-toml> --out <dir>",
+        ),
         (&["decide-only", "publish"][..], "not built yet"),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_assay"))

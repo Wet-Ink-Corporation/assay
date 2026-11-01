@@ -41,6 +41,7 @@ mod prerequisites;
 mod prior;
 mod publish;
 mod pull_request;
+mod redecide;
 mod revisions;
 mod status;
 mod supervisor;
@@ -77,6 +78,11 @@ pub use publish::{
     run_publish,
 };
 pub use pull_request::{ForgeObjectsError, ForgePullRequest};
+pub use redecide::{
+    DefaultBranch, PayloadMismatch, RedecideJob, RedecideJobPorts, RedecideRunError,
+    RedecideRunFailure, RedecideRunOutcome, RedecideState, RedecideStateFileError, Redecision,
+    forgery_code, run_redecide,
+};
 pub use revisions::ForgeRevisions;
 pub use status::{
     Format, StatusArgs, StatusCommand, StatusContext, StatusRunError, StatusUsage,

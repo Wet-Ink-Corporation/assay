@@ -28,6 +28,10 @@
 //! `assay decide-only guard` (#61 DO-10) decides which PRs the decide-only workflow decides
 //! again for its event (a command comment, an `assay:*` label, the hourly poll) and writes
 //! `prs` and `trigger` to `GITHUB_OUTPUT`; it exits 1 for an untrusted head (0006).
+//! `assay decide-only decide --config <plugins-toml> --out <dir>` (#61 DO-11) refuses a re-run
+//! and a PR not in guard's `prs`, then decides that PR again from the evidence bundle the
+//! ledger points at, writing its state and, for a new decision, its `run-decision.json` into
+//! `<dir>` and its outputs (`bundle`, `bundle_digest`, `artifact`) to `GITHUB_OUTPUT`.
 //! `assay plan --out <dir>` (#60 ST-5) plans guard's identity into `<dir>/run.json` and writes
 //! plan's outputs (03 §4a) to `GITHUB_OUTPUT`.
 //! `assay review --placeholder` (#60 ST-9, D11 A) writes the review job's placeholder outputs
@@ -59,6 +63,7 @@ mod open_job;
 mod plan_job;
 mod publish_job;
 mod reconcile;
+mod redecide_job;
 mod release;
 mod review;
 mod self_gate;
@@ -238,8 +243,12 @@ fn run_guard(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
 
 /// `assay decide-only guard` (#61 DO-10): exit 0 once the outputs are written (`prs` and
 /// `trigger`, or `prs=[]` alone), 1 for a refused event (an untrusted head, 0006), 2 when it
-/// cannot decide or write, or for a step not built yet.
+/// cannot decide or write, or for a step not built yet. `decide` runs as `run_redecide`.
 fn run_decide_only(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let mut args = args.peekable();
+    if args.next_if(|step| step == "decide").is_some() {
+        return run_redecide(args);
+    }
     let variables = decide_only_job::DecideOnlyVariables {
         run: run_variables(),
         event_name: env::var_os(guard_job::EVENT_NAME),
@@ -263,6 +272,24 @@ fn run_decide_only(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         }
         Err(error) => report(&error),
     }
+}
+
+/// `assay decide-only decide` (#61 DO-11): exit 0 once the re-decision's state (and, for a new
+/// decision, its bundle) and its outputs are written and its line printed; 2 when it refuses,
+/// cannot decide or cannot write, or a scratch directory is left behind. A refusal of the
+/// evidence, a reply and a silent outcome are states, not exit 2.
+fn run_redecide(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = redecide_job::RedecideVariables {
+        run: run_variables(),
+        output: env::var_os(decide_job::Variable::Output.name()),
+        pr: env::var_os(redecide_job::PR),
+        event_name: env::var_os(guard_job::EVENT_NAME),
+        event_path: env::var_os(guard_job::EVENT_PATH),
+        common: decide_variables(),
+        now: SystemTime::now(),
+    };
+    let ended = redecide_job::run(args, variables);
+    print_ended(ended.line, &ended.left)
 }
 
 /// `assay review --placeholder` (#60 ST-9): exit 0 once the outputs are written, 2 otherwise.

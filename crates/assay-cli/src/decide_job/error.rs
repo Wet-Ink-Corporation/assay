@@ -170,7 +170,7 @@ pub(crate) enum Common {
 
 impl Common {
     /// `job: `, what failed, and the cause chain.
-    fn write(&self, job: &'static str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    pub(crate) fn write(&self, job: &'static str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Variable { variable, problem } => variable.refusal(job, *problem).fmt(f),
             Self::Needs(source) => {

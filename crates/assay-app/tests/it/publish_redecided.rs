@@ -921,3 +921,42 @@ fn a_refusal_whose_claim_moved_under_the_lock_yields() -> Result<(), Box<dyn Err
     assert_eq!(world.app_check(NAME)?.output, None);
     Ok(())
 }
+
+#[test]
+fn a_refusal_s_key_is_recognised_over_its_own_evidence_and_repository_only()
+-> Result<(), Box<dyn Error>> {
+    let case = Case::plain()?;
+    let repo_id = decide_only_run(99)?.repo_id;
+    let evidence = &case.claim.evidence;
+    // Another pointer of its own, the claim's kept.
+    let other_evidence = assay_app::EvidencePointer {
+        run_id: NonZeroU64::MAX,
+        ..evidence.clone()
+    };
+    for refusal in [
+        RedecideRefusal::Forged,
+        RedecideRefusal::Absent(Absence::Expired),
+        RedecideRefusal::Absent(Absence::Missing),
+    ] {
+        let key: Sha256Digest =
+            refusal_key(&case, (case.target(99)?, refusal, &case.claim))?.parse()?;
+
+        assert!(
+            RedecideRefusal::keyed_over(repo_id, evidence, &key),
+            "{refusal:?}"
+        );
+        assert!(
+            !RedecideRefusal::keyed_over(repo_id, &other_evidence, &key),
+            "{refusal:?} over other evidence"
+        );
+        assert!(
+            !RedecideRefusal::keyed_over(NonZeroU64::MAX, evidence, &key),
+            "{refusal:?} in another repository"
+        );
+    }
+    assert!(
+        !RedecideRefusal::keyed_over(repo_id, evidence, &digest(CLAIMED)?),
+        "a decision key is no refusal's"
+    );
+    Ok(())
+}
