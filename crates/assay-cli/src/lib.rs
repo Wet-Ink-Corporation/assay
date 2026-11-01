@@ -27,6 +27,10 @@
 //! and writes its [`DecideState`] and, for an authenticated run, its bundle into an [`OutDir`],
 //! returning decide's outputs; [`run_publish`] publishes that state over the verdict check, the
 //! publish lock and the artifact store (`assay decide` and `assay publish`, #60 ST-14, D5 A).
+//! [`run_redecide`] decides one PR again from the evidence the ledger points at and writes its
+//! [`RedecideState`] and, for a new decision, its bundle into an [`OutDir`]; [`run_republish`]
+//! publishes that state over the publication register's claim, the publish lock and the
+//! decision bundle store (`assay decide-only decide` and `publish`, #61 DO-11, DO-12).
 
 mod admit;
 mod artifacts;
@@ -42,6 +46,7 @@ mod prior;
 mod publish;
 mod pull_request;
 mod redecide;
+mod republish;
 mod revisions;
 mod status;
 mod supervisor;
@@ -82,6 +87,10 @@ pub use redecide::{
     DefaultBranch, PayloadMismatch, RedecideJob, RedecideJobPorts, RedecideRunError,
     RedecideRunFailure, RedecideRunOutcome, RedecideState, RedecideStateFileError, Redecision,
     forgery_code, run_redecide,
+};
+pub use republish::{
+    RepublishJob, RepublishJobPorts, RepublishRun, RepublishRunError, RepublishRunFailure,
+    RepublishRunOutcome, run_republish,
 };
 pub use revisions::ForgeRevisions;
 pub use status::{

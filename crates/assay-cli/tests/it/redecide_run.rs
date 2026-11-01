@@ -1,10 +1,13 @@
 //! `run_redecide` (#61 DO-11) over fakes and a real evidence bundle: the fixture PR planned by
 //! `run_plan` and decided by the pipeline's `run_decide` with an opener push record, so the
 //! bundle decide-only reads is one assay wrote. `branches` holds the branches of the flow the
-//! review asked for (#61 DO-11 review round 1).
+//! review asked for (#61 DO-11 review round 1); `publish` publishes what a run wrote, as
+//! `decide-only publish` does (#61 DO-12).
 
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod branches;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod publish;
 
 use std::cell::RefCell;
 use std::error::Error;
