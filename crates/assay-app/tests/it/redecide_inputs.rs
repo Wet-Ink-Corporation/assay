@@ -55,8 +55,7 @@ fn an_approval_after_the_push_clock_turns_trust_path_unapproved_into_success()
             .reasons
             .iter()
             .any(|reason| reason.code == ReasonCode::TrustPathUnapproved),
-        "the evidence decision is trust-path-unapproved: {:?}",
-        recorded.reasons
+        "the evidence decision is trust-path-unapproved"
     );
     world.review(APPROVER, ReviewState::Approved, (HEAD_COMMIT, 5));
     let state = redecided(&world, &evidence, &lists())?;
