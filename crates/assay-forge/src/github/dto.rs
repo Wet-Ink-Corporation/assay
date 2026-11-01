@@ -59,6 +59,10 @@ pub(crate) struct CheckRunDto {
     pub(crate) external_id: Option<String>,
     pub(crate) status: String,
     pub(crate) conclusion: Option<String>,
+    /// `null` until the check completes. Absent reads as `null` too, so only a reader that
+    /// needs it (the decide-only poll) refuses a completed check without one.
+    #[serde(default)]
+    pub(crate) completed_at: Option<String>,
     pub(crate) output: OutputDto,
     pub(crate) app: Option<AppDto>,
     pub(crate) html_url: Option<String>,

@@ -61,6 +61,23 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
         name: &CheckName,
         deadline: Option<Deadline>,
     ) -> Result<Option<CheckRun>, ForgeError<T::Error>> {
+        self.app_check(head, name, deadline)?
+            .map(|check| self.own_check(Operation::ListChecks, check))
+            .transpose()
+    }
+
+    /// The App's check named `name` on `head` as GitHub lists it, found by app id only.
+    /// Nothing is sent that would not end before `deadline`, when there is one.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError::Ambiguous`] when the App has two; the listing's errors.
+    pub(crate) fn app_check(
+        &self,
+        head: &CommitId,
+        name: &CheckName,
+        deadline: Option<Deadline>,
+    ) -> Result<Option<CheckRunDto>, ForgeError<T::Error>> {
         let operation = Operation::ListChecks;
         let mut found = None;
         let path = self.checks_path(head, Some(name))?;
@@ -78,7 +95,7 @@ impl<T: Transport, S: Sleep> GitHub<T, S> {
             if found.is_some() {
                 return Err(ForgeError::Ambiguous { operation });
             }
-            found = Some(self.own_check(operation, check)?);
+            found = Some(check);
         }
         Ok(found)
     }
