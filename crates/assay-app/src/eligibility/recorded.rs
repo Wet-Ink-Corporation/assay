@@ -18,7 +18,7 @@ use super::commands::{VoidCause, recorded_command};
 use super::rule::{Ineligible, RangeFacts};
 use super::state::CommitRange;
 use super::timestamp::Timestamp;
-use crate::config::{CommitId, EligibilityLists, RecordedLists, Sha256Digest};
+use crate::config::{CommitId, EligibilityLists, RecordedFrom, RecordedLists, Sha256Digest};
 use crate::status::UserId;
 
 #[cfg(test)]
@@ -112,9 +112,21 @@ pub struct RecordedState {
 }
 
 impl RecordedState {
-    /// `github` read strictly; `None` when it is not a record assay writes.
+    /// `github` of an `assay.run-inputs/1` bundle read strictly; `None` when it is not a record
+    /// assay writes.
     pub(crate) fn read(github: &Value) -> Option<Self> {
-        StateRecordIn::deserialize(github).ok()?.recorded()
+        StateRecordIn::deserialize(github)
+            .ok()?
+            .recorded(RecordedFrom::Base)
+    }
+
+    /// `github` of an `assay.run-decision/1` bundle read strictly: as [`Self::read`], with the
+    /// lists decide-only narrowed to the base tip's (R3-26), so up to 128 maintainers and
+    /// agents.
+    pub(crate) fn read_narrowed(github: &Value) -> Option<Self> {
+        StateRecordIn::deserialize(github)
+            .ok()?
+            .recorded(RecordedFrom::Narrowed)
     }
 
     /// The lists the evidence run judged by: base `.assay/owners` and `.assay/agents` at its
@@ -164,8 +176,9 @@ impl StateRecordIn {
         &self.head_sha
     }
 
-    /// The facts of the record, when every part of it is one the writer writes.
-    fn recorded(self) -> Option<RecordedState> {
+    /// The facts of the record, when every part of it is one the writer writes for lists
+    /// `from` there.
+    fn recorded(self, from: RecordedFrom) -> Option<RecordedState> {
         let clock = match self.push_clock.as_deref() {
             None => None,
             Some(text) => Some(text.parse().ok()?),
@@ -191,7 +204,7 @@ impl StateRecordIn {
             RangeIn::NeedsSplit => RangeFacts::TooLarge,
         };
         Some(RecordedState {
-            lists: EligibilityLists::recorded(self.lists).ok()?,
+            lists: EligibilityLists::recorded(self.lists, from).ok()?,
             author: UserId(self.author),
             head: self.head_sha.parse().ok()?,
             range,

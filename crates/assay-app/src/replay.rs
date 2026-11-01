@@ -436,9 +436,23 @@ pub(crate) fn recompute(
     bundle: &Bundle,
     rubric: &Rubric,
 ) -> Result<Result<Decision, DecisionDiff>, serde_json::Error> {
-    let decision = decide(rubric, &bundle.inputs);
+    recompute_recorded(&bundle.inputs, &bundle.decision, rubric)
+}
+
+/// The decision `inputs` give under `rubric`, when it is `recorded` in canonical encoding;
+/// otherwise where the two first differ. One rule for both bundle contracts.
+///
+/// # Errors
+///
+/// A decision could not be encoded: a defect in `decide`'s types.
+pub(crate) fn recompute_recorded(
+    inputs: &DecisionInputs,
+    recorded: &Value,
+    rubric: &Rubric,
+) -> Result<Result<Decision, DecisionDiff>, serde_json::Error> {
+    let decision = decide(rubric, inputs);
     let replayed = serde_json::to_value(&decision)?;
-    Ok(match diff::first_difference(&bundle.decision, &replayed)? {
+    Ok(match diff::first_difference(recorded, &replayed)? {
         Some(diff) => Err(diff),
         None => Ok(decision),
     })

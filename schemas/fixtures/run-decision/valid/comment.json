@@ -1,0 +1,304 @@
+{
+  "schema": "assay.run-decision/1",
+  "run_uid": {
+    "repo_id": 840213377,
+    "run_id": 99,
+    "run_attempt": 1
+  },
+  "evidence": {
+    "run_id": 7,
+    "run_attempt": 1,
+    "sha256": "sha256:b20e3f80bce14eaff1c35f61ad94b783a0c0a1cc509c2f842f68baa453841c73"
+  },
+  "trigger": {
+    "event": "comment",
+    "comment_id": 72,
+    "actor_id": 1001
+  },
+  "inputs": {
+    "decision_key": "sha256:c148957b82dbfe50f8cab2efe2c6e6319232245617cc328603749be933eb1b22",
+    "evidence_key": "sha256:ed30d0fb61bccd95c8a99a7386a7112c4e386c7c4f5576a336efcce56655b35f",
+    "policy": {
+      "protected_bases": [
+        "main"
+      ],
+      "llm_blockers": "advisory",
+      "llm_majors": "advisory",
+      "on_infra_failure": "warn",
+      "block_on_infra_for": [
+        "trust-path",
+        "exec-surface"
+      ]
+    },
+    "pr": {
+      "base_ref": "main",
+      "open_prs_on_head": 1,
+      "tier": "micro",
+      "classes": [],
+      "owner_approval": "not-approved",
+      "authorship": "other",
+      "readiness": "ready",
+      "requeues": 0
+    },
+    "gates": [
+      {
+        "name": "temper",
+        "required": true,
+        "outcome": {
+          "status": "ran",
+          "conclusion": "fail",
+          "steps": "unknown"
+        },
+        "findings": [
+          {
+            "fp": "950d3571ed850237",
+            "rule": "raised",
+            "severity": "blocker"
+          }
+        ]
+      },
+      {
+        "name": "temper",
+        "required": true,
+        "outcome": {
+          "status": "ran",
+          "conclusion": "pass",
+          "steps": "unknown"
+        },
+        "findings": []
+      },
+      {
+        "name": "custom-lint",
+        "required": false,
+        "outcome": {
+          "status": "ran",
+          "conclusion": "pass",
+          "steps": "unknown"
+        },
+        "findings": []
+      }
+    ],
+    "weigh_in": "not-required",
+    "llm": {
+      "status": "completed"
+    },
+    "findings": [],
+    "dispositions": [],
+    "completed_roles": [
+      "combined-micro"
+    ],
+    "coordinator": {
+      "status": "not-needed"
+    },
+    "verifier": {
+      "status": "not-needed"
+    },
+    "degraded": [],
+    "waivers": [
+      {
+        "fp": "950d3571ed850237",
+        "by": "approver"
+      }
+    ],
+    "override_record": {
+      "scope": "all",
+      "reasons_digest": "sha256:edfab635b96543711e1a2662a111f30252334d5a72e82c9d11bb62e35ad7e231",
+      "by": "break-glass"
+    }
+  },
+  "rubric_version": "1",
+  "decision": {
+    "schema": "assay.decision/1",
+    "decision_key": "sha256:c148957b82dbfe50f8cab2efe2c6e6319232245617cc328603749be933eb1b22",
+    "evidence_key": "sha256:ed30d0fb61bccd95c8a99a7386a7112c4e386c7c4f5576a336efcce56655b35f",
+    "conclusion": "neutral",
+    "reasons": [
+      {
+        "code": "gate-failed",
+        "detail": "temper"
+      },
+      {
+        "code": "override",
+        "detail": "all"
+      }
+    ],
+    "counts": {
+      "blocker": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    "advisory_blockers": [],
+    "dispositions": [
+      {
+        "fp": "950d3571ed850237",
+        "code": "waived-by-owner"
+      }
+    ],
+    "waived": [
+      {
+        "fp": "950d3571ed850237",
+        "by": "approver"
+      }
+    ],
+    "degraded": [],
+    "rubric_version": "1",
+    "inputs_digest": "sha256:c49f2efccf2e04d09b4608c49c86ae10d18c412f7a3fcd0bef1ce0cde41ba06b"
+  },
+  "events": [
+    {
+      "schema": "assay.event/1",
+      "job": "redecide",
+      "idx": 0,
+      "ts": "2026-11-01T10:00:00Z",
+      "run_key": "sha256:ed30d0fb61bccd95c8a99a7386a7112c4e386c7c4f5576a336efcce56655b35f",
+      "run_uid": {
+        "repo_id": 840213377,
+        "run_id": 99,
+        "run_attempt": 1
+      },
+      "stage": "S7",
+      "kind": "CommandRecorded",
+      "data": {
+        "command": "override",
+        "actor_id": 1001,
+        "comment_id": 72
+      }
+    },
+    {
+      "schema": "assay.event/1",
+      "job": "redecide",
+      "idx": 1,
+      "ts": "2026-11-01T10:00:00Z",
+      "run_key": "sha256:ed30d0fb61bccd95c8a99a7386a7112c4e386c7c4f5576a336efcce56655b35f",
+      "run_uid": {
+        "repo_id": 840213377,
+        "run_id": 99,
+        "run_attempt": 1
+      },
+      "stage": "S7",
+      "kind": "CommandVoided",
+      "data": {
+        "comment_id": 70,
+        "reason": "deleted"
+      }
+    },
+    {
+      "schema": "assay.event/1",
+      "job": "redecide",
+      "idx": 2,
+      "ts": "2026-11-01T10:00:00Z",
+      "run_key": "sha256:ed30d0fb61bccd95c8a99a7386a7112c4e386c7c4f5576a336efcce56655b35f",
+      "run_uid": {
+        "repo_id": 840213377,
+        "run_id": 99,
+        "run_attempt": 1
+      },
+      "stage": "S7",
+      "kind": "WaiverApplied",
+      "data": {
+        "who": "approver",
+        "fp": "950d3571ed850237"
+      }
+    },
+    {
+      "schema": "assay.event/1",
+      "job": "redecide",
+      "idx": 3,
+      "ts": "2026-11-01T10:00:00Z",
+      "run_key": "sha256:ed30d0fb61bccd95c8a99a7386a7112c4e386c7c4f5576a336efcce56655b35f",
+      "run_uid": {
+        "repo_id": 840213377,
+        "run_id": 99,
+        "run_attempt": 1
+      },
+      "stage": "S7",
+      "kind": "OverrideApplied",
+      "data": {
+        "who": "break-glass",
+        "reason": "the runner is down"
+      }
+    }
+  ],
+  "github": {
+    "lists": {
+      "owners": [
+        {
+          "id": 1001,
+          "login": "break-glass"
+        }
+      ],
+      "approvers": [
+        {
+          "id": 1002,
+          "login": "approver"
+        }
+      ],
+      "maintainers": [
+        {
+          "id": 124330161,
+          "login": "Ryan-Britton"
+        }
+      ],
+      "agents": [
+        {
+          "id": 124330161,
+          "login": "Ryan-Britton"
+        }
+      ]
+    },
+    "author": 2000,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "range": {
+      "status": "within",
+      "users": [
+        2000
+      ],
+      "unattributed": false
+    },
+    "pushers": [],
+    "push_clock": "2026-10-13T09:00:00Z",
+    "approvals": [],
+    "commands": [
+      {
+        "comment_id": 70,
+        "actor_id": 1002,
+        "created_at": "2026-10-13T09:03:00Z",
+        "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "body_sha256": "sha256:d6a9b7b792f17ccd254686917a3befdd3fe8ec249fb19774d1eb2a57295ab0c6",
+        "command": "waive",
+        "args": [
+          "fedcba9876543210"
+        ],
+        "status": "void",
+        "reason": "deleted"
+      },
+      {
+        "comment_id": 71,
+        "actor_id": 1002,
+        "created_at": "2026-10-13T09:04:00Z",
+        "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "body_sha256": "sha256:35449b2923fd56e453b72f10babe1d5ea72cc61a9301f24af029fe6972a013cf",
+        "command": "waive",
+        "args": [
+          "950d3571ed850237"
+        ],
+        "status": "valid"
+      },
+      {
+        "comment_id": 72,
+        "actor_id": 1001,
+        "created_at": "2026-10-13T09:05:00Z",
+        "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "body_sha256": "sha256:caa551a8fe85bce2a840fce2d32b7c288dce2051e210cd49aa1378d96a221b3e",
+        "command": "override",
+        "args": [
+          "all",
+          "sha256:edfab635b96543711e1a2662a111f30252334d5a72e82c9d11bb62e35ad7e231",
+          "the runner is down"
+        ],
+        "status": "valid"
+      }
+    ]
+  }
+}

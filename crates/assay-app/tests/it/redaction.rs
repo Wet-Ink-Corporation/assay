@@ -193,6 +193,7 @@ fn schema_stem(contract: Contract) -> &'static str {
         Contract::Decision => "decision-1",
         Contract::Event => "event-1",
         Contract::Status => "status-1",
+        Contract::RunDecision => "run-decision-1",
     }
 }
 

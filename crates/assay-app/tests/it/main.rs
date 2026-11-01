@@ -105,6 +105,9 @@ mod reconcile_fakes;
 mod reconcile_ledger;
 mod redaction;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod redecide_bundle;
+mod redecide_bundle_read;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod redecide_evidence;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod redecide_fakes;

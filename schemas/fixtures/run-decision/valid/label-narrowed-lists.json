@@ -1,0 +1,411 @@
+{
+  "schema": "assay.run-decision/1",
+  "run_uid": {
+    "repo_id": 840213377,
+    "run_id": 99,
+    "run_attempt": 1
+  },
+  "evidence": {
+    "run_id": 7,
+    "run_attempt": 1,
+    "sha256": "sha256:6212dc51fa2044d3b30ccb50c325e7afd4040083bfa9e4ddb74700c1d35fdcf2"
+  },
+  "trigger": {
+    "event": "label",
+    "actor_id": 1002
+  },
+  "inputs": {
+    "decision_key": "sha256:44af6bfc4320e4f9f8f473d0ce72bbf32f8310bd4a0743474d52c5e987da0fae",
+    "evidence_key": "sha256:ed30d0fb61bccd95c8a99a7386a7112c4e386c7c4f5576a336efcce56655b35f",
+    "policy": {
+      "protected_bases": [
+        "main"
+      ],
+      "llm_blockers": "advisory",
+      "llm_majors": "advisory",
+      "on_infra_failure": "warn",
+      "block_on_infra_for": [
+        "trust-path",
+        "exec-surface"
+      ]
+    },
+    "pr": {
+      "base_ref": "main",
+      "open_prs_on_head": 1,
+      "tier": "micro",
+      "classes": [],
+      "owner_approval": "not-approved",
+      "authorship": "other",
+      "readiness": "ready",
+      "requeues": 0
+    },
+    "gates": [
+      {
+        "name": "temper",
+        "required": true,
+        "outcome": {
+          "status": "ran",
+          "conclusion": "pass",
+          "steps": "unknown"
+        },
+        "findings": []
+      },
+      {
+        "name": "temper",
+        "required": true,
+        "outcome": {
+          "status": "ran",
+          "conclusion": "pass",
+          "steps": "unknown"
+        },
+        "findings": []
+      },
+      {
+        "name": "custom-lint",
+        "required": false,
+        "outcome": {
+          "status": "ran",
+          "conclusion": "pass",
+          "steps": "unknown"
+        },
+        "findings": []
+      }
+    ],
+    "weigh_in": "not-required",
+    "llm": {
+      "status": "completed"
+    },
+    "findings": [],
+    "dispositions": [],
+    "completed_roles": [
+      "combined-micro"
+    ],
+    "coordinator": {
+      "status": "not-needed"
+    },
+    "verifier": {
+      "status": "not-needed"
+    },
+    "degraded": [],
+    "waivers": [],
+    "override_record": null
+  },
+  "rubric_version": "1",
+  "decision": {
+    "schema": "assay.decision/1",
+    "decision_key": "sha256:44af6bfc4320e4f9f8f473d0ce72bbf32f8310bd4a0743474d52c5e987da0fae",
+    "evidence_key": "sha256:ed30d0fb61bccd95c8a99a7386a7112c4e386c7c4f5576a336efcce56655b35f",
+    "conclusion": "success",
+    "reasons": [],
+    "counts": {
+      "blocker": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    "advisory_blockers": [],
+    "dispositions": [],
+    "waived": [],
+    "degraded": [],
+    "rubric_version": "1",
+    "inputs_digest": "sha256:091e3dca01107ef8a3ef7f8470e9cfcb126d4f689a73f9e87ca93adf6efe2e93"
+  },
+  "events": [],
+  "github": {
+    "lists": {
+      "owners": [
+        {
+          "id": 1001,
+          "login": "break-glass"
+        }
+      ],
+      "approvers": [
+        {
+          "id": 1002,
+          "login": "approver"
+        }
+      ],
+      "maintainers": [
+        {
+          "id": 5000,
+          "login": "m0"
+        },
+        {
+          "id": 5001,
+          "login": "m1"
+        },
+        {
+          "id": 5002,
+          "login": "m2"
+        },
+        {
+          "id": 5003,
+          "login": "m3"
+        },
+        {
+          "id": 5004,
+          "login": "m4"
+        },
+        {
+          "id": 5005,
+          "login": "m5"
+        },
+        {
+          "id": 5006,
+          "login": "m6"
+        },
+        {
+          "id": 5007,
+          "login": "m7"
+        },
+        {
+          "id": 5008,
+          "login": "m8"
+        },
+        {
+          "id": 5009,
+          "login": "m9"
+        },
+        {
+          "id": 5010,
+          "login": "m10"
+        },
+        {
+          "id": 5011,
+          "login": "m11"
+        },
+        {
+          "id": 5012,
+          "login": "m12"
+        },
+        {
+          "id": 5013,
+          "login": "m13"
+        },
+        {
+          "id": 5014,
+          "login": "m14"
+        },
+        {
+          "id": 5015,
+          "login": "m15"
+        },
+        {
+          "id": 5016,
+          "login": "m16"
+        },
+        {
+          "id": 5017,
+          "login": "m17"
+        },
+        {
+          "id": 5018,
+          "login": "m18"
+        },
+        {
+          "id": 5019,
+          "login": "m19"
+        },
+        {
+          "id": 5020,
+          "login": "m20"
+        },
+        {
+          "id": 5021,
+          "login": "m21"
+        },
+        {
+          "id": 5022,
+          "login": "m22"
+        },
+        {
+          "id": 5023,
+          "login": "m23"
+        },
+        {
+          "id": 5024,
+          "login": "m24"
+        },
+        {
+          "id": 5025,
+          "login": "m25"
+        },
+        {
+          "id": 5026,
+          "login": "m26"
+        },
+        {
+          "id": 5027,
+          "login": "m27"
+        },
+        {
+          "id": 5028,
+          "login": "m28"
+        },
+        {
+          "id": 5029,
+          "login": "m29"
+        },
+        {
+          "id": 5030,
+          "login": "m30"
+        },
+        {
+          "id": 5031,
+          "login": "m31"
+        },
+        {
+          "id": 5032,
+          "login": "m32"
+        },
+        {
+          "id": 5033,
+          "login": "m33"
+        },
+        {
+          "id": 5034,
+          "login": "m34"
+        },
+        {
+          "id": 5035,
+          "login": "m35"
+        },
+        {
+          "id": 5036,
+          "login": "m36"
+        },
+        {
+          "id": 5037,
+          "login": "m37"
+        },
+        {
+          "id": 5038,
+          "login": "m38"
+        },
+        {
+          "id": 5039,
+          "login": "m39"
+        },
+        {
+          "id": 5040,
+          "login": "m40"
+        },
+        {
+          "id": 5041,
+          "login": "m41"
+        },
+        {
+          "id": 5042,
+          "login": "m42"
+        },
+        {
+          "id": 5043,
+          "login": "m43"
+        },
+        {
+          "id": 5044,
+          "login": "m44"
+        },
+        {
+          "id": 5045,
+          "login": "m45"
+        },
+        {
+          "id": 5046,
+          "login": "m46"
+        },
+        {
+          "id": 5047,
+          "login": "m47"
+        },
+        {
+          "id": 5048,
+          "login": "m48"
+        },
+        {
+          "id": 5049,
+          "login": "m49"
+        },
+        {
+          "id": 5050,
+          "login": "m50"
+        },
+        {
+          "id": 5051,
+          "login": "m51"
+        },
+        {
+          "id": 5052,
+          "login": "m52"
+        },
+        {
+          "id": 5053,
+          "login": "m53"
+        },
+        {
+          "id": 5054,
+          "login": "m54"
+        },
+        {
+          "id": 5055,
+          "login": "m55"
+        },
+        {
+          "id": 5056,
+          "login": "m56"
+        },
+        {
+          "id": 5057,
+          "login": "m57"
+        },
+        {
+          "id": 5058,
+          "login": "m58"
+        },
+        {
+          "id": 5059,
+          "login": "m59"
+        },
+        {
+          "id": 5060,
+          "login": "m60"
+        },
+        {
+          "id": 5061,
+          "login": "m61"
+        },
+        {
+          "id": 5062,
+          "login": "m62"
+        },
+        {
+          "id": 5063,
+          "login": "m63"
+        },
+        {
+          "id": 124330161,
+          "login": "Ryan-Britton"
+        }
+      ],
+      "agents": [
+        {
+          "id": 124330161,
+          "login": "Ryan-Britton"
+        }
+      ]
+    },
+    "author": 2000,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "range": {
+      "status": "within",
+      "users": [
+        2000
+      ],
+      "unattributed": false
+    },
+    "pushers": [],
+    "push_clock": "2026-10-13T09:00:00Z",
+    "approvals": [],
+    "commands": []
+  }
+}

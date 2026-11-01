@@ -1,0 +1,36 @@
+{
+  "schema": "assay.run-decision/1",
+  "run_uid": {
+    "repo_id": 42,
+    "run_id": 99,
+    "run_attempt": 1
+  },
+  "trigger": {
+    "event": "schedule"
+  },
+  "inputs": {},
+  "rubric_version": "1",
+  "decision": {},
+  "events": [],
+  "github": {
+    "lists": {
+      "owners": [],
+      "approvers": [],
+      "maintainers": [],
+      "agents": []
+    },
+    "author": 2000,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "range": {
+      "status": "within",
+      "users": [
+        2000
+      ],
+      "unattributed": false
+    },
+    "pushers": [],
+    "push_clock": null,
+    "approvals": [],
+    "commands": []
+  }
+}

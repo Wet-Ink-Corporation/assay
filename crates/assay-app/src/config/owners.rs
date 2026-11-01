@@ -20,6 +20,19 @@ use crate::status::UserId;
 /// The most identities one list may hold (H-13).
 pub const MAX_LIST_ENTRIES: usize = 64;
 
+/// The most maintainers or agents a narrowed snapshot records: [`EligibilityLists::narrowed_to`]
+/// unites the base's and the tip's, each at most [`MAX_LIST_ENTRIES`].
+pub(crate) const MAX_NARROWED_LIST_ENTRIES: usize = 128;
+
+/// Which lists a bundle's snapshot recorded, and so how many identities each may hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecordedFrom {
+    /// The base's lists as [`EligibilityLists::parse`] read them (`assay.run-inputs/1`).
+    Base,
+    /// The base's lists narrowed to the protected base's tip (`assay.run-decision/1`, R3-26).
+    Narrowed,
+}
+
 /// The largest `.assay/owners` or `.assay/agents` read, in bytes (H-13).
 pub const MAX_LISTS_BYTES: usize = 64 << 10;
 
@@ -209,13 +222,19 @@ impl EligibilityLists {
 
     /// The lists a bundle's GitHub snapshot records (`github.lists`), held to every rule of
     /// [`Self::parse`]: the snapshot's lists were read by it, so a record it would refuse is
-    /// not one assay wrote (wi-b5affa).
-    pub(crate) fn recorded(lists: RecordedLists) -> Result<Self, ListsError> {
+    /// not one assay wrote (wi-b5affa). Lists `from` [`RecordedFrom::Narrowed`] may hold
+    /// [`MAX_NARROWED_LIST_ENTRIES`] maintainers and agents, as [`Self::narrowed_to`] unites
+    /// two files' lists there.
+    pub(crate) fn recorded(lists: RecordedLists, from: RecordedFrom) -> Result<Self, ListsError> {
+        let united = match from {
+            RecordedFrom::Base => MAX_LIST_ENTRIES,
+            RecordedFrom::Narrowed => MAX_NARROWED_LIST_ENTRIES,
+        };
         Self {
-            owners: identities(ListName::Owners, lists.owners)?,
-            approvers: identities(ListName::Approvers, lists.approvers)?,
-            maintainers: identities(ListName::Maintainers, lists.maintainers)?,
-            agents: identities(ListName::Agents, lists.agents)?,
+            owners: identities(ListName::Owners, lists.owners, MAX_LIST_ENTRIES)?,
+            approvers: identities(ListName::Approvers, lists.approvers, MAX_LIST_ENTRIES)?,
+            maintainers: identities(ListName::Maintainers, lists.maintainers, united)?,
+            agents: identities(ListName::Agents, lists.agents, united)?,
         }
         .disjoint()?
         .judged()
@@ -256,13 +275,14 @@ impl EligibilityLists {
         let mut lists = Self::default();
         if let Some(text) = owners {
             let dto: OwnersDto = read(ListFile::Owners, text)?;
-            lists.owners = identities(ListName::Owners, dto.owners)?;
-            lists.approvers = identities(ListName::Approvers, dto.approvers)?;
-            lists.maintainers = identities(ListName::Maintainers, dto.maintainers)?;
+            lists.owners = identities(ListName::Owners, dto.owners, MAX_LIST_ENTRIES)?;
+            lists.approvers = identities(ListName::Approvers, dto.approvers, MAX_LIST_ENTRIES)?;
+            lists.maintainers =
+                identities(ListName::Maintainers, dto.maintainers, MAX_LIST_ENTRIES)?;
         }
         if let Some(text) = agents {
             let dto: AgentsDto = read(ListFile::Agents, text)?;
-            lists.agents = identities(ListName::Agents, dto.agents)?;
+            lists.agents = identities(ListName::Agents, dto.agents, MAX_LIST_ENTRIES)?;
         }
         lists.disjoint()
     }
@@ -348,9 +368,13 @@ fn read<T: serde::de::DeserializeOwned>(file: ListFile, text: &str) -> Result<T,
     })
 }
 
-/// One list's entries, validated and sorted by id.
-fn identities(list: ListName, entries: Vec<IdentityDto>) -> Result<Vec<Identity>, ListsError> {
-    if entries.len() > MAX_LIST_ENTRIES {
+/// One list's entries, at most `cap`, validated and sorted by id.
+fn identities(
+    list: ListName,
+    entries: Vec<IdentityDto>,
+    cap: usize,
+) -> Result<Vec<Identity>, ListsError> {
+    if entries.len() > cap {
         return Err(ListsError::TooMany { list });
     }
     let mut seen = BTreeSet::new();

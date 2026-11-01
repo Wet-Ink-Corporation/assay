@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:assay:schema:run-decision:1",
+  "title": "assay.run-decision/1",
+  "description": "The decision bundle decide-only persists as `run-decision.json` in its artifact `assay-decision-<pr>-<nonce>`, one per PR it re-decides, the one the decision pointer's sha256 names (docs/architecture/02-architecture.md §5, 03-contracts.md §6e, #61 D5): the evidence pointer it was decided from, what triggered it, the decision inputs, the rubric version, the decision, its events and its GitHub state snapshot. At most 8 MiB. Unknown fields are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_uid", "evidence", "trigger", "inputs", "rubric_version", "decision", "events", "github"],
+  "properties": {
+    "schema": { "const": "assay.run-decision/1" },
+    "run_uid": {
+      "description": "The decide-only workflow run that re-decided, (repo_id, run_id, run_attempt) (03 §4); attempt 1 only (R3-05).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_id", "run_id", "run_attempt"],
+      "properties": {
+        "repo_id": { "$ref": "#/$defs/positiveId" },
+        "run_id": { "$ref": "#/$defs/positiveId" },
+        "run_attempt": { "const": 1 }
+      }
+    },
+    "evidence": {
+      "description": "The evidence pointer (`assay.ledger-state/1` `evidence`, R3-08) whose `assay.run-inputs/1` bundle the decision was re-decided from, so replay follows the decision to its evidence (J10).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "run_attempt", "sha256"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/positiveId" },
+        "run_attempt": { "const": 1 },
+        "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "trigger": {
+      "description": "What started the re-decision: an `issue_comment` (`comment`, with the comment and its author), an `assay:*` label change (`label`, with its sender) or the hourly poll (`schedule`).",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["event", "comment_id", "actor_id"],
+          "properties": {
+            "event": { "const": "comment" },
+            "comment_id": { "$ref": "#/$defs/positiveId" },
+            "actor_id": { "$ref": "#/$defs/userId" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["event", "actor_id"],
+          "properties": {
+            "event": { "const": "label" },
+            "actor_id": { "$ref": "#/$defs/userId" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["event"],
+          "properties": { "event": { "const": "schedule" } }
+        }
+      ]
+    },
+    "inputs": {
+      "description": "The domain's DecisionInputs exactly as decided: the evidence bundle's, with what the snapshot decides recomputed (validated by the domain's serde types on read).",
+      "type": "object"
+    },
+    "rubric_version": { "$ref": "#/$defs/nonEmpty" },
+    "decision": {
+      "description": "The decision, an assay.decision/1 document (validated against its own schema on read).",
+      "type": "object"
+    },
+    "events": {
+      "description": "The re-decision's events (assay.event/1) of job `redecide`, in order: the triggering comment's `CommandRecorded` or `CommandRejected`, one `CommandVoided` per void command record, one `WaiverApplied` per waiver the decision applied, then `OverrideApplied`.",
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "required": ["job", "kind"],
+        "properties": {
+          "job": { "const": "redecide" },
+          "kind": { "enum": ["CommandRecorded", "CommandRejected", "CommandVoided", "WaiverApplied", "OverrideApplied"] }
+        }
+      }
+    },
+    "github": {
+      "description": "decide-only's GitHub state snapshot the decision's `inputs` were built from (04-pipeline.md §5 and §6, #61 D3): the eligibility lists judged by, narrowed by the protected base's tip (R3-26: `owners` and `approvers` those of both base and tip, so at most 64; `maintainers` and `agents` those of either, so at most 128), the PR author and head, what the git range and the push records said, the push clock, every reviewer's standing approval of the head and every command record with what this decision made of it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lists", "author", "head_sha", "range", "pushers", "push_clock", "approvals", "commands"],
+      "properties": {
+        "lists": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["owners", "approvers", "maintainers", "agents"],
+          "properties": {
+            "owners": { "$ref": "#/$defs/identities" },
+            "approvers": { "$ref": "#/$defs/identities" },
+            "maintainers": { "$ref": "#/$defs/narrowedIdentities" },
+            "agents": { "$ref": "#/$defs/narrowedIdentities" }
+          }
+        },
+        "author": { "$ref": "#/$defs/userId" },
+        "head_sha": { "$ref": "#/$defs/commit" },
+        "range": {
+          "description": "Rule (b): `within` (at most 250 commits) with the GitHub users who authored (git author only) or committed a counted commit, clean merges from base apart, and whether a counted commit is attributed to no GitHub user; or `needs-split`.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "users", "unattributed"],
+              "properties": {
+                "status": { "const": "within" },
+                "users": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/userId" } },
+                "unattributed": { "type": "boolean" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status"],
+              "properties": { "status": { "const": "needs-split" } }
+            }
+          ]
+        },
+        "pushers": {
+          "description": "Rule (c): the senders of push records for the PR, clean merges from base apart.",
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/userId" }
+        },
+        "push_clock": {
+          "description": "The `at` of the latest push record whose `after` is the head; null when none names it.",
+          "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+        },
+        "approvals": {
+          "description": "Each reviewer's latest review of the head that is not a comment, when it is an approval, and whether it counted.",
+          "type": "array",
+          "maxItems": 3000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["review", "reviewer", "submitted_at", "status"],
+            "properties": {
+              "review": { "$ref": "#/$defs/positiveId" },
+              "reviewer": { "$ref": "#/$defs/userId" },
+              "submitted_at": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+              "status": { "enum": ["counted", "before-push", "no-push-clock", "unsubmitted", "ineligible"] },
+              "reason": { "$ref": "#/$defs/ineligible" }
+            },
+            "if": { "properties": { "status": { "const": "ineligible" } } },
+            "then": { "required": ["reason"] },
+            "else": { "not": { "required": ["reason"] } }
+          }
+        },
+        "commands": {
+          "description": "Every command record of the PR (`commands/<repo_id>/<pr>.jsonl`), with its status: `void` (and why) when its comment no longer stands, else whether it applies to this head.",
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["comment_id", "actor_id", "created_at", "head_sha", "body_sha256", "command", "args", "status"],
+            "properties": {
+              "comment_id": { "$ref": "#/$defs/positiveId" },
+              "actor_id": { "$ref": "#/$defs/userId" },
+              "created_at": { "$ref": "#/$defs/timestamp" },
+              "head_sha": { "$ref": "#/$defs/commit" },
+              "body_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+              "command": { "enum": ["recheck", "waive", "override", "dismiss", "retry", "weigh-in-ack"] },
+              "args": { "type": "array", "maxItems": 3, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },
+              "status": { "enum": ["valid", "void", "other-head", "ineligible", "before-push-clock"] },
+              "reason": {
+                "anyOf": [{ "enum": ["deleted", "edited", "hash", "author", "app"] }, { "$ref": "#/$defs/ineligible" }]
+              }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "status": { "const": "void" } } },
+                "then": {
+                  "required": ["reason"],
+                  "properties": { "reason": { "enum": ["deleted", "edited", "hash", "author", "app"] } }
+                }
+              },
+              {
+                "if": { "properties": { "status": { "const": "ineligible" } } },
+                "then": { "required": ["reason"], "properties": { "reason": { "$ref": "#/$defs/ineligible" } } }
+              },
+              {
+                "if": { "properties": { "status": { "enum": ["valid", "other-head", "before-push-clock"] } } },
+                "then": { "not": { "required": ["reason"] } }
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "userId": { "description": "A positive numeric GitHub user id.", "type": "integer", "minimum": 1 },
+    "positiveId": { "description": "A positive numeric GitHub object id (a run, a review or a comment).", "type": "integer", "minimum": 1 },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "login"],
+      "properties": {
+        "id": { "$ref": "#/$defs/userId" },
+        "login": { "type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$" }
+      }
+    },
+    "identities": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/identity" } },
+    "narrowedIdentities": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/identity" } },
+    "ineligible": {
+      "enum": ["not-privileged", "maintainer", "agent", "author", "in-range", "pusher", "unattributed-range", "range-too-large"]
+    },
+    "nonEmpty": { "type": "string", "minLength": 1 }
+  }
+}

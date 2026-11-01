@@ -1,0 +1,302 @@
+{
+  "schema": "assay.run-decision/1",
+  "run_uid": {
+    "repo_id": 42,
+    "run_id": 99,
+    "run_attempt": 1
+  },
+  "evidence": {
+    "run_id": 7,
+    "run_attempt": 1,
+    "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "trigger": {
+    "event": "schedule"
+  },
+  "inputs": {},
+  "rubric_version": "1",
+  "decision": {},
+  "events": [],
+  "github": {
+    "lists": {
+      "owners": [
+        {
+          "id": 6000,
+          "login": "o00"
+        },
+        {
+          "id": 6001,
+          "login": "o01"
+        },
+        {
+          "id": 6002,
+          "login": "o02"
+        },
+        {
+          "id": 6003,
+          "login": "o03"
+        },
+        {
+          "id": 6004,
+          "login": "o04"
+        },
+        {
+          "id": 6005,
+          "login": "o05"
+        },
+        {
+          "id": 6006,
+          "login": "o06"
+        },
+        {
+          "id": 6007,
+          "login": "o07"
+        },
+        {
+          "id": 6008,
+          "login": "o08"
+        },
+        {
+          "id": 6009,
+          "login": "o09"
+        },
+        {
+          "id": 6010,
+          "login": "o0a"
+        },
+        {
+          "id": 6011,
+          "login": "o0b"
+        },
+        {
+          "id": 6012,
+          "login": "o0c"
+        },
+        {
+          "id": 6013,
+          "login": "o0d"
+        },
+        {
+          "id": 6014,
+          "login": "o0e"
+        },
+        {
+          "id": 6015,
+          "login": "o0f"
+        },
+        {
+          "id": 6016,
+          "login": "o10"
+        },
+        {
+          "id": 6017,
+          "login": "o11"
+        },
+        {
+          "id": 6018,
+          "login": "o12"
+        },
+        {
+          "id": 6019,
+          "login": "o13"
+        },
+        {
+          "id": 6020,
+          "login": "o14"
+        },
+        {
+          "id": 6021,
+          "login": "o15"
+        },
+        {
+          "id": 6022,
+          "login": "o16"
+        },
+        {
+          "id": 6023,
+          "login": "o17"
+        },
+        {
+          "id": 6024,
+          "login": "o18"
+        },
+        {
+          "id": 6025,
+          "login": "o19"
+        },
+        {
+          "id": 6026,
+          "login": "o1a"
+        },
+        {
+          "id": 6027,
+          "login": "o1b"
+        },
+        {
+          "id": 6028,
+          "login": "o1c"
+        },
+        {
+          "id": 6029,
+          "login": "o1d"
+        },
+        {
+          "id": 6030,
+          "login": "o1e"
+        },
+        {
+          "id": 6031,
+          "login": "o1f"
+        },
+        {
+          "id": 6032,
+          "login": "o20"
+        },
+        {
+          "id": 6033,
+          "login": "o21"
+        },
+        {
+          "id": 6034,
+          "login": "o22"
+        },
+        {
+          "id": 6035,
+          "login": "o23"
+        },
+        {
+          "id": 6036,
+          "login": "o24"
+        },
+        {
+          "id": 6037,
+          "login": "o25"
+        },
+        {
+          "id": 6038,
+          "login": "o26"
+        },
+        {
+          "id": 6039,
+          "login": "o27"
+        },
+        {
+          "id": 6040,
+          "login": "o28"
+        },
+        {
+          "id": 6041,
+          "login": "o29"
+        },
+        {
+          "id": 6042,
+          "login": "o2a"
+        },
+        {
+          "id": 6043,
+          "login": "o2b"
+        },
+        {
+          "id": 6044,
+          "login": "o2c"
+        },
+        {
+          "id": 6045,
+          "login": "o2d"
+        },
+        {
+          "id": 6046,
+          "login": "o2e"
+        },
+        {
+          "id": 6047,
+          "login": "o2f"
+        },
+        {
+          "id": 6048,
+          "login": "o30"
+        },
+        {
+          "id": 6049,
+          "login": "o31"
+        },
+        {
+          "id": 6050,
+          "login": "o32"
+        },
+        {
+          "id": 6051,
+          "login": "o33"
+        },
+        {
+          "id": 6052,
+          "login": "o34"
+        },
+        {
+          "id": 6053,
+          "login": "o35"
+        },
+        {
+          "id": 6054,
+          "login": "o36"
+        },
+        {
+          "id": 6055,
+          "login": "o37"
+        },
+        {
+          "id": 6056,
+          "login": "o38"
+        },
+        {
+          "id": 6057,
+          "login": "o39"
+        },
+        {
+          "id": 6058,
+          "login": "o3a"
+        },
+        {
+          "id": 6059,
+          "login": "o3b"
+        },
+        {
+          "id": 6060,
+          "login": "o3c"
+        },
+        {
+          "id": 6061,
+          "login": "o3d"
+        },
+        {
+          "id": 6062,
+          "login": "o3e"
+        },
+        {
+          "id": 6063,
+          "login": "o3f"
+        },
+        {
+          "id": 6064,
+          "login": "o40"
+        }
+      ],
+      "approvers": [],
+      "maintainers": [],
+      "agents": []
+    },
+    "author": 2000,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "range": {
+      "status": "within",
+      "users": [
+        2000
+      ],
+      "unattributed": false
+    },
+    "pushers": [],
+    "push_clock": null,
+    "approvals": [],
+    "commands": []
+  }
+}

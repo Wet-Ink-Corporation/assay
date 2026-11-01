@@ -24,6 +24,7 @@ use assay_domain::{Aeu, Conclusion, ContentHash, DecisionInputs, Event, Reason, 
 use thiserror::Error;
 
 pub use self::bundle::{BUNDLE_FILE, BundleError, MAX_BUNDLE_BYTES};
+pub(crate) use self::bundle::{CappedJson, capped_json};
 pub(crate) use self::findings::read_published;
 pub use self::findings::{
     CommentStep, FindingsError, FindingsOutcome, FindingsPublication, FindingsPublished,

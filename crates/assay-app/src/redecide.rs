@@ -5,16 +5,24 @@
 //! This module holds the evidence read ([`read_evidence`]), the re-decision's inputs
 //! ([`redecision_inputs`]) over the snapshot
 //! [`redecided_state`](crate::redecided_state) takes from the bundle's recorded facts, and the
-//! names of the decision bundle decide-only persists (D5): one file, [`DECISION_FILE`], in an
+//! decision bundle decide-only persists (D5, `assay.run-decision/1`): built by
+//! [`prepare_decision`] and read by [`read_decision_bundle`], one file, [`DECISION_FILE`], in an
 //! artifact named `assay-decision-<pr>-<nonce>`, one per PR, since one run may decide several.
 
+mod bundle;
 mod evidence;
 mod inputs;
+mod read;
 
+pub use self::bundle::{
+    DecisionReadBack, DecisionTarget, DecisionTrigger, PrepareDecisionError, Redecided,
+    TriggerCommand, prepare_decision,
+};
 pub use self::evidence::{
     Absence, EvidenceBundle, EvidenceError, EvidenceRead, EvidenceRequest, Forgery, read_evidence,
 };
 pub use self::inputs::{RedecisionRequest, redecision_inputs};
+pub use self::read::{DecisionBundle, DecisionBundleError, read_decision_bundle};
 
 /// The decision bundle's file in its artifact (`assay.run-decision/1`, D5).
 pub const DECISION_FILE: &str = "run-decision.json";
