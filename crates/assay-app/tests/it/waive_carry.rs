@@ -101,7 +101,7 @@ fn first_fp(run: &AuthenticatedRun) -> Result<Fingerprint, Box<dyn Error>> {
 
 /// The bundle of the waived head's run over [`raised_document`] that applied `waivers`, and
 /// its evidence pointer.
-fn prior_bundle(
+pub(crate) fn prior_bundle(
     waivers: impl FnOnce(Fingerprint) -> Vec<Waiver>,
 ) -> Result<(Run, Vec<u8>, EvidencePointer), Box<dyn Error>> {
     let scenario = scenario_with(raised_document(PRIOR_KEY), GateConclusion::Fail, PRIOR_KEY)?;
@@ -173,7 +173,7 @@ fn waived_then_pushed(fp: Fingerprint, pusher: u64) -> Result<GitHubState, Box<d
 }
 
 /// The approver's waiver of `fp`.
-fn by_approver(fp: Fingerprint) -> Vec<Waiver> {
+pub(crate) fn by_approver(fp: Fingerprint) -> Vec<Waiver> {
     vec![Waiver {
         fp,
         by: "approver".to_owned(),

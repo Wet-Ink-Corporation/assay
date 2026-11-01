@@ -183,8 +183,8 @@ pub use publish::{
 };
 pub use publish::{MAX_REFUSAL_DETAIL_BYTES, NotARefusal, RefusalReason, publish_refusal};
 pub use replay::{
-    BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
-    ReplayRequest, Replayed, RunField, StoredBundle, replay_decision,
+    BundleShape, BundleSource, DecisionBundleSource, DecisionDiff, Matched, Mismatch, ModelReplay,
+    ReplayError, ReplayRequest, Replayed, RunField, StoredBundle, replay_decision,
 };
 pub use rereview::{
     Ancestry, CarriedAnchor, CarriedField, CarriedFinding, CarriedOutcome, CarriedParts,
@@ -246,4 +246,13 @@ pub use release::{
 mod weigh_in;
 pub use weigh_in::{
     BlockingItem, Checkpoint, MAX_OPEN_BYTES, MAX_OPEN_ITEMS, OpenItemsError, checkpoint,
+};
+mod provenance;
+pub use provenance::{
+    ExpectedRun, ProvenanceRefusal, RunEvent, RunProvenance, Workflow, WorkflowRunFacts, accept_run,
+};
+mod redecide;
+pub use redecide::{
+    Absence, DECISION_FILE, EvidenceBundle, EvidenceError, EvidenceRead, EvidenceRequest, Forgery,
+    MAX_DECISION_BUNDLE_BYTES, read_evidence,
 };

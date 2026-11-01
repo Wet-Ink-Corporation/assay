@@ -30,6 +30,7 @@ mod ledger;
 mod ledger_refs;
 mod pipeline;
 mod ports;
+mod provenance;
 mod pulls;
 mod reads;
 mod reconcile;

@@ -1,0 +1,59 @@
+{
+  "id": 41260608626,
+  "name": "assay",
+  "node_id": "WFR_kwLOVER55s8AAAAJm1Lscg",
+  "head_branch": "claude/assay-60-st8-gates-lint",
+  "head_sha": "1d1398e57676b4ee9c765fa204cf2032f3d5ef7a",
+  "path": ".github/workflows/assay.yml",
+  "display_title": "assay",
+  "run_number": 436,
+  "event": "pull_request_target",
+  "status": "completed",
+  "conclusion": "success",
+  "workflow_id": 381056875,
+  "check_suite_id": 111835990904,
+  "check_suite_node_id": "CS_kwDOVER55s8AAAAaCfHLeA",
+  "pull_requests": [],
+  "created_at": "2026-11-01T01:19:28Z",
+  "updated_at": "2026-11-01T01:21:54Z",
+  "actor": {
+    "login": "Ryan-Britton",
+    "id": 124330161,
+    "type": "User"
+  },
+  "run_attempt": 1,
+  "referenced_workflows": [],
+  "run_started_at": "2026-11-01T01:19:28Z",
+  "triggering_actor": {
+    "login": "Ryan-Britton",
+    "id": 124330161,
+    "type": "User"
+  },
+  "previous_attempt_url": null,
+  "repository": {
+    "id": 1413773798,
+    "node_id": "R_kgDOVER55g",
+    "name": "assay",
+    "full_name": "Wet-Ink-Corporation/assay",
+    "private": false,
+    "owner": {
+      "login": "Wet-Ink-Corporation",
+      "id": 262218335,
+      "type": "Organization"
+    },
+    "fork": false
+  },
+  "head_repository": {
+    "id": 1413773798,
+    "node_id": "R_kgDOVER55g",
+    "name": "assay",
+    "full_name": "Wet-Ink-Corporation/assay",
+    "private": false,
+    "owner": {
+      "login": "Wet-Ink-Corporation",
+      "id": 262218335,
+      "type": "Organization"
+    },
+    "fork": false
+  }
+}

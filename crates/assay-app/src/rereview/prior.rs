@@ -9,7 +9,6 @@ use std::num::NonZeroU64;
 
 use assay_domain::{Decision, RunUid};
 use serde::Deserialize;
-use serde_json::Value;
 use thiserror::Error;
 
 use super::carried::{CarriedFinding, CarryRefused, read_carried};
@@ -115,10 +114,7 @@ pub fn prior_head<S: BundleSource>(
 ) -> Result<CommitId, PriorCarryError<S::Error>> {
     let bundle = read_prior(request, source)?;
     bundle
-        .github
-        .get("head_sha")
-        .and_then(Value::as_str)
-        .and_then(|head| head.parse().ok())
+        .snapshot_head()
         .ok_or(PriorCarryError::Shape(BundleShape::Shape))
 }
 
