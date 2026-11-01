@@ -257,7 +257,8 @@ impl Scene {
                 event,
                 rubric: over.rubric,
                 at: NOW.parse()?,
-                nonce: "0123456789abcdef0123456789abcdef".parse()?,
+                nonce: format!("{:032x}", 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef_u128)
+                    .parse()?,
             },
             &RedecideJobPorts {
                 app: hub,

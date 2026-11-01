@@ -200,7 +200,9 @@ fn a_guard_that_did_not_succeed_is_refused() {
 #[test]
 fn a_redecision_bundle_writes_its_digest_and_artifact_name() {
     let digest = Sha256Digest::of(b"run-decision");
-    let nonce: ArtifactNonce = "0123456789abcdef0123456789abcdef".parse().expect("a nonce");
+    let nonce: ArtifactNonce = format!("{:032x}", 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef_u128)
+        .parse()
+        .expect("a nonce");
 
     let outputs = RedecideOutputs::bundle(pr(352), digest.clone(), &nonce);
 
