@@ -248,6 +248,11 @@ mod weigh_in;
 pub use weigh_in::{
     BlockingItem, Checkpoint, MAX_OPEN_BYTES, MAX_OPEN_ITEMS, OpenItemsError, checkpoint,
 };
+mod decide_only;
+pub use decide_only::{
+    CommandReplies, CompletedVerdict, MAX_POLL_PULLS, MAX_TIP_LIST_BYTES, PollForge, PolledPull,
+    Reply, TipListFiles, TipLists, VerdictView,
+};
 mod provenance;
 pub use provenance::{
     ExpectedRun, ProvenanceRefusal, RunEvent, RunProvenance, Workflow, WorkflowRunFacts, accept_run,

@@ -185,7 +185,7 @@ fn pull_view<E>(operation: Operation, pull: PullDto) -> Result<PullView, ForgeEr
 }
 
 /// A conclusion of any app's check run.
-fn observed_conclusion<E>(
+pub(super) fn observed_conclusion<E>(
     operation: Operation,
     conclusion: &str,
 ) -> Result<ObservedConclusion, ForgeError<E>> {

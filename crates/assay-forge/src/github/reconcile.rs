@@ -30,26 +30,15 @@ impl<T: Transport, S: Sleep> ReconcileForge for GitHub<T, S> {
 
     fn open_pulls(&self, limit: usize) -> Result<Vec<OpenPull>, Self::Error> {
         let operation = Operation::ListPulls;
-        let path = self.path(operation, &format!("pulls?state=open&per_page={PER_PAGE}"))?;
-        let mut pulls = self
-            .api
-            .list::<Vec<PullDto>>(operation, path, Some(limit))?
+        self.open_pull_dtos(limit)?
             .into_iter()
             .map(|pull| {
-                if pull.state != "open" {
-                    return Err(ForgeError::Malformed {
-                        operation,
-                        detail: "a listed open PR is not open",
-                    });
-                }
                 Ok(OpenPull {
                     number: dto::nonzero(operation, pull.number, "a PR number is zero")?,
                     head_sha: dto::commit(operation, &pull.head.sha)?,
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        pulls.truncate(limit);
-        Ok(pulls)
+            .collect()
     }
 
     /// Reads every check on `head` before keeping the App's, so that a list cut at `limit` is
@@ -142,6 +131,29 @@ impl<T: Transport, S: Sleep> ReconcileForge for GitHub<T, S> {
         write: LockedWrite<'_>,
     ) -> Result<(), CompareAndSetError<Self::Error>> {
         self.compare_and_set(id, expected, write)
+    }
+}
+
+impl<T: Transport, S: Sleep> GitHub<T, S> {
+    /// The repository's open PRs, at most `limit`, each checked open: the reconcile's and the
+    /// decide-only poll's listing (D8).
+    pub(super) fn open_pull_dtos(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PullDto>, ForgeError<T::Error>> {
+        let operation = Operation::ListPulls;
+        let path = self.path(operation, &format!("pulls?state=open&per_page={PER_PAGE}"))?;
+        let mut pulls = self
+            .api
+            .list::<Vec<PullDto>>(operation, path, Some(limit))?;
+        if pulls.iter().any(|pull| pull.state != "open") {
+            return Err(ForgeError::Malformed {
+                operation,
+                detail: "a listed open PR is not open",
+            });
+        }
+        pulls.truncate(limit);
+        Ok(pulls)
     }
 }
 
