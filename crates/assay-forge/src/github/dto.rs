@@ -15,6 +15,33 @@ pub(crate) struct AppDto {
     pub(crate) id: u64,
 }
 
+/// What a comment's `performed_via_github_app` says. An absent key says nothing about who
+/// posted the comment, so its readers refuse it rather than read it as a human's.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) enum ViaApp {
+    /// The key is absent (serde's `default`).
+    #[default]
+    Unstated,
+    /// `null`: no app posted it.
+    No,
+    /// An app object: an app posted it.
+    Yes,
+}
+
+/// A present `performed_via_github_app`, `null` or an app (whose shape is still checked). Use
+/// with `#[serde(default, deserialize_with = "...")]` so an absent key is `Unstated`.
+pub(crate) fn via_app<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<ViaApp, D::Error> {
+    Option::<AppDto>::deserialize(deserializer).map(|app| {
+        if app.is_some() {
+            ViaApp::Yes
+        } else {
+            ViaApp::No
+        }
+    })
+}
+
 /// A user as GitHub embeds one.
 #[derive(Debug, Deserialize)]
 pub(crate) struct UserDto {
