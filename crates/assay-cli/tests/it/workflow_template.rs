@@ -28,6 +28,90 @@ pub(crate) const ASSAY_FETCH: [(&str, &str); 4] = [
     ("out-dir", "bin"),
 ];
 
+/// The first line of the step reading the ledger repository from base config.
+const LEDGER_RUN: &str = "python3 -I - base/.assay/plugins.toml >> \"$GITHUB_OUTPUT\" <<'EOF'";
+
+/// What a step is, for its job's ordered step list: its `id`, and its action without the `@`
+/// pin, or else the first line of its `run:` text (empty for a step with neither).
+pub(crate) type StepIdentity<'a> = (Option<&'a str>, String);
+
+/// The identity of each step of every job, in file order, so a step added anywhere, a
+/// `run: curl … | sh` or a `download-artifact` alike, changes the list.
+pub(crate) fn step_identities<'a>(
+    jobs: &[(&'a str, Vec<&'a str>)],
+) -> Vec<(&'a str, Vec<StepIdentity<'a>>)> {
+    jobs.iter()
+        .map(|(job, body)| {
+            let identities = steps(body)
+                .iter()
+                .map(|step| {
+                    let what = match (step.value("uses"), step.run()) {
+                        (Some(action), _) => action
+                            .split_once('@')
+                            .map_or(action, |(action, _)| action)
+                            .to_owned(),
+                        (None, Some(run)) => run.lines().next().unwrap_or_default().to_owned(),
+                        (None, None) => String::new(),
+                    };
+                    (step.value("id"), what)
+                })
+                .collect();
+            (*job, identities)
+        })
+        .collect()
+}
+
+/// One step of a job's expected step list, read into a [`StepIdentity`] by [`identities`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Expected {
+    /// `actions/checkout`, no id.
+    Checkout,
+    /// `fetch-by-digest` of the assay binary, no id.
+    Fetch,
+    /// `fetch-by-digest` of temper, `id: temper`.
+    Temper,
+    /// The `node` path lookup, `id: node`.
+    Node,
+    /// The ledger repository's read from base config, `id: ledger`.
+    Ledger,
+    /// A `create-github-app-token` step with this id.
+    Token(&'static str),
+    /// `download-artifact`, no id.
+    Download,
+    /// `upload-artifact`, with this id if any.
+    Upload(Option<&'static str>),
+    /// The `bin/assay` step of this row of the argv table, with this id if any.
+    Assay(Option<&'static str>, usize),
+}
+
+/// The identities of `expected`, with [`Expected::Assay`] rows read from `table`.
+pub(crate) fn identities(
+    table: &[Invocation],
+    expected: &[Expected],
+) -> Vec<StepIdentity<'static>> {
+    let [checkout, upload, download, app_token, fetch] = ACTIONS;
+    expected
+        .iter()
+        .map(|step| match *step {
+            Expected::Checkout => (None, checkout.to_owned()),
+            Expected::Fetch => (None, fetch.to_owned()),
+            Expected::Temper => (Some("temper"), fetch.to_owned()),
+            Expected::Node => (Some("node"), NODE_RUN.to_owned()),
+            Expected::Ledger => (Some("ledger"), LEDGER_RUN.to_owned()),
+            Expected::Token(id) => (Some(id), app_token.to_owned()),
+            Expected::Download => (None, download.to_owned()),
+            Expected::Upload(id) => (id, upload.to_owned()),
+            Expected::Assay(id, row) => (
+                id,
+                table.get(row).map(Invocation::run_line).unwrap_or_default(),
+            ),
+        })
+        .collect()
+}
+
+/// The `node` path lookup's `run:` line.
+const NODE_RUN: &str = "printf 'path=%s\\n' \"$(command -v node)\" >> \"$GITHUB_OUTPUT\"";
+
 /// The `&&` terms of a job's `if`.
 pub(crate) fn terms(condition: &str) -> Vec<&str> {
     condition.split(" && ").map(str::trim).collect()

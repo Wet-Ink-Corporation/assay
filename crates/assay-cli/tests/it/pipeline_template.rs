@@ -14,8 +14,13 @@ use super::workflow::{
     job_body, job_entries, job_value, jobs, permissions, steps, template, top_level_block,
 };
 use super::workflow_template::{
-    ASSAY_FETCH, ActionPins, Minted, action_pins, all_steps, app_tokens, assay_step, ledger_token,
-    needs, raw_run_lines, terms, token_variable, verdict_token,
+    ASSAY_FETCH, ActionPins, Expected, Minted, action_pins, all_steps, app_tokens, assay_step,
+    identities, ledger_token, needs, raw_run_lines, step_identities, terms, token_variable,
+    verdict_token,
+};
+
+use super::workflow_template::Expected::{
+    Assay, Checkout, Download, Fetch, Ledger, Node, Temper, Token, Upload,
 };
 
 fn pipeline() -> io::Result<String> {
@@ -89,6 +94,114 @@ fn the_jobs_are_the_pipeline_s_in_order_with_guard_first() -> io::Result<()> {
         .collect::<Vec<_>>();
 
     assert_eq!(names, JOBS);
+    Ok(())
+}
+
+/// Each job's steps in file order, with [`Expected::Assay`] rows of [`PIPELINE`]; nothing else
+/// may run in a job, so an added `run: curl … | sh` or download fails.
+const STEPS: [(&str, &[Expected]); 10] = [
+    ("guard", &[Checkout, Fetch, Assay(Some("guard"), 0)]),
+    (
+        "open",
+        &[
+            Checkout,
+            Fetch,
+            Ledger,
+            Token("verdict-token"),
+            Token("ledger-token"),
+            Assay(None, 1),
+        ],
+    ),
+    (
+        "plan",
+        &[Checkout, Fetch, Assay(Some("plan"), 2), Upload(None)],
+    ),
+    (
+        "gates-static",
+        &[
+            Checkout,
+            Checkout,
+            Fetch,
+            Temper,
+            Node,
+            Assay(Some("gates"), 3),
+            Upload(None),
+        ],
+    ),
+    (
+        "gates-lint",
+        &[
+            Checkout,
+            Checkout,
+            Fetch,
+            Temper,
+            Node,
+            Assay(Some("gates"), 4),
+            Upload(None),
+        ],
+    ),
+    (
+        "gates-test",
+        &[
+            Checkout,
+            Checkout,
+            Fetch,
+            Assay(Some("gates"), 5),
+            Upload(None),
+        ],
+    ),
+    (
+        "admit",
+        &[
+            Checkout,
+            Fetch,
+            Ledger,
+            Token("verdict-token"),
+            Token("ledger-token"),
+            Download,
+            Assay(Some("admit"), 6),
+            Upload(None),
+        ],
+    ),
+    ("review", &[Checkout, Fetch, Assay(Some("review"), 7)]),
+    (
+        "release",
+        &[
+            Checkout,
+            Fetch,
+            Ledger,
+            Token("ledger-token"),
+            Assay(None, 8),
+        ],
+    ),
+    (
+        "decide",
+        &[
+            Checkout,
+            Fetch,
+            Ledger,
+            Token("verdict-token"),
+            Token("ledger-token"),
+            Download,
+            Assay(Some("decide"), 9),
+            Upload(Some("persist")),
+            Assay(None, 10),
+        ],
+    ),
+];
+
+#[test]
+fn each_job_runs_exactly_its_steps_in_order() -> io::Result<()> {
+    let workflow = pipeline()?;
+    let jobs = jobs(&workflow);
+
+    let read = step_identities(&jobs);
+
+    let expected = STEPS
+        .iter()
+        .map(|(job, steps)| (*job, identities(PIPELINE, steps)))
+        .collect::<Vec<_>>();
+    assert_eq!(read, expected);
     Ok(())
 }
 

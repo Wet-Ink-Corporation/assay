@@ -254,6 +254,7 @@ pub(crate) const DECIDE_ONLY: &[Invocation] = &[
             Word("--state"),
             Word("decide-out"),
         ],
+        // Entry by entry, since a const slice cannot be concatenated with another.
         env: &[
             REDECIDE_ENV[0],
             REDECIDE_ENV[1],

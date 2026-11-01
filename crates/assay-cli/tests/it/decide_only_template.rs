@@ -16,9 +16,11 @@ use super::workflow::{
     top_level_block,
 };
 use super::workflow_template::{
-    ASSAY_FETCH, ActionPins, action_pins, all_steps, app_tokens, assay_step, ledger_token, needs,
-    raw_run_lines, token_variable, verdict_token,
+    ASSAY_FETCH, ActionPins, action_pins, all_steps, app_tokens, assay_step, identities,
+    ledger_token, needs, raw_run_lines, step_identities, token_variable, verdict_token,
 };
+
+use super::workflow_template::Expected::{Assay, Checkout, Fetch, Ledger, Token, Upload};
 
 fn decide_only() -> io::Result<String> {
     template("assay-decide.yml.tmpl")
@@ -99,6 +101,35 @@ fn the_jobs_are_guard_then_redecide() -> io::Result<()> {
         .collect::<Vec<_>>();
 
     assert_eq!(names, JOBS);
+    Ok(())
+}
+
+#[test]
+fn each_job_runs_exactly_its_steps_in_order() -> io::Result<()> {
+    let workflow = decide_only()?;
+    let jobs = jobs(&workflow);
+
+    let read = step_identities(&jobs);
+
+    // Nothing else may run in a job, so an added `run: curl … | sh` or download fails.
+    let guard = [Checkout, Fetch, Assay(Some("guard"), 0)];
+    let redecide = [
+        Checkout,
+        Fetch,
+        Ledger,
+        Token("verdict-token"),
+        Token("ledger-token"),
+        Assay(Some("decide"), 1),
+        Upload(Some("persist")),
+        Assay(None, 2),
+    ];
+    assert_eq!(
+        read,
+        [
+            ("guard", identities(DECIDE_ONLY, &guard)),
+            ("redecide", identities(DECIDE_ONLY, &redecide)),
+        ]
+    );
     Ok(())
 }
 

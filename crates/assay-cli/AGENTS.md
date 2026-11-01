@@ -66,6 +66,7 @@ One integration binary, `tests/it/` (TST-14):
 - `pipeline_template.rs` (#60 ST-15): `workflows/assay.yml.tmpl` through `workflow.rs`'s line readers (plus its `template`, `job_value`, `job_entries` and `steps` readers). It pins:
   - the triggers (no `branches:`, a dispatch with only `pr`);
   - the job order with guard first, holding no secret, variable, environment or App token;
+  - each job's exact ordered step list (`step_identities`, #61 DO-13 review F1), so an extra step anywhere fails;
   - the privileged set (open, admit, release, decide, each in `assay-publish`), each needing guard and gated on its `run`;
   - every job's exact `needs` and `if`, and `github.run_attempt == 1` on exactly open, admit, review, release and decide (`always() && …` on decide);
   - no `${{` on any raw line of a step's `run:` (a `run: |` block's comment lines included, which GitHub still expands);
@@ -82,10 +83,10 @@ One integration binary, `tests/it/` (TST-14):
   - each job's `outputs:` exactly the names its command writes (`assay_cli::OutputName`'s sets).
 
   Finally, doctor's `run_prerequisites` passes with the template installed as `.github/workflows/assay.yml` (`doctor_prerequisites.rs`'s `Fake`).
-- `workflow_template.rs` (#61 DO-13): what both template tests share, moved from `pipeline_template.rs` without changing an expectation: the `needs`/`if` term readers, `all_steps`, `assay_step`, `raw_run_lines`, the action allowlist and pin check (`action_pins`), the assay fetch inputs, the App token `with:` lists (`verdict_token`, `ledger_token`, `app_tokens`) and the token and id variables' one source (`token_variable`).
+- `workflow_template.rs` (#61 DO-13): what both template tests share, moved from `pipeline_template.rs` without changing an expectation: the `needs`/`if` term readers, `all_steps`, `assay_step`, `raw_run_lines`, the action allowlist and pin check (`action_pins`), the assay fetch inputs, the App token `with:` lists (`verdict_token`, `ledger_token`, `app_tokens`), the token and id variables' one source (`token_variable`), and each job's ordered step identities (`step_identities`: `id` plus the action without its pin or the `run:` text's first line; `Expected` and `identities` build the expected lists).
 - `decide_only_template.rs` (#61 DO-13): `workflows/assay-decide.yml.tmpl` through the same readers. It pins:
   - `on:` exactly (`issue_comment [created]`, `pull_request_target [labeled, unlabeled]`, one cron off the hour) and no `pull_request_review`, `pull_request`, `workflow_dispatch` or `branches` on any line;
-  - the jobs `guard` then `redecide`; guard holding no secret, environment or App token; redecide the only job with a secret or environment, needing guard, `if: github.run_attempt == 1 && needs.guard.outputs.prs != '[]'`, in `assay-publish`, with the matrix `pr: ${{ fromJSON(needs.guard.outputs.prs) }}` and `fail-fast: false`;
+  - the jobs `guard` then `redecide`, each running exactly its ordered steps (an extra step anywhere fails); guard holding no secret, environment or App token; redecide the only job with a secret or environment, needing guard, `if: github.run_attempt == 1 && needs.guard.outputs.prs != '[]'`, in `assay-publish`, with the matrix `pr: ${{ fromJSON(needs.guard.outputs.prs) }}` and `fail-fast: false`;
   - guard's `if:` as the poll, 02 §5's comment filter (read from the spec's group expression) or the same filter for an `assay:*` label;
   - redecide's only concurrency group, `assay-recheck-<repo_id>-<pr>` with `cancel-in-progress: false` and `queue: max`, none at the top, and the filter and group markers only in `concurrency:` and `if:` lines;
   - no `${{` on any raw `run:` line; each job's `permissions:` and `permissions: {}` at the top; each App token's, checkout's and fetch-by-digest's whole `with:` list; the ledger step byte for byte the pipeline's; pins, allowlist and `.github/`'s pins;
