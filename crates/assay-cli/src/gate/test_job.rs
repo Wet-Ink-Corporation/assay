@@ -16,7 +16,8 @@ use assay_gates::{
 use tempfile::TempDir;
 
 use super::{
-    Finished, GateCliError, JobInputs, Paths, Prepared, Ran, TEST, finish, prepare, scratch,
+    Finished, GateCliError, JobInputs, Paths, Prepared, Ran, TEST, closing, finish, prepare,
+    scratch,
 };
 
 /// Runs `gates-test` over `paths` and writes its documents and output.
@@ -34,18 +35,18 @@ pub(super) fn run(paths: &Paths, job: JobInputs) -> Result<Ran, GateCliError> {
     } = prepare(paths, &job.output)?;
     let scratch = scratch()?;
     let environment = GateEnvironment::from_vars(job.vars);
-    let mut runner = TestGates::new(&placed.head, environment, job.run_key, (killer, &scratch))?;
-    let reports = run_gates(&config, TEST, &mut runner, &validator);
-    finish(
-        Finished {
-            job: TEST,
-            config: &config,
-            out: &placed.out,
-            output,
-        },
-        reports,
-        scratch,
-    )
+    let ended = TestGates::new(&placed.head, environment, job.run_key, (killer, &scratch))
+        .and_then(|mut runner| {
+            let reports = run_gates(&config, TEST, &mut runner, &validator);
+            let finished = Finished {
+                job: TEST,
+                config: &config,
+                out: &placed.out,
+                output,
+            };
+            finish(finished, reports)
+        });
+    closing(scratch, ended)
 }
 
 /// The gates `gates-test` runs: temper's declared `test` steps and the `exec` gates of the job.

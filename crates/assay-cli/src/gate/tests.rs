@@ -170,3 +170,55 @@ fn gates_lint_is_not_wired_whatever_its_flags() {
         );
     }
 }
+
+/// A scratch directory whose removal fails: it is already gone when it is closed.
+fn vanished_scratch() -> (TempDir, PathBuf) {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = scratch.path().to_path_buf();
+    std::fs::remove_dir(&path).expect("an empty directory is removed");
+    (scratch, path)
+}
+
+#[test]
+fn a_failed_job_reports_the_scratch_it_could_not_remove_beside_its_error() {
+    let (scratch, path) = vanished_scratch();
+
+    let closed = closing(scratch, Err(GateCliError::RunKey));
+
+    assert!(
+        matches!(
+            closed,
+            Err(GateCliError::ScratchLeft { ref error, ref left })
+                if matches!(**error, GateCliError::RunKey)
+                    && matches!(**left, GateCliError::Scratch { path: ref at, .. } if *at == path)
+        ),
+        "{closed:?}"
+    );
+}
+
+#[test]
+fn a_failed_job_whose_scratch_is_removed_reports_only_its_error() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = scratch.path().to_path_buf();
+
+    let closed = closing(scratch, Err(GateCliError::RunKey));
+
+    assert!(matches!(closed, Err(GateCliError::RunKey)), "{closed:?}");
+    assert!(!path.exists(), "the scratch directory is removed");
+}
+
+#[test]
+fn a_job_that_ran_keeps_its_reports_and_says_where_its_scratch_is_left() {
+    let (scratch, path) = vanished_scratch();
+
+    let closed = closing(scratch, Ok(Vec::new()));
+
+    assert!(
+        matches!(
+            closed,
+            Ok(Ran { ref reports, scratch_left: Some(GateCliError::Scratch { path: ref at, .. }) })
+                if reports.is_empty() && *at == path
+        ),
+        "{closed:?}"
+    );
+}

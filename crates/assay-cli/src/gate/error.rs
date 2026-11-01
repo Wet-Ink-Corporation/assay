@@ -122,6 +122,12 @@ pub(crate) enum GateCliError {
     Validator(ContractSchemaError),
     /// The job's scratch directory could not be created or removed.
     Scratch { path: PathBuf, source: io::Error },
+    /// The job failed with `error`, and its scratch directory could not be removed after
+    /// (`left`, a [`GateCliError::Scratch`]).
+    ScratchLeft {
+        error: Box<GateCliError>,
+        left: Box<GateCliError>,
+    },
     /// A concluded report carries no document (the gate use case promises one).
     NoDocument(String),
     /// A document could not be encoded.
@@ -187,6 +193,7 @@ impl fmt::Display for GateCliError {
             Self::Scratch { path, source } => {
                 write!(f, "scratch directory {}: {source}", path.display())
             }
+            Self::ScratchLeft { error, left } => write!(f, "{error}; and {left}"),
             Self::NoDocument(plugin) => write!(f, "gate `{plugin}` concluded without a document"),
             Self::Encode(source) => write!(f, "cannot encode a document: {source}"),
             Self::Write { path, source } => write!(f, "cannot write {}: {source}", path.display()),

@@ -1,7 +1,9 @@
 //! What `assay gate gates-static` (#60 ST-7) refuses before anything runs: a relative `--node`
 //! or `--temper`, either inside `--head`, either missing, and a missing or invalid pinned
 //! commit, run token, repository or `PATH`. Every case exits 2 with no git or node started and
-//! nothing written, and a variable is named but never echoed.
+//! nothing written, and a variable is named but never echoed. A valid pinned commit the
+//! repository does not hold is a failed fetch: exit 2 after git ran, with no gate run and
+//! nothing written.
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -150,4 +152,53 @@ fn a_missing_or_invalid_token_repository_or_path_is_refused() -> Result<(), Box<
         refused_variable(&scene, name, value)?;
     }
     Ok(())
+}
+
+/// A 40-hex commit the fixture repository does not hold.
+const ABSENT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// Runs the job with `name` set to [`ABSENT`]: it must exit 2 with stderr starting `starts`,
+/// after git tried the fetch, with no gate run and nothing written.
+fn unfetchable(scene: &Scene, name: &str, starts: &str) -> Result<(), Box<dyn Error>> {
+    let output = scene.run(|command| {
+        command.env(name, ABSENT);
+    })?;
+
+    assert_eq!(output.status.code(), Some(2), "{name}: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with(starts), "{name}: {stderr}");
+    assert!(
+        scene
+            .recorded("git-bin/fetches")?
+            .contains(&format!("{ABSENT}:refs/assay/fetched/{ABSENT}")),
+        "{name}: the fetch was tried"
+    );
+    assert_eq!(scene.recorded("bin/node-env")?, "", "{name}: no gate ran");
+    assert!(!scene.path("out").exists(), "{name}: no --out");
+    assert_eq!(scene.recorded("output")?, "", "{name}: no output");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn a_head_commit_that_cannot_be_fetched_exits_2_and_runs_no_gate() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new(&[])?;
+
+    unfetchable(
+        &scene,
+        "ASSAY_HEAD_SHA",
+        "assay: fetching the head commit: ",
+    )
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn a_base_commit_that_cannot_be_fetched_exits_2_and_runs_no_gate() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new(&[])?;
+
+    unfetchable(
+        &scene,
+        "ASSAY_BASE_SHA",
+        "assay: fetching the base commit: ",
+    )
 }

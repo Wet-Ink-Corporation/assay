@@ -176,7 +176,11 @@ fn wire(
         (GateJob::Static, Some(node), Some(temper)) => {
             Ok(Wired::Static(Programs::absolute(node, temper)?))
         }
-        _ => Err(GateCliError::Usage),
+        // gates-static without both programs, gates-test with either.
+        (GateJob::Static, None, _)
+        | (GateJob::Static, _, None)
+        | (GateJob::Build(BuildJob::Test), Some(_), _)
+        | (GateJob::Build(BuildJob::Test), _, Some(_)) => Err(GateCliError::Usage),
     }
 }
 
@@ -280,19 +284,36 @@ struct Finished<'p> {
     output: File,
 }
 
-/// Accounts for the required gates that did not report, writes the documents and the output,
-/// and removes the scratch directory.
+/// Accounts for the required gates that did not report, then writes the documents and the
+/// output; the reports are the job's.
 fn finish(
     finished: Finished<'_>,
     mut reports: Vec<GateJobReport>,
-    scratch: TempDir,
-) -> Result<Ran, GateCliError> {
+) -> Result<Vec<GateJobReport>, GateCliError> {
     account_for_required(finished.config, finished.job, &mut reports);
     results::write(finished.out, &reports, finished.output)?;
-    Ok(Ran {
-        reports,
-        scratch_left: close(scratch),
-    })
+    Ok(reports)
+}
+
+/// Removes the scratch directory once the job ended with `ended`, on every path: a directory
+/// that could not be removed is reported beside the job's error, or as left behind by a job
+/// that ran (H-10: `TempDir`'s drop would discard the failure).
+fn closing(
+    scratch: TempDir,
+    ended: Result<Vec<GateJobReport>, GateCliError>,
+) -> Result<Ran, GateCliError> {
+    let left = close(scratch);
+    match (ended, left) {
+        (Ok(reports), scratch_left) => Ok(Ran {
+            reports,
+            scratch_left,
+        }),
+        (Err(error), None) => Err(error),
+        (Err(error), Some(left)) => Err(GateCliError::ScratchLeft {
+            error: Box::new(error),
+            left: Box::new(left),
+        }),
+    }
 }
 
 /// Removes the scratch directory, saying where it is left when it cannot be removed.

@@ -14,7 +14,10 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
 
-use assay_app::{Adapter, GateError, GateJob, GateRun, GateRunner, Plugin, run_gates};
+use assay_app::{
+    Adapter, ContractValidator, GateError, GateJob, GateJobReport, GateRun, GateRunner, Plugin,
+    PluginsConfig, run_gates,
+};
 use assay_cli::{ForgeRevisions, ForgeSupervisor};
 use assay_forge::git::{
     Authorization, CommitSha, GitEnvironment, GitError, GitLimits, HttpsRemote, ObjectRepo,
@@ -26,18 +29,19 @@ use assay_gates::{
     GateEnvironment, TemperAdapter, TemperError, TemperPaths, TemperSettings, WeighInAdapter,
     WeighInError,
 };
+use tempfile::TempDir;
 
 use super::paths::Programs;
 use super::{
-    Finished, GateCliError, JobInputs, Paths, Prepared, Ran, Side, StaticError, Variable, finish,
-    prepare, scratch,
+    Finished, GateCliError, JobInputs, Paths, Prepared, Ran, Side, StaticError, Variable, closing,
+    finish, prepare, scratch,
 };
 
 /// The job.
 const STATIC: GateJob = GateJob::Static;
 
-/// What the composition root read of the process for the fetch (ARC-11).
-#[derive(Debug)]
+/// What the composition root read of the process for the fetch (ARC-11). Its `Debug` shows
+/// whether the token is set, never its value.
 pub(crate) struct StaticVariables {
     /// [`Variable::BaseSha`].
     pub(crate) base_sha: Option<OsString>,
@@ -49,6 +53,18 @@ pub(crate) struct StaticVariables {
     pub(crate) repository: Option<OsString>,
     /// [`Variable::Path`].
     pub(crate) path: Option<OsString>,
+}
+
+impl fmt::Debug for StaticVariables {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StaticVariables")
+            .field("base_sha", &self.base_sha)
+            .field("head_sha", &self.head_sha)
+            .field("token", &self.token.as_ref().map(|_set| "<redacted>"))
+            .field("repository", &self.repository)
+            .field("path", &self.path)
+            .finish()
+    }
 }
 
 /// Where the pinned commits are fetched from, and how.
@@ -159,26 +175,55 @@ pub(super) fn run(
     let settings = TemperSettings::new(paths, &environment, job.run_key.clone())
         .map_err(GateCliError::TemperSettings)?;
     let scratch = scratch()?;
+    let inputs = Inputs {
+        source,
+        killer,
+        settings,
+        run_key: job.run_key,
+    };
+    let ended = gates_in(&scratch, inputs, &config, &validator).and_then(|reports| {
+        let finished = Finished {
+            job: STATIC,
+            config: &config,
+            out: &placed.out,
+            output,
+        };
+        finish(finished, reports)
+    });
+    closing(scratch, ended)
+}
+
+/// What the gates need once the job's refusals are behind it.
+struct Inputs {
+    source: Source,
+    killer: GroupKiller,
+    settings: TemperSettings,
+    run_key: String,
+}
+
+/// Fetches the pinned commits into an object-only repository under `scratch` and runs the
+/// gates over them.
+fn gates_in(
+    scratch: &TempDir,
+    inputs: Inputs,
+    config: &PluginsConfig,
+    validator: &ContractValidator,
+) -> Result<Vec<GateJobReport>, GateCliError> {
+    let Inputs {
+        source,
+        killer,
+        settings,
+        run_key,
+    } = inputs;
     // git and the scan's supervisor each keep a handle on the killer (a program path).
     let Fetched { repo, base, head } =
         source.fetch(scratch.path().join("objects.git"), killer.clone())?;
     let revisions = ForgeRevisions::new(&repo, base, head, TreeLimits::default());
     let mut runner = StaticGates {
         temper: TemperAdapter::new(ForgeSupervisor::new(killer), &revisions, settings),
-        weigh_in: WeighInAdapter::new(&revisions, job.run_key)
-            .map_err(StaticError::WeighInSettings)?,
+        weigh_in: WeighInAdapter::new(&revisions, run_key).map_err(StaticError::WeighInSettings)?,
     };
-    let reports = run_gates(&config, STATIC, &mut runner, &validator);
-    finish(
-        Finished {
-            job: STATIC,
-            config: &config,
-            out: &placed.out,
-            output,
-        },
-        reports,
-        scratch,
-    )
+    Ok(run_gates(config, STATIC, &mut runner, validator))
 }
 
 /// The gates `gates-static` runs: temper's Z2s checks and Weigh-In, over the PR's revisions.
