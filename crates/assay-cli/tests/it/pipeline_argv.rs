@@ -1,6 +1,8 @@
-//! The argv of every `bin/assay` step of `workflows/assay.yml.tmpl` (#60 ST-15), as one table the
-//! template test (`pipeline_template.rs`) and the binary test below both read: a flag renamed in
-//! the binary fails here, and the template, which must use exactly these lines, fails there.
+//! The argv of every `bin/assay` step of `workflows/assay.yml.tmpl` (#60 ST-15, [`PIPELINE`]) and
+//! of `workflows/assay-decide.yml.tmpl` (#61 DO-13, [`DECIDE_ONLY`]), as tables the template tests
+//! (`pipeline_template.rs`, `decide_only_template.rs`) and the binary tests below both read: a
+//! flag renamed in the binary fails here, and a template, which must use exactly these lines,
+//! fails there.
 
 use std::error::Error;
 use std::process::Command;
@@ -21,7 +23,7 @@ pub(crate) enum Arg {
     Variable(&'static str),
 }
 
-/// One `bin/assay` step of the pipeline.
+/// One `bin/assay` step of a template.
 #[derive(Debug)]
 pub(crate) struct Invocation {
     /// The job it runs in.
@@ -214,6 +216,58 @@ pub(crate) const PIPELINE: &[Invocation] = &[
     },
 ];
 
+/// The matrix entry the decide-only `redecide` job decides (03 §4a).
+const PR: &str = "ASSAY_PR";
+
+/// What decide-only's `decide` and `publish` both read (03 §4a): decide's, and the PR.
+const REDECIDE_ENV: [&str; 7] = [NEEDS, PR, TOKEN, LEDGER_TOKEN, RUN_TOKEN, APP_ID, BOT_ID];
+
+/// The decide-only workflow's `bin/assay` steps, in the template's job order (#61 DO-13, D9 A,
+/// 03 §4a).
+pub(crate) const DECIDE_ONLY: &[Invocation] = &[
+    Invocation {
+        job: "guard",
+        args: &[Word("decide-only"), Word("guard")],
+        env: &[RUN_TOKEN, APP_ID, BOT_ID],
+        refusal: "usage: assay decide-only guard",
+    },
+    Invocation {
+        job: "redecide",
+        args: &[
+            Word("decide-only"),
+            Word("decide"),
+            Word("--config"),
+            Word(CONFIG),
+            Word("--out"),
+            Word("decide-out"),
+        ],
+        env: &REDECIDE_ENV,
+        refusal: "usage: assay decide-only decide",
+    },
+    Invocation {
+        job: "redecide",
+        args: &[
+            Word("decide-only"),
+            Word("publish"),
+            Word("--config"),
+            Word(CONFIG),
+            Word("--state"),
+            Word("decide-out"),
+        ],
+        env: &[
+            REDECIDE_ENV[0],
+            REDECIDE_ENV[1],
+            REDECIDE_ENV[2],
+            REDECIDE_ENV[3],
+            REDECIDE_ENV[4],
+            REDECIDE_ENV[5],
+            REDECIDE_ENV[6],
+            "ASSAY_PERSIST",
+        ],
+        refusal: "usage: assay decide-only publish",
+    },
+];
+
 /// Runs the binary with `args` in an empty directory, with no variable but a `PATH` that finds
 /// nothing, so every command stops at its first missing variable and reaches no program; a
 /// [`Variable`] is given as an absolute path that does not exist. Returns its exit code and stderr.
@@ -234,10 +288,10 @@ fn run(args: &[Arg], extra: &[&str]) -> Result<(Option<i32>, String), Box<dyn Er
     Ok((ran.status.code(), String::from_utf8(ran.stderr)?))
 }
 
-#[test]
-#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
-fn every_pipeline_argv_gets_past_argument_parsing() -> Result<(), Box<dyn Error>> {
-    for invocation in PIPELINE {
+/// Asserts that each argv of `table` gets past argument parsing: it exits 2 at its first
+/// missing variable, not with its usage refusal.
+fn assert_each_parses(table: &[Invocation]) -> Result<(), Box<dyn Error>> {
+    for invocation in table {
         let (code, stderr) = run(invocation.args, &[])?;
 
         assert_eq!(code, Some(2), "{}: {stderr}", invocation.run_line());
@@ -250,10 +304,9 @@ fn every_pipeline_argv_gets_past_argument_parsing() -> Result<(), Box<dyn Error>
     Ok(())
 }
 
-#[test]
-#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
-fn every_pipeline_argv_with_an_extra_flag_is_a_usage_error() -> Result<(), Box<dyn Error>> {
-    for invocation in PIPELINE {
+/// Asserts that each argv of `table` with one more flag is refused with its usage line.
+fn assert_each_refuses_an_extra_flag(table: &[Invocation]) -> Result<(), Box<dyn Error>> {
+    for invocation in table {
         let (code, stderr) = run(invocation.args, &["--bogus"])?;
 
         assert_eq!(code, Some(2), "{} --bogus: {stderr}", invocation.run_line());
@@ -264,6 +317,30 @@ fn every_pipeline_argv_with_an_extra_flag_is_a_usage_error() -> Result<(), Box<d
         );
     }
     Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn every_pipeline_argv_gets_past_argument_parsing() -> Result<(), Box<dyn Error>> {
+    assert_each_parses(PIPELINE)
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn every_pipeline_argv_with_an_extra_flag_is_a_usage_error() -> Result<(), Box<dyn Error>> {
+    assert_each_refuses_an_extra_flag(PIPELINE)
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn every_decide_only_argv_gets_past_argument_parsing() -> Result<(), Box<dyn Error>> {
+    assert_each_parses(DECIDE_ONLY)
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn every_decide_only_argv_with_an_extra_flag_is_a_usage_error() -> Result<(), Box<dyn Error>> {
+    assert_each_refuses_an_extra_flag(DECIDE_ONLY)
 }
 
 #[test]
