@@ -130,6 +130,8 @@ fn the_only_ledger_writes_are_the_lock_and_the_evidence() -> Result<(), Box<dyn 
             Call::Upload,
             Call::Acquire,
             Call::RecordEvidence,
+            // D2 of #61 (wi-a99de2): the publication register, under the lock, before the check.
+            Call::RecordPublished,
             Call::UpdateCheck,
             Call::CreateSummary,
             Call::Release,
@@ -714,6 +716,8 @@ fn a_refusal_fails_the_check_and_persists_nothing() -> Result<(), Box<dyn Error>
         world.writes(),
         [
             Call::Acquire,
+            // D2 of #61 (wi-a99de2): a refusal records the publication register alone.
+            Call::RecordPublished,
             Call::UpdateCheck,
             Call::CreateSummary,
             Call::Release

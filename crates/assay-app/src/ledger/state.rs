@@ -40,6 +40,21 @@ pub struct PrState {
     /// Commands counted per actor, for decide-only's rate limit (T9, T12); at most
     /// [`MAX_STATE_ENTRIES`], actors distinct.
     pub actor_counters: Vec<ActorCounter>,
+    /// The publication register: which key the verdict check of which head was last written
+    /// under, by which run (D2 of #61). Every verdict writer writes it under the per-head lock,
+    /// before the check; decide-only writes a check only while it carries this key.
+    pub published: Option<PublicationRegister>,
+}
+
+/// The publication register `{head_sha, key, run_id}` (D2 of #61).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicationRegister {
+    /// The head whose verdict check was written.
+    pub head_sha: CommitId,
+    /// The key it was written under: a decision key, or a refusal's.
+    pub key: Sha256Digest,
+    /// The run that wrote it: a pipeline run, or a decide-only one.
+    pub run_id: NonZeroU64,
 }
 
 /// The decision pointer `{run_id, sha256}`, written by decide-only for its own bundle (02 §5).
@@ -181,10 +196,20 @@ struct StateDocument<'a> {
     evidence: Option<EvidenceLine>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     decision: Option<DecisionLine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    published: Option<PublishedLine>,
     evidence_records: Vec<RecordLine<'a>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     deferral: Option<DeferralLine<'a>>,
     actor_counters: Vec<CounterLine>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishedLine {
+    head_sha: String,
+    key: String,
+    run_id: NonZeroU64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -246,6 +271,11 @@ impl<'a> StateDocument<'a> {
                 run_id: pointer.run_id,
                 sha256: pointer.sha256.to_string(),
             }),
+            published: state.published.as_ref().map(|register| PublishedLine {
+                head_sha: register.head_sha.to_string(),
+                key: register.key.to_string(),
+                run_id: register.run_id,
+            }),
             evidence_records: state
                 .evidence_records
                 .iter()
@@ -305,12 +335,23 @@ impl TryFrom<StateDocument<'_>> for PrState {
                 })
             })
             .transpose()?;
+        let published = document
+            .published
+            .map(|line| -> Result<_, Corruption> {
+                Ok(PublicationRegister {
+                    head_sha: field(&line.head_sha, "published")?,
+                    key: field(&line.key, "published")?,
+                    run_id: line.run_id,
+                })
+            })
+            .transpose()?;
         Ok(Self {
             evidence,
             decision,
             evidence_records: evidence_records(document.evidence_records)?,
             deferral: document.deferral.map(deferral).transpose()?,
             actor_counters: actor_counters(document.actor_counters)?,
+            published,
         })
     }
 }

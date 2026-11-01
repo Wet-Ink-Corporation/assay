@@ -88,6 +88,7 @@ mod prompt_bundle;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod provenance;
 mod publish;
+mod publish_claim;
 mod publish_deadline;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod publish_fakes;
@@ -95,7 +96,9 @@ mod publish_findings;
 mod publish_ledger;
 mod publish_persist;
 mod publish_persisted;
+mod publish_redecided;
 mod publish_refusal;
+mod publish_register;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod publish_support;
 mod read_limits;
@@ -115,6 +118,7 @@ mod redecide_inputs;
 mod redecide_state;
 mod release;
 mod replay;
+mod replay_chain;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod replay_fakes;
 mod rereview_anchor;

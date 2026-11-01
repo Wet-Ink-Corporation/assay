@@ -12,6 +12,7 @@ use assay_domain::{Side, Tier};
 
 use crate::config::{CommitId, GateName, Sha256Digest};
 use crate::forge::{Deadline, LockedWrite};
+use crate::ledger::{DecisionPointer, PublicationRegister};
 
 /// The verdict check and the summary comment, written with the `assay-verdict` App's token.
 /// Implemented by the forge adapter (#53).
@@ -201,6 +202,86 @@ pub trait PublishLedger {
         lease: &Self::Lease,
         entry: &EvidenceEntry,
     ) -> Result<(), Self::Error>;
+
+    /// Writes `entry`'s publication register into the PR's state while holding `lease`, by
+    /// compare-and-set on the file (D2 of #61): over whatever was there for a pipeline run
+    /// (`over` is `None`), or only while the state still holds `over`'s register and evidence
+    /// pointer. The write starts only before the lease's [`deadline`](Self::deadline).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::Error`] when the state file could not be written, the register names another
+    /// head than the lock's or another run than the writer, or the lease's deadline has come
+    /// (nothing is written).
+    fn record_published(
+        &self,
+        lease: &Self::Lease,
+        entry: &PublishedEntry,
+    ) -> Result<Claimed, Self::Error>;
+
+    /// Writes `entry`'s decision pointer and publication register into the PR's state in one
+    /// compare-and-set while holding `lease`, only while the state still holds `entry.over`'s
+    /// register and evidence pointer (decide-only, D2 of #61). The write starts only before the
+    /// lease's [`deadline`](Self::deadline).
+    ///
+    /// # Errors
+    ///
+    /// As [`record_published`](Self::record_published), and when the pointer names another run
+    /// than the writer.
+    fn record_decision(
+        &self,
+        lease: &Self::Lease,
+        entry: &DecisionEntry,
+    ) -> Result<Claimed, Self::Error>;
+}
+
+/// What decide-only read of a PR's state before it re-decided: the register it claims the
+/// check by and the evidence pointer it re-decided from (D2 of #61).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Claim {
+    /// The publication register: decide-only writes the check only while it carries its key.
+    pub register: PublicationRegister,
+    /// The evidence pointer the re-decision's evidence bundle was read through.
+    pub evidence: EvidencePointer,
+}
+
+/// A publication register to record, and the claim it replaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedEntry {
+    /// The repository's numeric id.
+    pub repo_id: NonZeroU64,
+    /// The PR number.
+    pub pr: NonZeroU64,
+    /// The register: the head, the key the check is written under and the writing run.
+    pub register: PublicationRegister,
+    /// `None` for a pipeline run, which owns the check by its stamp; decide-only's claim, which
+    /// the state must still hold, otherwise.
+    pub over: Option<Claim>,
+}
+
+/// decide-only's decision pointer and publication register, recorded together (J10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionEntry {
+    /// The repository's numeric id.
+    pub repo_id: NonZeroU64,
+    /// The PR number.
+    pub pr: NonZeroU64,
+    /// Where the decision bundle is: written only once its upload is confirmed.
+    pub pointer: DecisionPointer,
+    /// The register: the head, the decision key and the decide-only run.
+    pub register: PublicationRegister,
+    /// The claim the state must still hold.
+    pub over: Claim,
+}
+
+/// Whether a claimed register was recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Claimed {
+    /// It was recorded (or was already the state's).
+    Recorded,
+    /// The state no longer holds the claim's register or evidence pointer: another writer
+    /// published since; nothing was written.
+    Moved,
 }
 
 /// The run's artifact store, written with the run's token. Implemented by the forge adapter.

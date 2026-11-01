@@ -41,7 +41,7 @@ pub use port::{
 pub use push::{PushAppended, PushDraft, PushKind, PushRecord, append_push, read_pushes};
 pub use record::Appended;
 pub use state::{
-    ActorCounter, DecisionPointer, DeferralRecord, MAX_STATE_ENTRIES, PrState, StateUpdate,
-    read_state, update_state,
+    ActorCounter, DecisionPointer, DeferralRecord, MAX_STATE_ENTRIES, PrState, PublicationRegister,
+    StateUpdate, read_state, update_state,
 };
 pub use time::{LedgerMonth, LedgerTime, ParseLedgerTimeError};

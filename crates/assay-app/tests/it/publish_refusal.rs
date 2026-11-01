@@ -59,6 +59,8 @@ fn a_persisted_refusal_publishes_the_check_the_refusal_itself_would() -> Result<
         persisted.writes(),
         [
             Call::Acquire,
+            // D2 of #61 (wi-a99de2): a refusal records the publication register alone.
+            Call::RecordPublished,
             Call::UpdateCheck,
             Call::CreateSummary,
             Call::Release
