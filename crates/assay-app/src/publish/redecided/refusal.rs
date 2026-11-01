@@ -1,7 +1,10 @@
 //! decide-only's refusals of unusable evidence (D11, F19, F20): a forged bundle is
 //! `failure gate-error:bundle-digest`, an absent one `failure bundle-expired`, each published
-//! over the register's key and keyed over the evidence pointer and the reason, never the
-//! decide-only run, so the hourly poll's repeats are write-if-changed.
+//! over the register's key and keyed over the repository, the evidence pointer and the reason,
+//! never the decide-only run. The register it leaves names the decide-only run, which no
+//! pointer names, so a later decide-only run recognises it by its key
+//! ([`RedecideRefusal::keyed_over`]) and decides again; the hourly poll's repeats of the same
+//! refusal are then write-if-changed.
 
 use std::convert::Infallible;
 use std::num::NonZeroU64;
@@ -9,6 +12,7 @@ use std::num::NonZeroU64;
 use assay_domain::{ContentHash, Reason, ReasonCode};
 
 use super::RedecideTarget;
+use crate::config::Sha256Digest;
 use crate::publish::ports::{Claim, EvidencePointer, PublishLedger, VerdictForge};
 use crate::publish::write::{self, Claimant, Pending, Writer};
 use crate::publish::{PublishError, PublishFailure, Published, refusal_update};
@@ -24,6 +28,23 @@ pub enum RedecideRefusal {
 }
 
 impl RedecideRefusal {
+    /// Every refusal, in a fixed order.
+    const ALL: [Self; 3] = [
+        Self::Forged,
+        Self::Absent(Absence::Missing),
+        Self::Absent(Absence::Expired),
+    ];
+
+    /// Whether `key` is one [`publish_redecide_refusal`] publishes a refusal of `evidence` in
+    /// repository `repo_id` under, for any reason: a register decide-only wrote itself over the
+    /// evidence the ledger still points at, which a later decide-only run may write over.
+    #[must_use]
+    pub fn keyed_over(repo_id: NonZeroU64, evidence: &EvidencePointer, key: &Sha256Digest) -> bool {
+        Self::ALL
+            .into_iter()
+            .any(|refusal| refusal_key(repo_id, evidence, &refusal.reason()) == key.as_str())
+    }
+
     /// The reason the check fails with.
     #[must_use]
     pub fn reason(self) -> Reason {
@@ -77,7 +98,7 @@ pub fn publish_redecide_refusal<F: VerdictForge, L: PublishLedger>(
     }
     let reason = unusable.refusal.reason();
     let update = refusal_update(
-        key(target.run_uid.repo_id, &claim.evidence, &reason),
+        refusal_key(target.run_uid.repo_id, &claim.evidence, &reason),
         &reason,
     );
     write::write_at(
@@ -89,8 +110,8 @@ pub fn publish_redecide_refusal<F: VerdictForge, L: PublishLedger>(
 }
 
 /// The key a decide-only refusal is published under, `sha256:<hex>` over the repository, the
-/// evidence pointer and the reason.
-fn key(repo_id: NonZeroU64, evidence: &EvidencePointer, reason: &Reason) -> String {
+/// evidence pointer and the reason; [`RedecideRefusal::keyed_over`] recognises it.
+fn refusal_key(repo_id: NonZeroU64, evidence: &EvidencePointer, reason: &Reason) -> String {
     let repository = repo_id.to_string();
     let run_id = evidence.run_id.to_string();
     let attempt = evidence.run_attempt.to_string();

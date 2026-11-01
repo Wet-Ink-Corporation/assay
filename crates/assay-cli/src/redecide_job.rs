@@ -27,7 +27,8 @@ use assay_app::{DECISION_FILE, LedgerTime, NonceSource, ParseLedgerTimeError, re
 use assay_cli::outputs::{DecideOnlyGuardOutputs, RedecideOutputs};
 use assay_cli::{
     FirstAttempt, JobName, Needs, OutDir, OutDirError, OutputError, Outputs, RedecideJob,
-    RedecideJobPorts, RedecideRunError, RunVariables, STATE_FILE, run_redecide,
+    RedecideJobPorts, RedecideRunError, Redecision, RunVariables, STATE_FILE, forgery_code,
+    run_redecide,
 };
 use assay_domain::Rubric;
 use assay_forge::github::{
@@ -304,14 +305,14 @@ fn connect(
                 decided
             });
             close(verdict, Variable::Token.name(), left);
-            let outputs = decided?;
+            let redecision = decided?;
             let mut writer = Outputs::new(&job.output);
-            for (name, value) in outputs.outputs() {
+            for (name, value) in redecision.outputs.outputs() {
                 writer
                     .write(name, &value)
                     .map_err(RedecideCliError::Output)?;
             }
-            Ok(line(&job.out, &outputs))
+            Ok(line(&job.out, &redecision))
         })
 }
 
@@ -322,7 +323,7 @@ fn redecide_over(
     at: LedgerTime,
     (verdict, github): (&GitHub<Gh, ThreadSleep>, &GitHub<Gh, ThreadSleep>),
     ledger: &LedgerPorts<'_, '_>,
-) -> Result<RedecideOutputs, RedecideCliError> {
+) -> Result<Redecision, RedecideCliError> {
     let nonce = Urandom.nonce().map_err(RedecideCliError::Nonce)?;
     let redecide_job = RedecideJob {
         run: &job.run,
@@ -342,16 +343,21 @@ fn redecide_over(
         .map_err(|error| RedecideCliError::Redecide(Box::new(error)))
 }
 
-/// What it wrote, as one line for the job's log.
-fn line(out: &OutDir, outputs: &RedecideOutputs) -> String {
+/// What it wrote, as one line for the job's log, naming how forged evidence is forged.
+fn line(out: &OutDir, redecision: &Redecision) -> String {
     let state = out.path().join(STATE_FILE);
-    match outputs {
-        RedecideOutputs::NoBundle => {
-            format!(
+    match &redecision.outputs {
+        RedecideOutputs::NoBundle => match &redecision.forgery {
+            None => format!(
                 "assay decide-only decide: wrote {}; no bundle",
                 state.display()
-            )
-        }
+            ),
+            Some(forgery) => format!(
+                "assay decide-only decide: wrote {}; no bundle; the evidence is forged ({})",
+                state.display(),
+                forgery_code(forgery),
+            ),
+        },
         RedecideOutputs::Bundle { digest, artifact } => format!(
             "assay decide-only decide: wrote {} and {} ({digest}) for {artifact}",
             state.display(),

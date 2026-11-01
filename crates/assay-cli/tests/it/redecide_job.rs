@@ -104,17 +104,22 @@ impl Scene {
 #[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
 fn a_re_run_is_refused_before_any_token_is_read() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new()?;
-    let mut variables = scene.run("2", Some("55"))?;
-    variables.extend(Scene::tokens());
+    let without_tokens = scene.run("2", Some("55"))?;
+    // Two environments: the second is the first plus the tokens.
+    let mut with_tokens = without_tokens.clone();
+    with_tokens.extend(Scene::tokens());
+    // Without tokens, a token read before the attempt would be refused as not set, by name.
+    for variables in [without_tokens, with_tokens] {
+        let ran = scene.redecide(&variables)?;
 
-    let ran = scene.redecide(&variables)?;
-
-    let stderr = String::from_utf8(ran.stderr)?;
-    assert_eq!(ran.status.code(), Some(2), "{stderr}");
-    assert!(stderr.contains("attempt 2"), "{stderr}");
-    assert!(!stderr.contains("TOKEN"), "no token is named: {stderr}");
-    assert!(!stderr.contains(SECRET), "{stderr}");
-    scene.assert_nothing_written()
+        let stderr = String::from_utf8(ran.stderr)?;
+        assert_eq!(ran.status.code(), Some(2), "{stderr}");
+        assert!(stderr.contains("attempt 2"), "{stderr}");
+        assert!(!stderr.contains("TOKEN"), "no token is named: {stderr}");
+        assert!(!stderr.contains(SECRET), "{stderr}");
+        scene.assert_nothing_written()?;
+    }
+    Ok(())
 }
 
 #[test]

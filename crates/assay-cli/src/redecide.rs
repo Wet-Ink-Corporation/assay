@@ -23,14 +23,14 @@ use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    ArtifactNonce, BundleSource, CommandComments, CommandCount, CommandReplies, CommitId, Counted,
-    CurrentPullRequest, DECISION_FILE, DecisionTarget, EligibilityLists, EvidenceBundle,
-    EvidencePointer, EvidenceRead, EvidenceRequest, Exempt, Forge, GitHubState, Ledger,
-    LedgerSnapshot, LedgerTime, LedgerWriteError, PrState, PreparedBundle, PrerequisiteForge,
-    PublicationRegister, PullRequestState, RedecidePorts, RedecideRefusal, RedecideRequest,
-    RedecideStateError, Redecided, RedecisionRequest, Reply, RunProvenance, StateUpdate, Timestamp,
-    TipListFiles, TipLists, count_command, prepare_decision, read_evidence, read_state,
-    redecided_state, redecision_inputs, update_state,
+    AGENTS_PATH, ArtifactNonce, BundleSource, CommandComments, CommandCount, CommandReplies,
+    CommitId, Counted, CurrentPullRequest, DECISION_FILE, DecisionTarget, EligibilityLists,
+    EvidenceBundle, EvidencePointer, EvidenceRead, EvidenceRequest, Exempt, Forge, Forgery,
+    GitHubState, Ledger, LedgerSnapshot, LedgerTime, LedgerWriteError, OWNERS_PATH, PrState,
+    PreparedBundle, PrerequisiteForge, PublicationRegister, PullRequestState, RedecidePorts,
+    RedecideRefusal, RedecideRequest, RedecideStateError, Redecided, RedecisionRequest, Reply,
+    RunProvenance, StateUpdate, Timestamp, TipListFiles, TipLists, count_command, prepare_decision,
+    read_evidence, read_state, redecided_state, redecision_inputs, update_state,
 };
 use assay_domain::Rubric;
 use assay_forge::github::{DecideOnlyEvent, ForgeError, GitHub, Sleep, Transport};
@@ -44,15 +44,23 @@ use crate::decide::write_out;
 use crate::outputs::{DecideOnlyGuardOutputs, RedecideOutputs};
 
 /// `state`'s publication register (D2) when decide-only may write over it for `head`: it is of
-/// `head`, and was written from `state`'s own evidence or decision, by the run its evidence
-/// pointer or its decision pointer names (wi-b70b90). A register of any other run (a newer
-/// pipeline run's refusal on the same head) is not decide-only's to overwrite with older
-/// evidence.
-fn claimable<'s>(state: &'s PrState, head: &CommitId) -> Option<&'s PublicationRegister> {
+/// `head`, and was written from `state`'s own evidence or decision: by the run its evidence
+/// pointer or its decision pointer names, or by a decide-only refusal of its evidence pointer
+/// in repository `repo_id` (its key is [`RedecideRefusal::keyed_over`] that pointer). A
+/// register of any other run (a newer pipeline run's refusal on the same head) is not
+/// decide-only's to overwrite with older evidence (wi-b70b90).
+fn claimable<'s>(
+    state: &'s PrState,
+    repo_id: NonZeroU64,
+    head: &CommitId,
+) -> Option<&'s PublicationRegister> {
     let register = state.published.as_ref()?;
-    let evidence = state.evidence.as_ref().map(|pointer| pointer.run_id);
+    let evidence = state.evidence.as_ref();
     let decision = state.decision.as_ref().map(|pointer| pointer.run_id);
-    let claimed = evidence == Some(register.run_id) || decision == Some(register.run_id);
+    let claimed = evidence.is_some_and(|pointer| pointer.run_id == register.run_id)
+        || decision == Some(register.run_id)
+        || evidence
+            .is_some_and(|pointer| RedecideRefusal::keyed_over(repo_id, pointer, &register.key));
     (&register.head_sha == head && claimed).then_some(register)
 }
 
@@ -110,7 +118,19 @@ pub struct RedecideJobPorts<'p, A, R, L> {
 }
 
 /// What [`run_redecide`] returns over its ports.
-pub type RedecideRunOutcome<A, R, L> = Result<RedecideOutputs, RedecideRunFailure<A, R, L>>;
+pub type RedecideRunOutcome<A, R, L> = Result<Redecision, RedecideRunFailure<A, R, L>>;
+
+/// What a re-decision left besides `--out`: its outputs, and how forged evidence is forged.
+///
+/// The forgery is for the job's log ([`forgery_code`]); `state.json` names only the refusal, so
+/// the cause is reported rather than dropped (H-10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Redecision {
+    /// The outputs to append (03 §4a).
+    pub outputs: RedecideOutputs,
+    /// How the evidence is forged, for a [`RedecideRefusal::Forged`] refusal only.
+    pub forgery: Option<Forgery>,
+}
 
 /// A step of the re-decision over the ports' error types.
 type Step<T, A, R, L> = Result<T, RedecideRunFailure<A, R, L>>;
@@ -119,8 +139,8 @@ type Step<T, A, R, L> = Result<T, RedecideRunFailure<A, R, L>>;
 enum Ended {
     /// Nothing to publish.
     Silent,
-    /// The evidence is unusable.
-    Refused(RedecideRefusal),
+    /// The evidence is unusable; forged evidence carries how.
+    Refused(RedecideRefusal, Option<Forgery>),
     /// A new decision, as its bundle's bytes.
     Decided(PreparedBundle),
 }
@@ -160,13 +180,13 @@ where
         Some(trigger) => redecide(job, ports, trigger)?,
         None => Ended::Silent,
     };
-    let (state, bundle) = match ended {
-        Ended::Silent => (RedecideState::Silent, None),
-        Ended::Refused(refusal) => (RedecideState::Refused(refusal), None),
+    let (state, bundle, forgery) = match ended {
+        Ended::Silent => (RedecideState::Silent, None, None),
+        Ended::Refused(refusal, forgery) => (RedecideState::Refused(refusal), None, forgery),
         Ended::Decided(bundle) => {
             // The state owns its copy of the digest; the bundle's bytes are written beside it.
             let digest = bundle.digest().clone();
-            (RedecideState::Decided { digest }, Some(bundle))
+            (RedecideState::Decided { digest }, Some(bundle), None)
         }
     };
     let bundle_file = bundle
@@ -174,10 +194,23 @@ where
         .map(|bundle| (DECISION_FILE, bundle.bytes()));
     write_out(out, &state.json(), bundle_file)
         .map_err(|(path, source)| RedecideRunError::Write { path, source })?;
-    Ok(match state {
+    let outputs = match state {
         RedecideState::Decided { digest } => RedecideOutputs::bundle(job.pr, digest, &job.nonce),
         RedecideState::Silent | RedecideState::Refused(_) => RedecideOutputs::NoBundle,
-    })
+    };
+    Ok(Redecision { outputs, forgery })
+}
+
+/// The closed code of how evidence is forged, for the job's log: `provenance`, `too-large`,
+/// `shape` or `mismatch`.
+#[must_use]
+pub const fn forgery_code(forgery: &Forgery) -> &'static str {
+    match forgery {
+        Forgery::Provenance(_) => "provenance",
+        Forgery::TooLarge => "too-large",
+        Forgery::Shape(_) => "shape",
+        Forgery::Mismatch(_) => "mismatch",
+    }
 }
 
 /// The re-decision of `job.pr` for `trigger`.
@@ -223,15 +256,17 @@ where
         }
     }
     let state = read_state(ports.ledger, repo_id, pr).map_err(RedecideRunError::State)?;
-    let register = claimable(&state, &live.head_sha);
+    let register = claimable(&state, repo_id, &live.head_sha);
     let (Some(pointer), Some(register)) = (state.evidence.as_ref(), register) else {
         return silent(Reply::NoEvidence);
     };
     let evidence = match evidence(job, ports.run, pointer)? {
         EvidenceRead::Authentic(evidence) => evidence,
-        EvidenceRead::Forged(_) => return Ok(Ended::Refused(RedecideRefusal::Forged)),
+        EvidenceRead::Forged(forgery) => {
+            return Ok(Ended::Refused(RedecideRefusal::Forged, Some(forgery)));
+        }
         EvidenceRead::Absent(absence) => {
-            return Ok(Ended::Refused(RedecideRefusal::Absent(absence)));
+            return Ok(Ended::Refused(RedecideRefusal::Absent(absence), None));
         }
         EvidenceRead::OtherRubric => return silent(Reply::RerunNeeded),
     };
@@ -282,16 +317,20 @@ fn tip_lists<G, T, B, L>(
     files: Result<TipListFiles, T>,
 ) -> Result<EligibilityLists, RedecideRunError<G, T, B, L>> {
     let files = files.map_err(RedecideRunError::TipLists)?;
-    let (Ok(owners), Ok(agents)) = (text(files.owners.as_deref()), text(files.agents.as_deref()))
-    else {
-        return Err(RedecideRunError::TipListText);
-    };
+    let owners = text(files.owners.as_deref(), OWNERS_PATH)?;
+    let agents = text(files.agents.as_deref(), AGENTS_PATH)?;
     EligibilityLists::parse(owners, agents).map_err(RedecideRunError::Lists)
 }
 
-/// A list file's bytes as text, `None` when the file is absent.
-fn text(bytes: Option<&[u8]>) -> Result<Option<&str>, std::str::Utf8Error> {
-    bytes.map(std::str::from_utf8).transpose()
+/// List file `file`'s bytes as text, `None` when the file is absent.
+fn text<'b, G, T, B, L>(
+    bytes: Option<&'b [u8]>,
+    file: &'static str,
+) -> Result<Option<&'b str>, RedecideRunError<G, T, B, L>> {
+    bytes
+        .map(std::str::from_utf8)
+        .transpose()
+        .map_err(|_not_utf8| RedecideRunError::TipListText { file })
 }
 
 /// An authentic evidence bundle of the PR's live head, and what the re-decision read before it.

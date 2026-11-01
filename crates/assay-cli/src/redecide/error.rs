@@ -55,7 +55,11 @@ pub enum RedecideRunError<G, T, B, L> {
     /// The base tip's eligibility lists could not be read.
     TipLists(T),
     /// A base tip list file is not UTF-8.
-    TipListText,
+    TipListText {
+        /// The file: [`OWNERS_PATH`](assay_app::OWNERS_PATH) or
+        /// [`AGENTS_PATH`](assay_app::AGENTS_PATH).
+        file: &'static str,
+    },
     /// The base tip's eligibility lists were refused.
     Lists(ListsError),
     /// The command could not be counted (J7).
@@ -112,7 +116,7 @@ impl<G, T, B, L> fmt::Display for RedecideRunError<G, T, B, L> {
             }
             Self::Live(_) => f.write_str("could not read the PR's live head and base"),
             Self::TipLists(_) => f.write_str("could not read the base tip's eligibility lists"),
-            Self::TipListText => f.write_str("a base tip eligibility list is not UTF-8"),
+            Self::TipListText { file } => write!(f, "the base tip's {file} is not UTF-8"),
             Self::Lists(_) => f.write_str("the base tip's eligibility lists were refused"),
             Self::Count(_) => f.write_str("could not count the command in the PR's ledger state"),
             Self::State(_) => f.write_str("could not read the PR's ledger state"),
@@ -144,7 +148,7 @@ where
 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::NotScheduled { .. } | Self::Payload(_) | Self::TipListText => None,
+            Self::NotScheduled { .. } | Self::Payload(_) | Self::TipListText { .. } => None,
             Self::Live(source) | Self::DefaultBranch(source) | Self::Reply(source) => Some(source),
             Self::TipLists(source) => Some(source),
             Self::Lists(source) => Some(source),

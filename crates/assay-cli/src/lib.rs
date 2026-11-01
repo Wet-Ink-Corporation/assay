@@ -80,7 +80,8 @@ pub use publish::{
 pub use pull_request::{ForgeObjectsError, ForgePullRequest};
 pub use redecide::{
     DefaultBranch, PayloadMismatch, RedecideJob, RedecideJobPorts, RedecideRunError,
-    RedecideRunFailure, RedecideRunOutcome, RedecideState, RedecideStateFileError, run_redecide,
+    RedecideRunFailure, RedecideRunOutcome, RedecideState, RedecideStateFileError, Redecision,
+    forgery_code, run_redecide,
 };
 pub use revisions::ForgeRevisions;
 pub use status::{

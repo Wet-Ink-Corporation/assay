@@ -188,10 +188,12 @@ impl DefaultBranch for Hub<'_> {
     }
 }
 
-/// The ledger's files, every read and write logged as `read <path>` or `write <path>`.
+/// The ledger's files, every read and write logged as `read <path>` or `write <path>`; a write
+/// to a path starting with `refuse` fails, after it is logged.
 pub(crate) struct LoggedLedger<'l> {
     pub(crate) files: &'l MemoryLedger,
     pub(crate) log: &'l Log,
+    pub(crate) refuse: Option<&'static str>,
 }
 
 impl Ledger for LoggedLedger<'_> {
@@ -208,7 +210,14 @@ impl Ledger for LoggedLedger<'_> {
         contents: &[u8],
         condition: &WriteCondition,
     ) -> Result<WriteOutcome, Refused> {
-        self.log.borrow_mut().push(format!("write {path}"));
+        let path_text = path.to_string();
+        let refused = self
+            .refuse
+            .is_some_and(|prefix| path_text.starts_with(prefix));
+        self.log.borrow_mut().push(format!("write {path_text}"));
+        if refused {
+            return Err(Refused("the ledger refuses this write"));
+        }
         self.files.write(path, contents, condition)
     }
 }

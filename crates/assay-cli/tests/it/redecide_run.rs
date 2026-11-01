@@ -1,6 +1,10 @@
 //! `run_redecide` (#61 DO-11) over fakes and a real evidence bundle: the fixture PR planned by
 //! `run_plan` and decided by the pipeline's `run_decide` with an opener push record, so the
-//! bundle decide-only reads is one assay wrote.
+//! bundle decide-only reads is one assay wrote. `branches` holds the branches of the flow the
+//! review asked for (#61 DO-11 review round 1).
+
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod branches;
 
 use std::cell::RefCell;
 use std::error::Error;
@@ -11,7 +15,7 @@ use std::path::PathBuf;
 
 use assay_app::{
     Absence, ActorCounter, BUNDLE_FILE, CommandRejected, CommentAction, CommentEvent, CommentId,
-    CommitId, DECISION_FILE, DecisionPointer, DeferralRecord, EvidencePointer, Ineligible,
+    CommitId, DECISION_FILE, DecisionPointer, DeferralRecord, EvidencePointer, Forgery, Ineligible,
     IssueComment, MAX_COMMANDS_PER_ACTOR, PrState, PublicationRegister, PushDraft, PushKind,
     RedecideRefusal, Reply, Sha256Digest, StoredBundle, Timestamp, append_push, read_commands,
     read_state, update_state,
@@ -19,9 +23,9 @@ use assay_app::{
 use assay_cli::outputs::{DecideOnlyGuardOutputs, DecideOnlyPrs, DecideTrigger, RedecideOutputs};
 use assay_cli::{
     FirstAttempt, OutDir, PayloadMismatch, RedecideJob, RedecideJobPorts, RedecideRunError,
-    RedecideState, RunEnv, RunVariables, STATE_FILE, run_redecide,
+    RedecideState, Redecision, RunEnv, RunVariables, STATE_FILE, run_redecide,
 };
-use assay_domain::{Decision, ReasonCode};
+use assay_domain::{Decision, ReasonCode, Rubric};
 use assay_forge::github::{
     CommentPayload, DecideOnlyEvent, HeadRepository, Label, LabelAction, LabelPayload, Sender,
     SenderKind,
@@ -188,10 +192,33 @@ impl Scene {
         event: &DecideOnlyEvent,
         trigger: DecideTrigger,
     ) -> Result<Redecided, Box<dyn Error>> {
+        self.redecide_over(hub, event, (trigger, self.as_fixture()))
+    }
+
+    /// Like [`Scene::redecide`], with `over` in place of the fixture's rubric and ledger.
+    fn redecide_over(
+        &self,
+        hub: &Hub<'_>,
+        event: &DecideOnlyEvent,
+        (trigger, over): (DecideTrigger, Over<'_>),
+    ) -> Result<Redecided, Box<dyn Error>> {
         let guard = DecideOnlyGuardOutputs::new(DecideOnlyPrs::one(id(PR)?), trigger);
-        let (ran, out) = self.attempt(hub, event, &guard)?;
-        let outputs = ran.map_err(|error| format!("run_redecide failed: {error}"))?;
-        Ok(Redecided { outputs, out })
+        let (ran, out) = self.attempt_over(hub, event, (&guard, over))?;
+        let Redecision { outputs, forgery } =
+            ran.map_err(|error| format!("run_redecide failed: {error}"))?;
+        Ok(Redecided {
+            outputs,
+            forgery,
+            out,
+        })
+    }
+
+    /// The fixture's rubric and a ledger that refuses nothing.
+    const fn as_fixture(&self) -> Over<'_> {
+        Over {
+            rubric: &self.planned.rubric,
+            refuse: None,
+        }
     }
 
     /// Runs decide-only for `event` after `guard` over `hub`, into a fresh `--out`, which is
@@ -202,6 +229,16 @@ impl Scene {
         event: &DecideOnlyEvent,
         guard: &DecideOnlyGuardOutputs,
     ) -> Result<(Attempted, PathBuf), Box<dyn Error>> {
+        self.attempt_over(hub, event, (guard, self.as_fixture()))
+    }
+
+    /// Like [`Scene::attempt`], with `over` in place of the fixture's rubric and ledger.
+    fn attempt_over(
+        &self,
+        hub: &Hub<'_>,
+        event: &DecideOnlyEvent,
+        (guard, over): (&DecideOnlyGuardOutputs, Over<'_>),
+    ) -> Result<(Attempted, PathBuf), Box<dyn Error>> {
         let out = {
             let mut outs = self.outs.borrow_mut();
             *outs = outs.saturating_add(1);
@@ -210,6 +247,7 @@ impl Scene {
         let ledger = LoggedLedger {
             files: &self.files,
             log: &self.log,
+            refuse: over.refuse,
         };
         let ran = run_redecide(
             &RedecideJob {
@@ -217,7 +255,7 @@ impl Scene {
                 guard,
                 pr: id(PR)?,
                 event,
-                rubric: &self.planned.rubric,
+                rubric: over.rubric,
                 at: NOW.parse()?,
                 nonce: "0123456789abcdef0123456789abcdef".parse()?,
             },
@@ -258,11 +296,20 @@ impl Scene {
 }
 
 /// What `run_redecide` gives over the fakes.
-type Attempted = Result<RedecideOutputs, RedecideRunError<Refused, Refused, Refused, Refused>>;
+type Attempted = Result<Redecision, RedecideRunError<Refused, Refused, Refused, Refused>>;
+
+/// What a run differs in from the fixture's: the rubric it decides under, and the ledger path
+/// prefix whose writes fail.
+#[derive(Clone, Copy)]
+struct Over<'r> {
+    rubric: &'r Rubric,
+    refuse: Option<&'static str>,
+}
 
 /// What one decide-only run left.
 struct Redecided {
     outputs: RedecideOutputs,
+    forgery: Option<Forgery>,
     out: PathBuf,
 }
 
@@ -869,5 +916,13 @@ fn a_command_already_recorded_for_its_comment_is_accepted_once() -> Result<(), B
     assert!(again.has_bundle());
     assert!(again.overridden()?, "the recorded override still applies");
     assert!(replied(&hub)?.is_empty());
+    let bundle = again.bundle()?;
+    let commands = bundle["github"]["commands"]
+        .as_array()
+        .ok_or("the snapshot's commands")?;
+    let [command] = commands.as_slice() else {
+        return Err(format!("one command in the snapshot, got {}", commands.len()).into());
+    };
+    assert_eq!(command["comment_id"], COMMENT, "the comment's own record");
     Ok(())
 }
