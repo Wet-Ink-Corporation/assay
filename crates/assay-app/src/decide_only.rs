@@ -29,6 +29,15 @@ pub trait CommandReplies {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reply {
     /// The command was not recorded, for this closed reason.
+    ///
+    /// Only for an `/assay` command line a person posted, so a caller passes one of
+    /// [`CommandRejected::Unknown`], [`CommandRejected::Malformed`],
+    /// [`CommandRejected::Ineligible`], [`CommandRejected::NoPushClock`],
+    /// [`CommandRejected::BeforePushClock`] and [`CommandRejected::ViaApp`]. The other three
+    /// never get a reply (D10): [`CommandRejected::NotACommand`] is not a command,
+    /// [`CommandRejected::NotCreated`] is an edit or deletion, which is never read as one, and
+    /// [`CommandRejected::NoAuthor`] has no author to answer. Their sentences still render, so
+    /// a caller that passes one posts closed text, never the comment's.
     Rejected(CommandRejected),
     /// The author has used up their commands on this PR (D6).
     RateLimited,
@@ -54,34 +63,33 @@ impl Reply {
     /// The reply's sentence: fixed text, or for [`Reply::Rejected`] the closed reason's.
     #[must_use]
     pub fn sentence(self) -> Cow<'static, str> {
-        let fixed = match self {
+        match self {
             Self::Rejected(reason) => {
-                return Cow::Owned(format!("assay did not record this command: {reason}."));
+                Cow::Owned(format!("assay did not record this command: {reason}."))
             }
-            Self::RateLimited => {
+            Self::RateLimited => Cow::Borrowed(
                 "assay did not act on this command: its author has used every command allowed \
-                 on this PR."
-            }
-            Self::RetryUnavailable => {
-                "assay did not act on this command: retrying a role is not available yet."
-            }
-            Self::NoEvidence => {
+                 on this PR.",
+            ),
+            Self::RetryUnavailable => Cow::Borrowed(
+                "assay did not act on this command: retrying a role is not available yet.",
+            ),
+            Self::NoEvidence => Cow::Borrowed(
                 "assay did not act on this command: this PR has no completed assay run on its \
-                 head to decide again."
-            }
-            Self::RerunNeeded => {
+                 head to decide again.",
+            ),
+            Self::RerunNeeded => Cow::Borrowed(
                 "assay did not act on this command: the last run was decided under another \
-                 rubric version, so a new run is needed."
-            }
-            Self::HeadMoved => {
+                 rubric version, so a new run is needed.",
+            ),
+            Self::HeadMoved => Cow::Borrowed(
                 "assay did not act on this command: the PR changed since its last run, and its \
-                 next run decides."
-            }
-            Self::NotRecorded => {
-                "assay could not record this command, so it has no effect; post it again."
-            }
-        };
-        Cow::Borrowed(fixed)
+                 next run decides.",
+            ),
+            Self::NotRecorded => Cow::Borrowed(
+                "assay could not record this command, so it has no effect; post it again.",
+            ),
+        }
     }
 
     /// The reply's comment body: [`Reply::marker`] on the first line, which is never a

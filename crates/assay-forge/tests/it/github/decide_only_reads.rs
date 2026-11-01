@@ -241,6 +241,85 @@ fn a_tip_list_that_is_a_directory_is_refused() {
     assert_eq!(recorded.unused(), 0, "nothing more is read");
 }
 
+/// `lists_at("main")` when `.assay/owners` answers `answer`.
+fn owners_answered(
+    answer: &Value,
+) -> Result<TipListFiles, TipListsError<super::recorded::Unscripted>> {
+    let recorded = Recorded::default().ok(
+        Method::Get,
+        &contents(".assay/owners", "main"),
+        json(answer),
+    );
+    let waits = Waits::default();
+    github(&recorded, &waits).lists_at("main")
+}
+
+#[test]
+fn a_tip_list_that_is_a_submodule_is_refused() {
+    // GitHub's documented answer for a submodule path.
+    let submodule = json!({
+        "type": "submodule",
+        "submodule_git_url": "git://example.com/defunkt/owners.git",
+        "size": 0,
+        "name": "owners",
+        "path": ".assay/owners",
+        "sha": "2d9debffacb6a0e831b00abdd15ce96ac50e0cc3",
+    });
+
+    let lists = owners_answered(&submodule);
+
+    assert!(
+        matches!(
+            lists,
+            Err(TipListsError::NotAFile {
+                path: ".assay/owners",
+                entry: TipEntry::Submodule
+            })
+        ),
+        "{lists:?}"
+    );
+}
+
+#[test]
+fn a_tip_list_entry_of_an_unknown_type_is_refused() {
+    let mut unknown = file_answer(".assay/owners", OWNERS);
+    unknown["type"] = Value::from("worktree");
+
+    let lists = owners_answered(&unknown);
+
+    assert!(
+        matches!(
+            lists,
+            Err(TipListsError::Forge(ForgeError::Malformed {
+                operation: Operation::ReadContents,
+                detail: "unknown contents entry type"
+            }))
+        ),
+        "{lists:?}"
+    );
+}
+
+#[test]
+fn a_tip_list_without_base64_content_is_refused() {
+    // GitHub answers `encoding: none` with empty content for a file over 1 MB.
+    let mut unencoded = file_answer(".assay/owners", OWNERS);
+    unencoded["encoding"] = Value::from("none");
+    unencoded["content"] = Value::from("");
+
+    let lists = owners_answered(&unencoded);
+
+    assert!(
+        matches!(
+            lists,
+            Err(TipListsError::Forge(ForgeError::Malformed {
+                operation: Operation::ReadContents,
+                detail: "not a base64-encoded file"
+            }))
+        ),
+        "{lists:?}"
+    );
+}
+
 #[test]
 fn a_tip_list_that_is_a_symlink_is_refused() {
     let entry = json!({
@@ -308,14 +387,22 @@ fn the_poll_lists_open_pulls_with_their_head_and_base() {
 fn the_poll_reads_no_more_open_pulls_than_its_limit() {
     let recorded_pulls = fixture_json("open_pulls_all.json");
     let template = recorded_pulls.get(0).cloned().expect("a recorded open PR");
-    let listing: Vec<Value> = (1..=60_u64)
+    // A full first page that names a next one, which is not recorded: reading it would be an
+    // unscripted request.
+    let listing: Vec<Value> = (1..=100_u64)
         .map(|number| {
             let mut pull = template.clone();
             pull["number"] = Value::from(number);
             pull
         })
         .collect();
-    let recorded = Recorded::default().ok(Method::Get, &open_pulls(), json(&Value::Array(listing)));
+    let next = path("pulls?state=open&per_page=100&page=2");
+    let link = format!("<https://api.github.com/{next}>; rel=\"next\"");
+    let recorded = Recorded::default().then(
+        Method::Get,
+        &open_pulls(),
+        reply(200, &[("Link", &link)], json(&Value::Array(listing))),
+    );
     let waits = Waits::default();
 
     let pulls = PollForge::open_pulls(&github(&recorded, &waits), MAX_POLL_PULLS);
@@ -326,7 +413,7 @@ fn the_poll_reads_no_more_open_pulls_than_its_limit() {
         .map(|pull| pull.number.get())
         .collect();
     assert_eq!(numbers, (1..=50).collect::<Vec<_>>());
-    assert_eq!(recorded.unused(), 0, "one page");
+    assert_eq!(recorded.sent().len(), 1, "the next page is never asked for");
 }
 
 /// The verdict checks on [`HEAD`](super::recorded::HEAD).
