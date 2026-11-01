@@ -6,11 +6,11 @@ use std::cell::RefCell;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    BundleSource, CheckFound, CheckName, CheckRun, CheckRunId, CheckStatus, CheckUpdate, CommentId,
-    CommitId, CommitIdentity, CompareAndSetError, CurrentPullRequest, Deadline, EvidenceEntry,
-    Forge, LedgerTime, LockedWrite, PublishLedger, PullOnHead, PullRequestState, Reaction,
-    ReactionSubject, Review, StoredBundle, SummaryComment, TimelineEvent, Upserted, UserId,
-    VerdictForge,
+    BundleSource, CheckFound, CheckName, CheckRun, CheckRunId, CheckStatus, CheckUpdate, Claimed,
+    CommentId, CommitId, CommitIdentity, CompareAndSetError, CurrentPullRequest, Deadline,
+    DecisionEntry, EvidenceEntry, Forge, LedgerTime, LockedWrite, PublishLedger, PublishedEntry,
+    PullOnHead, PullRequestState, Reaction, ReactionSubject, Review, StoredBundle, SummaryComment,
+    TimelineEvent, Upserted, UserId, VerdictForge,
 };
 use assay_domain::RunUid;
 
@@ -221,6 +221,16 @@ impl PublishLedger for FreeLock {
         // The entry is borrowed; the fake records its own copy.
         self.evidence.borrow_mut().push(entry.clone());
         Ok(())
+    }
+
+    fn record_published(&self, (): &(), _: &PublishedEntry) -> Result<Claimed, Refused> {
+        self.calls.borrow_mut().push("record published");
+        Ok(Claimed::Recorded)
+    }
+
+    fn record_decision(&self, (): &(), _: &DecisionEntry) -> Result<Claimed, Refused> {
+        self.calls.borrow_mut().push("record decision");
+        Ok(Claimed::Recorded)
     }
 }
 

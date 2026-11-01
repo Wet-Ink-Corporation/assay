@@ -136,6 +136,7 @@ pub use gate::{
 pub use golden::{
     CorpusEntry, CorpusEntryKind, GoldenReplay, RubricError, SELF_GATE, read_rubric, replay_golden,
 };
+pub use ledger::PublicationRegister;
 pub use ledger::{
     ActorCounter, Appended, BUDGET_WINDOW, COOLDOWN_WINDOW, CommandRecord, Consumed, Corruption,
     CostKind, CostRecord, CostRole, CostWindow, DecisionPointer, DeferralRecord, FileVersion,
@@ -181,6 +182,11 @@ pub use publish::{
 pub use publish::{
     BundleRefused, PersistOutcome, Persisted, PersistedError, PersistedOutcome, PersistedPorts,
     PrepareError, PreparedBundle, Unconfirmed, UnknownPersistOutcome, prepare, publish_persisted,
+};
+pub use publish::{
+    Claim, Claimed, DecisionEntry, PublishedEntry, RedecideRefusal, RedecideTarget, RedecidedError,
+    RedecidedOutcome, RedecidedPersisted, RedecidedPorts, RedecidedRefused, UnusableEvidence,
+    publish_redecide_refusal, publish_redecided,
 };
 pub use publish::{MAX_REFUSAL_DETAIL_BYTES, NotARefusal, RefusalReason, publish_refusal};
 pub use replay::{

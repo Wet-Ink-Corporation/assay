@@ -7,7 +7,8 @@ use std::error::Error;
 use assay_app::{
     ActorCounter, Corruption, DecisionPointer, DeferralRecord, EvidencePointer, EvidenceRecord,
     LedgerPath, LedgerReadError, LedgerWriteError, LlmEvidence, MAX_STATE_ENTRIES, PrState,
-    StateUpdate, UserId, WriteCondition, WriteOutcome, read_state, update_state,
+    PublicationRegister, StateUpdate, UserId, WriteCondition, WriteOutcome, read_state,
+    update_state,
 };
 use assay_domain::Tier;
 
@@ -68,6 +69,7 @@ fn full_state() -> PrState {
             flag: true,
         }),
         actor_counters: vec![counted(1001, 3)],
+        published: None,
     }
 }
 
@@ -284,4 +286,63 @@ fn a_state_past_its_entry_cap_is_never_written() {
         "{updated:?}"
     );
     assert_eq!(ledger.writes(), []);
+}
+
+/// D2 A: the publication register of head `bbbb…`, keyed `cccc…`, written by run 102.
+fn register() -> PublicationRegister {
+    PublicationRegister {
+        head_sha: commit('b'),
+        key: digest('c'),
+        run_id: id(102),
+    }
+}
+
+/// [`full_document`] with the register after the decision pointer.
+fn registered_document() -> String {
+    full_document().replacen(
+        r#""evidence_records""#,
+        &format!(
+            r#""published":{{"head_sha":"{b}","key":"sha256:{c}","run_id":102}},"evidence_records""#,
+            b = "b".repeat(40),
+            c = "c".repeat(64),
+        ),
+        1,
+    )
+}
+
+#[test]
+fn the_publication_register_is_written_after_the_decision_pointer_and_read_back()
+-> Result<(), Box<dyn Error>> {
+    let ledger = MemoryLedger::default();
+    let registered = PrState {
+        published: Some(register()),
+        ..full_state()
+    };
+
+    update_state(&ledger, id(42), id(7), |_state| Some(registered.clone()))?;
+
+    assert_eq!(ledger.text(&path()), registered_document());
+    assert_eq!(read_state(&ledger, id(42), id(7))?, registered);
+    Ok(())
+}
+
+#[test]
+fn a_register_whose_head_or_key_does_not_read_is_refused() {
+    let document = registered_document();
+    state_refused(
+        &document.replacen(&"b".repeat(40), &"b".repeat(39), 1),
+        Corruption::Field("published"),
+    );
+    state_refused(
+        &document.replacen(&format!("sha256:{}", "c".repeat(64)), "pending:7:3", 1),
+        Corruption::Field("published"),
+    );
+}
+
+#[test]
+fn a_register_with_an_unknown_field_is_refused() {
+    state_refused(
+        &registered_document().replacen(r#""run_id":102}"#, r#""run_id":102,"run_attempt":1}"#, 1),
+        Corruption::Shape,
+    );
 }

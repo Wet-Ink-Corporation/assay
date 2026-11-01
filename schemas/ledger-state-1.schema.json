@@ -31,6 +31,17 @@
         "sha256": { "$ref": "#/$defs/digest" }
       }
     },
+    "published": {
+      "description": "The publication register (D2 of #61): the head whose verdict check was last written, the key it was written under (a decision key or a refusal's) and the run that wrote it. Every verdict writer writes it under the per-head lock before the check; decide-only writes a check only while it carries this key.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head_sha", "key", "run_id"],
+      "properties": {
+        "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "key": { "$ref": "#/$defs/digest" },
+        "run_id": { "$ref": "#/$defs/id" }
+      }
+    },
     "evidence_records": {
       "description": "The evidence records `{evidence_key, bundle_sha256, llm, tier}` of 02 §5, one per evidence key.",
       "type": "array",

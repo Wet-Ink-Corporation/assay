@@ -10,9 +10,10 @@ use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    BundleStore, CheckName, CheckRun, CheckRunId, CheckStatus, CheckUpdate, CommentForge,
-    CommentId, CommitId, Deadline, EvidenceEntry, InlineComment, LedgerTime, LockedWrite,
-    ParseLedgerTimeError, PublishLedger, SummaryComment, VerdictForge,
+    BundleStore, CheckName, CheckRun, CheckRunId, CheckStatus, CheckUpdate, Claim, Claimed,
+    CommentForge, CommentId, CommitId, Deadline, DecisionEntry, EvidenceEntry, EvidencePointer,
+    InlineComment, LedgerTime, LockedWrite, ParseLedgerTimeError, PublicationRegister,
+    PublishLedger, PublishedEntry, SummaryComment, VerdictForge,
 };
 use assay_domain::Side;
 
@@ -91,6 +92,8 @@ pub(crate) enum Call {
     Acquire,
     Release,
     RecordEvidence,
+    RecordPublished,
+    RecordDecision,
     Upload,
 }
 
@@ -145,6 +148,14 @@ pub(crate) struct FakeWorld {
     leases: RefCell<u64>,
     /// Every evidence entry recorded, in order.
     pub(crate) evidence: RefCell<Vec<EvidenceEntry>>,
+    /// The PR state's evidence pointer: the last one recorded, or one a test seeds.
+    pub(crate) pointer: RefCell<Option<EvidencePointer>>,
+    /// The PR state's publication register: the last one recorded, or one a test seeds.
+    pub(crate) register: RefCell<Option<PublicationRegister>>,
+    /// Every register entry recorded, in order.
+    pub(crate) published: RefCell<Vec<PublishedEntry>>,
+    /// Every decision entry recorded, in order.
+    pub(crate) decisions: RefCell<Vec<DecisionEntry>>,
     /// Every upload: artifact, file, bytes.
     pub(crate) uploads: RefCell<Vec<(String, String, Vec<u8>)>>,
     pub(crate) calls: RefCell<Vec<Call>>,
@@ -486,8 +497,51 @@ impl PublishLedger for FakeWorld {
 
     fn record_evidence(&self, lease: &FakeLease, entry: &EvidenceEntry) -> Result<(), FakeError> {
         self.record_by(Call::RecordEvidence, Some(lease.deadline))?;
+        // The state keeps its pointer, and the log its own copy of the entry.
+        *self.pointer.borrow_mut() = Some(entry.pointer.clone());
         self.evidence.borrow_mut().push(entry.clone());
         Ok(())
+    }
+
+    fn record_published(
+        &self,
+        lease: &FakeLease,
+        entry: &PublishedEntry,
+    ) -> Result<Claimed, FakeError> {
+        self.record_by(Call::RecordPublished, Some(lease.deadline))?;
+        if !self.holds(entry.over.as_ref()) {
+            return Ok(Claimed::Moved);
+        }
+        // The state keeps its register, and the log its own copy of the entry.
+        *self.register.borrow_mut() = Some(entry.register.clone());
+        self.published.borrow_mut().push(entry.clone());
+        Ok(Claimed::Recorded)
+    }
+
+    fn record_decision(
+        &self,
+        lease: &FakeLease,
+        entry: &DecisionEntry,
+    ) -> Result<Claimed, FakeError> {
+        self.record_by(Call::RecordDecision, Some(lease.deadline))?;
+        if !self.holds(Some(&entry.over)) {
+            return Ok(Claimed::Moved);
+        }
+        // The state keeps its register, and the log its own copy of the entry.
+        *self.register.borrow_mut() = Some(entry.register.clone());
+        self.decisions.borrow_mut().push(entry.clone());
+        Ok(Claimed::Recorded)
+    }
+}
+
+impl FakeWorld {
+    /// Whether the PR state still holds `over`'s register and evidence pointer (always, for
+    /// `None`), as the ledger's compare-and-set judges it.
+    fn holds(&self, over: Option<&Claim>) -> bool {
+        over.is_none_or(|claim| {
+            self.register.borrow().as_ref() == Some(&claim.register)
+                && self.pointer.borrow().as_ref() == Some(&claim.evidence)
+        })
     }
 }
 
