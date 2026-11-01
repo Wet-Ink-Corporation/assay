@@ -33,6 +33,7 @@ mod doctor_profile_fakes;
 mod domain_model;
 mod eligibility;
 mod eligibility_commands;
+mod eligibility_counter;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod eligibility_fakes;
 mod eligibility_ledger;
