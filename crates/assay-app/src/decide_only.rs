@@ -1,6 +1,8 @@
 //! The GitHub ports decide-only needs beyond the pipeline's (#61 DO-9): replies to command
 //! comments (D10), the base tip's eligibility lists (D4) and the hourly poll's reads (D8).
-//! Implemented by `assay-forge`'s `GitHub`.
+//! Implemented by `assay-forge`'s `GitHub`. [`poll_pending`] is the poll's selection (D8 A).
+
+mod poll;
 
 use std::borrow::Cow;
 use std::num::NonZeroU64;
@@ -8,6 +10,8 @@ use std::num::NonZeroU64;
 use crate::{
     CheckName, CommandRejected, CommentId, CommitId, ObservedConclusion, Review, Timestamp,
 };
+
+pub use self::poll::{PollError, poll_pending};
 
 /// Replies to command comments, written with the `assay-verdict` App's token.
 pub trait CommandReplies {
@@ -129,6 +133,9 @@ pub trait TipLists {
 
 /// The most open PRs the hourly poll reads (D8).
 pub const MAX_POLL_PULLS: usize = 50;
+
+/// The most PRs the hourly poll selects for one run to decide again (D8).
+pub const MAX_POLL_SELECTED: usize = 20;
 
 /// An open PR as the poll reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]

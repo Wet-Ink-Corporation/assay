@@ -249,8 +249,8 @@ pub use weigh_in::{
 };
 mod decide_only;
 pub use decide_only::{
-    CommandReplies, CompletedVerdict, MAX_POLL_PULLS, MAX_TIP_LIST_BYTES, PollForge, PolledPull,
-    Reply, TipListFiles, TipLists, VerdictView,
+    CommandReplies, CompletedVerdict, MAX_POLL_PULLS, MAX_POLL_SELECTED, MAX_TIP_LIST_BYTES,
+    PollError, PollForge, PolledPull, Reply, TipListFiles, TipLists, VerdictView, poll_pending,
 };
 mod provenance;
 pub use provenance::{

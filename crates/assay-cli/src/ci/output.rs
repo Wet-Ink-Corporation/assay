@@ -28,7 +28,7 @@ pub enum OutputName {
     AuthorId,
     /// guard: `sender_id`, the event sender's user id.
     SenderId,
-    /// guard: `trigger`, the event behind the run.
+    /// guard and decide-only guard: `trigger`, the event behind the run.
     Trigger,
     /// guard: `before`, the head before a `synchronize` push; written for that event only.
     Before,
@@ -88,11 +88,17 @@ pub enum OutputName {
     /// decide: `bundle_digest`, the sha256 of the `run-inputs.json` it wrote; written with
     /// `bundle=true` only.
     BundleDigest,
+    /// decide-only guard: `prs`, the PRs to decide again, as a compact JSON array (#61 DO-10).
+    Prs,
 }
 
 impl OutputName {
     /// The outputs `decide` writes (#60 ST-14), in order.
     pub const DECIDE: [Self; 2] = [Self::Bundle, Self::BundleDigest];
+
+    /// The outputs `decide-only guard` writes (#61 DO-10), in order; `trigger` only beside a
+    /// PR to decide.
+    pub const DECIDE_ONLY_GUARD: [Self; 2] = [Self::Prs, Self::Trigger];
 
     /// The outputs `guard` writes.
     pub const GUARD: [Self; 11] = [
@@ -202,6 +208,7 @@ impl OutputName {
             Self::PackDigest => "pack_digest",
             Self::Bundle => "bundle",
             Self::BundleDigest => "bundle_digest",
+            Self::Prs => "prs",
         }
     }
 }

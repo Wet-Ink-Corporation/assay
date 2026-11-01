@@ -25,6 +25,9 @@
 //! the config names, and the check stamped `in_progress` under the publish lock.
 //! `assay guard` (#60 ST-2) decides whether the pipeline runs for the event behind the run
 //! and writes the run identity to `GITHUB_OUTPUT`; it exits 1 for an untrusted head (0006).
+//! `assay decide-only guard` (#61 DO-10) decides which PRs the decide-only workflow decides
+//! again for its event (a command comment, an `assay:*` label, the hourly poll) and writes
+//! `prs` and `trigger` to `GITHUB_OUTPUT`; it exits 1 for an untrusted head (0006).
 //! `assay plan --out <dir>` (#60 ST-5) plans guard's identity into `<dir>/run.json` and writes
 //! plan's outputs (03 §4a) to `GITHUB_OUTPUT`.
 //! `assay review --placeholder` (#60 ST-9, D11 A) writes the review job's placeholder outputs
@@ -47,6 +50,7 @@ mod admit_job;
 mod bundle;
 mod check;
 mod decide_job;
+mod decide_only_job;
 mod doctor;
 mod gate;
 mod guard_job;
@@ -86,6 +90,9 @@ fn main() -> ExitCode {
     }
     if command == "gate" {
         return run_gate(args);
+    }
+    if command == "decide-only" {
+        return run_decide_only(args);
     }
     if command == "pre-push" {
         return run_pre_push(args);
@@ -220,6 +227,35 @@ fn run_guard(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     match guard_job::run(args, variables) {
         Ok(guard_job::Ended::Written) => ExitCode::SUCCESS,
         Ok(guard_job::Ended::Refused(refusal)) => {
+            // As in `report`: stderr is the last channel, and the exit code still refuses.
+            match writeln!(io::stderr().lock(), "assay: {refusal}") {
+                Ok(()) | Err(_) => ExitCode::FAILURE,
+            }
+        }
+        Err(error) => report(&error),
+    }
+}
+
+/// `assay decide-only guard` (#61 DO-10): exit 0 once the outputs are written (`prs` and
+/// `trigger`, or `prs=[]` alone), 1 for a refused event (an untrusted head, 0006), 2 when it
+/// cannot decide or write, or for a step not built yet.
+fn run_decide_only(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = decide_only_job::DecideOnlyVariables {
+        run: run_variables(),
+        event_name: env::var_os(guard_job::EVENT_NAME),
+        event_path: env::var_os(guard_job::EVENT_PATH),
+        output: env::var_os(guard_job::OUTPUT),
+        app_id: env::var_os(status_pr::APP_ID),
+        bot_id: env::var_os(status_pr::BOT_ID),
+        reads: decide_only_job::ReadVariables {
+            token: env::var_os(guard_job::RUN_TOKEN),
+            path: env::var_os("PATH"),
+            gh: GhEnvironment::from_process_env(),
+        },
+    };
+    match decide_only_job::run(args, variables) {
+        Ok(decide_only_job::Ended::Written) => ExitCode::SUCCESS,
+        Ok(decide_only_job::Ended::Refused(refusal)) => {
             // As in `report`: stderr is the last channel, and the exit code still refuses.
             match writeln!(io::stderr().lock(), "assay: {refusal}") {
                 Ok(()) | Err(_) => ExitCode::FAILURE,
