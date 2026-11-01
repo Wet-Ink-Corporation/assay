@@ -6,6 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
+use assay_cli::OutputName;
+
 use super::doctor_prerequisites::{Fake, written};
 use super::pipeline_argv::{Invocation, PIPELINE};
 use super::release_workflow::is_pinned;
@@ -265,19 +267,84 @@ fn every_job_holding_a_token_that_writes_or_a_secret_runs_on_the_first_attempt_o
     Ok(())
 }
 
-#[test]
-fn no_run_holds_an_expression() -> io::Result<()> {
-    let workflow = pipeline()?;
-    let jobs = jobs(&workflow);
+/// Every raw line of `text` that GitHub reads as a step's `run:` text, as `(line number, line)`:
+/// a one-line `run:` value, and every line of a `run: |` block (comment and blank lines
+/// included, since GitHub expands an expression on any of them) up to the first line indented
+/// no deeper than its `run` key. Only `run:` keys inside a `steps:` block count, so a job output
+/// named `run` is not one. Unlike [`jobs`], it drops nothing.
+fn raw_run_lines(text: &str) -> Vec<(usize, &str)> {
+    let mut lines = Vec::new();
+    let mut block: Option<usize> = None;
+    let mut steps: Option<usize> = None;
+    for (number, line) in (1..).zip(text.lines()) {
+        let indent = line.len().saturating_sub(line.trim_start().len());
+        if let Some(key_indent) = block {
+            if line.trim().is_empty() || indent > key_indent {
+                lines.push((number, line));
+                continue;
+            }
+            block = None;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        if steps.is_some_and(|steps| indent <= steps) {
+            steps = None;
+        }
+        if line.trim() == "steps:" {
+            steps = Some(indent);
+            continue;
+        }
+        if steps.is_none() {
+            continue;
+        }
+        let dash = line.trim_start().strip_prefix("- ");
+        let key_indent = indent.saturating_add(if dash.is_some() { 2 } else { 0 });
+        let key = dash.unwrap_or_else(|| line.trim_start());
+        if let Some(value) = key.strip_prefix("run:") {
+            let value = value.trim();
+            if value == "|" || value == ">" || value.starts_with("|-") || value.starts_with(">-") {
+                block = Some(key_indent);
+            } else {
+                lines.push((number, line));
+            }
+        }
+    }
+    lines
+}
 
-    let expressions = all_steps(&jobs)
-        .into_iter()
-        .filter_map(|(job, step)| step.run().map(|run| (job, run)))
-        .filter(|(_, run)| run.contains("${{"))
+#[test]
+fn no_run_holds_an_expression_on_any_line_comments_included() -> io::Result<()> {
+    let workflow = pipeline()?;
+
+    let runs = raw_run_lines(&workflow);
+    let expressions = runs
+        .iter()
+        .filter(|(_, line)| line.contains("${{"))
         .collect::<Vec<_>>();
 
-    assert_eq!(expressions, Vec::<(&str, String)>::new());
+    assert!(
+        runs.iter().any(|(_, line)| line.contains("tomllib")),
+        "the `run: |` blocks were not read"
+    );
+    assert_eq!(expressions, Vec::<&(usize, &str)>::new());
     Ok(())
+}
+
+#[test]
+fn a_run_block_s_comment_line_is_read_as_run_text() {
+    let text = "jobs:\n  a:\n    steps:\n      - run: |\n          # ${{ x }}\n          echo\n        env:\n          A: ${{ y }}\n      - run: echo ${{ z }}\n";
+
+    let runs = raw_run_lines(text);
+
+    assert_eq!(
+        runs,
+        [
+            (5, "          # ${{ x }}"),
+            (6, "          echo"),
+            (9, "      - run: echo ${{ z }}"),
+        ]
+    );
 }
 
 #[test]
@@ -385,44 +452,57 @@ fn every_job_is_granted_exactly_its_permissions_and_the_workflow_none() -> io::R
     Ok(())
 }
 
-/// Each App token minted, by `(job, step id)`: its app id, private key, repository and
-/// `permission-*` scopes.
-type Minted<'a> = BTreeMap<(&'a str, &'a str), (&'a str, &'a str, &'a str, Vec<String>)>;
+/// Each App token minted, by `(job, step id)`: its whole `with:` entry list, in file order.
+type Minted<'a> = BTreeMap<(&'a str, &'a str), Vec<(&'a str, &'a str)>>;
 
 /// The tokens 05 §4 narrows each job to (W2: `actions: read` for open's `created_at` read and
-/// `contents: read` for its compare, 03 §4a).
+/// `contents: read` for its compare, 03 §4a). No other input is allowed, so neither a wider
+/// `owner` nor a missing `repositories` passes.
 fn expected_tokens() -> Minted<'static> {
-    let verdict = |scopes: &[&str]| {
-        (
-            "${{ vars.ASSAY_VERDICT_APP_ID }}",
-            "${{ secrets.ASSAY_VERDICT_PRIVATE_KEY }}",
-            "${{ github.event.repository.name }}",
-            scopes.iter().map(|&s| s.to_owned()).collect::<Vec<_>>(),
-        )
+    let verdict = |scopes: &[(&'static str, &'static str)]| {
+        let mut with = vec![
+            ("app-id", "${{ vars.ASSAY_VERDICT_APP_ID }}"),
+            ("private-key", "${{ secrets.ASSAY_VERDICT_PRIVATE_KEY }}"),
+            ("repositories", "${{ github.event.repository.name }}"),
+        ];
+        with.extend_from_slice(scopes);
+        with
     };
     let ledger = || {
-        (
-            "${{ vars.ASSAY_LEDGER_APP_ID }}",
-            "${{ secrets.ASSAY_LEDGER_PRIVATE_KEY }}",
-            "${{ steps.ledger.outputs.name }}",
-            vec!["contents: write".to_owned()],
-        )
+        vec![
+            ("app-id", "${{ vars.ASSAY_LEDGER_APP_ID }}"),
+            ("private-key", "${{ secrets.ASSAY_LEDGER_PRIVATE_KEY }}"),
+            ("owner", "${{ steps.ledger.outputs.owner }}"),
+            ("repositories", "${{ steps.ledger.outputs.name }}"),
+            ("permission-contents", "write"),
+        ]
     };
     BTreeMap::from([
         (
             ("open", "verdict-token"),
-            verdict(&["actions: read", "checks: write", "contents: read"]),
+            verdict(&[
+                ("permission-actions", "read"),
+                ("permission-checks", "write"),
+                ("permission-contents", "read"),
+            ]),
         ),
         (("open", "ledger-token"), ledger()),
         (
             ("admit", "verdict-token"),
-            verdict(&["checks: read", "pull-requests: read"]),
+            verdict(&[
+                ("permission-checks", "read"),
+                ("permission-pull-requests", "read"),
+            ]),
         ),
         (("admit", "ledger-token"), ledger()),
         (("release", "ledger-token"), ledger()),
         (
             ("decide", "verdict-token"),
-            verdict(&["checks: write", "contents: read", "pull-requests: write"]),
+            verdict(&[
+                ("permission-checks", "write"),
+                ("permission-contents", "read"),
+                ("permission-pull-requests", "write"),
+            ]),
         ),
         (("decide", "ledger-token"), ledger()),
     ])
@@ -440,23 +520,9 @@ fn each_app_token_is_narrowed_to_one_repository_and_its_job_s_scopes() -> io::Re
                 .is_some_and(|action| action.starts_with("actions/create-github-app-token@"))
         })
         .map(|(job, step)| {
-            let with = |name| step.entry("with", name).unwrap_or_default();
-            let scopes = step
-                .entries("with")
-                .into_iter()
-                .filter_map(|(name, level)| {
-                    name.strip_prefix("permission-")
-                        .map(|scope| format!("{scope}: {level}"))
-                })
-                .collect::<Vec<_>>();
             (
                 (job, step.value("id").unwrap_or_default()),
-                (
-                    with("app-id"),
-                    with("private-key"),
-                    with("repositories"),
-                    scopes,
-                ),
+                step.entries("with"),
             )
         })
         .collect::<Minted<'_>>();
@@ -559,6 +625,51 @@ fn every_action_is_pinned_allowlisted_and_shares_the_repository_s_pin() -> io::R
         Vec::<&&str>::new(),
         "a pin other than .github/'s"
     );
+    Ok(())
+}
+
+/// The inputs of the step fetching the assay binary (02 §4, 05 T14): the pin from base config,
+/// never the PR head, from assay's own package, of the binary's artifact type.
+const ASSAY_FETCH: [(&str, &str); 4] = [
+    ("repository", "ghcr.io/wet-ink-corporation/assay"),
+    ("config", "base/.assay/plugins.toml"),
+    ("artifact-type", "application/vnd.wet-ink.assay.binary.v1"),
+    ("out-dir", "bin"),
+];
+
+/// The inputs of the step fetching the pinned temper copy (D8 A, W6), installed outside the
+/// workspace a PR checkout shares.
+const TEMPER_FETCH: [(&str, &str); 5] = [
+    ("repository", "ghcr.io/wet-ink-corporation/temper"),
+    ("config", "base/.assay/plugins.toml"),
+    ("selector", "plugin.temper"),
+    ("mode", "\"0644\""),
+    ("out-dir", "${{ runner.temp }}/temper"),
+];
+
+#[test]
+fn every_fetch_by_digest_reads_its_pin_from_base_config_with_fixed_inputs() -> io::Result<()> {
+    let workflow = pipeline()?;
+    let jobs = jobs(&workflow);
+
+    let fetches = all_steps(&jobs)
+        .into_iter()
+        .filter(|(_, step)| {
+            step.value("uses").is_some_and(|action| {
+                action.starts_with("Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@")
+            })
+        })
+        .map(|(job, step)| (job, step.value("id"), step.entries("with")))
+        .collect::<Vec<_>>();
+
+    let mut expected = Vec::new();
+    for job in JOBS {
+        expected.push((job, None, ASSAY_FETCH.to_vec()));
+        if matches!(job, "gates-static" | "gates-lint") {
+            expected.push((job, Some("temper"), TEMPER_FETCH.to_vec()));
+        }
+    }
+    assert_eq!(fetches, expected);
     Ok(())
 }
 
@@ -773,12 +884,19 @@ fn expected_variable(job: &str, name: &str) -> Option<&'static str> {
         (_, "ASSAY_LEDGER_TOKEN") => "${{ steps.ledger-token.outputs.token }}",
         (_, "ASSAY_VERDICT_APP_ID") => "${{ vars.ASSAY_VERDICT_APP_ID }}",
         (_, "ASSAY_VERDICT_BOT_ID") => "${{ vars.ASSAY_VERDICT_BOT_ID }}",
+        (_, "ASSAY_BASE_SHA") => "${{ needs.guard.outputs.base_sha }}",
+        (_, "ASSAY_HEAD_SHA") => "${{ needs.guard.outputs.head_sha }}",
+        (_, "ASSAY_MERGE_BASE") => "${{ needs.plan.outputs.merge_base }}",
+        (_, "ASSAY_RUN_KEY") => "${{ needs.plan.outputs.run_key }}",
+        (_, "ASSAY_NODE") => "${{ steps.node.outputs.path }}",
+        (_, "ASSAY_TEMPER") => "${{ steps.temper.outputs.dir }}",
+        (_, "ASSAY_PERSIST") => "${{ steps.persist.outcome }}",
         _ => return None,
     })
 }
 
 #[test]
-fn tokens_and_needs_reach_assay_only_from_their_one_source() -> io::Result<()> {
+fn every_assay_variable_comes_from_its_one_source() -> io::Result<()> {
     let workflow = pipeline()?;
     let jobs = jobs(&workflow);
 
@@ -788,10 +906,7 @@ fn tokens_and_needs_reach_assay_only_from_their_one_source() -> io::Result<()> {
         .flat_map(|(invocation, step)| {
             step.entries("env")
                 .into_iter()
-                .filter(|(name, value)| {
-                    expected_variable(invocation.job, name)
-                        .is_some_and(|expected| expected != *value)
-                })
+                .filter(|(name, value)| expected_variable(invocation.job, name) != Some(*value))
                 .map(|(name, value)| format!("{}: {name}: {value}", invocation.job))
                 .collect::<Vec<_>>()
         })
@@ -800,52 +915,6 @@ fn tokens_and_needs_reach_assay_only_from_their_one_source() -> io::Result<()> {
     assert_eq!(wrong, Vec::<String>::new());
     Ok(())
 }
-
-/// guard's outputs (03 §4a), which every later job reads through `ASSAY_NEEDS`.
-const GUARD_OUTPUTS: [&str; 11] = [
-    "run",
-    "pr",
-    "head_sha",
-    "base_sha",
-    "base_ref",
-    "draft",
-    "author_id",
-    "sender_id",
-    "trigger",
-    "before",
-    "default_branch",
-];
-
-/// plan's outputs (03 §4a): every one is required by its readers.
-const PLAN_OUTPUTS: [&str; 13] = [
-    "run_digest",
-    "run_key",
-    "tier",
-    "draft",
-    "review",
-    "merge_base",
-    "artifact_plan",
-    "artifact_gates_static",
-    "artifact_gates_lint",
-    "artifact_gates_test",
-    "artifact_admit",
-    "artifact_review",
-    "artifact_decide",
-];
-
-/// admit's closed output set (03 §4a).
-const ADMIT_OUTPUTS: [&str; 10] = [
-    "admission",
-    "deferral",
-    "slot",
-    "lease_commit",
-    "reserved_aeu",
-    "tier",
-    "degrade",
-    "run_digest",
-    "pack_digest",
-    "review",
-];
 
 #[test]
 fn each_job_publishes_exactly_the_outputs_its_command_writes() -> io::Result<()> {
@@ -858,23 +927,24 @@ fn each_job_publishes_exactly_the_outputs_its_command_writes() -> io::Result<()>
         .filter(|(_, outputs)| !outputs.is_empty())
         .collect::<BTreeMap<_, _>>();
 
-    let from = |step: &str, names: &[&str]| {
+    // The binary's own closed sets, so an output it gains or renames fails here.
+    let from = |step: &str, names: &[OutputName]| {
         names
             .iter()
-            .map(|name| format!("{name}: ${{{{ steps.{step}.outputs.{name} }}}}"))
+            .map(|name| {
+                let name = name.as_str();
+                format!("{name}: ${{{{ steps.{step}.outputs.{name} }}}}")
+            })
             .collect::<Vec<_>>()
     };
     let expected = BTreeMap::from([
-        ("guard", from("guard", &GUARD_OUTPUTS)),
-        ("plan", from("plan", &PLAN_OUTPUTS)),
-        ("gates-static", from("gates", &["gates"])),
-        ("gates-lint", from("gates", &["gates"])),
-        ("gates-test", from("gates", &["gates"])),
-        ("admit", from("admit", &ADMIT_OUTPUTS)),
-        (
-            "review",
-            from("review", &["stage", "cost_aeu", "documents"]),
-        ),
+        ("guard", from("guard", &OutputName::GUARD)),
+        ("plan", from("plan", &OutputName::PLAN)),
+        ("gates-static", from("gates", &OutputName::GATES)),
+        ("gates-lint", from("gates", &OutputName::GATES)),
+        ("gates-test", from("gates", &OutputName::GATES)),
+        ("admit", from("admit", &OutputName::ADMIT)),
+        ("review", from("review", &OutputName::REVIEW)),
     ]);
     let read = published
         .iter()

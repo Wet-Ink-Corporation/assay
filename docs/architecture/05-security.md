@@ -58,15 +58,16 @@ Every job also sets `packages: read` where it runs the assay binary (the GHCR di
 
 | Job / workflow | `permissions:` / token | Secrets | PR code run | Network |
 |---|---|---|---|---|
-| open | App token: `checks: write` on the consumer repo; ledger token `contents: write` (push records, publish lock); `packages: read` | App keys (env-scoped) | no | GitHub API |
+| guard (pipeline, #60 ST-15) | `contents: read` (sparse base `.assay/` at the event's commit, for the binary's pin), `packages: read`, `pull-requests: read` (a dispatch's PR read; `ASSAY_RUN_TOKEN` is set only for a dispatch) | none, no environment, no App token (0006) | no | GitHub API |
+| open | App token: `checks: write`, `contents: read` (a `synchronize`'s compare) and `actions: read` (the run's `created_at` on a private repository) on the consumer repo (03 §4a); ledger token `contents: write` (push records, publish lock); job `contents: read` (sparse base `.assay/` checkout, D3 A), `packages: read` | App keys (env-scoped) | no | GitHub API |
 | plan | `contents: read`, `pull-requests: read`, `packages: read` | none | no | GitHub API |
 | gates-static | `contents: read`, `packages: read`, `actions: read` | none | no (pinned base tools on sanitised copies only) | registries for `cargo fetch --locked` only |
 | gates-lint | `contents: read`, `packages: read` (warm `target/`) | none | **yes** (build.rs, proc-macros) | registries (crates.io), GitHub; ideally network-isolated after `cargo fetch` of the locked set |
 | gates-test | `contents: read`, `packages: read` | none | **yes** (tests) | as gates-lint; different VM |
-| admit | App token: `checks: read`, `pull-requests: read` on the consumer repo; ledger token `contents: write`; `actions: read`; `packages: read` | App keys (env-scoped) | no | GitHub API |
-| release | ledger token `contents: write` only (cost record, compare-and-set slot release); `packages: read` | ledger App key (env-scoped) | no | GitHub API, ledger git push |
+| admit | App token: `checks: read`, `pull-requests: read` on the consumer repo; ledger token `contents: write`; `actions: read`; job `contents: read` (sparse base checkout, D3 A; the run token's pinned commits); `packages: read` | App keys (env-scoped) | no | GitHub API |
+| release | ledger token `contents: write` only (cost record, compare-and-set slot release); job `contents: read` (sparse base checkout, D3 A), `packages: read` | ledger App key (env-scoped) | no | GitHub API, ledger git push |
 | review | `contents: read`, `packages: read`, `actions: read` (the context pack) | `CLAUDE_CODE_OAUTH_TOKEN` (env-scoped) | no | `api.anthropic.com`, `github.com` only (block-mode egress) |
-| decide | App token: `checks: write`, `pull-requests: write`, `contents: read` on the consumer repo; ledger token `contents: write`; `actions: read`; `packages: read` | App keys (env-scoped) | no (fetches git objects as data, hardened, `03 §9`) | GitHub API |
+| decide | App token: `checks: write`, `pull-requests: write`, `contents: read` on the consumer repo; ledger token `contents: write`; `actions: read`; job `contents: read` (sparse base checkout, D3 A; the run token's pinned commits) and `pull-requests: read` (the run token reads the live PR and its REST file list, 03 §4a); `packages: read` | App keys (env-scoped) | no (fetches git objects as data, hardened, `03 §9`) | GitHub API |
 | decide-only | as decide (default-branch workflow file only) | App keys (env-scoped) | no | GitHub API |
 | requeue | App token: `actions: write` (dispatch, PR number only) on the consumer repo; ledger token `contents: read` (deferral records) | App keys (env-scoped) | no | GitHub API |
 | reconcile (scheduled, default branch, per consumer repo) | App token: `checks: write` on the consumer repo (its own checks only); ledger token `contents: write` (publish lock); `actions: read` | App keys (env-scoped) | no | GitHub API |

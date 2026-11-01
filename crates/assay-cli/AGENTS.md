@@ -68,17 +68,18 @@ One integration binary, `tests/it/` (TST-14):
   - the job order with guard first, holding no secret, variable, environment or App token;
   - the privileged set (open, admit, release, decide, each in `assay-publish`), each needing guard and gated on its `run`;
   - every job's exact `needs` and `if`, and `github.run_attempt == 1` on exactly open, admit, review, release and decide (`always() && …` on decide);
-  - no `${{` in any `run:`;
+  - no `${{` on any raw line of a step's `run:` (a `run: |` block's comment lines included, which GitHub still expands);
+  - every fetch-by-digest step's exact inputs (base config, the fixed repository, the binary's artifact type; temper's `plugin.temper` selector and `runner.temp` out-dir);
   - concurrency only on gates-static, gates-lint, gates-test and review, with `cancel-in-progress` only for synchronize, none on decide and none at the top;
   - each job's `permissions:` and `permissions: {}` at the top;
-  - each App token's repository and `permission-*` scopes;
+  - each App token's whole `with:` list;
   - `persist-credentials: false` on every checkout, with the head checked out only into `pr` in the gates jobs;
   - every `uses:` SHA-pinned, on a cache-free allowlist, and sharing `.github/`'s pin for the same action;
   - review's 40-minute bound;
   - decide's decide, upload (`persist`) and publish order with `ASSAY_PERSIST` from the upload's outcome;
   - one `pattern: assay-*` download before admit's and decide's assay step, and each upload under plan's artifact name;
-  - every `bin/assay` line taken from `pipeline_argv.rs` with exactly its `env:` names, each token and the needs from their one source;
-  - each job's `outputs:` exactly the names its command writes.
+  - every `bin/assay` line taken from `pipeline_argv.rs` with exactly its `env:` names, each variable from its one source;
+  - each job's `outputs:` exactly the names its command writes (`assay_cli::OutputName`'s sets).
 
   Finally, doctor's `run_prerequisites` passes with the template installed as `.github/workflows/assay.yml` (`doctor_prerequisites.rs`'s `Fake`).
 
