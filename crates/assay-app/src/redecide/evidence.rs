@@ -11,7 +11,6 @@
 use std::num::NonZeroU64;
 
 use assay_domain::{Decision, DecisionInputs, Rubric, RunUid};
-use serde_json::Value;
 use thiserror::Error;
 
 use crate::config::{CommitId, Sha256Digest};
@@ -244,7 +243,7 @@ fn authenticated<P, S>(
     if let Some(mismatch) = replay::inconsistency(&bundle, run) {
         return Ok(forged(Forgery::Mismatch(mismatch)));
     }
-    let Some(head) = snapshot_head(&bundle.github) else {
+    let Some(head) = bundle.snapshot_head() else {
         return Ok(forged(Forgery::Shape(BundleShape::Shape)));
     };
     if bundle.rubric_version != rubric.version() {
@@ -270,11 +269,6 @@ fn authenticated<P, S>(
         bindings,
         prior_waivers,
     })))
-}
-
-/// The head the bundle's GitHub snapshot was taken of.
-fn snapshot_head(github: &Value) -> Option<CommitId> {
-    github.get("head_sha")?.as_str()?.parse().ok()
 }
 
 /// The forged verdict.

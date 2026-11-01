@@ -257,7 +257,7 @@ fn a_dispatch_of_the_pipeline_on_the_default_branch_is_authentic() -> Result<(),
 #[test]
 fn a_run_assay_does_not_believe_is_forged_and_nothing_is_fetched() -> Result<(), Box<dyn Error>> {
     let persisted = Persisted::new()?;
-    let cases: [(&str, Answer, ProvenanceRefusal); 5] = [
+    let cases: [(&str, Answer, ProvenanceRefusal); 6] = [
         (
             "a branch's own workflow",
             run_with(&persisted, |run| {
@@ -279,6 +279,13 @@ fn a_run_assay_does_not_believe_is_forged_and_nothing_is_fetched() -> Result<(),
         ),
         (
             "a fork's head",
+            run_with(&persisted, |run| {
+                run.head_repo = NonZeroU64::new(run.repo_id.get().saturating_add(1));
+            }),
+            ProvenanceRefusal::HeadRepository,
+        ),
+        (
+            "a deleted head repository",
             run_with(&persisted, |run| run.head_repo = None),
             ProvenanceRefusal::HeadRepository,
         ),
@@ -428,6 +435,49 @@ fn a_bundle_that_is_not_the_contract_is_forged() -> Result<(), Box<dyn Error>> {
         outcome,
         Ok(EvidenceRead::Forged(Forgery::Shape(BundleShape::Shape)))
     );
+    Ok(())
+}
+
+/// A case: its name and the edit made to the bundle's `github` snapshot.
+type SnapshotEdit = (&'static str, fn(&mut Value));
+
+#[test]
+fn a_snapshot_without_a_readable_head_is_forged() -> Result<(), Box<dyn Error>> {
+    let persisted = Persisted::new()?;
+    let cases: [SnapshotEdit; 3] = [
+        ("no head_sha", |github| {
+            github
+                .as_object_mut()
+                .expect("the snapshot is an object")
+                .remove("head_sha");
+        }),
+        ("a short head_sha", |github| {
+            github["head_sha"] = Value::from("bbbb");
+        }),
+        ("a head_sha that is not text", |github| {
+            github["head_sha"] = Value::from(7);
+        }),
+    ];
+    for (case, edit) in cases {
+        let (bytes, pointer) = tampered(&persisted, |bundle| {
+            edit(&mut bundle["github"]);
+            Ok(())
+        })?;
+        let answer = Answer::Run(pipeline_run(&persisted));
+
+        let (outcome, _) = read_under(
+            &persisted,
+            &pointer,
+            Ports::new(answer, Stored::Bytes(bytes)),
+            &rubric_v1()?,
+        );
+
+        assert_matches!(
+            outcome,
+            Ok(EvidenceRead::Forged(Forgery::Shape(BundleShape::Shape))),
+            "{case}"
+        );
+    }
     Ok(())
 }
 

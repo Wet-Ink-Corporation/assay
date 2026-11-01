@@ -25,7 +25,7 @@ use serde_json::error::Category;
 use thiserror::Error;
 
 pub use self::diff::DecisionDiff;
-use crate::config::Sha256Digest;
+use crate::config::{CommitId, Sha256Digest};
 use crate::contract::parse_json_strict;
 use crate::publish::{BUNDLE_FILE, EvidencePointer, MAX_BUNDLE_BYTES};
 use crate::rereview::record::CarryIn;
@@ -304,6 +304,12 @@ struct BundleDocument {
 }
 
 impl Bundle {
+    /// The head the bundle's GitHub snapshot was taken of; `None` when its `head_sha` is not
+    /// a commit id.
+    pub(crate) fn snapshot_head(&self) -> Option<CommitId> {
+        self.github.get("head_sha")?.as_str()?.parse().ok()
+    }
+
     /// Each gate document's file and bytes, as its job published them, in bundle order: what a
     /// waiver was bound to on the bundle's head (#59).
     pub(crate) fn gate_documents(&self) -> impl Iterator<Item = (&str, &[u8])> + '_ {
