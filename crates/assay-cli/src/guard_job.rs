@@ -211,7 +211,7 @@ pub(crate) fn run(
         .to_str()
         .and_then(|name| name.parse::<EventName>().ok())
         .ok_or(GuardCliError::Event)?;
-    let payload = read_payload(event, present(variables.event_path, EVENT_PATH)?)?;
+    let payload = read_payload(event, &present(variables.event_path, EVENT_PATH)?)?;
     let dispatch = variables.dispatch;
     let guarded = guard(run_uid.repo_id, payload, |pr| read_pull(repo, pr, dispatch))
         .map_err(GuardCliError::Guard)?;
@@ -236,11 +236,18 @@ fn present(value: Option<OsString>, name: &'static str) -> Result<OsString, Guar
 }
 
 /// The payload of `event` in the regular file at `path`.
-fn read_payload(event: EventName, path: OsString) -> Result<EventPayload, GuardCliError> {
-    regular_path(&path).map_err(GuardCliError::PayloadFile)?;
-    let file = File::open(path).map_err(GuardCliError::PayloadFile)?;
-    regular(&file).map_err(GuardCliError::PayloadFile)?;
+fn read_payload(event: EventName, path: &OsStr) -> Result<EventPayload, GuardCliError> {
+    let file = open_payload(path).map_err(GuardCliError::PayloadFile)?;
     EventPayload::read(event, file).map_err(GuardCliError::Payload)
+}
+
+/// The regular file at `path`, `GITHUB_EVENT_PATH`, opened for reading; a FIFO is never
+/// opened. Shared with `assay decide-only guard`.
+pub(crate) fn open_payload(path: &OsStr) -> io::Result<File> {
+    regular_path(path)?;
+    let file = File::open(path)?;
+    regular(&file)?;
+    Ok(file)
 }
 
 /// The regular file at `path`, `GITHUB_OUTPUT`, opened for appending (GitHub creates it; it is

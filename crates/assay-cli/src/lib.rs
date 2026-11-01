@@ -16,7 +16,9 @@
 //! The pipeline's CI plumbing (#60, 03 §4a): [`RunEnv`] (the run, with the first-attempt guard
 //! [`RunEnv::first_attempt`]), [`Needs`] (`ASSAY_NEEDS`, read strictly), [`Outputs`] (the
 //! `GITHUB_OUTPUT` writer) and [`outputs`], each job's outputs as typed values. [`guard`] decides
-//! whether the pipeline runs for an event and with which identity (`assay guard`, 0006).
+//! whether the pipeline runs for an event and with which identity (`assay guard`, 0006);
+//! [`guard_decide_only`] decides which PRs a decide-only run decides again, over any
+//! [`DecideOnlyGuardReads`] (`assay decide-only guard`, #61 DO-10).
 //! [`run_plan`] plans guard's PR over its fetched objects into [`RUN_FILE`] in an [`OutDir`]
 //! and returns plan's outputs (`assay plan`, #60 ST-5). [`run_admit`] authenticates plan's
 //! document, admits the run over the ledger, refs, bundle store, comments and fetched objects,
@@ -30,6 +32,7 @@ mod admit;
 mod artifacts;
 mod ci;
 mod decide;
+mod decide_only;
 mod guard;
 mod open;
 pub mod outputs;
@@ -55,6 +58,10 @@ pub use ci::{
 pub use decide::{
     DecideJob, DecideJobPorts, DecideRunError, DecideRunFailure, DecideRunOutcome, DecideState,
     DecideStateError, MAX_STATE_BYTES, STATE_FILE, run_decide,
+};
+pub use decide_only::{
+    DecideOnlyGuardJob, DecideOnlyGuardReads, GuardDecideOnlyError, GuardedDecideOnly, Skipped,
+    guard_decide_only,
 };
 pub use guard::{GuardError, Guarded, Refusal, UntrustedHead, guard};
 pub use open::{

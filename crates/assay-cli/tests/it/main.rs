@@ -17,6 +17,10 @@ mod check_weigh_in;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod decide_fakes;
 mod decide_job;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod decide_only_guard;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod decide_only_job;
 mod decide_run;
 #[cfg(unix)] // Unix symlinks
 mod dir_artifacts;
