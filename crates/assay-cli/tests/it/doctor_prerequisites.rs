@@ -40,7 +40,7 @@ fn args(text: &[&str]) -> Vec<OsString> {
 
 /// The fake was told to fail.
 #[derive(Debug)]
-struct Refused;
+pub(crate) struct Refused;
 
 impl fmt::Display for Refused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -52,8 +52,8 @@ impl std::error::Error for Refused {}
 
 /// One repository on `main`, files by path; everything else meets 05 §7.
 #[derive(Debug, Clone, Default)]
-struct Fake {
-    files: BTreeMap<&'static str, String>,
+pub(crate) struct Fake {
+    pub(crate) files: BTreeMap<&'static str, String>,
     rulesets: Vec<Ruleset>,
     rules: Vec<AppliedRule>,
     collaborators: Vec<Collaborator>,
@@ -98,7 +98,7 @@ fn verdict_rule() -> Rule {
 }
 
 impl Fake {
-    fn repository() -> Self {
+    pub(crate) fn repository() -> Self {
         let mut files = BTreeMap::new();
         files.insert(".assay/plugins.toml", plugins(true));
         files.insert(".assay/owners", OWNERS.to_owned());
@@ -217,7 +217,7 @@ impl PrerequisiteForge for Fake {
 }
 
 /// What `write_prerequisites` wrote for `repository`, with the ledger [`Fake::ledger`].
-fn written(repository: &Fake) -> (bool, String) {
+pub(crate) fn written(repository: &Fake) -> (bool, String) {
     let report = run_prerequisites(repository, |_| Ok::<_, Refused>(Fake::ledger()), apps())
         .expect("base config is readable");
     let mut out = Vec::new();

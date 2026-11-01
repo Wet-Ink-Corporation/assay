@@ -66,6 +66,10 @@ mod open_fakes;
 mod open_job;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod open_run;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod pipeline_argv;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod pipeline_template;
 mod plan;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod plan_job;
