@@ -5,7 +5,7 @@ use std::num::NonZeroU64;
 
 use thiserror::Error;
 
-use super::commands::SnapshotCommand;
+use super::commands::{SnapshotCommand, UnreadCommand};
 use super::ports::{LedgerRecords, SnapshotLedger};
 use crate::ledger::{Ledger, LedgerReadError, PushRecord, read_commands, read_pushes};
 use crate::publish::CommentId;
@@ -30,13 +30,15 @@ pub enum LedgerSnapshotError<E> {
     /// The record stream could not be read or is refused.
     #[error("could not read the PR's ledger records")]
     Read(#[source] LedgerReadError<E>),
-    /// A command record does not say which head it was posted on: `assay.ledger-command/1`
-    /// has no `head_sha`, and a head-bound command cannot be judged without one, so the record
-    /// is refused rather than given a head (wi-b5affa).
-    #[error("command record of comment {} does not record its head", comment_id.0)]
-    HeadUnrecorded {
+    /// A command record's command is not one the snapshot can judge. The strict reader refuses
+    /// such a line first, so this guards the conversion rather than the file (wi-b5affa).
+    #[error("command record of comment {} cannot be judged", comment_id.0)]
+    Command {
         /// The comment the record came from.
         comment_id: CommentId,
+        /// What is wrong with its command.
+        #[source]
+        problem: UnreadCommand,
     },
 }
 
@@ -71,11 +73,15 @@ where
         if records.len() > max {
             return Ok(LedgerRecords::TooMany);
         }
-        match records.first() {
-            Some(record) => Err(LedgerSnapshotError::HeadUnrecorded {
-                comment_id: record.comment_id,
-            }),
-            None => Ok(LedgerRecords::Listed(Vec::new())),
-        }
+        records
+            .iter()
+            .map(|record| {
+                SnapshotCommand::try_from(record).map_err(|problem| LedgerSnapshotError::Command {
+                    comment_id: record.comment_id,
+                    problem,
+                })
+            })
+            .collect::<Result<_, _>>()
+            .map(LedgerRecords::Listed)
     }
 }

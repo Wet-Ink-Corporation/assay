@@ -16,6 +16,8 @@ mod check_events;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod check_fakes;
 mod check_patches;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod command_line;
 mod config;
 mod contract;
 mod coordinate;
@@ -39,6 +41,8 @@ mod eligibility_fakes;
 mod eligibility_ledger;
 mod eligibility_lists;
 mod eligibility_range;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod eligibility_records;
 mod eligibility_refusals;
 mod eval_compare;
 mod eval_corpus;
