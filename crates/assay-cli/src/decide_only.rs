@@ -23,7 +23,9 @@ use assay_forge::github::{
 
 use crate::ci::OutputName;
 use crate::guard::{Refusal, UntrustedHead};
-use crate::outputs::{DECIDE_ONLY_SKIP, DecideOnlyGuardOutputs, DecideOnlyPrs, DecideTrigger};
+use crate::outputs::{
+    DECIDE_ONLY_SKIP, DecideOnlyGuardOutputs, DecideOnlyPrs, DecideTrigger, PrsError,
+};
 
 /// The prefix of every label of assay's.
 const ASSAY_LABEL: &str = "assay:";
@@ -133,6 +135,9 @@ pub enum GuardDecideOnlyError<E> {
     DefaultBranch(E),
     /// The poll could not read GitHub.
     Poll(PollError<E>),
+    /// The poll's selection is not a set of PRs one run may decide (a PR selected twice, or
+    /// more than the cap): nothing is written rather than a set GitHub's answers made up.
+    Selection(PrsError),
 }
 
 impl<E> fmt::Display for GuardDecideOnlyError<E> {
@@ -147,6 +152,7 @@ impl<E> fmt::Display for GuardDecideOnlyError<E> {
                 f.write_str("reading the repository's default branch for the hourly poll failed")
             }
             Self::Poll(_) => f.write_str("the hourly poll could not read GitHub"),
+            Self::Selection(_) => f.write_str("the hourly poll's selection was refused"),
         }
     }
 }
@@ -157,6 +163,7 @@ impl<E: Error + 'static> Error for GuardDecideOnlyError<E> {
             Self::OtherRepository { .. } => None,
             Self::Pull { source, .. } | Self::DefaultBranch(source) => Some(source),
             Self::Poll(source) => Some(source),
+            Self::Selection(source) => Some(source),
         }
     }
 }
@@ -171,7 +178,9 @@ impl<E: Error + 'static> Error for GuardDecideOnlyError<E> {
 ///
 /// [`GuardDecideOnlyError::OtherRepository`] when the payload is for another repository;
 /// [`GuardDecideOnlyError::Pull`], [`GuardDecideOnlyError::DefaultBranch`] and
-/// [`GuardDecideOnlyError::Poll`] when a read fails.
+/// [`GuardDecideOnlyError::Poll`] when a read fails; [`GuardDecideOnlyError::Selection`] when
+/// the poll selects a PR twice or more than
+/// [`MAX_DECIDE_ONLY_PRS`](crate::outputs::MAX_DECIDE_ONLY_PRS).
 pub fn guard_decide_only<G: DecideOnlyGuardReads>(
     job: DecideOnlyGuardJob,
     event: &DecideOnlyEvent,
@@ -271,11 +280,16 @@ fn poll<G: DecideOnlyGuardReads>(
             prs.push(pr);
         }
     }
-    // The poll selects each PR once, at most its cap, so only an empty set is refused.
-    Ok(DecideOnlyPrs::try_from(prs)
-        .map_or(GuardedDecideOnly::Skip(Skipped::NothingPending), |prs| {
-            GuardedDecideOnly::Run(DecideOnlyGuardOutputs::new(prs, DecideTrigger::Schedule))
-        }))
+    match DecideOnlyPrs::try_from(prs) {
+        Ok(prs) => Ok(GuardedDecideOnly::Run(DecideOnlyGuardOutputs::new(
+            prs,
+            DecideTrigger::Schedule,
+        ))),
+        Err(PrsError::Empty) => Ok(GuardedDecideOnly::Skip(Skipped::NothingPending)),
+        Err(refused @ (PrsError::Repeated { .. } | PrsError::OverCap { .. })) => {
+            Err(GuardDecideOnlyError::Selection(refused))
+        }
+    }
 }
 
 /// A run for the one PR `pr`.

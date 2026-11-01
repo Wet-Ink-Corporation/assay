@@ -13,7 +13,7 @@ use assay_app::{
     CheckName, CommitId, CompletedVerdict, ObservedConclusion, PollError, PollForge, PolledPull,
     Review, ReviewState, UserId, VerdictView,
 };
-use assay_cli::outputs::{DecideOnlyGuardOutputs, DecideOnlyPrs, DecideTrigger};
+use assay_cli::outputs::{DecideOnlyGuardOutputs, DecideOnlyPrs, DecideTrigger, PrsError};
 use assay_cli::{
     DecideOnlyGuardJob, DecideOnlyGuardReads, GuardDecideOnlyError, GuardedDecideOnly, OutputName,
     Refusal, Skipped, UntrustedHead, guard_decide_only,
@@ -114,7 +114,10 @@ struct FakeReads {
     /// PRs whose verdict check is `failure (trust-path-unapproved)` at minute `.1`, approved
     /// on the head at minute 59.
     waiting: Vec<(u64, u32)>,
+    /// Every read fails.
     fail: bool,
+    /// Only the read logged exactly so fails (`open_pulls 50`, `pull 3`).
+    fail_on: Option<&'static str>,
     calls: RefCell<Vec<String>>,
 }
 
@@ -134,8 +137,9 @@ impl FakeReads {
     }
 
     fn log(&self, call: String) -> Result<(), ReadFailed> {
+        let fails = self.fail || self.fail_on == Some(call.as_str());
         self.calls.borrow_mut().push(call);
-        if self.fail { Err(ReadFailed) } else { Ok(()) }
+        if fails { Err(ReadFailed) } else { Ok(()) }
     }
 }
 
@@ -547,15 +551,67 @@ fn a_poll_whose_reads_fail_cannot_decide() {
 
     let guarded = guard_decide_only(job(), &schedule(), &reads);
 
-    let poll = GuardDecideOnlyError::Poll(PollError::Pulls(ReadFailed));
-
     assert_eq!(
         guarded,
         Err(GuardDecideOnlyError::DefaultBranch(ReadFailed))
     );
-    assert_eq!(poll.to_string(), "the hourly poll could not read GitHub");
+}
+
+#[test]
+fn a_poll_whose_listing_fails_is_a_poll_error() {
+    let reads = FakeReads {
+        fail_on: Some("open_pulls 50"),
+        ..FakeReads::default().waiting(3, 10)
+    };
+
+    let guarded = guard_decide_only(job(), &schedule(), &reads);
+
     assert_eq!(
-        poll.source().map(ToString::to_string).as_deref(),
+        guarded,
+        Err(GuardDecideOnlyError::Poll(PollError::Pulls(ReadFailed)))
+    );
+    let error = guarded.expect_err("a poll error");
+    assert_eq!(error.to_string(), "the hourly poll could not read GitHub");
+    assert_eq!(
+        error.source().map(ToString::to_string).as_deref(),
         Some("listing the open PRs failed")
+    );
+}
+
+#[test]
+fn a_poll_whose_read_of_a_selected_pr_fails_cannot_decide() {
+    let reads = FakeReads {
+        fail_on: Some("pull 4"),
+        ..FakeReads::default().waiting(3, 10).waiting(4, 11)
+    };
+
+    let guarded = guard_decide_only(job(), &schedule(), &reads);
+
+    assert_eq!(
+        guarded,
+        Err(GuardDecideOnlyError::Pull {
+            pr: id(4),
+            source: ReadFailed
+        })
+    );
+}
+
+#[test]
+fn a_poll_selection_that_is_no_pr_set_is_an_error_not_a_no_op() {
+    // A listing that names PR 3 twice: the poll selects it twice, which no run may get.
+    let reads = FakeReads::default().waiting(3, 10).waiting(3, 10);
+
+    let guarded = guard_decide_only(job(), &schedule(), &reads);
+
+    assert_eq!(
+        guarded,
+        Err(GuardDecideOnlyError::Selection(PrsError::Repeated {
+            pr: id(3)
+        }))
+    );
+    let error = guarded.expect_err("a selection error");
+    assert_eq!(
+        error.source().map(ToString::to_string).as_deref(),
+        Some("PR #3 is named twice")
     );
 }
