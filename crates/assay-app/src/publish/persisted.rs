@@ -132,9 +132,8 @@ pub fn prepare(target: &Target<'_>, decided: &Decided<'_>) -> Result<PreparedBun
         github: decided.github,
     })
     .map_err(PrepareError::Bundle)?;
-    let digest = Sha256Digest::of(&bytes);
     reread(target, decided.rubric, &bytes).map_err(PrepareError::ReadBack)?;
-    Ok(PreparedBundle { bytes, digest })
+    Ok(PreparedBundle::of(bytes))
 }
 
 /// How the workflow's upload step ended (`steps.<id>.outcome`).

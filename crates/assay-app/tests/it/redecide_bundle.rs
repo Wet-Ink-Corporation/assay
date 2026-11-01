@@ -11,11 +11,13 @@ use assay_app::{
     Redecided, RedecisionRequest, Sha256Digest, SnapshotCommand, Timestamp, TriggerCommand,
     read_decision_bundle, redecision_inputs,
 };
-use assay_domain::{DecisionInputs, EventPayload, Fingerprint, Rubric, RunUid, VoidReason};
+use assay_domain::{
+    DecisionInputs, EventPayload, Fingerprint, PrClass, Rubric, RunUid, Tier, VoidReason,
+};
 use serde_json::{Value, json};
 
 use crate::eligibility_fakes::{
-    APPROVER, CONTRIBUTOR, LISTS_AGENTS, OWNER, World, comment, created, lists, user,
+    APPROVER, CONTRIBUTOR, LISTS_AGENTS, OWNER, World, at, comment, created, lists, sha, user,
 };
 use crate::publish_support::HEAD_COMMIT;
 use crate::redecide_fakes::{evidence, evidence_of, redecided};
@@ -346,6 +348,145 @@ fn a_command_that_is_not_the_trigger_s_is_refused() -> Result<(), Box<dyn Error>
         assert!(
             matches!(outcome, Err(PrepareDecisionError::Trigger)),
             "{trigger:?}: {outcome:?}"
+        );
+    }
+    // The same record, posted on another head.
+    let mut elsewhere = recorded;
+    elsewhere.head_sha = sha('c');
+    let outcome = assay_app::prepare_decision(
+        &case.target(comment_trigger(&posted)?)?,
+        &case.redecided(Some(TriggerCommand::Recorded(&elsewhere))),
+    );
+    assert!(
+        matches!(outcome, Err(PrepareDecisionError::Trigger)),
+        "a record of another head: {outcome:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_rejection_that_is_not_the_trigger_s_is_refused() -> Result<(), Box<dyn Error>> {
+    let case = Case::plain()?;
+    let posted = comment(81, CONTRIBUTOR, 5, "/assay waive 0123456789abcdef");
+    let Err(reason) = case.state.record_command(&created(posted.clone())) else {
+        return Err("the contributor's waive is rejected".into());
+    };
+    let triggers = [
+        (
+            "another comment",
+            comment_trigger(&comment(82, CONTRIBUTOR, 6, "/assay recheck"))?,
+        ),
+        (
+            "another author",
+            DecisionTrigger::Comment {
+                comment_id: posted.id,
+                actor_id: user(APPROVER),
+            },
+        ),
+    ];
+    for (name, trigger) in triggers {
+        let outcome = assay_app::prepare_decision(
+            &case.target(trigger)?,
+            &case.redecided(Some(TriggerCommand::Rejected {
+                reason,
+                comment: &posted,
+            })),
+        );
+
+        assert!(
+            matches!(outcome, Err(PrepareDecisionError::Trigger)),
+            "{name}: {outcome:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A case: its name, how the recorded comment changes (`None`: it is deleted), and the reason
+/// its event gives.
+type Voiding = (&'static str, Option<fn(&mut IssueComment)>, VoidReason);
+
+#[test]
+fn a_voided_record_s_event_gives_edited_deleted_or_hash() -> Result<(), Box<dyn Error>> {
+    let cases: [Voiding; 4] = [
+        (
+            "edited",
+            Some(|posted| posted.updated_at = at(9)),
+            VoidReason::Edited,
+        ),
+        ("deleted", None, VoidReason::Deleted),
+        (
+            "another author",
+            Some(|posted| posted.user = Some(user(APPROVER))),
+            VoidReason::Hash,
+        ),
+        (
+            "now via an app",
+            Some(|posted| posted.via_app = true),
+            VoidReason::Hash,
+        ),
+    ];
+    for (name, change, expected) in cases {
+        let mut world = contributor_pr();
+        let recorded = record(
+            &mut world,
+            &comment(90, OWNER, 5, "/assay waive 0123456789abcdef"),
+        )?;
+        let evidence = evidence(&world, |_| Ok(()))?;
+        match change {
+            None => {
+                world.comments.remove(&recorded.comment_id);
+            }
+            Some(change) => {
+                let stored = world
+                    .comments
+                    .get_mut(&recorded.comment_id)
+                    .ok_or("the comment is kept")?;
+                change(stored);
+            }
+        }
+        let case = Case::over(&world, evidence, &lists())?;
+
+        let bundle = case.scheduled()??;
+
+        let back = read_decision_bundle(bundle.bytes())?;
+        let payloads: Vec<&EventPayload> =
+            back.events().iter().map(|event| &event.payload).collect();
+        assert_eq!(
+            payloads,
+            [&EventPayload::CommandVoided {
+                comment_id: recorded.comment_id.0,
+                reason: expected,
+            }],
+            "{name}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn inputs_of_other_classes_or_another_tier_than_the_evidence_s_are_refused()
+-> Result<(), Box<dyn Error>> {
+    let cases: [Refused; 2] = [
+        (
+            "other classes",
+            |inputs| inputs.pr.classes = vec![PrClass::TrustPath],
+            |error| matches!(error, PrepareDecisionError::Classes),
+        ),
+        (
+            "another tier",
+            |inputs| inputs.pr.tier = Tier::Full,
+            |error| matches!(error, PrepareDecisionError::Tier),
+        ),
+    ];
+    for (name, edit, expected) in cases {
+        let mut case = Case::plain()?;
+        edit(&mut case.inputs);
+
+        let outcome = case.scheduled()?;
+
+        assert!(
+            outcome.as_ref().err().is_some_and(expected),
+            "{name}: {outcome:?}"
         );
     }
     Ok(())

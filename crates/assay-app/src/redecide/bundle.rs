@@ -115,6 +115,13 @@ pub enum PrepareDecisionError {
     /// The inputs' or the evidence's base ref is not the PR's.
     #[error("the decision's base ref is not the PR's")]
     BaseRef,
+    /// The inputs' classes are not the evidence's, so the bundle would not say which PRs fail
+    /// closed (a re-decision never reclassifies).
+    #[error("the decision inputs' classes are not the evidence's")]
+    Classes,
+    /// The inputs' tier is not the evidence's, the tier its LLM stage ran at.
+    #[error("the decision inputs' tier is not the evidence's")]
+    Tier,
     /// The evidence was decided under another rubric version than the one given.
     #[error("the evidence was decided under another rubric version")]
     RubricVersion,
@@ -272,6 +279,13 @@ fn fits(
     }
     if inputs.pr.base_ref != target.base_ref || evidence.base_ref() != target.base_ref {
         return Err(PrepareDecisionError::BaseRef);
+    }
+    let recorded = &evidence.inputs().pr;
+    if inputs.pr.classes != recorded.classes {
+        return Err(PrepareDecisionError::Classes);
+    }
+    if inputs.pr.tier != recorded.tier {
+        return Err(PrepareDecisionError::Tier);
     }
     if evidence.decision().rubric_version != redecided.rubric.version() {
         return Err(PrepareDecisionError::RubricVersion);

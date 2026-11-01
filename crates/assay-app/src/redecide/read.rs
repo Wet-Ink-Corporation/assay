@@ -197,6 +197,7 @@ impl DecisionBundleIn {
             TriggerIn::Schedule {} => DecisionTrigger::Schedule,
         };
         let recorded = RecordedState::read_narrowed(&self.github)?;
+        let void = void_records(&self.github)?;
         let bundle = DecisionBundle {
             run_uid: self.run_uid,
             evidence,
@@ -207,16 +208,89 @@ impl DecisionBundleIn {
             events: self.events,
             recorded,
         };
-        written_events(&bundle).then_some(bundle)
+        (written_events(&bundle) && written_contents(&bundle, &void)).then_some(bundle)
     }
 }
 
+/// The comment ids of `github.commands` whose status is `void`, in record order; `None` when
+/// a record has no such id (the snapshot reader has already refused any other shape).
+fn void_records(github: &Value) -> Option<Vec<u64>> {
+    github
+        .get("commands")?
+        .as_array()?
+        .iter()
+        .filter(|record| record.get("status").and_then(Value::as_str) == Some("void"))
+        .map(|record| record.get("comment_id").and_then(Value::as_u64))
+        .collect()
+}
+
+/// Whether `bundle`'s events say what its snapshot and decision say: one `CommandVoided` per
+/// void record (`void`), in order; one `WaiverApplied` per entry of the decision's `waived`,
+/// in order; and an `OverrideApplied`, by the inputs' override's issuer, exactly when the
+/// decision gives the `override` reason.
+fn written_contents(bundle: &DecisionBundle, void: &[u64]) -> bool {
+    let payloads = || bundle.events.iter().map(|event| &event.payload);
+    let voided: Vec<u64> = payloads()
+        .filter_map(|payload| match payload {
+            EventPayload::CommandVoided { comment_id, .. } => Some(comment_id.get()),
+            _ => None,
+        })
+        .collect();
+    let waivers: Vec<(String, &str)> = payloads()
+        .filter_map(|payload| match payload {
+            EventPayload::WaiverApplied { who, fp } => Some((fp.to_string(), who.as_str())),
+            _ => None,
+        })
+        .collect();
+    let waived: Option<Vec<(String, &str)>> = bundle
+        .decision
+        .get("waived")
+        .and_then(Value::as_array)
+        .and_then(|entries| {
+            entries
+                .iter()
+                .map(|entry| {
+                    let fp = entry.get("fp")?.as_str()?.to_owned();
+                    Some((fp, entry.get("by")?.as_str()?))
+                })
+                .collect()
+        });
+    let overridden = bundle
+        .decision
+        .get("reasons")
+        .and_then(Value::as_array)
+        .is_some_and(|reasons| {
+            reasons
+                .iter()
+                .any(|reason| reason.get("code").and_then(Value::as_str) == Some("override"))
+        });
+    let override_by: Vec<&str> = payloads()
+        .filter_map(|payload| match payload {
+            EventPayload::OverrideApplied { who, .. } => Some(who.as_str()),
+            _ => None,
+        })
+        .collect();
+    let expected_by: Vec<&str> = bundle
+        .inputs
+        .override_record
+        .iter()
+        .filter(|_| overridden)
+        .map(|record| record.by.as_str())
+        .collect();
+    voided == void && waived.as_ref() == Some(&waivers) && override_by == expected_by
+}
+
 /// Whether `bundle`'s events are ones the writer writes: [`EVENT_JOB`]'s, at [`EVENT_STAGE`],
-/// numbered from 0, naming the bundle's run and evidence key at a time that reads, and the
-/// trigger's command first, then voided records, waivers and at most one override.
+/// numbered from 0, naming the bundle's run and evidence key, all at the first event's time
+/// (which reads), and the trigger's command first, then voided records, waivers and at most
+/// one override.
 fn written_events(bundle: &DecisionBundle) -> bool {
     let events = &bundle.events;
     if events.len() > MAX_DECISION_EVENTS {
+        return false;
+    }
+    let at = events.first().map(|event| event.ts.as_str());
+    if at.is_some_and(|ts| ts.parse::<Timestamp>().is_err()) {
         return false;
     }
     let envelopes = (0_u64..).zip(events).all(|(idx, event)| {
@@ -225,7 +299,7 @@ fn written_events(bundle: &DecisionBundle) -> bool {
             && event.stage == EVENT_STAGE
             && event.run_uid == bundle.run_uid
             && event.run_key == bundle.inputs.evidence_key
-            && event.ts.parse::<Timestamp>().is_ok()
+            && Some(event.ts.as_str()) == at
     });
     let mut last = Rank::Command;
     let mut overrides = 0_usize;
