@@ -12,7 +12,8 @@
 //! [`Api::mint_installation_token`] mints the narrowed token a job's [`GitHub`] is built with.
 //! Every response is decoded into a wire DTO and converted, and data the adapter cannot read
 //! exactly is refused ([`ForgeError`], wi-b5affa). [`EventPayload::read`] reads the event
-//! behind a pipeline run from its payload file the same way (#60).
+//! behind a pipeline run from its payload file the same way (#60), and
+//! [`DecideOnlyEvent::read`] the event behind a decide-only run (#61).
 
 mod api;
 mod artifacts;
@@ -44,8 +45,10 @@ pub use api::{Api, MAX_LIST_ITEMS};
 pub use artifacts::BundleFetchError;
 pub use error::{ForgeError, Operation};
 pub use event::{
-    DispatchPayload, EventName, EventPayload, EventPayloadError, HeadRepository, MAX_EVENT_BYTES,
-    ParseEventNameError, PullRequestAction, PullRequestPayload,
+    CommentPayload, DecideOnlyEvent, DecideOnlyEventError, DecideOnlyEventName, DispatchPayload,
+    EventName, EventPayload, EventPayloadError, HeadRepository, Label, LabelAction, LabelName,
+    LabelNameError, LabelPayload, MAX_EVENT_BYTES, MAX_LABEL_BYTES, ParseDecideOnlyEventNameError,
+    ParseEventNameError, PullRequestAction, PullRequestPayload, Sender, SenderKind,
 };
 pub use gh::{
     GH_DOWNLOAD_TIMEOUT, GH_OUTPUT_CAP, GH_TIMEOUT, GhApi, GhCall, GhDownloadError, GhEnvironment,
