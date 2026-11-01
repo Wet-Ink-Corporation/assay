@@ -23,7 +23,7 @@ use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    AGENTS_PATH, ArtifactNonce, BundleSource, CommandComments, CommandCount, CommandReplies,
+    AGENTS_PATH, ArtifactNonce, BundleSource, Claim, CommandComments, CommandCount, CommandReplies,
     CommitId, Counted, CurrentPullRequest, DECISION_FILE, DecisionTarget, EligibilityLists,
     EvidenceBundle, EvidencePointer, EvidenceRead, EvidenceRequest, Exempt, Forge, Forgery,
     GitHubState, Ledger, LedgerSnapshot, LedgerTime, LedgerWriteError, OWNERS_PATH, PrState,
@@ -62,6 +62,16 @@ fn claimable<'s>(
         || evidence
             .is_some_and(|pointer| RedecideRefusal::keyed_over(repo_id, pointer, &register.key));
     (&register.head_sha == head && claimed).then_some(register)
+}
+
+/// `state`'s register and evidence pointer as decide-only's [`Claim`] for `head`, when the
+/// register is [`claimable`] and the state has an evidence pointer; taken out of `state`.
+pub(crate) fn claim(state: PrState, repo_id: NonZeroU64, head: &CommitId) -> Option<Claim> {
+    claimable(&state, repo_id, head)?;
+    Some(Claim {
+        register: state.published?,
+        evidence: state.evidence?,
+    })
 }
 
 /// The repository's default branch, the only branch a dispatched pipeline run may run on (J4).
