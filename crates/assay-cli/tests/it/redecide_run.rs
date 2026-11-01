@@ -257,8 +257,7 @@ impl Scene {
                 event,
                 rubric: over.rubric,
                 at: NOW.parse()?,
-                nonce: format!("{:032x}", 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef_u128)
-                    .parse()?,
+                nonce: format!("{:032x}", u128::default()).parse()?,
             },
             &RedecideJobPorts {
                 app: hub,
@@ -501,7 +500,7 @@ fn an_eligible_override_is_recorded_with_the_live_head_and_applied() -> Result<(
         ran.outputs,
         RedecideOutputs::Bundle {
             digest: digest.clone(),
-            artifact: "assay-decision-55-0123456789abcdef0123456789abcdef".to_owned(),
+            artifact: "assay-decision-55-00000000000000000000000000000000".to_owned(),
         }
     );
     assert_eq!(ran.state()?, RedecideState::Decided { digest });
