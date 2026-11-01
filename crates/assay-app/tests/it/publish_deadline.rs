@@ -26,6 +26,8 @@ fn every_call_under_the_lock_carries_the_lease_s_deadline() -> Result<(), Box<dy
         [
             (Call::FindCheck, by),
             (Call::RecordEvidence, by),
+            // D2 of #61 (wi-a99de2): the publication register, under the lock, before the check.
+            (Call::RecordPublished, by),
             (Call::UpdateCheck, by),
             (Call::FindSummary, by),
             (Call::CreateSummary, by),
