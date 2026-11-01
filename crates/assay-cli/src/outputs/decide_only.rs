@@ -2,13 +2,17 @@
 //! matrix runs for, as a compact JSON array of PR numbers, and `trigger`, the event behind them.
 //! A guard with nothing to decide writes `prs=[]` alone ([`DECIDE_ONLY_SKIP`]), and no job
 //! needs it, so [`DecideOnlyGuardOutputs::from_needs`] refuses an empty set.
+//!
+//! `assay decide-only decide`'s outputs (#61 DO-11) are [`RedecideOutputs`]: `bundle`, and with
+//! `bundle=true` the decision bundle's `bundle_digest` and the `artifact` name the upload step
+//! stores it under.
 
 use std::fmt;
 use std::num::NonZeroU64;
 
-use assay_app::MAX_POLL_SELECTED;
+use assay_app::{ArtifactNonce, MAX_POLL_SELECTED, Sha256Digest};
 
-use super::Read;
+use super::{Read, flag_word};
 use crate::ci::{JobName, Needs, NeedsError, OutputName, canonical_positive};
 
 /// The job whose outputs [`DecideOnlyGuardOutputs`] are: decide-only's guard job is `guard`.
@@ -188,6 +192,50 @@ impl DecideOnlyGuardOutputs {
                     .find(|trigger| trigger.word() == word)
             })?,
         })
+    }
+}
+
+/// The prefix of a decision bundle's artifact name (D5): `assay-decision-<pr>-<nonce>`.
+const DECISION_ARTIFACT: &str = "assay-decision-";
+
+/// What `decide-only decide` reports for the upload step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RedecideOutputs {
+    /// No decision bundle: nothing new to publish, or a refusal.
+    NoBundle,
+    /// The decision bundle written, and the artifact to store it as.
+    Bundle {
+        /// The sha256 of the bundle's exact bytes.
+        digest: Sha256Digest,
+        /// `assay-decision-<pr>-<nonce>`.
+        artifact: String,
+    },
+}
+
+impl RedecideOutputs {
+    /// The outputs for a bundle of PR `pr` whose sha256 is `digest`, stored under a name made
+    /// unique by `nonce`.
+    #[must_use]
+    pub fn bundle(pr: NonZeroU64, digest: Sha256Digest, nonce: &ArtifactNonce) -> Self {
+        Self::Bundle {
+            digest,
+            artifact: format!("{DECISION_ARTIFACT}{pr}-{nonce}"),
+        }
+    }
+
+    /// The outputs, in [`OutputName::REDECIDE`]'s order: `bundle` (`true` or `false`) and, for a
+    /// bundle only, `bundle_digest` and `artifact`.
+    #[must_use]
+    pub fn outputs(&self) -> Vec<(OutputName, String)> {
+        match self {
+            Self::NoBundle => vec![(OutputName::Bundle, flag_word(false).to_owned())],
+            Self::Bundle { digest, artifact } => vec![
+                (OutputName::Bundle, flag_word(true).to_owned()),
+                (OutputName::BundleDigest, digest.to_string()),
+                // The outputs own their copy; the value keeps its name.
+                (OutputName::Artifact, artifact.clone()),
+            ],
+        }
     }
 }
 

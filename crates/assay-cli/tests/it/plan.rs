@@ -23,7 +23,7 @@ use tempfile::TempDir;
 
 const PIN: &str = "0123456789abcdef0123456789abcdef01234567";
 
-fn plugins_toml(required: bool) -> String {
+pub(crate) fn plugins_toml(required: bool) -> String {
     format!(
         "[assay]\ndigest = \"sha256:dc7c1d8e3ccab68cfdb828ce40a446c3913f7172f899ffe3f439839cfd917a8b\"\n\n\
          [[plugin]]\nname = \"temper\"\nadapter = \"builtin:temper\"\npin = \"git:{PIN}\"\n\

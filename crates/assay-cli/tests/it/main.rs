@@ -77,6 +77,10 @@ mod publish_run;
 #[cfg(unix)] // process groups, through forge's git
 mod pull_request;
 mod reconcile;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod redecide_fakes;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod redecide_run;
 #[cfg(unix)] // stand-in executables with Unix file modes
 mod release_job;
 mod release_workflow;

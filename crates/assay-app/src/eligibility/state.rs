@@ -9,7 +9,7 @@ use assay_domain::{Authorship, Override, OwnerApproval, Readiness, Waiver};
 use super::approvals::{Approval, ApprovalStatus, IgnoredApproval};
 use super::commands::{
     CommandRejected, CommandStatus, CommentEvent, JudgedCommand, Recorded, SnapshotCommand,
-    VoidCause, record,
+    VoidCause, applicability, record,
 };
 use super::grammar::Command;
 use super::rule::{Ineligible, Rule};
@@ -146,6 +146,24 @@ impl GitHubState {
     /// the push clock.
     pub fn record_command(&self, event: &CommentEvent) -> Result<Recorded, CommandRejected> {
         record(event, &self.head, self.clock, &self.rule)
+    }
+
+    /// The snapshot with `record`, the command [`Self::record_command`] gave and decide-only
+    /// appended to the ledger, judged as every record of the snapshot is, so this decision
+    /// applies it. A snapshot that already holds a record of its comment (read from the ledger
+    /// after an earlier append) is returned as it is: a comment is one record.
+    #[must_use]
+    pub fn with_recorded(mut self, record: SnapshotCommand) -> Self {
+        if self
+            .commands
+            .iter()
+            .any(|judged| judged.record.comment_id == record.comment_id)
+        {
+            return self;
+        }
+        let status = applicability(&record, &self.head, self.clock, &self.rule);
+        self.commands.push(JudgedCommand { record, status });
+        self
     }
 
     /// The valid waivers of this head, for [`DecisionInputs::waivers`](assay_domain::DecisionInputs).

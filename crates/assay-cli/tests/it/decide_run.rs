@@ -75,7 +75,12 @@ impl Planned {
     /// A ready PR planned as `plan` would, its gates passing and admitted to spend, with the
     /// placeholder review.
     pub(crate) fn new() -> Result<Self, Box<dyn Error>> {
-        let pr = pr(&[], &[("src/lib.rs", "pub fn two() {}\n")])?;
+        Self::with_base(&[])
+    }
+
+    /// Like [`Self::new`], with `base_files` also in the base commit.
+    pub(crate) fn with_base(base_files: &[(&str, &str)]) -> Result<Self, Box<dyn Error>> {
+        let pr = pr(base_files, &[("src/lib.rs", "pub fn two() {}\n")])?;
         let run = RunEnv::from_vars(&RunVariables {
             run_id: Some(OsString::from("4242")),
             run_attempt: Some(OsString::from("1")),
@@ -155,6 +160,15 @@ impl Planned {
     /// Decides over `state` and the downloaded artifacts, with an empty ledger and no
     /// previous run.
     pub(crate) fn decide(&self, state: &LiveState) -> Result<Ran, Box<dyn Error>> {
+        self.decide_over(state, &MemoryLedger::default())
+    }
+
+    /// Like [`Self::decide`], over the ledger files `ledger` holds.
+    pub(crate) fn decide_over(
+        &self,
+        state: &LiveState,
+        ledger: &MemoryLedger,
+    ) -> Result<Ran, Box<dyn Error>> {
         let objects = ForgePullRequest::new(
             &self.pr.repo,
             TreeLimits::default(),
@@ -168,7 +182,7 @@ impl Planned {
             state,
             artifacts: &artifacts,
             forge: &forge,
-            ledger: &MemoryLedger::default(),
+            ledger,
             bundles: &NoBundles::default(),
             comments: &NoComments,
         };

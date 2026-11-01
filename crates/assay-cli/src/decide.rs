@@ -162,7 +162,8 @@ where
             (DecideState::Decided { digest }, Some(bundle))
         }
     };
-    write_out(out, &state, bundle.as_ref().map(PreparedBundle::bytes))
+    let bundle_file = bundle.as_ref().map(|bundle| (BUNDLE_FILE, bundle.bytes()));
+    write_out(out, &state.json(), bundle_file)
         .map_err(|(path, source)| DecideRunError::Write { path, source })?;
     Ok(match state {
         DecideState::Decided { digest } => DecideOutputs::Bundle { digest },
@@ -365,19 +366,16 @@ fn carried<H, S, A, F, L, B: BundleSource, C>(
     Ok((findings, waivers))
 }
 
-/// Creates `out` (refusing one that exists by now) and writes `bundle`, when there is one, and
-/// then `state` into it; the directory or file that could not be written, and why.
-fn write_out(
+/// Creates `out` (refusing one that exists by now) and writes `bundle`, a file name and its
+/// bytes, when there is one, and then `state` as [`STATE_FILE`] into it; the directory or file
+/// that could not be written, and why. decide-only's `decide` writes its `--out` the same way.
+pub(crate) fn write_out(
     out: &OutDir,
-    state: &DecideState,
-    bundle: Option<&[u8]>,
+    state: &[u8],
+    bundle: Option<(&str, &[u8])>,
 ) -> Result<(), (PathBuf, io::Error)> {
     fs::create_dir(out.path()).map_err(|source| (out.path().to_path_buf(), source))?;
-    let state = state.json();
-    let files = bundle
-        .map(|bytes| (BUNDLE_FILE, bytes))
-        .into_iter()
-        .chain([(STATE_FILE, state.as_slice())]);
+    let files = bundle.into_iter().chain([(STATE_FILE, state)]);
     for (name, bytes) in files {
         let path = out.path().join(name);
         File::create_new(&path)

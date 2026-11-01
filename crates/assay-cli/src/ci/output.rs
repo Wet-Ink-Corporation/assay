@@ -90,6 +90,9 @@ pub enum OutputName {
     BundleDigest,
     /// decide-only guard: `prs`, the PRs to decide again, as a compact JSON array (#61 DO-10).
     Prs,
+    /// decide-only decide: `artifact`, the name `assay-decision-<pr>-<nonce>` the upload step
+    /// stores `run-decision.json` under; written with `bundle=true` only (#61 DO-11).
+    Artifact,
 }
 
 impl OutputName {
@@ -99,6 +102,10 @@ impl OutputName {
     /// The outputs `decide-only guard` writes (#61 DO-10), in order; `trigger` only beside a
     /// PR to decide.
     pub const DECIDE_ONLY_GUARD: [Self; 2] = [Self::Prs, Self::Trigger];
+
+    /// The outputs `decide-only decide` writes (#61 DO-11), in order; `bundle_digest` and
+    /// `artifact` only with `bundle=true`.
+    pub const REDECIDE: [Self; 3] = [Self::Bundle, Self::BundleDigest, Self::Artifact];
 
     /// The outputs `guard` writes.
     pub const GUARD: [Self; 11] = [
@@ -209,6 +216,7 @@ impl OutputName {
             Self::Bundle => "bundle",
             Self::BundleDigest => "bundle_digest",
             Self::Prs => "prs",
+            Self::Artifact => "artifact",
         }
     }
 }
