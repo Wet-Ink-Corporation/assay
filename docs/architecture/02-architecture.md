@@ -46,7 +46,7 @@ assay is one Rust binary (`assay`) with a subcommand per pipeline stage, a base-
         │                     │                        │      │ sequential) → coordinator → verifier;    │
         │                     │                        │      │ egress scan of its own output (T2)       │
         │                     │                        │      └──────────────────┬───────────────────────┘
-        │                     │                        │      ┌─ release (Z4; needs admit, review) ──────┐
+        │                     │                        │      ┌─ release (Z4; needs guard, admit, review)┐
         │                     │                        │      │ always(), slot held, run_attempt == 1;   │
         │                     │                        │      │ ledger token only; releases the slot by  │
         │                     │                        │      │ CAS (force-with-lease), writes the cost  │
