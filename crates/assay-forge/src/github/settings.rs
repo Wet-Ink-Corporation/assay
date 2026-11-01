@@ -210,7 +210,7 @@ impl<T: Transport, S: Sleep> PrerequisiteForge for GitHub<T, S> {
 impl<T: Transport, S: Sleep> GitHub<T, S> {
     /// `contents/<path>?ref=<branch>`, each path segment encoded; a path that is empty,
     /// absolute or has an empty, `.` or `..` segment is refused unsent.
-    fn contents(
+    pub(super) fn contents(
         &self,
         operation: Operation,
         branch: &str,

@@ -14,6 +14,8 @@ mod deadline;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod decide_only_event;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod decide_only_reads;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod event;
 #[cfg(unix)] // exit statuses built from raw wait statuses
 mod gh;
