@@ -11,7 +11,7 @@ use assay_domain::{ContentHash, Reason, ReasonCode};
 use super::RedecideTarget;
 use crate::publish::ports::{Claim, EvidencePointer, PublishLedger, VerdictForge};
 use crate::publish::write::{self, Claimant, Pending, Writer};
-use crate::publish::{PublishFailure, Published, refusal_update};
+use crate::publish::{PublishError, PublishFailure, Published, refusal_update};
 use crate::redecide::Absence;
 
 /// Why decide-only refuses to re-decide from the evidence the ledger points at.
@@ -63,14 +63,18 @@ pub struct UnusableEvidence<'a> {
 /// # Errors
 ///
 /// As [`publish`](crate::publish): there is no check to write, the lock cannot be taken, or a
-/// forge call fails; and [`PublishError::ClaimHead`](crate::PublishError::ClaimHead) for a
-/// claim of another head. A stale writer yields ([`Published::Yielded`]); that is not an error.
+/// forge call fails; [`PublishError::ClaimHead`] for a claim of another head; and
+/// [`PublishError::NotFirstAttempt`] for a re-run, before any port call. A stale writer
+/// yields ([`Published::Yielded`]); that is not an error.
 pub fn publish_redecide_refusal<F: VerdictForge, L: PublishLedger>(
     unusable: &UnusableEvidence<'_>,
     forge: &F,
     ledger: &L,
 ) -> Result<Published<L::Error, Infallible>, PublishFailure<F, L>> {
     let (target, claim) = (&unusable.target, unusable.claim);
+    if !target.is_first_attempt() {
+        return Err(PublishError::NotFirstAttempt);
+    }
     let reason = unusable.refusal.reason();
     let update = refusal_update(
         key(target.run_uid.repo_id, &claim.evidence, &reason),

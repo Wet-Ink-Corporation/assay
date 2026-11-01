@@ -43,6 +43,11 @@ pub struct RedecideTarget<'a> {
 }
 
 impl<'a> RedecideTarget<'a> {
+    /// Whether the run is attempt 1, the only one that publishes (R3-05).
+    const fn is_first_attempt(&self) -> bool {
+        self.run_uid.run_attempt.get() == NonZeroU64::MIN.get()
+    }
+
     /// Where the check is written.
     const fn site(&self) -> Site<'a> {
         Site {
@@ -203,7 +208,7 @@ pub fn publish_redecided<F: VerdictForge, L: PublishLedger, S: DecisionBundleSou
 /// Reads `persisted.bundle` back as the target's re-decision from the claim's evidence.
 fn reread(persisted: &RedecidedPersisted<'_>) -> Result<DecisionBundle, RedecidedRefused> {
     let target = &persisted.target;
-    if target.run_uid.run_attempt != NonZeroU64::MIN {
+    if !target.is_first_attempt() {
         return Err(RedecidedRefused::NotFirstAttempt);
     }
     let bundle = read_decision_bundle(persisted.bundle).map_err(RedecidedRefused::Unreadable)?;

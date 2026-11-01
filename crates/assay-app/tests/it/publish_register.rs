@@ -145,6 +145,38 @@ fn a_pipeline_register_is_written_alone_over_whatever_was_there() -> Result<(), 
 }
 
 #[test]
+fn a_late_pipeline_register_leaves_a_later_run_s_register_of_another_head()
+-> Result<(), Box<dyn Error>> {
+    // (register there, whether run 7's pipeline register of head `bbbb…` replaces it)
+    let cases = [
+        (register('a', 'f', 9), false),
+        (register('a', 'f', 5), true),
+        (register('b', 'f', 9), true),
+    ];
+    for (there, replaced) in cases {
+        let before = PrState {
+            // The state owns its copy; `there` is compared after the write.
+            published: Some(there.clone()),
+            ..claimed_state()
+        };
+        let ledger = ledger_with(&before)?;
+        let (refs, clock) = (MemoryRefs::default(), FakeClock::reading(&[NOW]));
+
+        let recorded = publisher(&ledger, &refs, &clock)
+            .record_published(&live(), &published(register('b', 'c', 7), None))?;
+
+        assert_eq!(recorded, Claimed::Recorded, "{there:?}");
+        let kept = if replaced {
+            register('b', 'c', 7)
+        } else {
+            there
+        };
+        assert_eq!(state(&ledger)?.published, Some(kept));
+    }
+    Ok(())
+}
+
+#[test]
 fn a_register_of_another_head_than_the_lock_s_is_refused_unwritten() {
     let (ledger, refs, clock) = (
         MemoryLedger::default(),

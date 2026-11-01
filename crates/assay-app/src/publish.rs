@@ -147,10 +147,13 @@ pub enum Published<L, B> {
 /// Why a writer yielded (R3-09).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Stale {
-    /// The check's stamp is neither this run's `pending:` stamp nor its decision key: the lock
-    /// was not taken.
+    /// The check's `external_id` is neither the writer's claim nor the key it publishes under:
+    /// for a pipeline run, not its `pending:` stamp; for decide-only, not the key of the
+    /// publication register it read (any `pending:` stamp included). The lock was not taken.
     Foreign,
-    /// The check changed between the writer's first read and its read under the lock.
+    /// The check changed between the writer's first read and its read under the lock, or, for
+    /// decide-only, the ledger no longer held the register and evidence pointer it claimed when
+    /// it came to record its own ([`Claimed::Moved`]). Nothing was written.
     Moved,
 }
 
@@ -243,6 +246,10 @@ pub enum PublishError<F, L> {
     /// written.
     #[error("the claimed publication register is of another head")]
     ClaimHead,
+    /// decide-only's run is a re-run: only attempt 1 publishes (R3-05). Nothing was read or
+    /// written.
+    #[error("only attempt 1 publishes")]
+    NotFirstAttempt,
     /// The App's check for the head does not exist: `open` creates it, never `decide`.
     #[error("there is no verdict check for the head")]
     CheckMissing,
