@@ -9,23 +9,26 @@ use std::error::Error;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    Absence, BUNDLE_FILE, BundleSource, ChainError, ChainMismatch, ChainPorts, ChainReplayed,
-    ChainRequest, DecisionBundleSource, DecisionPointer, DecisionTarget, DecisionTrigger, Forgery,
-    InputsField, MAX_DECISION_BUNDLE_BYTES, ProvenanceRefusal, Redecided, RedecisionRequest,
-    RunEvent, RunField, RunProvenance, Sha256Digest, StoredBundle, WorkflowRunFacts,
-    prepare_decision, redecision_inputs, replay_chain,
+    Absence, BUNDLE_FILE, BundleShape, BundleSource, ChainError, ChainMismatch, ChainPorts,
+    ChainReplayed, ChainRequest, DecisionBundleSource, DecisionPointer, DecisionTarget,
+    DecisionTrigger, Forgery, InputsField, MAX_BUNDLE_BYTES, MAX_DECISION_BUNDLE_BYTES,
+    ProvenanceRefusal, Recorded, Redecided, RedecisionRequest, ReviewState, RunEvent, RunField,
+    RunProvenance, Sha256Digest, StoredBundle, WorkflowRunFacts, prepare_decision,
+    redecision_inputs, replay_chain,
 };
-use assay_domain::{DecisionInputs, LlmStage, NotRunReason, Rubric, RunUid};
+use assay_domain::{DecisionInputs, LlmStage, NotRunReason, PrClass, Rubric, RunUid, Tier, decide};
+use serde_json::{Value, json};
 
-use crate::decide_fakes::Scenario;
-use serde_json::Value;
-
-use crate::eligibility_fakes::{CONTRIBUTOR, DIGEST, World, lists, sha};
+use crate::decide_fakes::{Scenario, authenticated};
+use crate::eligibility_fakes::{
+    APPROVER, CONTRIBUTOR, DIGEST, World, comment, created, lists, sha,
+};
 use crate::plan_fakes::FakeError;
-use crate::publish_support::HEAD_COMMIT;
+use crate::publish_support::{HEAD_COMMIT, Run};
 use crate::redecide_fakes::{StoredEvidence, redecided, stored_evidence};
 use crate::replay_fakes::Stored;
 use crate::support::rubric_v1;
+use crate::waive_carry::raised_scenario;
 
 /// The repository of every run here (`plan_fakes::run_uid`).
 const REPO: u64 = 840_213_377;
@@ -47,13 +50,15 @@ enum Call {
     Provenance(u64),
     /// The decision bundle of a run and PR was fetched, under a limit.
     Decision(RunUid, u64, usize),
-    /// The evidence bundle of a run was fetched.
-    Evidence(RunUid, String),
+    /// The evidence bundle's file of a run was fetched, under a limit.
+    Evidence(RunUid, String, usize),
 }
 
 /// GitHub's runs and the artifact store, logging every call into one list.
 struct Ports {
     runs: Vec<WorkflowRunFacts>,
+    /// The run whose provenance GitHub fails to answer for, if any.
+    unreadable: Option<NonZeroU64>,
     evidence: Stored,
     decision: Stored,
     calls: RefCell<Vec<Call>>,
@@ -75,6 +80,9 @@ impl RunProvenance for Ports {
 
     fn workflow_run(&self, run_id: NonZeroU64) -> Result<Option<WorkflowRunFacts>, FakeError> {
         self.calls.borrow_mut().push(Call::Provenance(run_id.get()));
+        if self.unreadable == Some(run_id) {
+            return Err(FakeError);
+        }
         Ok(self.runs.iter().find(|run| run.run_id == run_id).cloned())
     }
 }
@@ -82,10 +90,10 @@ impl RunProvenance for Ports {
 impl BundleSource for Ports {
     type Error = FakeError;
 
-    fn fetch(&self, run: RunUid, file: &str, _limit: usize) -> Result<StoredBundle, FakeError> {
+    fn fetch(&self, run: RunUid, file: &str, limit: usize) -> Result<StoredBundle, FakeError> {
         self.calls
             .borrow_mut()
-            .push(Call::Evidence(run, file.to_owned()));
+            .push(Call::Evidence(run, file.to_owned(), limit));
         answer(&self.evidence)
     }
 }
@@ -123,11 +131,52 @@ struct Chain {
     rubric: Rubric,
 }
 
+/// What a chain's evidence is taken over, and what happens on GitHub after it.
+struct Setup<'a, A, B> {
+    /// The pipeline run whose evidence is taken.
+    scenario: &'a Scenario,
+    /// The PR as the evidence run saw it.
+    world: World,
+    /// Applied to the run before it is published.
+    evidence_edit: A,
+    /// What happens on GitHub after the evidence, before decide-only re-decides.
+    later: B,
+}
+
 impl Chain {
     /// The re-decision decide-only run `run` persisted, its inputs changed by `edit` first.
     fn of(run: u64, edit: impl FnOnce(&mut DecisionInputs)) -> Result<Self, Box<dyn Error>> {
-        let world = World::opened_at(CONTRIBUTOR, HEAD_COMMIT);
-        let evidence = stored_evidence(&Scenario::new()?, &world, |_| Ok(()))?;
+        Self::built(
+            run,
+            Setup {
+                scenario: &Scenario::new()?,
+                world: World::opened_at(CONTRIBUTOR, HEAD_COMMIT),
+                evidence_edit: |_: &mut Run| Ok(()),
+                later: |_: &mut World| Ok(()),
+            },
+            edit,
+        )
+    }
+
+    /// The re-decision run `run` persisted of `setup`'s world, the inputs decide-only composes
+    /// changed by `edit` before the bundle is written.
+    fn built<A, B>(
+        run: u64,
+        setup: Setup<'_, A, B>,
+        edit: impl FnOnce(&mut DecisionInputs),
+    ) -> Result<Self, Box<dyn Error>>
+    where
+        A: FnOnce(&mut Run) -> Result<(), Box<dyn Error>>,
+        B: FnOnce(&mut World) -> Result<(), Box<dyn Error>>,
+    {
+        let Setup {
+            scenario,
+            mut world,
+            evidence_edit,
+            later,
+        } = setup;
+        let evidence = stored_evidence(scenario, &world, evidence_edit)?;
+        later(&mut world)?;
         let state = redecided(&world, &evidence.bundle, &lists())?;
         let mut inputs = redecision_inputs(&RedecisionRequest {
             evidence: &evidence.bundle,
@@ -201,6 +250,7 @@ impl Chain {
     fn ports(&self) -> Ports {
         Ports {
             runs: vec![self.evidence.run.clone(), self.decide_only.clone()],
+            unreadable: None,
             evidence: Stored::Bytes(self.evidence.bytes.clone()),
             decision: Stored::Bytes(self.decision.clone()),
             calls: RefCell::new(Vec::new()),
@@ -249,10 +299,7 @@ fn a_decision_bundle_replays_to_its_recorded_decision_through_its_evidence()
         return Err("the chain replays".into());
     };
 
-    assert_eq!(
-        matched.decision,
-        assay_domain::decide(&chain.rubric, &chain.inputs)
-    );
+    assert_eq!(matched.decision, decide(&chain.rubric, &chain.inputs));
     assert_eq!(matched.evidence, chain.evidence.bundle);
     let decision_run = RunUid {
         repo_id: id(REPO)?,
@@ -270,7 +317,7 @@ fn a_decision_bundle_replays_to_its_recorded_decision_through_its_evidence()
             Call::Provenance(DECIDE_ONLY_RUN),
             Call::Decision(decision_run, PR, MAX_DECISION_BUNDLE_BYTES),
             Call::Provenance(chain.evidence.pointer.run_id.get()),
-            Call::Evidence(evidence_run, BUNDLE_FILE.to_owned()),
+            Call::Evidence(evidence_run, BUNDLE_FILE.to_owned(), MAX_BUNDLE_BYTES),
         ],
         "the decision run's provenance first, then its bundle, then the evidence's"
     );
@@ -496,6 +543,128 @@ fn a_decision_bundle_that_cannot_be_read_is_an_error() -> Result<(), Box<dyn Err
     assert_matches!(
         chain.replay_under(&other_rubric, &rubric)?,
         Err(ChainError::RubricVersion)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_snapshot_that_changed_since_the_evidence_replays_as_recorded() -> Result<(), Box<dyn Error>> {
+    let scenario = raised_scenario()?;
+    let fp = authenticated(scenario.authenticate()?)?
+        .gates()
+        .first()
+        .and_then(|gate| gate.findings.first())
+        .ok_or("the static gate has a finding")?
+        .fp;
+    let setup = Setup {
+        scenario: &scenario,
+        world: World::opened_at(CONTRIBUTOR, HEAD_COMMIT),
+        evidence_edit: |run: &mut Run| {
+            run.inputs.pr.classes = vec![PrClass::TrustPath];
+            Ok(())
+        },
+        later: |world: &mut World| -> Result<(), Box<dyn Error>> {
+            world.review(APPROVER, ReviewState::Approved, (HEAD_COMMIT, 5));
+            let posted = comment(40, APPROVER, 6, &format!("/assay waive {fp}"));
+            let Recorded::Record(record) =
+                world.state()?.record_command(&created(posted.clone()))?
+            else {
+                return Err("the approver's waive is recorded".into());
+            };
+            world.commands.push(record);
+            world.comments.insert(posted.id, posted);
+            Ok(())
+        },
+    };
+    let chain = Chain::built(DECIDE_ONLY_RUN, setup, |_| ())?;
+    let evidence = &chain.evidence.bundle;
+    let redecision = decide(&chain.rubric, &chain.inputs);
+    assert_ne!(
+        chain.inputs.pr.owner_approval,
+        evidence.inputs().pr.owner_approval,
+        "the approval came after the evidence"
+    );
+    assert_ne!(
+        chain.inputs.waivers,
+        evidence.inputs().waivers,
+        "the waive came after the evidence"
+    );
+    assert_ne!(&redecision, evidence.decision());
+
+    let ChainReplayed::Match(matched) = chain.replay(&chain.ports())?? else {
+        return Err("a re-decision over a changed snapshot replays".into());
+    };
+
+    assert_eq!(matched.decision, redecision);
+    Ok(())
+}
+
+#[test]
+fn a_decision_bundle_off_the_contract_is_unreadable() -> Result<(), Box<dyn Error>> {
+    let chain = Chain::rewritten(|bundle| {
+        bundle["trigger"] = json!({"event": "push"});
+    })?;
+
+    assert_matches!(
+        chain.replay(&chain.ports())?,
+        Err(ChainError::Unreadable(BundleShape::Shape))
+    );
+    Ok(())
+}
+
+#[test]
+fn a_port_that_cannot_be_read_is_its_error() -> Result<(), Box<dyn Error>> {
+    let chain = Chain::plain()?;
+    let mut decision_run = chain.ports();
+    decision_run.unreadable = Some(id(DECIDE_ONLY_RUN)?);
+    let mut evidence_run = chain.ports();
+    evidence_run.unreadable = Some(chain.evidence.pointer.run_id);
+    let mut evidence_store = chain.ports();
+    evidence_store.evidence = Stored::Fails;
+
+    assert_matches!(
+        chain.replay(&decision_run)?,
+        Err(ChainError::Provenance(FakeError))
+    );
+    assert_eq!(
+        decision_run.calls.into_inner(),
+        [Call::Provenance(DECIDE_ONLY_RUN)]
+    );
+    assert_matches!(
+        chain.replay(&evidence_run)?,
+        Err(ChainError::Provenance(FakeError))
+    );
+    assert_eq!(
+        evidence_run.calls.into_inner().len(),
+        3,
+        "the evidence run's provenance failed after the decision bundle was read"
+    );
+    assert_matches!(
+        chain.replay(&evidence_store)?,
+        Err(ChainError::EvidenceFetch(FakeError))
+    );
+    Ok(())
+}
+
+#[test]
+fn inputs_that_differ_from_the_evidence_on_the_tier_or_base_ref_are_a_mismatch()
+-> Result<(), Box<dyn Error>> {
+    let tier = Chain::rewritten(|bundle| {
+        bundle["inputs"]["pr"]["tier"] = json!("needs-split");
+    })?;
+    assert_ne!(tier.inputs.pr.tier, Tier::NeedsSplit, "the tier changes");
+    let base_ref = Chain::rewritten(|bundle| {
+        bundle["inputs"]["pr"]["base_ref"] = json!("release");
+    })?;
+    assert_ne!(
+        base_ref.inputs.pr.base_ref, "release",
+        "the base ref changes"
+    );
+
+    assert_eq!(tier.mismatch()?, ChainMismatch::Inputs(InputsField::Tier));
+    assert_eq!(
+        base_ref.mismatch()?,
+        ChainMismatch::Inputs(InputsField::BaseRef)
     );
     Ok(())
 }
