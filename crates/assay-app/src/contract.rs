@@ -55,16 +55,19 @@ pub enum Contract {
     Event,
     /// `assay.status/1`: a PR's assay state as `assay status --json` renders it (03 §6b).
     Status,
+    /// `assay.run-decision/1`: the decision bundle decide-only persists (03 §6e, #61 D5).
+    RunDecision,
 }
 
 impl Contract {
     /// Every contract.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Findings,
         Self::Run,
         Self::Decision,
         Self::Event,
         Self::Status,
+        Self::RunDecision,
     ];
 
     /// The contract's name without its version, as it appears before the `/` of the `schema`
@@ -77,6 +80,7 @@ impl Contract {
             Self::Decision => "assay.decision",
             Self::Event => "assay.event",
             Self::Status => "assay.status",
+            Self::RunDecision => "assay.run-decision",
         }
     }
 
@@ -88,6 +92,7 @@ impl Contract {
             Self::Decision => include_str!("../../../schemas/decision-1.schema.json"),
             Self::Event => include_str!("../../../schemas/event-1.schema.json"),
             Self::Status => include_str!("../../../schemas/status-1.schema.json"),
+            Self::RunDecision => include_str!("../../../schemas/run-decision-1.schema.json"),
         }
     }
 }
@@ -107,6 +112,7 @@ pub struct ContractValidator {
     decision: Compiled,
     event: Compiled,
     status: Compiled,
+    run_decision: Compiled,
 }
 
 /// One contract's compiled schema and the property names it declares, the only object keys a
@@ -131,6 +137,7 @@ impl ContractValidator {
             decision: compile(Contract::Decision)?,
             event: compile(Contract::Event)?,
             status: compile(Contract::Status)?,
+            run_decision: compile(Contract::RunDecision)?,
         })
     }
 
@@ -204,6 +211,7 @@ impl ContractValidator {
             Contract::Decision => &self.decision,
             Contract::Event => &self.event,
             Contract::Status => &self.status,
+            Contract::RunDecision => &self.run_decision,
         }
     }
 }

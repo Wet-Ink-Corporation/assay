@@ -116,11 +116,28 @@ pub(super) fn bundle(contents: &Contents<'_>) -> Result<Vec<u8>, BundleError> {
         carry: CarryOut::of(contents.carry),
         github: StateRecord::of(contents.github),
     };
-    let mut out = Capped::new(MAX_BUNDLE_BYTES);
-    match serde_json::to_writer(&mut out, &inputs) {
+    capped_json(&inputs, MAX_BUNDLE_BYTES).map_err(|error| match error {
+        CappedJson::TooLarge => BundleError::TooLarge,
+        CappedJson::Encode(error) => BundleError::Encode(error),
+    })
+}
+
+/// Why [`capped_json`] wrote nothing.
+#[derive(Debug)]
+pub(crate) enum CappedJson {
+    /// The JSON would be larger than the cap; it was never held whole.
+    TooLarge,
+    /// The value could not be encoded.
+    Encode(serde_json::Error),
+}
+
+/// `value` as compact JSON of at most `cap` bytes.
+pub(crate) fn capped_json<T: Serialize>(value: &T, cap: usize) -> Result<Vec<u8>, CappedJson> {
+    let mut out = Capped::new(cap);
+    match serde_json::to_writer(&mut out, value) {
         Ok(()) => Ok(out.bytes),
-        Err(_over) if out.over => Err(BundleError::TooLarge),
-        Err(error) => Err(BundleError::Encode(error)),
+        Err(_over) if out.over => Err(CappedJson::TooLarge),
+        Err(error) => Err(CappedJson::Encode(error)),
     }
 }
 

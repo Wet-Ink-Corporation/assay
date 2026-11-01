@@ -1,0 +1,558 @@
+{
+  "schema": "assay.run-decision/1",
+  "run_uid": {
+    "repo_id": 42,
+    "run_id": 99,
+    "run_attempt": 1
+  },
+  "evidence": {
+    "run_id": 7,
+    "run_attempt": 1,
+    "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "trigger": {
+    "event": "schedule"
+  },
+  "inputs": {},
+  "rubric_version": "1",
+  "decision": {},
+  "events": [],
+  "github": {
+    "lists": {
+      "owners": [],
+      "approvers": [],
+      "maintainers": [
+        {
+          "id": 7000,
+          "login": "m00"
+        },
+        {
+          "id": 7001,
+          "login": "m01"
+        },
+        {
+          "id": 7002,
+          "login": "m02"
+        },
+        {
+          "id": 7003,
+          "login": "m03"
+        },
+        {
+          "id": 7004,
+          "login": "m04"
+        },
+        {
+          "id": 7005,
+          "login": "m05"
+        },
+        {
+          "id": 7006,
+          "login": "m06"
+        },
+        {
+          "id": 7007,
+          "login": "m07"
+        },
+        {
+          "id": 7008,
+          "login": "m08"
+        },
+        {
+          "id": 7009,
+          "login": "m09"
+        },
+        {
+          "id": 7010,
+          "login": "m0a"
+        },
+        {
+          "id": 7011,
+          "login": "m0b"
+        },
+        {
+          "id": 7012,
+          "login": "m0c"
+        },
+        {
+          "id": 7013,
+          "login": "m0d"
+        },
+        {
+          "id": 7014,
+          "login": "m0e"
+        },
+        {
+          "id": 7015,
+          "login": "m0f"
+        },
+        {
+          "id": 7016,
+          "login": "m10"
+        },
+        {
+          "id": 7017,
+          "login": "m11"
+        },
+        {
+          "id": 7018,
+          "login": "m12"
+        },
+        {
+          "id": 7019,
+          "login": "m13"
+        },
+        {
+          "id": 7020,
+          "login": "m14"
+        },
+        {
+          "id": 7021,
+          "login": "m15"
+        },
+        {
+          "id": 7022,
+          "login": "m16"
+        },
+        {
+          "id": 7023,
+          "login": "m17"
+        },
+        {
+          "id": 7024,
+          "login": "m18"
+        },
+        {
+          "id": 7025,
+          "login": "m19"
+        },
+        {
+          "id": 7026,
+          "login": "m1a"
+        },
+        {
+          "id": 7027,
+          "login": "m1b"
+        },
+        {
+          "id": 7028,
+          "login": "m1c"
+        },
+        {
+          "id": 7029,
+          "login": "m1d"
+        },
+        {
+          "id": 7030,
+          "login": "m1e"
+        },
+        {
+          "id": 7031,
+          "login": "m1f"
+        },
+        {
+          "id": 7032,
+          "login": "m20"
+        },
+        {
+          "id": 7033,
+          "login": "m21"
+        },
+        {
+          "id": 7034,
+          "login": "m22"
+        },
+        {
+          "id": 7035,
+          "login": "m23"
+        },
+        {
+          "id": 7036,
+          "login": "m24"
+        },
+        {
+          "id": 7037,
+          "login": "m25"
+        },
+        {
+          "id": 7038,
+          "login": "m26"
+        },
+        {
+          "id": 7039,
+          "login": "m27"
+        },
+        {
+          "id": 7040,
+          "login": "m28"
+        },
+        {
+          "id": 7041,
+          "login": "m29"
+        },
+        {
+          "id": 7042,
+          "login": "m2a"
+        },
+        {
+          "id": 7043,
+          "login": "m2b"
+        },
+        {
+          "id": 7044,
+          "login": "m2c"
+        },
+        {
+          "id": 7045,
+          "login": "m2d"
+        },
+        {
+          "id": 7046,
+          "login": "m2e"
+        },
+        {
+          "id": 7047,
+          "login": "m2f"
+        },
+        {
+          "id": 7048,
+          "login": "m30"
+        },
+        {
+          "id": 7049,
+          "login": "m31"
+        },
+        {
+          "id": 7050,
+          "login": "m32"
+        },
+        {
+          "id": 7051,
+          "login": "m33"
+        },
+        {
+          "id": 7052,
+          "login": "m34"
+        },
+        {
+          "id": 7053,
+          "login": "m35"
+        },
+        {
+          "id": 7054,
+          "login": "m36"
+        },
+        {
+          "id": 7055,
+          "login": "m37"
+        },
+        {
+          "id": 7056,
+          "login": "m38"
+        },
+        {
+          "id": 7057,
+          "login": "m39"
+        },
+        {
+          "id": 7058,
+          "login": "m3a"
+        },
+        {
+          "id": 7059,
+          "login": "m3b"
+        },
+        {
+          "id": 7060,
+          "login": "m3c"
+        },
+        {
+          "id": 7061,
+          "login": "m3d"
+        },
+        {
+          "id": 7062,
+          "login": "m3e"
+        },
+        {
+          "id": 7063,
+          "login": "m3f"
+        },
+        {
+          "id": 7064,
+          "login": "m40"
+        },
+        {
+          "id": 7065,
+          "login": "m41"
+        },
+        {
+          "id": 7066,
+          "login": "m42"
+        },
+        {
+          "id": 7067,
+          "login": "m43"
+        },
+        {
+          "id": 7068,
+          "login": "m44"
+        },
+        {
+          "id": 7069,
+          "login": "m45"
+        },
+        {
+          "id": 7070,
+          "login": "m46"
+        },
+        {
+          "id": 7071,
+          "login": "m47"
+        },
+        {
+          "id": 7072,
+          "login": "m48"
+        },
+        {
+          "id": 7073,
+          "login": "m49"
+        },
+        {
+          "id": 7074,
+          "login": "m4a"
+        },
+        {
+          "id": 7075,
+          "login": "m4b"
+        },
+        {
+          "id": 7076,
+          "login": "m4c"
+        },
+        {
+          "id": 7077,
+          "login": "m4d"
+        },
+        {
+          "id": 7078,
+          "login": "m4e"
+        },
+        {
+          "id": 7079,
+          "login": "m4f"
+        },
+        {
+          "id": 7080,
+          "login": "m50"
+        },
+        {
+          "id": 7081,
+          "login": "m51"
+        },
+        {
+          "id": 7082,
+          "login": "m52"
+        },
+        {
+          "id": 7083,
+          "login": "m53"
+        },
+        {
+          "id": 7084,
+          "login": "m54"
+        },
+        {
+          "id": 7085,
+          "login": "m55"
+        },
+        {
+          "id": 7086,
+          "login": "m56"
+        },
+        {
+          "id": 7087,
+          "login": "m57"
+        },
+        {
+          "id": 7088,
+          "login": "m58"
+        },
+        {
+          "id": 7089,
+          "login": "m59"
+        },
+        {
+          "id": 7090,
+          "login": "m5a"
+        },
+        {
+          "id": 7091,
+          "login": "m5b"
+        },
+        {
+          "id": 7092,
+          "login": "m5c"
+        },
+        {
+          "id": 7093,
+          "login": "m5d"
+        },
+        {
+          "id": 7094,
+          "login": "m5e"
+        },
+        {
+          "id": 7095,
+          "login": "m5f"
+        },
+        {
+          "id": 7096,
+          "login": "m60"
+        },
+        {
+          "id": 7097,
+          "login": "m61"
+        },
+        {
+          "id": 7098,
+          "login": "m62"
+        },
+        {
+          "id": 7099,
+          "login": "m63"
+        },
+        {
+          "id": 7100,
+          "login": "m64"
+        },
+        {
+          "id": 7101,
+          "login": "m65"
+        },
+        {
+          "id": 7102,
+          "login": "m66"
+        },
+        {
+          "id": 7103,
+          "login": "m67"
+        },
+        {
+          "id": 7104,
+          "login": "m68"
+        },
+        {
+          "id": 7105,
+          "login": "m69"
+        },
+        {
+          "id": 7106,
+          "login": "m6a"
+        },
+        {
+          "id": 7107,
+          "login": "m6b"
+        },
+        {
+          "id": 7108,
+          "login": "m6c"
+        },
+        {
+          "id": 7109,
+          "login": "m6d"
+        },
+        {
+          "id": 7110,
+          "login": "m6e"
+        },
+        {
+          "id": 7111,
+          "login": "m6f"
+        },
+        {
+          "id": 7112,
+          "login": "m70"
+        },
+        {
+          "id": 7113,
+          "login": "m71"
+        },
+        {
+          "id": 7114,
+          "login": "m72"
+        },
+        {
+          "id": 7115,
+          "login": "m73"
+        },
+        {
+          "id": 7116,
+          "login": "m74"
+        },
+        {
+          "id": 7117,
+          "login": "m75"
+        },
+        {
+          "id": 7118,
+          "login": "m76"
+        },
+        {
+          "id": 7119,
+          "login": "m77"
+        },
+        {
+          "id": 7120,
+          "login": "m78"
+        },
+        {
+          "id": 7121,
+          "login": "m79"
+        },
+        {
+          "id": 7122,
+          "login": "m7a"
+        },
+        {
+          "id": 7123,
+          "login": "m7b"
+        },
+        {
+          "id": 7124,
+          "login": "m7c"
+        },
+        {
+          "id": 7125,
+          "login": "m7d"
+        },
+        {
+          "id": 7126,
+          "login": "m7e"
+        },
+        {
+          "id": 7127,
+          "login": "m7f"
+        },
+        {
+          "id": 7128,
+          "login": "m80"
+        }
+      ],
+      "agents": []
+    },
+    "author": 2000,
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "range": {
+      "status": "within",
+      "users": [
+        2000
+      ],
+      "unattributed": false
+    },
+    "pushers": [],
+    "push_clock": null,
+    "approvals": [],
+    "commands": []
+  }
+}

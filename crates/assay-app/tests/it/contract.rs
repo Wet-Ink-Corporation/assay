@@ -20,7 +20,7 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 61] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 72] = [
     (
         Contract::Status,
         "unknown-field",
@@ -319,6 +319,66 @@ const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 61] = [
         Contract::Event,
         "data-not-an-object",
         Rejection::Violation("/data", "type"),
+    ),
+    // decide-only's decision bundle (#61 DO-6, D5).
+    (
+        Contract::RunDecision,
+        "unknown-field",
+        Rejection::Violation("", "additionalProperties"),
+    ),
+    (
+        Contract::RunDecision,
+        "unknown-version",
+        Rejection::Version(2),
+    ),
+    (
+        Contract::RunDecision,
+        "missing-evidence",
+        Rejection::Violation("", "required"),
+    ),
+    // An evidence pointer names attempt 1 only (R3-05).
+    (
+        Contract::RunDecision,
+        "evidence-attempt-two",
+        Rejection::Violation("/evidence/run_attempt", "const"),
+    ),
+    (
+        Contract::RunDecision,
+        "evidence-uppercase-digest",
+        Rejection::Violation("/evidence/sha256", "pattern"),
+    ),
+    (
+        Contract::RunDecision,
+        "comment-trigger-without-comment-id",
+        Rejection::Violation("/trigger", "oneOf"),
+    ),
+    (
+        Contract::RunDecision,
+        "schedule-trigger-with-actor",
+        Rejection::Violation("/trigger", "oneOf"),
+    ),
+    // Only the command, waiver and override kinds of decide-only's `redecide` job.
+    (
+        Contract::RunDecision,
+        "event-of-another-kind",
+        Rejection::Violation("/events/0/kind", "enum"),
+    ),
+    (
+        Contract::RunDecision,
+        "event-of-another-job",
+        Rejection::Violation("/events/0/job", "const"),
+    ),
+    // Narrowed lists: owners and approvers are an intersection (64), maintainers and agents a
+    // union (128).
+    (
+        Contract::RunDecision,
+        "owners-past-the-cap",
+        Rejection::Violation("/github/lists/owners", "maxItems"),
+    ),
+    (
+        Contract::RunDecision,
+        "maintainers-past-the-narrowed-cap",
+        Rejection::Violation("/github/lists/maintainers", "maxItems"),
     ),
 ];
 

@@ -27,6 +27,9 @@ use crate::replay::{
 
 /// The bundle [`prepare`] built: the exact bytes `decide` writes as [`BUNDLE_FILE`] and their
 /// sha256, which `decide` publishes as its `bundle_digest` output.
+///
+/// decide-only's [`prepare_decision`](crate::prepare_decision) builds its decision bundle as one
+/// too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedBundle {
     bytes: Vec<u8>,
@@ -34,6 +37,12 @@ pub struct PreparedBundle {
 }
 
 impl PreparedBundle {
+    /// `bytes`, a bundle that read back, with their sha256.
+    pub(crate) fn of(bytes: Vec<u8>) -> Self {
+        let digest = Sha256Digest::of(&bytes);
+        Self { bytes, digest }
+    }
+
     /// The bundle's bytes.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {

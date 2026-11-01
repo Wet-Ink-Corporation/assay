@@ -5,7 +5,7 @@
 
 use std::num::NonZeroU64;
 
-use assay_domain::{EventPayload, RunUid};
+use assay_domain::{EventPayload, RunUid, VoidReason};
 
 use super::grammar::{Command, Parsed, command_word, parse_command};
 use super::rule::{Ineligible, Rule};
@@ -266,6 +266,17 @@ impl VoidCause {
             Self::Hash => "hash",
             Self::Author => "author",
             Self::App => "app",
+        }
+    }
+
+    /// The reason a `CommandVoided` event gives (03 §6: `edited|deleted|hash`). A comment whose
+    /// author or app flag is no longer the record's no longer matches what was recorded, which
+    /// the event says as `hash`; the bundle's `github.commands` keeps the exact [`Self::code`].
+    pub(crate) const fn event_reason(self) -> VoidReason {
+        match self {
+            Self::Deleted => VoidReason::Deleted,
+            Self::Edited => VoidReason::Edited,
+            Self::Hash | Self::Author | Self::App => VoidReason::Hash,
         }
     }
 }
