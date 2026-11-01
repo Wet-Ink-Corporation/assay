@@ -259,10 +259,10 @@ pub(crate) struct Bundle {
     _events: Vec<IgnoredAny>,
     /// The findings the run carries into the next (#224); replay does not read them.
     pub(crate) carry: CarryIn,
-    /// The GitHub state snapshot (#58). Required, not kept: replay recomputes the decision
-    /// from `inputs`, which already hold what the rubric read of it.
-    #[serde(rename = "github")]
-    _github: IgnoredAny,
+    /// The GitHub state snapshot (#58). Required; replay recomputes the decision from `inputs`,
+    /// which already hold what the rubric read of it, and only the next run's admit reads its
+    /// `head_sha` (#60 ST-11, D6 A), so it is kept unparsed.
+    pub(crate) github: Value,
 }
 
 /// The only bundle version this build reads.

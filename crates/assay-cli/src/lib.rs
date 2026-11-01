@@ -18,8 +18,12 @@
 //! `GITHUB_OUTPUT` writer) and [`outputs`], each job's outputs as typed values. [`guard`] decides
 //! whether the pipeline runs for an event and with which identity (`assay guard`, 0006).
 //! [`run_plan`] plans guard's PR over its fetched objects into [`RUN_FILE`] in an [`OutDir`]
-//! and returns plan's outputs (`assay plan`, #60 ST-5).
+//! and returns plan's outputs (`assay plan`, #60 ST-5). [`run_admit`] authenticates plan's
+//! document, admits the run over the ledger, refs, bundle store, comments and fetched objects,
+//! writes the admitted documents into an [`OutDir`] and returns admit's outputs (`assay admit`,
+//! #60 ST-11).
 
+mod admit;
 mod ci;
 mod guard;
 mod open;
@@ -31,6 +35,10 @@ mod revisions;
 mod status;
 mod supervisor;
 
+pub use admit::{
+    AdmitJob, AdmitJobPorts, AdmitRunError, AdmitRunFailure, FetchCommits, FetchedSide, PACK_FILE,
+    SuppressError, run_admit,
+};
 pub use ci::{
     EntryProblem, FirstAttempt, JobName, JobResult, MAX_NEEDS_BYTES, Needs, NeedsError,
     NotFirstAttempt, OutDir, OutDirError, OutputError, OutputName, Outputs, RunEnv, RunEnvError,

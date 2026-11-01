@@ -1,5 +1,6 @@
 //! A job's `--out`: a directory that does not exist yet, outside every checkout.
 
+use std::env;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -28,7 +29,19 @@ impl OutDir {
     /// written as its resolved path; [`OutDirError::InCheckout`] when an ancestor holds `.git`;
     /// [`OutDirError::Path`] when a path cannot be made absolute, resolved or inspected.
     pub fn new(path: &Path) -> Result<Self, OutDirError> {
-        let given = path::absolute(path).map_err(OutDirError::at(path))?;
+        // Only a relative path reads the working directory; an empty one is left for
+        // `path::absolute` to refuse, as an absolute one is left as it is.
+        let cwd = if path.is_relative() && !path.as_os_str().is_empty() {
+            env::current_dir().map_err(OutDirError::at(path))?
+        } else {
+            PathBuf::new()
+        };
+        Self::resolve(&cwd, path)
+    }
+
+    /// [`new`](Self::new) with `cwd` as the working directory a relative `path` is taken from.
+    fn resolve(cwd: &Path, path: &Path) -> Result<Self, OutDirError> {
+        let given = path::absolute(cwd.join(path)).map_err(OutDirError::at(path))?;
         match fs::symlink_metadata(&given) {
             Ok(_) => return Err(OutDirError::Exists(given)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -262,13 +275,19 @@ mod tests {
 
     #[test]
     fn a_relative_path_is_taken_from_the_working_directory() {
-        let out = OutDir::new(Path::new("does-not-exist-plan-out"));
+        // `new` resolves a relative path from `env::current_dir()` through `resolve`; here the
+        // working directory is a scratch checkout, so the result holds whether or not the test
+        // itself runs inside one, and the process's working directory is never changed.
+        let (_dir, root) = scratch();
+        let cwd = root.join("checkout");
+        fs::create_dir_all(cwd.join(".git")).expect("a checkout");
 
-        let cwd = fs::canonicalize(".").expect("the working directory resolves");
-        // The crate's own directory is inside this repository's checkout.
+        let out = OutDir::resolve(&cwd, Path::new("does-not-exist-plan-out"));
+
         assert_matches!(
             out,
-            Err(OutDirError::InCheckout { out, .. }) if out == cwd.join("does-not-exist-plan-out")
+            Err(OutDirError::InCheckout { out, checkout })
+                if out == cwd.join("does-not-exist-plan-out") && checkout == cwd
         );
     }
 }

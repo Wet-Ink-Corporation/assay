@@ -9,10 +9,13 @@
 # approves, whatever caused it (fail-closed reading, wi-b5affa; owner to confirm).
 # `corpus/{dev,test,inject}/**` (owner, #230): the replay gate accepts a prompt or rubric PR by
 # its result on these cases, so a PR that could edit their labels could grade itself.
+# `plugin-mod/**`: the assay mod's own plugin (ADR-25), split from `plugin/` because desktop chats
+# switch off a plugin that ships a mod; it is the same trust path as `plugin/**`.
 trust = [
     "crates/**",
     "rubric/**",
     "plugin/**",
+    "plugin-mod/**",
     "schemas/**",
     "workflows/**",
     ".github/workflows/release.yml",

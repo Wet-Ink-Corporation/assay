@@ -42,6 +42,11 @@ pub enum AdmitError<L, R, B, C, S> {
     /// The carry is kept but the ledger has no evidence pointer to the previous run.
     #[error("the carry-over is kept but the ledger names no previous bundle")]
     NoPriorPointer,
+    /// The ledger's evidence pointer is not [`AdmitRequest::prior`](super::AdmitRequest), the
+    /// one the carry was decided on: a run completed in between, so the carry may be another
+    /// run's. Nothing was taken.
+    #[error("the ledger's evidence pointer moved since the carry-over was decided")]
+    PriorMoved,
     /// The previous run's findings could not be read from its bundle.
     #[error("the previous run's findings could not be read")]
     Prior(#[source] PriorCarryError<B>),

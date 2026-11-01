@@ -9,9 +9,10 @@ use assay_app::{
     Actor, CheckFound, CheckName, CheckRunId, CommandComments, CommentAction, CommentEvent,
     CommentId, CommitId, CommitIdentity, CompareAndSetError, EligibilityLists, Forge, GitHubState,
     IssueComment, LedgerRecords, LedgerTime, LockedWrite, MergeTree, PushDraft, PushKind,
-    PushRecord, RangeCommit, RangeListing, RangeObjects, Reaction, ReactionSubject, Review,
-    ReviewState, Sha256Digest, SnapshotCommand, SnapshotLedger, SnapshotStep, StateError,
-    StatePorts, StateRequest, TimelineEvent, Timestamp, TreeId, Upserted, UserId, github_state,
+    PushRecord, RangeCommit, RangeError, RangeIdentities, RangeListing, RangeObjects, RangeRequest,
+    Reaction, ReactionSubject, Review, ReviewState, Sha256Digest, SnapshotCommand, SnapshotLedger,
+    SnapshotStep, StateError, StatePorts, StateRequest, TimelineEvent, Timestamp, TreeId, Upserted,
+    UserId, github_state, range_identities,
 };
 use assay_domain::{Fingerprint, RunUid};
 
@@ -316,6 +317,22 @@ impl World {
                 base_sha: &base,
                 head_sha: &self.head,
                 lists: &self.lists,
+            },
+        )
+    }
+
+    /// The range's identities as `admit` reads them (#60 ST-11).
+    pub(crate) fn range_identities(
+        &self,
+    ) -> Result<RangeIdentities, RangeError<FakeError, FakeError>> {
+        let base = sha(BASE);
+        range_identities(
+            self,
+            self,
+            &RangeRequest {
+                base_sha: &base,
+                head_sha: &self.head,
+                pushes: &self.pushes,
             },
         )
     }

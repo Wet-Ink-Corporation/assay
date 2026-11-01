@@ -27,6 +27,7 @@ use super::ports::{
 use super::sanitise::Repository;
 use super::{Target, Unlock};
 use crate::config::{CommitId, Sha256Digest};
+use crate::forge::{Deadline, LockedWrite};
 use crate::validation::ValidFinding;
 
 /// The most findings published inline per run (04 §4 step 7).
@@ -189,7 +190,8 @@ pub fn publish_findings<F: CommentForge, L: PublishLedger>(
     else {
         return Err(FindingsError::LockBusy);
     };
-    let locked = under_lock(publication, forge, &gate_checks, &comments);
+    let deadline = ledger.deadline(&lease);
+    let locked = under_lock(publication, (forge, deadline), &gate_checks, &comments);
     let unlock = match ledger.release(lease) {
         Ok(()) => Unlock::Released,
         Err(error) => Unlock::Failed(error),
@@ -252,9 +254,10 @@ enum Refused<F> {
 }
 
 /// The calls under the lock, in order: verdict check, prior comments, gate checks, comments.
+/// Each carries `deadline`, the lock lease's, so none sends or waits past it (#290, #332).
 fn under_lock<F: CommentForge>(
     publication: &FindingsPublication<'_>,
-    forge: &F,
+    (forge, deadline): (&F, Deadline),
     gate_checks: &[GateCheck],
     comments: &[(Fingerprint, InlineComment<'_>)],
 ) -> Result<Locked, Refused<F::Error>> {
@@ -263,13 +266,13 @@ fn under_lock<F: CommentForge>(
     let key = publication.decision_key;
     let verdict = CheckName::for_base(&event.base_ref, target.default_branch);
     let current = forge
-        .find_check(&event.head_sha, &verdict)
+        .find_check(&event.head_sha, &verdict, Some(deadline))
         .map_err(|error| Refused::Forge(CommentStep::ReadCheck, error))?;
     if current.is_none_or(|check| check.external_id != key) {
         return Ok(Locked::Stale);
     }
     let prior = forge
-        .app_review_comments(event.number)
+        .app_review_comments(event.number, deadline)
         .map_err(|error| Refused::Forge(CommentStep::ReadComments, error))?;
     if prior.len() > MAX_PRIOR_COMMENTS {
         return Err(Refused::TooManyComments(prior.len()));
@@ -279,7 +282,7 @@ fn under_lock<F: CommentForge>(
         .filter_map(|body| comment::posted_fingerprint(body))
         .collect();
     for check in gate_checks {
-        write_gate_check(forge, &event.head_sha, check, key)?;
+        write_gate_check((forge, deadline), &event.head_sha, check, key)?;
     }
     let mut posted = Vec::new();
     let mut already_posted = Vec::new();
@@ -289,7 +292,7 @@ fn under_lock<F: CommentForge>(
             continue;
         }
         forge
-            .create_review_comment(event.number, comment)
+            .create_review_comment(event.number, comment, deadline)
             .map_err(|error| Refused::Forge(CommentStep::PostComment, error))?;
         posted.push(*fp);
     }
@@ -299,22 +302,27 @@ fn under_lock<F: CommentForge>(
     })
 }
 
-/// Creates `check`, or updates it unless it is already completed under `key`.
+/// Creates `check`, or updates it unless it is already completed under `key`, sending nothing
+/// past `deadline`.
 fn write_gate_check<F: CommentForge>(
-    forge: &F,
+    (forge, deadline): (&F, Deadline),
     head: &CommitId,
     check: &GateCheck,
     key: &str,
 ) -> Result<(), Refused<F::Error>> {
     let existing = forge
-        .find_check(head, &check.name)
+        .find_check(head, &check.name, Some(deadline))
         .map_err(|error| Refused::Forge(CommentStep::ReadGateCheck, error))?;
+    let write = LockedWrite {
+        update: &check.update,
+        deadline,
+    };
     let written = match existing {
         Some(found) if found.external_id == key && found.status == CheckStatus::Completed => {
             return Ok(());
         }
-        Some(found) => forge.update_check(found.id, &check.update),
-        None => forge.create_check(head, &check.name, &check.update),
+        Some(found) => forge.update_check(found.id, write),
+        None => forge.create_check(head, &check.name, write),
     };
     written.map_err(|error| Refused::Forge(CommentStep::WriteGateCheck, error))
 }

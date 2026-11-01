@@ -13,8 +13,8 @@ use assay_forge::github::{ForgeError, Method, Operation};
 use serde_json::json;
 
 use super::recorded::{
-    Recorded, Waits, first_write, fixture, fixture_json, github, head, id, json, path, pr, reply,
-    write_bodies,
+    Recorded, Waits, far, first_write, fixture, fixture_json, github, head, id, json, path, pr,
+    reply, write_bodies,
 };
 
 /// PR 268's issue comments.
@@ -35,7 +35,7 @@ fn the_marker_finds_only_the_apps_comment() {
     let recorded = Recorded::default().ok(Method::Get, &listing(), fixture("issue_comments.json"));
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_summary(pr(), SUMMARY_MARKER);
+    let found = github(&recorded, &waits).find_summary(pr(), SUMMARY_MARKER, far());
 
     assert_eq!(found.expect("listed"), Some(app_summary()));
 }
@@ -49,7 +49,7 @@ fn the_bot_user_without_the_app_is_not_the_app() {
     );
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_summary(pr(), SUMMARY_MARKER);
+    let found = github(&recorded, &waits).find_summary(pr(), SUMMARY_MARKER, far());
 
     assert_eq!(found.expect("listed"), None);
 }
@@ -63,7 +63,7 @@ fn two_app_summaries_are_refused() {
     );
     let waits = Waits::default();
 
-    let found = github(&recorded, &waits).find_summary(pr(), SUMMARY_MARKER);
+    let found = github(&recorded, &waits).find_summary(pr(), SUMMARY_MARKER, far());
 
     assert!(
         matches!(
@@ -142,7 +142,7 @@ fn a_summary_that_landed_before_a_5xx_is_not_posted_again() {
         .ok(Method::Get, &listing(), fixture("issue_comments.json"));
     let waits = Waits::default();
 
-    let created = github(&recorded, &waits).create_summary(pr(), &app_summary().body);
+    let created = github(&recorded, &waits).create_summary(pr(), &app_summary().body, far());
 
     assert_eq!(created.expect("landed"), ());
     assert_eq!(recorded.writes().len(), 1, "one POST only");
@@ -163,7 +163,7 @@ fn a_summary_the_probe_does_not_find_is_posted_again() {
         .then(Method::Post, &post, reply(201, &[], json(&json!({}))));
     let waits = Waits::default();
 
-    let created = github(&recorded, &waits).create_summary(pr(), &new_summary());
+    let created = github(&recorded, &waits).create_summary(pr(), &new_summary(), far());
 
     assert_eq!(created.expect("the second POST lands"), ());
     let body = Some(json!({ "body": new_summary() }));
@@ -183,7 +183,7 @@ fn a_summary_failing_four_times_with_probes_is_a_publish_error() {
     }
     let waits = Waits::default();
 
-    let created = github(&recorded, &waits).create_summary(pr(), &new_summary());
+    let created = github(&recorded, &waits).create_summary(pr(), &new_summary(), far());
 
     assert!(
         matches!(
@@ -226,7 +226,7 @@ fn an_inline_comment_the_probe_does_not_find_is_posted_again() {
         body: "new finding".to_owned(),
     };
 
-    let created = github(&recorded, &waits).create_review_comment(pr(), &comment);
+    let created = github(&recorded, &waits).create_review_comment(pr(), &comment, far());
 
     assert_eq!(created.expect("the second POST lands"), ());
     let body = Some(json!({
@@ -246,7 +246,7 @@ fn an_empty_marker_is_refused_unasked() {
     let waits = Waits::default();
     let forge = github(&recorded, &waits);
 
-    let found = forge.find_summary(pr(), "");
+    let found = forge.find_summary(pr(), "", far());
     let upserted = forge.upsert_comment(pr(), "", "body");
 
     assert!(
@@ -284,7 +284,7 @@ fn only_the_apps_review_comments_are_returned() {
     );
     let waits = Waits::default();
 
-    let bodies = github(&recorded, &waits).app_review_comments(pr());
+    let bodies = github(&recorded, &waits).app_review_comments(pr(), far());
 
     assert_eq!(
         bodies.expect("listed"),
@@ -311,7 +311,7 @@ fn an_inline_comment_over_a_span_names_both_ends_and_one_side() {
     };
 
     github(&recorded, &waits)
-        .create_review_comment(pr(), &comment)
+        .create_review_comment(pr(), &comment, far())
         .expect("posted");
 
     assert_eq!(

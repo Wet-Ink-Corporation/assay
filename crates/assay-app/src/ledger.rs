@@ -20,6 +20,7 @@ mod record;
 mod state;
 mod time;
 
+pub use aeu_text::parse_aeu;
 pub use budget::{BUDGET_WINDOW, COOLDOWN_WINDOW, CostWindow, LeaseReservation, read_costs};
 pub use command::{CommandRecord, MAX_COMMAND_CHARS, append_command, read_commands};
 pub use cost::{CostKind, CostRecord, CostRole, RoleCost, append_cost};

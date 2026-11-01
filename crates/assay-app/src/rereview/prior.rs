@@ -2,17 +2,19 @@
 //! (`docs/architecture/04-pipeline.md` §7, #224): the bundle is read through its evidence
 //! pointer, authenticated as replay and `assay status` authenticate it, and its carried
 //! findings go through the carried intake. The same bundle names the waivers its decision
-//! applied, which a later head may carry (#59). A reset or a first review reads nothing.
+//! applied, which a later head may carry (#59), and the head it was decided on (#60 ST-11, D6
+//! A). A reset or a first review reads nothing.
 
 use std::num::NonZeroU64;
 
 use assay_domain::{Decision, RunUid};
 use serde::Deserialize;
+use serde_json::Value;
 use thiserror::Error;
 
 use super::carried::{CarriedFinding, CarryRefused, read_carried};
 use super::target::Carry;
-use crate::config::Sha256Digest;
+use crate::config::{CommitId, Sha256Digest};
 use crate::eligibility::{PriorWaivers, WaiverBindings};
 use crate::publish::{BUNDLE_FILE, EvidencePointer, MAX_BUNDLE_BYTES};
 use crate::replay::{self, Bundle, BundleShape, BundleSource, Mismatch, StoredBundle};
@@ -94,6 +96,30 @@ pub fn prior_carry<S: BundleSource>(
     }
     let bundle = read_prior(request, source)?;
     read_carried(bundle.carry.into_parts(), request.repository).map_err(PriorCarryError::Refused)
+}
+
+/// The head of the previous completed run, from the bundle `request.pointer` names.
+///
+/// It is the bundle's GitHub state snapshot's `head_sha` (#60 ST-11, D6 A): the ledger's
+/// evidence pointer names no head, and this is the run whose findings [`prior_carry`] carries.
+///
+/// The bundle is fetched and authenticated exactly as [`prior_carry`] does.
+///
+/// # Errors
+///
+/// As [`prior_carry`], except [`PriorCarryError::Refused`], which this never returns; a
+/// snapshot whose `head_sha` is not a commit id is [`PriorCarryError::Shape`].
+pub fn prior_head<S: BundleSource>(
+    request: &PriorCarry<'_>,
+    source: &S,
+) -> Result<CommitId, PriorCarryError<S::Error>> {
+    let bundle = read_prior(request, source)?;
+    bundle
+        .github
+        .get("head_sha")
+        .and_then(Value::as_str)
+        .and_then(|head| head.parse().ok())
+        .ok_or(PriorCarryError::Shape(BundleShape::Shape))
 }
 
 /// What the previous completed run's decision waived, read from the bundle `request.pointer`

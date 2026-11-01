@@ -29,18 +29,26 @@
 //! plan's outputs (03 §4a) to `GITHUB_OUTPUT`.
 //! `assay review --placeholder` (#60 ST-9, D11 A) writes the review job's placeholder outputs
 //! (`stage=not-run`, `cost_aeu=0`, `documents=[]`) to `GITHUB_OUTPUT`.
+//! `assay admit --config <plugins-toml> --artifacts <dir> --out <dir>` (#60 ST-11) refuses a
+//! re-run, authenticates plan's `run.json` by plan's `run_digest`, admits the run (S1a) and
+//! writes the admitted documents into `<dir>` and admit's outputs to `GITHUB_OUTPUT`.
+//! `assay release --config <plugins-toml>` (#60 ST-10) releases the review slot `admit` holds
+//! by compare-and-set and writes the run's `final` cost record; with no slot it exits 0 at once.
 //! `assay reconcile [--ledger]` (#73) refuses any run attempt but the first (R3-05), then stops
 //! with exit 2 until the live GitHub transport (#273) exists. With no arguments it exits
 //! successfully without doing anything.
 
+mod admit_job;
 mod bundle;
 mod check;
 mod doctor;
 mod gate;
 mod guard_job;
+mod ledger_job;
 mod open_job;
 mod plan_job;
 mod reconcile;
+mod release;
 mod review;
 mod self_gate;
 mod status_local;
@@ -64,22 +72,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     };
     if command == "doctor" {
-        let mut args = args.peekable();
-        if args
-            .next_if(|arg| arg == doctor::profile::PROFILE_FLAG)
-            .is_some()
-        {
-            return run_doctor_profile(args);
-        }
-        if PrerequisitesArgs::requested(args.peek()) {
-            return match PrerequisitesArgs::parse(args) {
-                Ok(_) => report(
-                    &"doctor --repository: the live gh transport it reads through is not built yet (#273)",
-                ),
-                Err(usage) => report(&usage),
-            };
-        }
-        return run_doctor(args);
+        return run_doctor_command(args);
     }
     if command == "check" {
         return run_check(args);
@@ -99,6 +92,12 @@ fn main() -> ExitCode {
     if command == "plan" {
         return run_plan(args);
     }
+    if command == "admit" {
+        return run_admit(args);
+    }
+    if command == "release" {
+        return run_release(args);
+    }
     if command == "review" {
         return run_review(args);
     }
@@ -110,15 +109,20 @@ fn main() -> ExitCode {
         };
     }
     if command == "reconcile" {
-        return match reconcile::prepare(args, env::var_os(reconcile::RUN_ATTEMPT)) {
-            Ok(sweep) => report(&reconcile::ReconcileRefused::NotBuilt(sweep)),
-            Err(refused) => report(&refused),
-        };
+        return run_reconcile(args);
     }
     if command != "self-gate" {
         return report(&self_gate::SelfGateError::Usage);
     }
     run_self_gate(args)
+}
+
+/// `assay reconcile`: refused until the sweep is built, after its arguments are checked.
+fn run_reconcile(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    match reconcile::prepare(args, env::var_os(reconcile::RUN_ATTEMPT)) {
+        Ok(sweep) => report(&reconcile::ReconcileRefused::NotBuilt(sweep)),
+        Err(refused) => report(&refused),
+    }
 }
 
 /// `assay self-gate`: exit 0 lets the document's conclusion speak and exit 1 fails the gate
@@ -145,16 +149,26 @@ fn run_open(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
             repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
             repository: env::var_os("GITHUB_REPOSITORY"),
         },
-        needs: env::var_os(open_job::NEEDS),
+        needs: env::var_os(ledger_job::NEEDS),
         token: env::var_os(status_pr::TOKEN),
-        ledger_token: env::var_os(open_job::LEDGER_TOKEN),
+        ledger_token: env::var_os(ledger_job::LEDGER_TOKEN),
         app_id: env::var_os(status_pr::APP_ID),
         bot_id: env::var_os(status_pr::BOT_ID),
         path: env::var_os("PATH"),
         gh: GhEnvironment::from_process_env(),
     };
     let ended = open_job::run(args, variables);
-    let mut code = match ended.opened {
+    print_ended(ended.line, &ended.left)
+}
+
+/// Prints a job's `line` on stdout, or reports why there is none, then reports each directory
+/// it `left` behind: exit 0 only when the line is printed and nothing is left behind, 2
+/// otherwise (what the job wrote before stands).
+fn print_ended(
+    line: Result<String, impl std::fmt::Display>,
+    left: &[impl std::fmt::Display],
+) -> ExitCode {
+    let mut code = match line {
         Ok(line) => {
             let mut out = io::stdout().lock();
             match writeln!(out, "{line}").and_then(|()| out.flush()) {
@@ -164,7 +178,7 @@ fn run_open(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         }
         Err(error) => report(&error),
     };
-    for left in &ended.left {
+    for left in left {
         code = report(left);
     }
     code
@@ -211,8 +225,9 @@ fn run_review(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
 }
 
 /// `assay plan --out <dir>` (#60 ST-5): exit 0 once `<dir>/run.json` and plan's outputs are
-/// written and its line printed; 2 when it refuses or cannot write, or a scratch directory is
-/// left behind.
+/// written and its line printed; 2 when it refuses or cannot write, with no output written.
+/// A scratch directory left behind is also exit 2, even after a plan whose `run.json`, outputs
+/// and line are already written, which then stand.
 fn run_plan(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let variables = plan_job::PlanVariables {
         run: RunVariables {
@@ -228,17 +243,52 @@ fn run_plan(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         gh: GhEnvironment::from_process_env(),
     };
     let ended = plan_job::run(args, variables);
-    let mut code = match ended.planned {
-        Ok(line) => match writeln!(io::stdout().lock(), "{line}") {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => report(&error),
+    print_ended(ended.planned, &ended.left)
+}
+
+/// `assay admit` (#60 ST-11): exit 0 once the admitted documents and admit's outputs are written
+/// and its line printed; 2 when it refuses, cannot admit or cannot write (with only `slot` and
+/// `lease_commit` written when it holds a slot it could not otherwise report), or a scratch
+/// directory is left behind.
+fn run_admit(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    use admit_job::Variable;
+    let variables = admit_job::AdmitVariables {
+        run: RunVariables {
+            run_id: env::var_os("GITHUB_RUN_ID"),
+            run_attempt: env::var_os("GITHUB_RUN_ATTEMPT"),
+            repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
+            repository: env::var_os("GITHUB_REPOSITORY"),
         },
-        Err(error) => report(&error),
+        output: env::var_os(Variable::Output.name()),
+        needs: env::var_os(Variable::Needs.name()),
+        token: env::var_os(Variable::Token.name()),
+        ledger_token: env::var_os(Variable::LedgerToken.name()),
+        run_token: env::var_os(Variable::RunToken.name()),
+        path: env::var_os("PATH"),
+        gh: GhEnvironment::from_process_env(),
     };
-    for left in &ended.left {
-        code = report(left);
-    }
-    code
+    let ended = admit_job::run(args, variables);
+    print_ended(ended.line, &ended.left)
+}
+
+/// `assay release` (#60 ST-10): exit 0 once the run is settled (or admit held no slot) and its
+/// line printed, 2 when it cannot run or settle, or a scratch directory is left behind.
+fn run_release(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let variables = release::ReleaseVariables {
+        run: RunVariables {
+            run_id: env::var_os("GITHUB_RUN_ID"),
+            run_attempt: env::var_os("GITHUB_RUN_ATTEMPT"),
+            repository_id: env::var_os("GITHUB_REPOSITORY_ID"),
+            repository: env::var_os("GITHUB_REPOSITORY"),
+        },
+        needs: env::var_os(ledger_job::NEEDS),
+        ledger_token: env::var_os(ledger_job::LEDGER_TOKEN),
+        path: env::var_os("PATH"),
+        gh: GhEnvironment::from_process_env(),
+        now: SystemTime::now(),
+    };
+    let ended = release::run(args, variables);
+    print_ended(ended.line, &ended.left)
 }
 
 /// `assay gate <job>`: exit 0 once every gate's line is printed, its document written and the
@@ -273,6 +323,26 @@ fn run_gate(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
         Some(left) => report(left),
         None => ExitCode::SUCCESS,
     }
+}
+
+/// `assay doctor`: its profile, its prerequisites or its checks, as the first argument says.
+fn run_doctor_command(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let mut args = args.peekable();
+    if args
+        .next_if(|arg| arg == doctor::profile::PROFILE_FLAG)
+        .is_some()
+    {
+        return run_doctor_profile(args);
+    }
+    if PrerequisitesArgs::requested(args.peek()) {
+        return match PrerequisitesArgs::parse(args) {
+            Ok(_) => report(
+                &"doctor --repository: the live gh transport it reads through is not built yet (#273)",
+            ),
+            Err(usage) => report(&usage),
+        };
+    }
+    run_doctor(args)
 }
 
 /// `assay doctor`: exit 0 when every check passes, 1 when one fails or the token is past its

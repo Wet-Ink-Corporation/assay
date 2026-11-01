@@ -40,7 +40,8 @@ mod tiering;
 pub use admit::{
     ADMISSIONS_PER_HOUR, Admission, AdmitError, AdmitFailure, AdmitPorts, AdmitRequest, Admitted,
     AfterSlot, Budget, ContextPack, DAY_CAP, Deferred, MAX_DISMISSALS, MAX_SUPPRESS_BYTES,
-    PlanDocument, RangeIdentities, SLOT_POLL, SLOT_POLLS, Spend, Unwound, admit,
+    PlanDocument, PlanStage, RangeIdentities, SLOT_POLL, SLOT_POLLS, Spend, Unwound, admit,
+    plan_stage,
 };
 pub use calendar::{CalendarDate, CalendarDateError};
 pub use clock::Clock;
@@ -98,17 +99,18 @@ pub use decide::{
     InputsRequest, JobResult, MAX_EVIDENCE_BYTES, MAX_EVIDENCE_FILES, MAX_FETCHED_BYTES,
     MAX_REVIEW_DOCUMENTS, MAX_SYMBOL_BYTES, Moved, OutputsProblem, PlanJob, PlanMismatch,
     PlanRefusal, PullOnHead, PullRequestState, Refusal, Reported, ReportedGate, ReviewJob,
-    ReviewStage, RunArtifacts, Snapshot, StateStep, TierDegrade, Unreadable, UpstreamJob,
-    authenticate, decision_inputs,
+    ReviewStage, RunArtifacts, Snapshot, StateStep, TierDegrade, UnknownReviewStage, Unreadable,
+    UpstreamJob, authenticate, decision_inputs,
 };
 pub use eligibility::{
     AckedSet, Command, CommandComments, CommandRejected, CommentAction, CommentEvent, CommitRange,
     GitHubState, IgnoredApproval, Ineligible, InvalidTimestamp, IssueComment, LedgerRecords,
     LedgerSnapshot, LedgerSnapshotError, MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS,
     MAX_COMMENT_BYTES, MAX_PUSH_RECORDS, MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, Parsed,
-    PriorWaivers, RangeCommit, RangeListing, RangeObjects, Recorded, SnapshotCommand,
-    SnapshotLedger, SnapshotStep, StateError, StatePorts, StateRequest, Timestamp, TreeId,
-    VoidCause, WEB_FLOW, WaiverBindings, github_state, parse_command, waiver_events,
+    PriorWaivers, RangeCommit, RangeError, RangeListing, RangeObjects, RangeRequest, Recorded,
+    SnapshotCommand, SnapshotLedger, SnapshotStep, StateError, StatePorts, StateRequest, Timestamp,
+    TreeId, VoidCause, WEB_FLOW, WaiverBindings, github_state, parse_command, range_identities,
+    waiver_events,
 };
 pub use eval::{
     Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,
@@ -143,8 +145,9 @@ pub use ledger::{
     PushRecord, RefCreation, RefDeletion, RefTip, Released, RetryGrant, RoleCost, SLOT_TTL, Slot,
     SlotAcquired, SlotAcquisition, SlotHold, SlotLease, SlotRequest, SlotView, StateUpdate,
     WriteCondition, WriteOutcome, acquire_lock, acquire_slot, append_command, append_cost,
-    append_push, consume_grant, grant_retry, pending_grant, read_commands, read_costs, read_pushes,
-    read_slots, read_state, reap_expired_slots, release_lock, release_slot, update_state,
+    append_push, consume_grant, grant_retry, parse_aeu, pending_grant, read_commands, read_costs,
+    read_pushes, read_slots, read_state, reap_expired_slots, release_lock, release_slot,
+    update_state,
 };
 pub use model_runner::{
     InvalidPrompt, ModelAttempts, ModelCall, ModelOutcome, ModelResult, ModelRunner, Prompt,
@@ -187,7 +190,8 @@ pub use rereview::{
     Cumulative, Increment, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, MAX_RANGE_DIFF_BYTES,
     NotReverified, OmitReason, Omitted, PriorCarry, PriorCarryError, PriorHistory, RangeDiff,
     RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError, TargetRequest, next_carry,
-    prior_carry, prior_waivers, read_carried, recheck_anchors, review_target, settle_carried,
+    prior_carry, prior_head, prior_waivers, read_carried, recheck_anchors, review_target,
+    settle_carried,
 };
 pub use shard::{
     Import, MAX_IMPORTS, MAX_SHARD_FILES, MAX_SHARDS, Shard, ShardCount, ShardError, ShardFile,
@@ -232,6 +236,10 @@ pub use reconcile::{
     LockListing, LostLock, MAX_HEAD_CHECKS, MAX_OPEN_PULLS, MAX_PUBLISH_LOCKS,
     MAX_SUPERSEDED_HEADS, OpenPull, PullHead, ReconcileCheck, ReconcileForge, ReconcilePorts,
     RunProgress, STUCK_AFTER, Skip, SkippedCheck, StampedRun, reconcile_checks, reconcile_ledger,
+};
+mod release;
+pub use release::{
+    ReleaseError, ReleaseFailure, ReleasePorts, ReleaseRequest, ReviewCost, Settled, release,
 };
 mod weigh_in;
 pub use weigh_in::{

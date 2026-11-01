@@ -75,7 +75,8 @@ impl<T: Transport, S: Sleep> StatusForge for GitHub<T, S> {
             return Err(ForgeError::UnknownApp { app });
         }
         let mut views = Vec::new();
-        for comment in self.review_comments_of(number)? {
+        // `assay status` reads outside any lock.
+        for comment in self.review_comments_of(number, None)? {
             if !comment.user.as_ref().is_some_and(|user| self.is_bot(user)) {
                 continue;
             }

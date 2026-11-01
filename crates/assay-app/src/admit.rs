@@ -63,7 +63,7 @@ use crate::ledger::{
     ParseLedgerTimeError, PrState, PushKind, SlotRequest, SlotView, StateUpdate, read_commands,
     read_costs, read_pushes, read_slots, read_state, update_state,
 };
-use crate::publish::EvidenceRecord;
+use crate::publish::{EvidencePointer, EvidenceRecord};
 use crate::replay::BundleSource;
 use crate::rereview::{Carry, PriorCarry, prior_carry};
 use crate::status::{Identities, UserId};
@@ -94,6 +94,9 @@ pub struct AdmitRequest<'a> {
     pub plan: &'a [u8],
     /// Whether the previous completed run's open findings carry (`review_target`, 04 §7).
     pub carry: Carry,
+    /// The ledger's evidence pointer `carry` was decided on (`None` when it named none): admit
+    /// refuses a state whose pointer is another ([`AdmitError::PriorMoved`]).
+    pub prior: Option<&'a EvidencePointer>,
     /// The base P10 identity lists.
     pub identities: &'a Identities,
     /// The PR's author, from the triggering event.
@@ -112,6 +115,7 @@ pub struct AdmitRequest<'a> {
 /// [`AdmitError::NotFirstAttempt`] before anything is read; [`AdmitError::Plan`] when the
 /// plan's document is refused; a read failure ([`AdmitError::LedgerRead`],
 /// [`AdmitError::Lease`], [`AdmitError::Prior`], [`AdmitError::NoPriorPointer`],
+/// [`AdmitError::PriorMoved`],
 /// [`AdmitError::Comments`]) or an oversized suppress text before anything is written;
 /// [`AdmitError::LedgerWrite`] when a deferral record cannot be written; event and clock
 /// failures; and [`AdmitError::AfterSlot`] for a failure once a slot was taken.
@@ -134,10 +138,9 @@ where
     }
     let planned =
         Planned::read(validator, request.plan, request.run_uid).map_err(AdmitError::Plan)?;
-    let tier = match (planned.draft, SpendTier::of(planned.tier)) {
-        (true, _) => return Ok(no_spend(request.plan, NotRunReason::Draft)),
-        (false, None) => return Ok(no_spend(request.plan, NotRunReason::NoLlmTier)),
-        (false, Some(tier)) => tier,
+    let tier = match spend_tier(&planned) {
+        Ok(tier) => tier,
+        Err(reason) => return Ok(no_spend(request.plan, reason)),
     };
     let AdmitPorts {
         ledger,
@@ -160,6 +163,45 @@ where
         planned,
     };
     run.admit(tier)
+}
+
+/// What [`admit`] makes of the plan before it reads any port (#60 ST-11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanStage {
+    /// The run has no LLM stage (a draft, `trivial` or `needs-split`): what [`admit`] outputs
+    /// for it, the plan's document unchanged, with nothing read or taken.
+    NoSpend(Box<Admitted>),
+    /// The run's LLM stage would spend: [`admit`] reads the ledger.
+    Spends,
+}
+
+/// Whether [`admit`] would read any port for `plan`, the plan's `run.json` for `run_uid`.
+///
+/// It reads the plan as [`admit`] reads it and applies [`admit`]'s rule, so a caller reads
+/// nothing it would need only for a run that spends.
+///
+/// # Errors
+///
+/// [`PlanDocument`] when [`admit`] would refuse the plan's document.
+pub fn plan_stage(
+    validator: &ContractValidator,
+    plan: &[u8],
+    run_uid: RunUid,
+) -> Result<PlanStage, PlanDocument> {
+    let planned = Planned::read(validator, plan, run_uid)?;
+    Ok(match spend_tier(&planned) {
+        Ok(_tier) => PlanStage::Spends,
+        Err(reason) => PlanStage::NoSpend(Box::new(no_spend(plan, reason))),
+    })
+}
+
+/// The tier `planned`'s LLM stage spends at, or why it has none.
+const fn spend_tier(planned: &Planned) -> Result<SpendTier, NotRunReason> {
+    match (planned.draft, SpendTier::of(planned.tier)) {
+        (true, _) => Err(NotRunReason::Draft),
+        (false, None) => Err(NotRunReason::NoLlmTier),
+        (false, Some(tier)) => Ok(tier),
+    }
 }
 
 /// The plan's document unchanged: a run with no LLM stage has nothing to admit.
@@ -368,6 +410,10 @@ where
             && text.len() > MAX_SUPPRESS_BYTES
         {
             return Err(AdmitError::SuppressTooLarge { size: text.len() });
+        }
+        // The carry was decided on the previous run the caller read; this state must name it.
+        if state.evidence.as_ref() != request.prior {
+            return Err(AdmitError::PriorMoved);
         }
         let (repo_id, pr) = (self.repo_id(), self.planned.pr);
         // An opener record's sender opened the PR and is not a pusher (03 §6c), and a push of a
