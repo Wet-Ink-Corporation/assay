@@ -7,7 +7,8 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use assay_app::{
-    Ledger, LedgerReadError, PublishError, PublishLedger, RedecidedError, VerdictForge,
+    BundleSource, EvidenceError, Ledger, LedgerReadError, PublishError, PublishLedger,
+    RedecidedError, VerdictForge,
 };
 
 use crate::artifacts::DirArtifactsError;
@@ -15,10 +16,11 @@ use crate::redecide::RedecideStateFileError;
 
 /// Why `decide-only publish` published nothing.
 ///
-/// `G` is GitHub's error (the live PR, the default branch, the check and the summary), `L` the
-/// ledger files' and `P` the publish ledger's.
+/// `G` is GitHub's error (the live PR, the default branch, the evidence run's provenance, the
+/// check and the summary), `B` the evidence store's, `L` the ledger files' and `P` the publish
+/// ledger's.
 #[derive(Debug)]
-pub enum RepublishRunError<G, L, P> {
+pub enum RepublishRunError<G, B, L, P> {
     /// `ASSAY_PR` is not one of the PRs guard wrote in `prs`.
     NotScheduled {
         /// `ASSAY_PR`.
@@ -47,6 +49,9 @@ pub enum RepublishRunError<G, L, P> {
     DefaultBranch(G),
     /// The PR's ledger state could not be read.
     Ledger(LedgerReadError<L>),
+    /// The claim's evidence could not be read again for a refusal; a verdict about it is an
+    /// outcome, not this.
+    Evidence(EvidenceError<G, B>),
     /// The refusal could not be published.
     Refusal(PublishError<G, P>),
     /// The re-decision could not be published, or its bundle is not this run's re-decision.
@@ -54,13 +59,14 @@ pub enum RepublishRunError<G, L, P> {
 }
 
 /// The [`RepublishRunError`] of `run_republish` over its ports.
-pub type RepublishRunFailure<A, L, P> = RepublishRunError<
+pub type RepublishRunFailure<A, R, L, P> = RepublishRunError<
     <A as VerdictForge>::Error,
+    <R as BundleSource>::Error,
     <L as Ledger>::Error,
     <P as PublishLedger>::Error,
 >;
 
-impl<G, L, P> fmt::Display for RepublishRunError<G, L, P> {
+impl<G, B, L, P> fmt::Display for RepublishRunError<G, B, L, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotScheduled { pr } => write!(f, "ASSAY_PR {pr} is not one of guard's prs"),
@@ -74,15 +80,17 @@ impl<G, L, P> fmt::Display for RepublishRunError<G, L, P> {
             Self::Live(_) => f.write_str("could not read the PR's live head and base"),
             Self::DefaultBranch(_) => f.write_str("could not read the default branch"),
             Self::Ledger(_) => f.write_str("could not read the PR's ledger state"),
+            Self::Evidence(_) => f.write_str("could not read the evidence bundle again"),
             Self::Refusal(_) => f.write_str("could not publish the refusal"),
             Self::Decided(_) => f.write_str("could not publish the re-decision"),
         }
     }
 }
 
-impl<G, L, P> Error for RepublishRunError<G, L, P>
+impl<G, B, L, P> Error for RepublishRunError<G, B, L, P>
 where
     G: Error + 'static,
+    B: Error + 'static,
     L: Error + 'static,
     P: Error + 'static,
 {
@@ -96,6 +104,7 @@ where
             Self::State(source) => Some(source),
             Self::Live(source) | Self::DefaultBranch(source) => Some(source),
             Self::Ledger(source) => Some(source),
+            Self::Evidence(source) => Some(source),
             Self::Refusal(source) => Some(source),
             Self::Decided(source) => Some(source),
         }

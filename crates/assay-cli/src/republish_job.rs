@@ -73,6 +73,7 @@ pub(crate) type Ended = ledger_job::Ended<RepublishCliError>;
 /// What [`run_republish`] fails with over the live ports.
 type RepublishFailure = RepublishRunError<
     ForgeError<GhError>,
+    BundleFetchError,
     LedgerRepoError<GhError>,
     LedgerPublishError<LedgerRepoError<GhError>, LedgerRefsError<GhError>, ParseLedgerTimeError>,
 >;

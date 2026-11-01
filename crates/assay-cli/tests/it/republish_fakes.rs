@@ -1,5 +1,6 @@
 //! Fakes for `run_republish` (TST-09): GitHub with the App's token (the PR live and the verdict
-//! check) and with the run's (the default branch and decide-only's uploaded decision bundle),
+//! check) and with the run's (the default branch, decide-only's uploaded decision bundle, and
+//! the evidence run's provenance and bundle),
 //! each call logged by name into the log the ledger's files share, so a test can tell that no
 //! port was called.
 
@@ -7,9 +8,9 @@ use std::cell::RefCell;
 use std::num::NonZeroU64;
 
 use assay_app::{
-    CheckName, CheckRun, CheckRunId, CheckStatus, CommentId, CommitId, CurrentPullRequest,
-    Deadline, DecisionBundleSource, PullOnHead, PullRequestState, Sha256Digest, StoredBundle,
-    SummaryComment, VerdictForge,
+    BundleSource, CheckName, CheckRun, CheckRunId, CheckStatus, CommentId, CommitId,
+    CurrentPullRequest, Deadline, DecisionBundleSource, PullOnHead, PullRequestState,
+    RunProvenance, Sha256Digest, StoredBundle, SummaryComment, VerdictForge, WorkflowRunFacts,
 };
 use assay_cli::DefaultBranch;
 use assay_domain::RunUid;
@@ -111,11 +112,34 @@ impl VerdictForge for Verdict<'_> {
     }
 }
 
-/// The run token's GitHub: `main` as the default branch, and `stored` as the decision bundle
-/// the upload step left.
+/// The run token's GitHub: `main` as the default branch, `stored` as the decision bundle the
+/// upload step left, and `run` and `evidence` as the evidence run's provenance and bundle, as
+/// a refusal is read again.
 pub(crate) struct Store<'l> {
     pub(crate) stored: StoredBundle,
+    pub(crate) run: WorkflowRunFacts,
+    pub(crate) evidence: StoredBundle,
     pub(crate) log: &'l Log,
+}
+
+impl RunProvenance for Store<'_> {
+    type Error = Refused;
+
+    fn workflow_run(&self, _: NonZeroU64) -> Result<Option<WorkflowRunFacts>, Refused> {
+        self.log.borrow_mut().push("workflow run".to_owned());
+        // The caller owns GitHub's answer.
+        Ok(Some(self.run.clone()))
+    }
+}
+
+impl BundleSource for Store<'_> {
+    type Error = Refused;
+
+    fn fetch(&self, _: RunUid, _: &str, _: usize) -> Result<StoredBundle, Refused> {
+        self.log.borrow_mut().push("fetch evidence".to_owned());
+        // The caller owns what the store answers; the fake answers the same on every call.
+        Ok(self.evidence.clone())
+    }
 }
 
 impl DecisionBundleSource for Store<'_> {

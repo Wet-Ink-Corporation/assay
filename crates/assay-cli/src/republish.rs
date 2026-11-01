@@ -9,11 +9,15 @@
 //! default branch, and the PR's ledger state, from which decide-only's [`Claim`] is taken again
 //! by the rule decide applied (the register of the live head, written from the state's own
 //! evidence or decision): when there is none, the check is no longer decide-only's and nothing
-//! is published ([`RepublishRun::Unclaimed`]). A refusal is published over the claim through
-//! [`publish_redecide_refusal`]; a decision through [`publish_redecided`], which confirms the
-//! upload by sha256 only after the upload step reported `success`, writes the decision pointer
-//! and the register under the lock (J10), and otherwise fails a trust-path or exec-surface PR
-//! with `persist-error`.
+//! is published ([`RepublishRun::Unclaimed`]). The claim may have moved since decide read it (a
+//! pipeline run of the same head published new evidence), so each outcome is checked against
+//! it first, and is otherwise unclaimed too (wi-b70b90): a refusal is published only when the
+//! claim's evidence, read again through [`read_evidence`] as decide read it, still gives the
+//! same refusal, and then through [`publish_redecide_refusal`]; a decision only when its bundle
+//! names the claim's evidence pointer and the live head, and then through
+//! [`publish_redecided`], which confirms the upload by sha256 only after the upload step
+//! reported `success`, writes the decision pointer and the register under the lock (J10), and
+//! otherwise fails a trust-path or exec-surface PR with `persist-error`.
 
 mod error;
 
@@ -22,10 +26,12 @@ use std::num::NonZeroU64;
 use std::path::Path;
 
 use assay_app::{
-    DECISION_FILE, DecisionBundleSource, Fetched, Ledger, MAX_DECISION_BUNDLE_BYTES,
-    PersistOutcome, PublishLedger, Published, PullRequestState, RedecideRefusal, RedecideTarget,
-    RedecidedPersisted, RedecidedPorts, Sha256Digest, Unconfirmed, UnusableEvidence, VerdictForge,
-    publish_redecide_refusal, publish_redecided, read_state,
+    BundleSource, Claim, DECISION_FILE, DecisionBundleSource, EvidenceRead, EvidenceRequest,
+    Fetched, Ledger, MAX_DECISION_BUNDLE_BYTES, PersistOutcome, PublishLedger, Published,
+    PullRequestState, RedecideRefusal, RedecideTarget, RedecidedError, RedecidedPersisted,
+    RedecidedPorts, RedecidedRefused, RunProvenance, Sha256Digest, Unconfirmed, UnusableEvidence,
+    VerdictForge, publish_redecide_refusal, publish_redecided, read_decision_bundle, read_evidence,
+    read_state,
 };
 use assay_domain::Rubric;
 
@@ -57,7 +63,8 @@ pub struct RepublishJobPorts<'p, A, R, L, P> {
     /// GitHub with the `assay-verdict` App's token: the live PR, the verdict check and the
     /// summary comment.
     pub app: &'p A,
-    /// GitHub with the job's run token: the default branch and the uploaded decision bundle.
+    /// GitHub with the job's run token: the default branch, the uploaded decision bundle, and
+    /// the evidence run's provenance and bundle, read again for a refusal.
     pub run: &'p R,
     /// The ledger's files: the PR's state, whose register and evidence pointer are the claim.
     pub ledger: &'p L,
@@ -72,7 +79,9 @@ pub enum RepublishRun<P, B> {
     /// Nothing: decide found nothing to publish.
     Silent,
     /// Nothing: the ledger's register is no longer one decide-only may write over for the PR's
-    /// live head (another run published, or the PR moved), so the check is not decide-only's.
+    /// live head (another run published, or the PR moved), or the claim it gives is not the one
+    /// decide's outcome was reached over (other evidence, which no longer gives the refusal, or
+    /// a bundle of another pointer or head), so the check is not this run's.
     Unclaimed,
     /// The refusal check over the claim, or nothing where the check is no longer claimed.
     Refused(Published<P, Infallible>),
@@ -83,7 +92,7 @@ pub enum RepublishRun<P, B> {
 /// What [`run_republish`] returns over the ports' types.
 pub type RepublishRunOutcome<A, R, L, P> = Result<
     RepublishRun<<P as PublishLedger>::Error, <R as DecisionBundleSource>::Error>,
-    RepublishRunFailure<A, L, P>,
+    RepublishRunFailure<A, R, L, P>,
 >;
 
 /// What decide's `--out` holds to publish, read and checked before any port is called.
@@ -103,8 +112,9 @@ enum Pending {
 ///
 /// [`RepublishRunError`] when `job.pr` is not one of guard's, or decide's state or bundle
 /// cannot be read, is refused or does not hash to the state's digest, all before any port is
-/// called; when the PR, the default branch or the ledger state cannot be read; or when the
-/// verdict cannot be published.
+/// called; when the PR, the default branch, the ledger state or (for a refusal) the claim's
+/// evidence cannot be read; when the decision bundle is unreadable; or when the verdict cannot
+/// be published.
 pub fn run_republish<A, R, L, P, E>(
     job: &RepublishJob<'_>,
     ports: &RepublishJobPorts<'_, A, R, L, P>,
@@ -112,7 +122,7 @@ pub fn run_republish<A, R, L, P, E>(
 ) -> RepublishRunOutcome<A, R, L, P>
 where
     A: VerdictForge<Error = E> + PullRequestState<Error = E>,
-    R: DecisionBundleSource + DefaultBranch<Error = E>,
+    R: DecisionBundleSource + DefaultBranch<Error = E> + RunProvenance<Error = E> + BundleSource,
     L: Ledger,
     P: PublishLedger,
 {
@@ -133,48 +143,113 @@ where
     let Some(claim) = claim(pr_state, run_uid.repo_id, &live.head_sha) else {
         return Ok(RepublishRun::Unclaimed);
     };
-    let target = RedecideTarget {
-        run_uid,
-        number: job.pr,
-        head_sha: &live.head_sha,
-        base_ref: &live.base_ref,
-        default_branch: &default_branch,
+    let claimed = Claimed {
+        target: RedecideTarget {
+            run_uid,
+            number: job.pr,
+            head_sha: &live.head_sha,
+            base_ref: &live.base_ref,
+            default_branch: &default_branch,
+        },
+        claim: &claim,
     };
     match pending {
-        Pending::Refused(refusal) => {
-            let unusable = UnusableEvidence {
-                target,
-                claim: &claim,
-                refusal,
-            };
-            publish_redecide_refusal(&unusable, ports.app, ports.lock)
-                .map(RepublishRun::Refused)
-                .map_err(RepublishRunError::Refusal)
-        }
+        Pending::Refused(refusal) => publish_refusal(job, ports, &claimed, refusal),
         Pending::Decided { bundle, digest } => {
-            let persisted = RedecidedPersisted {
-                target,
-                claim: &claim,
-                rubric: job.rubric,
-                bundle: &bundle,
-                digest: &digest,
-                upload: job.upload,
-            };
-            let redecided_ports = RedecidedPorts {
-                forge: ports.app,
-                ledger: ports.lock,
-                bundles: ports.run,
-            };
-            publish_redecided(&persisted, &redecided_ports)
-                .map(RepublishRun::Decided)
-                .map_err(RepublishRunError::Decided)
+            publish_decision(job, ports, &claimed, (&bundle, &digest))
         }
     }
 }
 
+/// Where decide-only publishes, and the claim it re-took from the ledger for the live head.
+struct Claimed<'a> {
+    target: RedecideTarget<'a>,
+    claim: &'a Claim,
+}
+
+/// Publishes `refusal` over the claim, only while the evidence the claim points at, read again
+/// as decide read it, still gives that refusal: a pipeline run that published new evidence
+/// between the two steps is not refused with the old evidence's verdict (wi-b70b90).
+fn publish_refusal<A, R, L, P, E>(
+    job: &RepublishJob<'_>,
+    ports: &RepublishJobPorts<'_, A, R, L, P>,
+    claimed: &Claimed<'_>,
+    refusal: RedecideRefusal,
+) -> RepublishRunOutcome<A, R, L, P>
+where
+    A: VerdictForge<Error = E>,
+    R: DecisionBundleSource + RunProvenance<Error = E> + BundleSource,
+    L: Ledger,
+    P: PublishLedger,
+{
+    let request = EvidenceRequest {
+        repo_id: claimed.target.run_uid.repo_id,
+        pointer: &claimed.claim.evidence,
+        default_branch: claimed.target.default_branch,
+        rubric: job.rubric,
+    };
+    let read =
+        read_evidence(&request, ports.run, ports.run).map_err(RepublishRunError::Evidence)?;
+    let still = match read {
+        EvidenceRead::Forged(_) => Some(RedecideRefusal::Forged),
+        EvidenceRead::Absent(absence) => Some(RedecideRefusal::Absent(absence)),
+        EvidenceRead::Authentic(_) | EvidenceRead::OtherRubric => None,
+    };
+    if still != Some(refusal) {
+        return Ok(RepublishRun::Unclaimed);
+    }
+    let unusable = UnusableEvidence {
+        target: claimed.target,
+        claim: claimed.claim,
+        refusal,
+    };
+    publish_redecide_refusal(&unusable, ports.app, ports.lock)
+        .map(RepublishRun::Refused)
+        .map_err(RepublishRunError::Refusal)
+}
+
+/// Publishes the re-decision `bundle` (hashing to `digest`) over the claim, only when it was
+/// decided for the claim's evidence pointer and the live head; otherwise the check is no longer
+/// this decision's to write.
+fn publish_decision<A, R, L, P, E>(
+    job: &RepublishJob<'_>,
+    ports: &RepublishJobPorts<'_, A, R, L, P>,
+    claimed: &Claimed<'_>,
+    (bundle, digest): (&[u8], &Sha256Digest),
+) -> RepublishRunOutcome<A, R, L, P>
+where
+    A: VerdictForge<Error = E>,
+    R: DecisionBundleSource + BundleSource,
+    L: Ledger,
+    P: PublishLedger,
+{
+    let decided = read_decision_bundle(bundle).map_err(|error| {
+        RepublishRunError::Decided(RedecidedError::Bundle(RedecidedRefused::Unreadable(error)))
+    })?;
+    if decided.evidence() != &claimed.claim.evidence || decided.head() != claimed.target.head_sha {
+        return Ok(RepublishRun::Unclaimed);
+    }
+    let persisted = RedecidedPersisted {
+        target: claimed.target,
+        claim: claimed.claim,
+        rubric: job.rubric,
+        bundle,
+        digest,
+        upload: job.upload,
+    };
+    let redecided_ports = RedecidedPorts {
+        forge: ports.app,
+        ledger: ports.lock,
+        bundles: ports.run,
+    };
+    publish_redecided(&persisted, &redecided_ports)
+        .map(RepublishRun::Decided)
+        .map_err(RepublishRunError::Decided)
+}
+
 /// What decide's state in `dir` asks to publish, `None` for a silent one; for a decision, the
 /// bundle beside it, which must hash to the state's digest.
-fn read_out<G, L, P>(dir: &Path) -> Result<Option<Pending>, RepublishRunError<G, L, P>> {
+fn read_out<G, B, L, P>(dir: &Path) -> Result<Option<Pending>, RepublishRunError<G, B, L, P>> {
     let state = RedecideState::read(&read(dir, STATE_FILE, MAX_STATE_BYTES)?)
         .map_err(RepublishRunError::State)?;
     match state {
@@ -192,11 +267,11 @@ fn read_out<G, L, P>(dir: &Path) -> Result<Option<Pending>, RepublishRunError<G,
 }
 
 /// File `file` of decide's `--out` `dir`, which must be there and within `limit` bytes.
-fn read<G, L, P>(
+fn read<G, B, L, P>(
     dir: &Path,
     file: &str,
     limit: usize,
-) -> Result<Vec<u8>, RepublishRunError<G, L, P>> {
+) -> Result<Vec<u8>, RepublishRunError<G, B, L, P>> {
     match read_in(dir, file, limit).map_err(RepublishRunError::Read)? {
         Fetched::Found(bytes) => Ok(bytes),
         Fetched::Missing => Err(RepublishRunError::Missing {

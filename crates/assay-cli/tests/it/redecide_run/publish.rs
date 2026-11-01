@@ -8,28 +8,33 @@ use std::fs;
 use std::path::Path;
 
 use assay_app::{
-    Absence, CheckConclusion, CheckState, DECISION_FILE, DecisionPointer, LedgerPublish,
-    PersistFailure, PersistOutcome, PublicationRegister, Published, RedecideRefusal, Sha256Digest,
-    StoredBundle, Unconfirmed,
+    Absence, CheckConclusion, CheckState, CommitId, DECISION_FILE, DecisionPointer,
+    EvidencePointer, LedgerPublish, MAX_DECISION_BUNDLE_BYTES, PersistFailure, PersistOutcome,
+    PublicationRegister, Published, RedecideRefusal, Sha256Digest, StoredBundle, Unconfirmed,
 };
 use assay_cli::outputs::{DecideOnlyGuardOutputs, DecideOnlyPrs, DecideTrigger};
 use assay_cli::{
-    RedecideState, RepublishJob, RepublishJobPorts, RepublishRun, RepublishRunError, STATE_FILE,
-    run_republish,
+    MAX_STATE_BYTES, RedecideState, RepublishJob, RepublishJobPorts, RepublishRun,
+    RepublishRunError, STATE_FILE, run_republish,
 };
 
 use super::{
-    DECIDE_ONLY_RUN, LATER, NOW, OWNER, PIPELINE_RUN, PR, Redecided, Scene, comment, id, label,
-    override_line,
+    DECIDE_ONLY_RUN, LATER, NOW, OTHER_HEAD, OWNER, PIPELINE_RUN, PR, Redecided, Scene, comment,
+    id, label, override_line,
 };
 use crate::open_fakes::{FixedClock, MemoryRefs, Refused};
-use crate::redecide_fakes::LoggedLedger;
+use crate::redecide_fakes::{LoggedLedger, pipeline_run};
 use crate::republish_fakes::{Store, Verdict, completed_under};
 
 /// What `run_republish` gives over the fakes.
 type Ran = Result<
     RepublishRun<assay_app::LedgerPublishError<Refused, Refused, Refused>, Refused>,
-    RepublishRunError<Refused, Refused, assay_app::LedgerPublishError<Refused, Refused, Refused>>,
+    RepublishRunError<
+        Refused,
+        Refused,
+        Refused,
+        assay_app::LedgerPublishError<Refused, Refused, Refused>,
+    >,
 >;
 
 /// The key the scene's register names: the pipeline's, which no re-decision gives.
@@ -47,8 +52,8 @@ struct World<'s> {
 }
 
 impl<'s> World<'s> {
-    /// The check completed under the register's key, the PR unmoved, and `stored` as the
-    /// upload step left the decision artifact.
+    /// The check completed under the register's key, the PR unmoved, `stored` as the upload
+    /// step left the decision artifact, and the evidence still authentic.
     fn new(scene: &'s Scene, stored: StoredBundle) -> Result<Self, Box<dyn Error>> {
         Self::checked(scene, stored, &register_key())
     }
@@ -70,6 +75,9 @@ impl<'s> World<'s> {
             },
             store: Store {
                 stored,
+                run: pipeline_run(scene.planned.run.run_env().run_uid),
+                // The store holds its own copy of the evidence; the scene keeps the original.
+                evidence: StoredBundle::Found(scene.bundle.clone()),
                 log: &scene.log,
             },
             refs: MemoryRefs::default(),
@@ -249,7 +257,9 @@ fn a_refusal_is_published_over_the_register_and_once() -> Result<(), Box<dyn Err
         ran.state()?,
         RedecideState::Refused(RedecideRefusal::Absent(Absence::Expired))
     );
-    let world = World::new(&scene, StoredBundle::Missing)?;
+    let mut world = World::new(&scene, StoredBundle::Missing)?;
+    // The evidence is still expired when publish reads it again.
+    world.store.evidence = StoredBundle::Expired;
 
     let published = world.publish(&ran.out, PR, PersistOutcome::Skipped)??;
 
@@ -276,7 +286,8 @@ fn a_refusal_is_published_over_the_register_and_once() -> Result<(), Box<dyn Err
     );
     assert_eq!(state.decision, None, "a refusal writes no decision pointer");
 
-    let again = World::checked(&scene, StoredBundle::Missing, &register.key)?;
+    let mut again = World::checked(&scene, StoredBundle::Missing, &register.key)?;
+    again.store.evidence = StoredBundle::Expired;
     let repeated = again.publish(&ran.out, PR, PersistOutcome::Skipped)??;
 
     assert!(
@@ -367,6 +378,136 @@ fn a_register_another_run_wrote_since_decide_is_not_published_over() -> Result<(
     assert!(world.verdict.check.written().is_none(), "no check written");
     assert!(world.refs.created().is_empty(), "no lock taken");
     assert_eq!(scene.state()?, before, "the ledger state is left");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_refusal_of_evidence_the_ledger_no_longer_points_at_is_not_published()
+-> Result<(), Box<dyn Error>> {
+    let scene = Scene::new()?;
+    let authentic = scene.state()?.evidence.ok_or("an evidence pointer")?;
+    // decide reads a pointer its bundle does not hash to: a forgery of E1.
+    let forged = EvidencePointer {
+        sha256: Sha256Digest::of(b"not the bundle"),
+        ..authentic
+    };
+    // Each state edit owns its pointer.
+    scene.edit_state(|state| state.evidence = Some(forged.clone()))?;
+    let ran = scene.redecide(&scene.hub()?, &label(&scene)?, DecideTrigger::Label)?;
+    assert_eq!(
+        ran.state()?,
+        RedecideState::Refused(RedecideRefusal::Forged)
+    );
+    // Between the steps, a pipeline run publishes E2, authentic, with its own register.
+    let newer = Sha256Digest::of(b"E2's decision");
+    // Each state edit owns its pointer.
+    scene.edit_state(|state| state.evidence = Some(authentic.clone()))?;
+    scene.register(&scene.head(), &newer, id(PIPELINE_RUN)?)?;
+    let before = scene.state()?;
+    let world = World::checked(&scene, StoredBundle::Missing, &newer)?;
+
+    let published = world.publish(&ran.out, PR, PersistOutcome::Skipped)??;
+
+    assert!(
+        matches!(published, RepublishRun::Unclaimed),
+        "{published:?}"
+    );
+    assert!(world.verdict.check.written().is_none(), "no check written");
+    assert!(world.refs.created().is_empty(), "no lock taken");
+    assert_eq!(scene.state()?, before, "the ledger state is left");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_bundle_of_other_evidence_or_another_head_than_the_claim_is_not_published()
+-> Result<(), Box<dyn Error>> {
+    let other_head: CommitId = OTHER_HEAD.parse()?;
+    for moved_head in [false, true] {
+        let scene = Scene::new()?;
+        let (ran, bundle) = overridden(&scene)?;
+        if moved_head {
+            // The PR moved, and a pipeline run registered the new head from its evidence.
+            scene.register(&other_head, &register_key(), id(PIPELINE_RUN)?)?;
+        } else {
+            // A pipeline run of the same run id points at other evidence.
+            scene.edit_state(|state| {
+                if let Some(evidence) = state.evidence.as_mut() {
+                    evidence.sha256 = Sha256Digest::of(b"E2");
+                }
+            })?;
+        }
+        let before = scene.state()?;
+        let mut world = World::new(&scene, StoredBundle::Found(bundle))?;
+        if moved_head {
+            // The live PR owns its copy of the head.
+            world.verdict.current.head_sha = other_head.clone();
+        }
+
+        let published = world.publish(&ran.out, PR, PersistOutcome::Success)??;
+
+        assert!(
+            matches!(published, RepublishRun::Unclaimed),
+            "moved head {moved_head}: {published:?}"
+        );
+        assert!(world.verdict.check.written().is_none(), "no check written");
+        assert!(world.refs.created().is_empty(), "no lock taken");
+        assert_eq!(scene.state()?, before, "the ledger state is left");
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_moved_head_with_the_register_of_the_old_one_is_unclaimed() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new()?;
+    let (ran, bundle) = overridden(&scene)?;
+    let before = scene.state()?;
+    let mut world = World::new(&scene, StoredBundle::Found(bundle))?;
+    world.verdict.current.head_sha = OTHER_HEAD.parse()?;
+
+    let published = world.publish(&ran.out, PR, PersistOutcome::Success)??;
+
+    assert!(
+        matches!(published, RepublishRun::Unclaimed),
+        "{published:?}"
+    );
+    assert!(world.verdict.check.written().is_none(), "no check written");
+    assert!(world.refs.created().is_empty(), "no lock taken");
+    assert_eq!(scene.state()?, before, "the ledger state is left");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn an_oversized_state_or_bundle_is_refused_before_any_port() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new()?;
+    let state_out = scene.planned.root.join("large-state-out");
+    fs::create_dir(&state_out)?;
+    fs::write(
+        state_out.join(STATE_FILE),
+        vec![b' '; MAX_STATE_BYTES.saturating_add(1)],
+    )?;
+    let bundle_out = scene.planned.root.join("large-bundle-out");
+    fs::create_dir(&bundle_out)?;
+    let bundle = vec![b' '; MAX_DECISION_BUNDLE_BYTES.saturating_add(1)];
+    let decided = RedecideState::Decided {
+        digest: Sha256Digest::of(&bundle),
+    };
+    fs::write(bundle_out.join(STATE_FILE), decided.json())?;
+    fs::write(bundle_out.join(DECISION_FILE), &bundle)?;
+    let world = World::new(&scene, StoredBundle::Missing)?;
+
+    for (out, file) in [(&state_out, STATE_FILE), (&bundle_out, DECISION_FILE)] {
+        let published = world.publish(out, PR, PersistOutcome::Success)?;
+
+        assert!(
+            matches!(&published, Err(RepublishRunError::TooLarge { path }) if *path == out.join(file)),
+            "{file}: {published:?}"
+        );
+    }
+    assert_no_port(&world);
     Ok(())
 }
 
