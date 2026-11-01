@@ -144,11 +144,11 @@ fn a_relative_program_is_refused_by_its_flag() {
         matches!(
             refused,
             [
-                Err(GateCliError::Static(StaticError::RelativeProgram {
+                Err(GateCliError::Pinned(PinnedError::RelativeProgram {
                     program: Program::Node,
                     path: ref node
                 })),
-                Err(GateCliError::Static(StaticError::RelativeProgram {
+                Err(GateCliError::Pinned(PinnedError::RelativeProgram {
                     program: Program::Temper,
                     path: ref temper
                 })),
@@ -159,16 +159,48 @@ fn a_relative_program_is_refused_by_its_flag() {
 }
 
 #[test]
-fn gates_lint_is_not_wired_whatever_its_flags() {
-    for (node, temper) in [(None, None), (Some("/bin/node"), Some("/opt/temper"))] {
+fn gates_lint_takes_both_programs_by_absolute_path() {
+    // #60 ST-8 wires gates-lint: it was `NotWired` whatever its flags (D13, owner-approved).
+    let wired = wired(LINT, Some("/bin/node"), Some("/opt/temper"));
+
+    assert!(
+        matches!(
+            wired,
+            Ok(Wired::Lint(Programs { ref node, ref temper }))
+                if node == Path::new("/bin/node") && temper == Path::new("/opt/temper")
+        ),
+        "{wired:?}"
+    );
+}
+
+#[test]
+fn gates_lint_without_both_programs_is_a_usage_error() {
+    for (node, temper) in [
+        (None, None),
+        (Some("/bin/node"), None),
+        (None, Some("/opt/temper")),
+    ] {
         assert!(
-            matches!(
-                wired(GateJob::Build(BuildJob::Lint), node, temper),
-                Err(GateCliError::NotWired(GateJob::Build(BuildJob::Lint)))
-            ),
+            matches!(wired(LINT, node, temper), Err(GateCliError::Usage)),
             "{node:?} {temper:?}"
         );
     }
+}
+
+#[test]
+fn a_relative_program_of_gates_lint_is_refused_by_its_flag() {
+    let refused = wired(LINT, Some("node"), Some("/opt/temper"));
+
+    assert!(
+        matches!(
+            refused,
+            Err(GateCliError::Pinned(PinnedError::RelativeProgram {
+                program: Program::Node,
+                ref path
+            })) if path == Path::new("node")
+        ),
+        "{refused:?}"
+    );
 }
 
 /// A scratch directory whose removal fails: it is already gone when it is closed.

@@ -364,9 +364,10 @@ fn run_gate(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
     let variables = gate::GateVariables {
         run_key: env::var_os(self_gate::RUN_KEY),
         output: env::var_os(guard_job::OUTPUT),
-        fetch: gate::StaticVariables {
+        fetch: gate::PinnedVariables {
             base_sha: read(gate::Variable::BaseSha),
             head_sha: read(gate::Variable::HeadSha),
+            merge_base: read(gate::Variable::MergeBase),
             token: read(gate::Variable::RunToken),
             repository: read(gate::Variable::Repository),
             path: read(gate::Variable::Path),

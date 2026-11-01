@@ -33,6 +33,10 @@ mod fetch_by_digest;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod gate;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod gate_lint;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod gate_lint_checkout;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod gate_outputs;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod gate_paths;
