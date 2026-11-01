@@ -111,6 +111,31 @@ impl Command {
         }
     }
 
+    /// The command's canonical line: `/assay`, its word, then each of its [`args`](Self::args)
+    /// after one space. [`parse_command`] reads it back as this command, and a command record
+    /// holds exactly this text (`assay.ledger-command/1`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use assay_app::{Command, Parsed, parse_command};
+    ///
+    /// let waive = Command::Waive { finding: "0123456789abcdef".parse()? };
+    ///
+    /// assert_eq!(waive.line(), "/assay waive 0123456789abcdef");
+    /// assert_eq!(parse_command(&waive.line()), Parsed::Command(waive));
+    /// # Ok::<(), assay_domain::ParseFingerprintError>(())
+    /// ```
+    #[must_use]
+    pub fn line(&self) -> String {
+        let mut line = format!("{PREFIX} {}", self.name());
+        for arg in self.args() {
+            line.push(' ');
+            line.push_str(&arg);
+        }
+        line
+    }
+
     /// Whether the command's lifetime is the head (all but dismiss and recheck, 04 §5).
     #[must_use]
     pub const fn is_head_bound(&self) -> bool {

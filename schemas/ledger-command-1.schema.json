@@ -6,8 +6,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema", "run_uid", "pr", "comment_id", "actor_id", "command", "body_sha256", "created_at",
-    "at"
+    "schema", "run_uid", "pr", "comment_id", "actor_id", "head_sha", "command", "body_sha256",
+    "created_at", "at"
   ],
   "properties": {
     "schema": { "const": "assay.ledger-command/1" },
@@ -15,12 +15,15 @@
     "pr": { "$ref": "#/$defs/id" },
     "comment_id": { "$ref": "#/$defs/id" },
     "actor_id": { "$ref": "#/$defs/id" },
+    "head_sha": {
+      "description": "The PR head the comment was posted on: a head-bound command (waive, override, retry, weigh-in-ack) applies to that head alone (04-pipeline.md §5).",
+      "$ref": "#/$defs/sha"
+    },
     "command": {
-      "description": "The command as parsed, free text of 1 to 256 characters without a control character.",
+      "description": "The command as its canonical line: `/assay`, a command word other than `recheck` (never recorded), then each argument after one space, at most 512 characters without a control character. The schema checks the prefix and the word; the reader also re-parses the line by the grammar of 04 §6 and refuses it unless it is that command's canonical line byte for byte.",
       "type": "string",
-      "minLength": 1,
-      "maxLength": 256,
-      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+      "maxLength": 512,
+      "pattern": "^/assay (waive|override|dismiss|retry|weigh-in-ack) [^\\u0000-\\u001f\\u007f-\\u009f]+$"
     },
     "body_sha256": {
       "description": "The sha256 of the comment body at `created`: a body with another hash later voids the record (T21).",
@@ -42,6 +45,7 @@
       }
     },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "time": {
       "description": "A UTC instant to the millisecond, `YYYY-MM-DDTHH:MM:SS.mmmZ`.",
       "type": "string",
