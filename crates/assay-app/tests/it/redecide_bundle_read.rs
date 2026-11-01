@@ -95,6 +95,12 @@ fn the_reader_refuses_each_rule_the_schema_states() -> Result<(), Box<dyn Error>
         }),
         ("a run of attempt 2", |bundle| {
             bundle["run_uid"]["run_attempt"] = json!(2);
+            // The events name the same run, so only the run's attempt rule refuses it.
+            if let Some(events) = bundle["events"].as_array_mut() {
+                for event in events {
+                    event["run_uid"]["run_attempt"] = json!(2);
+                }
+            }
         }),
         ("an unknown top-level key", |bundle| {
             bundle["extra"] = json!(true);
