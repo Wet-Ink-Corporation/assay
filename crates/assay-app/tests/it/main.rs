@@ -84,6 +84,7 @@ mod publish_findings;
 mod publish_ledger;
 mod publish_persist;
 mod publish_persisted;
+mod publish_refusal;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod publish_support;
 mod read_limits;

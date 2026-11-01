@@ -99,6 +99,31 @@ pub fn base_identities<O: PullRequestObjects>(
     objects: &O,
     base: &CommitId,
 ) -> Result<Identities, BaseIdentitiesError<O::Error>> {
+    let lists = base_lists(objects, base)?;
+    Ok(Identities {
+        privileged: lists
+            .owners()
+            .iter()
+            .chain(lists.approvers())
+            .map(|identity| identity.id)
+            .collect(),
+        agents: lists.agents().iter().map(|identity| identity.id).collect(),
+    })
+}
+
+/// The base P10 identity lists at `base`, `.assay/owners` and `.assay/agents`.
+///
+/// They are read as [`EligibilityLists::parse`] reads them (an absent file is empty lists):
+/// what `decide`'s GitHub state snapshot judges eligibility by (#60 ST-14), and what
+/// [`base_identities`] reports.
+///
+/// # Errors
+///
+/// As [`base_identities`].
+pub fn base_lists<O: PullRequestObjects>(
+    objects: &O,
+    base: &CommitId,
+) -> Result<EligibilityLists, BaseIdentitiesError<O::Error>> {
     // `.assay` itself first, as `plan` reads base config: a symlink or submodule there lists
     // as one entry, and the lists under it must not read as absent.
     let entries = objects
@@ -109,17 +134,8 @@ pub fn base_identities<O: PullRequestObjects>(
     }
     let owners = read_list(objects, &entries, OWNERS)?;
     let agents = read_list(objects, &entries, AGENTS)?;
-    let lists = EligibilityLists::parse(owners.as_deref(), agents.as_deref())
-        .map_err(BaseIdentitiesError::Lists)?;
-    Ok(Identities {
-        privileged: lists
-            .owners()
-            .iter()
-            .chain(lists.approvers())
-            .map(|identity| identity.id)
-            .collect(),
-        agents: lists.agents().iter().map(|identity| identity.id).collect(),
-    })
+    EligibilityLists::parse(owners.as_deref(), agents.as_deref())
+        .map_err(BaseIdentitiesError::Lists)
 }
 
 /// The text of the list at `path` among the base's `.assay` `entries`, or `None` when the base

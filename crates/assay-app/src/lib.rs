@@ -180,6 +180,7 @@ pub use publish::{
     BundleRefused, PersistOutcome, Persisted, PersistedError, PersistedOutcome, PersistedPorts,
     PrepareError, PreparedBundle, Unconfirmed, UnknownPersistOutcome, prepare, publish_persisted,
 };
+pub use publish::{MAX_REFUSAL_DETAIL_BYTES, NotARefusal, RefusalReason, publish_refusal};
 pub use replay::{
     BundleShape, BundleSource, DecisionDiff, Matched, Mismatch, ModelReplay, ReplayError,
     ReplayRequest, Replayed, RunField, StoredBundle, replay_decision,
@@ -207,8 +208,8 @@ pub use status::{
     InvalidFetchedAt, LocalStatusError, LocalStatusRequest, MAX_CHECK_RUNS, MAX_FINDINGS,
     MAX_REASONS, ObservedConclusion, PullSelector, PullView, ReviewCommentView, StatusError,
     StatusFailure, StatusForge, StatusPorts, StatusReport, StatusRepository, StatusRequest,
-    StatusStep, StatusUnreadable, StoredLocalReport, UserId, Viewer, base_identities, is_tree_id,
-    local_status, read_pull, status,
+    StatusStep, StatusUnreadable, StoredLocalReport, UserId, Viewer, base_identities, base_lists,
+    is_tree_id, local_status, read_pull, status,
 };
 pub use tiering::{ExecSurface, MetadataError, PackageSet, Symlink, exec_surface};
 pub use tiering::{baseline_change, exec_roots, manifest_exec_roots, manifest_trust_keys};

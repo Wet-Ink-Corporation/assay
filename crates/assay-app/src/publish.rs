@@ -13,6 +13,7 @@ mod findings;
 mod ledger;
 mod persisted;
 mod ports;
+mod refusal;
 mod render;
 mod resolution;
 mod sanitise;
@@ -38,6 +39,7 @@ pub use self::ports::{
     CheckUpdate, CommentForge, CommentId, EvidenceEntry, EvidencePointer, EvidenceRecord,
     InlineComment, LlmEvidence, PublishLedger, SummaryComment, VerdictForge,
 };
+pub use self::refusal::{MAX_REFUSAL_DETAIL_BYTES, NotARefusal, RefusalReason, publish_refusal};
 pub use self::render::SUMMARY_MARKER;
 pub(crate) use self::render::read::{read_refusal_title, read_text};
 use self::render::{Projection, Summary};
@@ -302,7 +304,8 @@ pub fn publish<F: VerdictForge, L: PublishLedger, B: BundleStore>(
     match publication.verdict {
         Verdict::Silent => Ok(Published::Nothing),
         Verdict::Refused(refusal) => {
-            write::write(target, writer, Pending::Refused(refused(target, refusal)))
+            let reason = refusal.reason();
+            write::write(target, writer, Pending::Refused(refused(target, &reason)))
         }
         Verdict::Decided(decided) => {
             let inputs = decided.inputs;
@@ -364,17 +367,17 @@ fn upload<L, B: BundleStore>(
     Ok(Sha256Digest::of(&bytes))
 }
 
-/// The check update for a refusal: `failure` with its reason, keyed by the run and the reason.
-fn refused(target: &Target<'_>, refusal: &Refusal) -> CheckUpdate {
-    let reason = refusal.reason();
-    let key = refusal_key(target.run_uid, &reason);
-    let reasons = [reason];
+/// The check update for a refusal's `reason`: `failure` with it, keyed by the run and the
+/// reason. A [`Refusal`] and its persisted [`RefusalReason`] both publish through here.
+fn refused(target: &Target<'_>, reason: &Reason) -> CheckUpdate {
+    let key = refusal_key(target.run_uid, reason);
+    let reasons = std::slice::from_ref(reason);
     CheckUpdate {
         state: CheckState::Completed(CheckConclusion::Failure),
-        title: render::title(Conclusion::Failure, &reasons),
+        title: render::title(Conclusion::Failure, reasons),
         summary: render::summary(&Summary {
             conclusion: Conclusion::Failure,
-            reasons: &reasons,
+            reasons,
             facts: None,
             warning: None,
         }),
