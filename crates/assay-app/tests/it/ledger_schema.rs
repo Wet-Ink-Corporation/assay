@@ -197,6 +197,39 @@ fn the_push_fixtures_pass_or_fail_schema_and_reader_alike() -> Result<(), Box<dy
 }
 
 #[test]
+fn append_command_writes_the_golden_line() -> Result<(), Box<dyn Error>> {
+    let ledger = MemoryLedger::default();
+    let golden = fs::read(
+        schemas_dir()
+            .join("fixtures")
+            .join("ledger-command")
+            .join("valid")
+            .join("command.json"),
+    )?;
+
+    append_command(
+        &ledger,
+        &CommandRecord {
+            run_uid: run(7003),
+            pr: id(7),
+            comment_id: CommentId(id(900_001)),
+            actor_id: UserId(id(1001)),
+            head_sha: commit('b'),
+            command: "/assay waive 0123456789abcdef".to_owned(),
+            body_sha256: digest('c'),
+            created_at: at("2026-10-12T09:29:58.000Z"),
+            at: at("2026-10-12T09:30:00.000Z"),
+        },
+    )?;
+
+    assert_eq!(
+        ledger.text(&LedgerPath::commands(id(42), id(7))),
+        String::from_utf8(golden)?
+    );
+    Ok(())
+}
+
+#[test]
 fn the_command_fixtures_pass_or_fail_schema_and_reader_alike() -> Result<(), Box<dyn Error>> {
     check(
         "ledger-command",
@@ -204,6 +237,9 @@ fn the_command_fixtures_pass_or_fail_schema_and_reader_alike() -> Result<(), Box
             ("control-character", "/command", "pattern"),
             ("long-command", "/command", "maxLength"),
             ("missing-body-hash", "", "required"),
+            ("missing-head-sha", "", "required"),
+            ("recheck", "/command", "pattern"),
+            ("unknown-word", "/command", "pattern"),
         ],
     )
 }
@@ -349,7 +385,8 @@ fn write_one_of_each(ledger: &MemoryLedger) -> Result<(), Box<dyn Error>> {
             pr: id(7),
             comment_id: CommentId(id(900_001)),
             actor_id: UserId(id(1001)),
-            command: "/assay recheck".to_owned(),
+            head_sha: commit('b'),
+            command: "/assay waive 0123456789abcdef".to_owned(),
             body_sha256: digest('c'),
             created_at: at("2026-10-12T09:29:58.000Z"),
             at: at("2026-10-12T09:30:00.000Z"),

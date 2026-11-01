@@ -3,12 +3,15 @@
 //! reads the records, re-fetches each comment, and voids a record whose comment was deleted,
 //! edited or no longer hashes to it. An edit can only revoke a command, never grant one.
 
-use assay_domain::EventPayload;
+use std::num::NonZeroU64;
+
+use assay_domain::{EventPayload, RunUid};
 
 use super::grammar::{Command, Parsed, command_word, parse_command};
 use super::rule::{Ineligible, Rule};
 use super::timestamp::Timestamp;
 use crate::config::{CommitId, Sha256Digest};
+use crate::ledger::{CommandRecord, LedgerTime};
 use crate::publish::CommentId;
 use crate::status::UserId;
 
@@ -18,8 +21,9 @@ pub const MAX_COMMAND_RECORDS: usize = 256;
 /// An App-authored record of `commands/<repo_id>/<pr>.jsonl` as the snapshot judges it.
 ///
 /// The command is parsed and bound to the head it was posted on. The ledger's own model of the
-/// line is [`crate::CommandRecord`] (`assay.ledger-command/1`), which does not yet carry
-/// `head_sha`.
+/// line is [`CommandRecord`] (`assay.ledger-command/1`), which holds the command as its
+/// canonical line: [`SnapshotCommand::record`] writes one and `TryFrom<&CommandRecord>` reads
+/// one back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotCommand {
     /// The comment the command was posted in.
@@ -34,6 +38,98 @@ pub struct SnapshotCommand {
     pub body_sha256: Sha256Digest,
     /// The command.
     pub command: Command,
+}
+
+/// Why a [`CommandRecord`]'s `command` is not a command the snapshot can judge. The strict
+/// reader refuses all three, so only a record built by hand can carry one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum UnreadCommand {
+    /// It is not a command of the grammar.
+    #[error("the recorded command is not a command of the grammar")]
+    Unparsed,
+    /// It is `/assay recheck`, which is never recorded.
+    #[error("the recorded command is a recheck, which is never recorded")]
+    Recheck,
+    /// It reads as a command, but is not that command's canonical line.
+    #[error("the recorded command is not its command's canonical line")]
+    NotCanonical,
+}
+
+/// Why [`SnapshotCommand::record`] made no record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum CommandTimeError {
+    /// The comment's `created_at` has a fraction finer than the millisecond a ledger time
+    /// holds; it is refused rather than rounded, since a later read compares it exactly.
+    #[error("the comment's creation time is finer than a millisecond")]
+    SubMillisecond,
+}
+
+impl SnapshotCommand {
+    /// The ledger record of this command, appended by decide-only run `run_uid` on PR `pr` at
+    /// `at`: the command as its canonical [`Command::line`], the comment's `created_at` as a
+    /// [`LedgerTime`].
+    ///
+    /// # Errors
+    ///
+    /// [`CommandTimeError::SubMillisecond`] when `created_at` does not fall on a millisecond.
+    pub fn record(
+        &self,
+        run_uid: RunUid,
+        pr: NonZeroU64,
+        at: LedgerTime,
+    ) -> Result<CommandRecord, CommandTimeError> {
+        let created_at = self
+            .created_at
+            .ledger_time()
+            .ok_or(CommandTimeError::SubMillisecond)?;
+        Ok(CommandRecord {
+            run_uid,
+            pr,
+            comment_id: self.comment_id,
+            actor_id: self.actor,
+            // The record owns its copy; the snapshot keeps the judged one (OWN-02).
+            head_sha: self.head_sha.clone(),
+            command: self.command.line(),
+            body_sha256: self.body_sha256.clone(),
+            created_at,
+            at,
+        })
+    }
+}
+
+impl TryFrom<&CommandRecord> for SnapshotCommand {
+    type Error = UnreadCommand;
+
+    /// The record as the snapshot judges it: its command re-parsed from its line.
+    fn try_from(record: &CommandRecord) -> Result<Self, UnreadCommand> {
+        Ok(Self {
+            comment_id: record.comment_id,
+            actor: record.actor_id,
+            created_at: Timestamp::from(record.created_at),
+            // The snapshot owns its copy; the caller keeps the record it lent.
+            head_sha: record.head_sha.clone(),
+            body_sha256: record.body_sha256.clone(),
+            command: recorded_command(&record.command)?,
+        })
+    }
+}
+
+/// The command a record's `text` holds: a command of the grammar other than `recheck`, written
+/// exactly as its [`Command::line`]. The one rule of the ledger's strict reader and of
+/// `TryFrom<&CommandRecord>`.
+pub(crate) fn recorded_command(text: &str) -> Result<Command, UnreadCommand> {
+    let command = match parse_command(text) {
+        Parsed::Command(Command::Recheck) => return Err(UnreadCommand::Recheck),
+        Parsed::Command(command) => command,
+        Parsed::NotACommand | Parsed::Unknown | Parsed::Malformed => {
+            return Err(UnreadCommand::Unparsed);
+        }
+    };
+    if command.line() == text {
+        Ok(command)
+    } else {
+        Err(UnreadCommand::NotCanonical)
+    }
 }
 
 /// An issue comment as GitHub returns it. Its body is untrusted.
