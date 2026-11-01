@@ -168,8 +168,9 @@ pub struct PullRequest {
     /// The PR's draft flag from Z4's GitHub state snapshot taken at decide time (04 §5 inputs,
     /// 03 §2.1). It is independent of the plan whose `draft` yields
     /// [`NotRunReason::Draft`]: that excuse holds only while this still reads `Draft`. A
-    /// decide-only re-decision must refresh it from a new snapshot, never reuse the evidence
-    /// run's plan or snapshot, or a PR marked ready after its run would keep its draft excuse.
+    /// decide-only re-decision keeps the evidence bundle's flag (#61 D15, wi-f4455d): marking
+    /// the PR ready runs the pipeline again, whose `open` stamps the check `pending:`, and a
+    /// re-decision never writes over a check carrying another run's stamp.
     pub readiness: Readiness,
     /// How many times this head's deferred run was already requeued (rule 8a).
     pub requeues: u32,
