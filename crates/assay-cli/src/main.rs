@@ -10,8 +10,10 @@
 //! hook in `plugin/hooks/` calls (04 §9).
 //! `assay gate gates-test --config <plugins-toml> --head <dir> --out <dir>` (#67) runs the
 //! `gates-test` job's base-declared steps and `exec` gates, writes their documents (03 §2.1
-//! step 7) and appends the `gates` output to `GITHUB_OUTPUT` (#60 ST-6, 03 §4a); `gates-lint`
-//! and `gates-static` are refused until their inputs are wired.
+//! step 7) and appends the `gates` output to `GITHUB_OUTPUT` (#60 ST-6, 03 §4a);
+//! `assay gate gates-static ... --node <abs> --temper <abs>` (#60 ST-7) fetches the pinned base
+//! and head with `ASSAY_RUN_TOKEN` and runs the temper Z2s checks and Weigh-In the same way;
+//! `gates-lint` is refused until its ratchet base is wired.
 //! `assay doctor --repository <owner/name> --app <id> --ledger-app <id>` (#75) checks its
 //! arguments and then stops with exit 2: [`assay_cli::run_prerequisites`] runs the repository
 //! checks of 05 §7, but the binary does not wire it to the live `gh` transport (#273) yet.
@@ -244,9 +246,17 @@ fn run_plan(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
 /// 03 §2); 2 when the job cannot run, its documents or output cannot be encoded or written, or
 /// the scratch directory is left behind.
 fn run_gate(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
+    let read = |variable: gate::Variable| env::var_os(variable.name());
     let variables = gate::GateVariables {
         run_key: env::var_os(self_gate::RUN_KEY),
         output: env::var_os(guard_job::OUTPUT),
+        fetch: gate::StaticVariables {
+            base_sha: read(gate::Variable::BaseSha),
+            head_sha: read(gate::Variable::HeadSha),
+            token: read(gate::Variable::RunToken),
+            repository: read(gate::Variable::Repository),
+            path: read(gate::Variable::Path),
+        },
         vars: env::vars_os().collect(),
     };
     let ran = match gate::run(args, variables) {

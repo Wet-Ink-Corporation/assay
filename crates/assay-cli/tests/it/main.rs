@@ -26,6 +26,12 @@ mod gate_outputs;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod gate_paths;
 #[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod gate_static;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod gate_static_refusals;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
+mod gate_static_scene;
+#[cfg(target_os = "linux")] // the forge group killer needs /proc and a system `kill`
 mod gh;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod guard;
