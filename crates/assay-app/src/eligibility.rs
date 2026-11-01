@@ -12,6 +12,7 @@
 
 mod approvals;
 mod commands;
+mod counter;
 mod error;
 mod grammar;
 mod identities;
@@ -35,6 +36,7 @@ pub use self::commands::{
     MAX_COMMAND_RECORDS, Recorded, SnapshotCommand, UnreadCommand, VoidCause,
 };
 use self::commands::{JudgedCommand, applicability, void_cause};
+pub use self::counter::{CommandCount, Counted, Exempt, MAX_COMMANDS_PER_ACTOR, count_command};
 pub use self::error::{SnapshotStep, StateError};
 pub use self::grammar::{AckedSet, Command, MAX_COMMAND_REASON_CHARS, Parsed, parse_command};
 pub use self::identities::{RangeError, RangeRequest, range_identities};

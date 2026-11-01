@@ -103,14 +103,15 @@ pub use decide::{
     UpstreamJob, authenticate, decision_inputs,
 };
 pub use eligibility::{
-    AckedSet, Command, CommandComments, CommandRejected, CommandTimeError, CommentAction,
-    CommentEvent, CommitRange, GitHubState, IgnoredApproval, Ineligible, InvalidTimestamp,
-    IssueComment, LedgerRecords, LedgerSnapshot, LedgerSnapshotError, MAX_COMMAND_REASON_CHARS,
-    MAX_COMMAND_RECORDS, MAX_COMMENT_BYTES, MAX_PUSH_RECORDS, MAX_RANGE_COMMITS, MergeTree,
-    ParseTreeIdError, Parsed, PriorWaivers, RangeCommit, RangeError, RangeListing, RangeObjects,
-    RangeRequest, Recorded, SnapshotCommand, SnapshotLedger, SnapshotStep, StateError, StatePorts,
-    StateRequest, Timestamp, TreeId, UnreadCommand, VoidCause, WEB_FLOW, WaiverBindings,
-    github_state, parse_command, range_identities, waiver_events,
+    AckedSet, Command, CommandComments, CommandCount, CommandRejected, CommandTimeError,
+    CommentAction, CommentEvent, CommitRange, Counted, Exempt, GitHubState, IgnoredApproval,
+    Ineligible, InvalidTimestamp, IssueComment, LedgerRecords, LedgerSnapshot, LedgerSnapshotError,
+    MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_COMMANDS_PER_ACTOR, MAX_COMMENT_BYTES,
+    MAX_PUSH_RECORDS, MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, Parsed, PriorWaivers,
+    RangeCommit, RangeError, RangeListing, RangeObjects, RangeRequest, Recorded, SnapshotCommand,
+    SnapshotLedger, SnapshotStep, StateError, StatePorts, StateRequest, Timestamp, TreeId,
+    UnreadCommand, VoidCause, WEB_FLOW, WaiverBindings, count_command, github_state, parse_command,
+    range_identities, waiver_events,
 };
 pub use eval::{
     Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,
