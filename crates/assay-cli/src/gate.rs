@@ -6,9 +6,13 @@
 //! [`assay_app::run_gates`], from the head tree with the gate environment, and writes each
 //! concluded gate's validated `assay.findings/1` document as `<out>/<plugin>.json`
 //! (`gate/test_job.rs`). In `gates-static`, which also takes `--node <abs> --temper <abs>`
-//! (#60 ST-7), it fetches the pinned base and head into an object-only repository and runs the
-//! temper Z2s checks and Weigh-In the same way (`gate/static_job.rs`). `gates-lint` is named but
-//! refused: its ratchet base input is not wired yet (ST-8).
+//! (#60 ST-7), it fetches the pinned base and head into an object-only repository
+//! (`gate/fetch.rs`) and runs the temper Z2s checks and Weigh-In the same way
+//! (`gate/static_job.rs`). In `gates-lint`, which takes the same programs and `ASSAY_MERGE_BASE`
+//! as its ratchet base (#60 ST-8), it fetches them the same way, refuses a `--head` checkout
+//! that is not the head commit's tree (`gate/checkout.rs`, #348), and runs temper's declared
+//! `lint` steps, the pinned `baseline --check` and the `exec` gates of `job = "lint"` there
+//! (`gate/lint_job.rs`).
 //!
 //! The base config is read from outside the head tree (05 T3). `--out` must not exist and its
 //! parent must be named by its resolved path (no symlink, no `..`): it is checked before
@@ -26,7 +30,10 @@
 //! output are all encoded before anything is written, the documents are written next and the
 //! output last, so a job that cannot encode or write its documents appends nothing.
 
+mod checkout;
 mod error;
+mod fetch;
+mod lint_job;
 mod paths;
 mod results;
 mod static_job;
@@ -46,9 +53,10 @@ use assay_forge::process::GroupKiller;
 use tempfile::TempDir;
 
 pub(crate) use self::error::{GateCliError, Variable};
-use self::error::{Program, Side, StaticError};
+use self::error::{PinnedError, Program, Side};
+pub(crate) use self::fetch::PinnedVariables;
+use self::lint_job::LINT;
 use self::paths::{Placed, Programs, absolute, refuse_paths};
-pub(crate) use self::static_job::StaticVariables;
 use crate::doctor;
 use crate::guard_job::open_output;
 
@@ -62,8 +70,9 @@ pub(crate) struct GateVariables {
     pub(crate) run_key: Option<OsString>,
     /// `GITHUB_OUTPUT`: the file the job's outputs are appended to.
     pub(crate) output: Option<OsString>,
-    /// What `gates-static` fetches with; no other job reads it.
-    pub(crate) fetch: StaticVariables,
+    /// What `gates-static` and `gates-lint` fetch with, and `gates-lint`'s merge base;
+    /// `gates-test` reads none of it.
+    pub(crate) fetch: PinnedVariables,
     /// Every variable; only the gate allowlist reaches a gate.
     pub(crate) vars: Vec<(OsString, OsString)>,
 }
@@ -124,7 +133,7 @@ struct Args {
 /// flags in any order, each once; which job takes `--node` and `--temper` is [`wire`]'s.
 fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, GateCliError> {
     let job = args.next().ok_or(GateCliError::Usage)?;
-    let job = [GateJob::Static, GateJob::Build(BuildJob::Lint), TEST]
+    let job = [GateJob::Static, LINT, TEST]
         .into_iter()
         .find(|known| job.to_str() == Some(known.to_string().as_str()))
         .ok_or(GateCliError::Usage)?;
@@ -161,24 +170,27 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, GateCliError>
 enum Wired {
     Test,
     Static(Programs),
+    Lint(Programs),
 }
 
-/// The job, once its flags fit it: `gates-static` takes both programs, absolute, and
-/// `gates-test` neither; `gates-lint` is not wired yet.
+/// The job, once its flags fit it: `gates-static` and `gates-lint` take both programs,
+/// absolute, and `gates-test` neither.
 fn wire(
     job: GateJob,
     node: Option<PathBuf>,
     temper: Option<PathBuf>,
 ) -> Result<Wired, GateCliError> {
     match (job, node, temper) {
-        (GateJob::Build(BuildJob::Lint), _, _) => Err(GateCliError::NotWired(job)),
         (GateJob::Build(BuildJob::Test), None, None) => Ok(Wired::Test),
         (GateJob::Static, Some(node), Some(temper)) => {
             Ok(Wired::Static(Programs::absolute(node, temper)?))
         }
-        // gates-static without both programs, gates-test with either.
-        (GateJob::Static, None, _)
-        | (GateJob::Static, _, None)
+        (GateJob::Build(BuildJob::Lint), Some(node), Some(temper)) => {
+            Ok(Wired::Lint(Programs::absolute(node, temper)?))
+        }
+        // gates-static or gates-lint without both programs, gates-test with either.
+        (GateJob::Static | GateJob::Build(BuildJob::Lint), None, _)
+        | (GateJob::Static | GateJob::Build(BuildJob::Lint), _, None)
         | (GateJob::Build(BuildJob::Test), Some(_), _)
         | (GateJob::Build(BuildJob::Test), _, Some(_)) => Err(GateCliError::Usage),
     }
@@ -207,9 +219,10 @@ struct JobInputs {
 /// # Errors
 ///
 /// [`GateCliError`] when the arguments, the variables, `GITHUB_OUTPUT`, the paths, the
-/// programs or the config are refused, before anything runs; when `gates-static` cannot
-/// fetch its pinned commits; or when the documents or the output cannot be encoded or
-/// written. Nothing is then promised, and no output is appended unless every document was
+/// programs or the config are refused, before anything runs; when `gates-static` or
+/// `gates-lint` cannot fetch its pinned commits; when `gates-lint`'s checkout is not the head
+/// commit's tree, before any gate runs; or when the documents or the output cannot be encoded
+/// or written. Nothing is then promised, and no output is appended unless every document was
 /// written.
 pub(crate) fn run(
     args: impl Iterator<Item = OsString>,
@@ -240,6 +253,7 @@ pub(crate) fn run(
     match wired {
         Wired::Test => test_job::run(&paths, job),
         Wired::Static(programs) => static_job::run(&paths, programs, variables.fetch, job),
+        Wired::Lint(programs) => lint_job::run(&paths, programs, variables.fetch, job),
     }
 }
 

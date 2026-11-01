@@ -1,9 +1,17 @@
 //! The payload of the event behind a pipeline run (#60): a `pull_request_target` event of the
 //! actions assay runs for, or a `workflow_dispatch` naming only a PR (R3-14). It is GitHub's
 //! wire format, so it is read here like the REST responses: a DTO, then a checked conversion
-//! (OUT-01). Anything outside that shape is refused, never defaulted (wi-b5affa).
+//! (OUT-01). Anything outside that shape is refused, never defaulted (wi-b5affa). The events
+//! behind a decide-only run (#61) are read in [`decide_only`] the same way.
 
+mod decide_only;
 mod dto;
+
+pub use self::decide_only::{
+    CommentPayload, DecideOnlyEvent, DecideOnlyEventError, DecideOnlyEventName, Label, LabelAction,
+    LabelName, LabelNameError, LabelPayload, MAX_LABEL_BYTES, ParseDecideOnlyEventNameError,
+    Sender, SenderKind,
+};
 
 use std::io::Read;
 use std::num::NonZeroU64;
@@ -166,18 +174,7 @@ impl EventPayload {
     /// [`EventPayloadError::DispatchInput`] for a dispatch input other than `pr`; and
     /// [`EventPayloadError::Field`] for a field that does not parse or contradicts another.
     pub fn read<R: Read>(event: EventName, reader: R) -> Result<Self, EventPayloadError> {
-        let limit = u64::try_from(MAX_EVENT_BYTES).map_or(u64::MAX, |cap| cap.saturating_add(1));
-        let mut body = Vec::new();
-        reader
-            .take(limit)
-            .read_to_end(&mut body)
-            .map_err(EventPayloadError::Read)?;
-        if body.len() > MAX_EVENT_BYTES {
-            return Err(EventPayloadError::TooLarge {
-                cap: MAX_EVENT_BYTES,
-            });
-        }
-        let value = assay_app::parse_json_strict(&body).map_err(EventPayloadError::Shape)?;
+        let value = read_json(reader)?;
         match event {
             EventName::PullRequestTarget => serde_json::from_value::<PullRequestEventDto>(value)
                 .map_err(EventPayloadError::Shape)?
@@ -191,20 +188,67 @@ impl EventPayload {
     }
 }
 
+impl From<Unread> for EventPayloadError {
+    fn from(unread: Unread) -> Self {
+        match unread {
+            Unread::Read(error) => Self::Read(error),
+            Unread::TooLarge => Self::TooLarge {
+                cap: MAX_EVENT_BYTES,
+            },
+            Unread::Shape(error) => Self::Shape(error),
+        }
+    }
+}
+
+impl From<InvalidField> for EventPayloadError {
+    fn from(InvalidField(field): InvalidField) -> Self {
+        Self::Field(field)
+    }
+}
+
+/// Why a payload was not read into JSON; each event's error has a variant for each.
+#[derive(Debug)]
+enum Unread {
+    /// Reading failed.
+    Read(std::io::Error),
+    /// Over [`MAX_EVENT_BYTES`]; not parsed.
+    TooLarge,
+    /// Not JSON, or a repeated key.
+    Shape(serde_json::Error),
+}
+
+/// A payload field, by its path, that is missing or does not hold what it must.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InvalidField(&'static str);
+
+/// The payload in `reader` as strict JSON (no repeated key), at most [`MAX_EVENT_BYTES`].
+fn read_json<R: Read>(reader: R) -> Result<serde_json::Value, Unread> {
+    let limit = u64::try_from(MAX_EVENT_BYTES).map_or(u64::MAX, |cap| cap.saturating_add(1));
+    let mut body = Vec::new();
+    reader
+        .take(limit)
+        .read_to_end(&mut body)
+        .map_err(Unread::Read)?;
+    if body.len() > MAX_EVENT_BYTES {
+        return Err(Unread::TooLarge);
+    }
+    assay_app::parse_json_strict(&body).map_err(Unread::Shape)
+}
+
 /// `id` as a positive id, or the refusal of `field`.
-fn positive(id: u64, field: &'static str) -> Result<NonZeroU64, EventPayloadError> {
-    NonZeroU64::new(id).ok_or(EventPayloadError::Field(field))
+fn positive(id: u64, field: &'static str) -> Result<NonZeroU64, InvalidField> {
+    NonZeroU64::new(id).ok_or(InvalidField(field))
 }
 
 /// `sha` as a full commit id, or the refusal of `field`.
-fn commit(sha: &str, field: &'static str) -> Result<CommitId, EventPayloadError> {
-    sha.parse().ok().ok_or(EventPayloadError::Field(field))
+fn commit(sha: &str, field: &'static str) -> Result<CommitId, InvalidField> {
+    sha.parse().ok().ok_or(InvalidField(field))
 }
 
 /// `name` as a branch name (not empty, no control character), or the refusal of `field`.
-fn branch(name: String, field: &'static str) -> Result<String, EventPayloadError> {
+fn branch(name: String, field: &'static str) -> Result<String, InvalidField> {
     if name.is_empty() || name.chars().any(char::is_control) {
-        Err(EventPayloadError::Field(field))
+        Err(InvalidField(field))
     } else {
         Ok(name)
     }

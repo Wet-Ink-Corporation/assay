@@ -6,7 +6,7 @@ use assay_app::{CommandComments, CommentId, IssueComment, MAX_COMMENT_BYTES, Tim
 use serde::Deserialize;
 
 use super::GitHub;
-use super::dto::{self, AppDto, UserDto};
+use super::dto::{self, UserDto, ViaApp};
 use super::error::{ForgeError, Operation};
 use super::transport::{Sleep, Transport};
 
@@ -18,32 +18,8 @@ struct CommandCommentDto {
     created_at: String,
     updated_at: String,
     body: Option<String>,
-    #[serde(default, deserialize_with = "via_app")]
+    #[serde(default, deserialize_with = "dto::via_app")]
     performed_via_github_app: ViaApp,
-}
-
-/// What `performed_via_github_app` says. An absent key says nothing about who posted the
-/// comment, so it is refused rather than read as a human's.
-#[derive(Debug, Default, PartialEq, Eq)]
-enum ViaApp {
-    /// The key is absent (serde's `default`).
-    #[default]
-    Unstated,
-    /// `null`: no app posted it.
-    No,
-    /// An app object: an app posted it.
-    Yes,
-}
-
-/// A present `performed_via_github_app`, `null` or an app (whose shape is still checked).
-fn via_app<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<ViaApp, D::Error> {
-    Option::<AppDto>::deserialize(deserializer).map(|app| {
-        if app.is_some() {
-            ViaApp::Yes
-        } else {
-            ViaApp::No
-        }
-    })
 }
 
 impl<T: Transport, S: Sleep> CommandComments for GitHub<T, S> {

@@ -4,18 +4,19 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
-use assay_app::{ContractSchemaError, GateJob};
+use assay_app::ContractSchemaError;
 use assay_cli::OutputError;
 use assay_cli::outputs::GatesOutputError;
-use assay_forge::git::{GitError, InvalidHeader, ParseRemoteError};
+use assay_forge::git::{CommitSha, GitError, InvalidHeader, ParseRemoteError};
 use assay_forge::process::KillerError;
 use assay_gates::{ExecSettingsError, TemperSettingsError, WeighInSettingsError};
 
+use super::checkout::Mismatch;
 use crate::doctor::{DoctorCliError, write_chain};
 use crate::guard_job::OUTPUT;
 use crate::self_gate::RUN_KEY;
 
-/// A program `gates-static` takes by its path.
+/// A program `gates-static` and `gates-lint` take by its path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Program {
     /// `--node`: the `node` that runs the pinned temper.
@@ -34,13 +35,15 @@ impl Program {
     }
 }
 
-/// A variable `gates-static` reads besides the run key and `GITHUB_OUTPUT`.
+/// A variable `gates-static` and `gates-lint` read besides the run key and `GITHUB_OUTPUT`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Variable {
     /// `ASSAY_BASE_SHA`: the pinned base commit.
     BaseSha,
     /// `ASSAY_HEAD_SHA`: the pinned head commit.
     HeadSha,
+    /// `ASSAY_MERGE_BASE`: plan's `merge_base` output, `gates-lint`'s ratchet base (D4 A).
+    MergeBase,
     /// `ASSAY_RUN_TOKEN`: the job's `github.token`, which the fetch authenticates with.
     RunToken,
     /// `GITHUB_REPOSITORY`: the repository the commits are fetched from.
@@ -55,6 +58,7 @@ impl Variable {
         match self {
             Self::BaseSha => "ASSAY_BASE_SHA",
             Self::HeadSha => "ASSAY_HEAD_SHA",
+            Self::MergeBase => "ASSAY_MERGE_BASE",
             Self::RunToken => "ASSAY_RUN_TOKEN",
             Self::Repository => "GITHUB_REPOSITORY",
             Self::Path => "PATH",
@@ -66,6 +70,9 @@ impl Variable {
         match self {
             Self::BaseSha => "the PR's pinned base commit, 40 lowercase hex digits",
             Self::HeadSha => "the PR's pinned head commit, 40 lowercase hex digits",
+            Self::MergeBase => {
+                "plan's merge base of the pinned base and head, 40 lowercase hex digits"
+            }
             Self::RunToken => "the job's github.token (contents: read)",
             Self::Repository => "the repository as owner/name",
             Self::Path => "the directories git is found in",
@@ -86,16 +93,15 @@ pub(crate) enum Side {
 #[derive(Debug)]
 pub(crate) enum GateCliError {
     /// Not the job's flags, each once: `--config`, `--head` and `--out`, plus `--node` and
-    /// `--temper` for `gates-static` only.
+    /// `--temper` for `gates-static` and `gates-lint` only.
     Usage,
-    /// The job is named but its inputs are not wired yet.
-    NotWired(GateJob),
     /// `ASSAY_RUN_KEY` is unset or empty.
     RunKey,
     /// `ASSAY_RUN_KEY` is not valid Unicode.
     RunKeyNotUnicode,
-    /// What only `gates-static` takes was refused, or its commits could not be fetched.
-    Static(StaticError),
+    /// What only the jobs that fetch their pinned commits take was refused, the commits could
+    /// not be fetched, or `gates-lint`'s checkout is not the head commit's tree.
+    Pinned(PinnedError),
     /// A path could not be resolved or inspected.
     Path { path: PathBuf, source: io::Error },
     /// `--head` is not a directory.
@@ -148,18 +154,13 @@ impl fmt::Display for GateCliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Usage => f.write_str(
-                "usage: assay gate <gates-lint|gates-test> --config <plugins-toml> --head <dir> \
-                 --out <dir>, or assay gate gates-static --config <plugins-toml> --head <dir> \
+                "usage: assay gate gates-test --config <plugins-toml> --head <dir> --out <dir>, \
+                 or assay gate <gates-static|gates-lint> --config <plugins-toml> --head <dir> \
                  --out <dir> --node <absolute path> --temper <absolute path>",
-            ),
-            Self::NotWired(job) => write!(
-                f,
-                "gate {job}: not wired yet (its ratchet base input is not built); gates-static \
-                 and gates-test run"
             ),
             Self::RunKey => write!(f, "{RUN_KEY} is not set"),
             Self::RunKeyNotUnicode => write!(f, "{RUN_KEY} is not valid Unicode"),
-            Self::Static(source) => write!(f, "{source}"),
+            Self::Pinned(source) => write!(f, "{source}"),
             Self::Path { path, source } => write!(f, "cannot resolve {}: {source}", path.display()),
             Self::HeadNotDir(path) => {
                 write!(f, "the head tree {} is not a directory", path.display())
@@ -205,9 +206,10 @@ impl fmt::Display for GateCliError {
     }
 }
 
-/// Why `gates-static` could not take its own inputs or fetch its pinned commits; exit 2.
+/// Why `gates-static` or `gates-lint` could not take its own inputs, fetch its pinned commits or,
+/// in `gates-lint`, trust its checkout; exit 2.
 #[derive(Debug)]
-pub(crate) enum StaticError {
+pub(crate) enum PinnedError {
     /// A variable is not set.
     Missing(Variable),
     /// A variable holds something it may not; its value is never shown.
@@ -226,15 +228,28 @@ pub(crate) enum StaticError {
     Git(GitError),
     /// A pinned commit could not be fetched.
     Fetch { side: Side, source: GitError },
+    /// The fetched head commit's tree could not be listed or read.
+    HeadTree(GitError),
+    /// The checkout could not be walked, or a file of it read.
+    CheckoutRead { path: PathBuf, source: io::Error },
+    /// The checkout holds more entries that are not directories than a tree listing may, or
+    /// more directories than the tree implies plus the untracked allowance.
+    CheckoutTooLarge { files: usize, directories: usize },
+    /// The checkout at `checkout` is not `head`'s tree (#348).
+    Checkout {
+        checkout: PathBuf,
+        head: CommitSha,
+        mismatch: Mismatch,
+    },
 }
 
-impl From<StaticError> for GateCliError {
-    fn from(error: StaticError) -> Self {
-        Self::Static(error)
+impl From<PinnedError> for GateCliError {
+    fn from(error: PinnedError) -> Self {
+        Self::Pinned(error)
     }
 }
 
-impl fmt::Display for StaticError {
+impl fmt::Display for PinnedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (context, source): (&str, &dyn std::error::Error) = match self {
             Self::Missing(variable) => {
@@ -259,6 +274,28 @@ impl fmt::Display for StaticError {
                     "{flag} {path} is inside the head tree, which the PR controls"
                 );
             }
+            Self::CheckoutTooLarge { files, directories } => {
+                return write!(
+                    f,
+                    "the head checkout holds more than {files} files, symlinks and submodules, \
+                     or more than {directories} directories"
+                );
+            }
+            Self::Checkout {
+                checkout,
+                head,
+                mismatch,
+            } => {
+                let checkout = checkout.display();
+                return write!(
+                    f,
+                    "the head checkout {checkout} is not {head}'s tree: {mismatch}"
+                );
+            }
+            Self::CheckoutRead { path, source } => {
+                let path = path.display();
+                return write!(f, "reading the head checkout at {path}: {source}");
+            }
             Self::Authorization(source) => ("", source),
             Self::Remote(source) => ("the repository's remote: ", source),
             Self::WeighInSettings(source) => ("", source),
@@ -267,6 +304,7 @@ impl fmt::Display for StaticError {
                 Side::Base => ("fetching the base commit: ", source),
                 Side::Head => ("fetching the head commit: ", source),
             },
+            Self::HeadTree(source) => ("reading the fetched head commit's tree: ", source),
         };
         f.write_str(context)?;
         write_chain(f, source)

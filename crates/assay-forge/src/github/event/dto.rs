@@ -2,25 +2,27 @@
 //! field read is required and checked in the conversion, except the dispatch's `inputs`,
 //! which is a closed set (R3-14).
 
+use std::num::NonZeroU64;
+
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use super::{
-    DispatchPayload, EventPayloadError, HeadRepository, PullRequestAction, PullRequestPayload,
-    branch, canonical_positive, commit, positive, shown,
+    DispatchPayload, EventPayloadError, HeadRepository, InvalidField, PullRequestAction,
+    PullRequestPayload, branch, canonical_positive, commit, positive, shown,
 };
 use assay_app::{CommitId, UserId};
 
 /// A user as the payload embeds one.
 #[derive(Debug, Deserialize)]
 pub(super) struct UserDto {
-    id: u64,
+    pub(super) id: u64,
 }
 
 /// A repository as the payload embeds one.
 #[derive(Debug, Deserialize)]
 pub(super) struct RepoDto {
-    id: u64,
+    pub(super) id: u64,
 }
 
 /// The repository the event is for.
@@ -34,10 +36,28 @@ pub(super) struct RepositoryDto {
 #[derive(Debug, Deserialize)]
 pub(super) struct EndDto {
     #[serde(rename = "ref")]
-    git_ref: String,
-    sha: String,
+    pub(super) git_ref: String,
+    pub(super) sha: String,
     /// `null` for a head whose repository was deleted.
-    repo: Option<RepoDto>,
+    pub(super) repo: Option<RepoDto>,
+}
+
+/// Where a PR's head lives, for a PR whose base repository (`base`) must be the event's
+/// (`repository_id`). A head GitHub reports as `null` was deleted; reported, never dropped.
+pub(super) fn head_repository(
+    head: Option<RepoDto>,
+    base: Option<RepoDto>,
+    repository_id: NonZeroU64,
+) -> Result<HeadRepository, InvalidField> {
+    let base = base.ok_or(InvalidField("pull_request.base.repo"))?;
+    if base.id != repository_id.get() {
+        return Err(InvalidField("pull_request.base.repo.id"));
+    }
+    Ok(match head {
+        None => HeadRepository::Deleted,
+        Some(repo) if repo.id == repository_id.get() => HeadRepository::Base,
+        Some(repo) => HeadRepository::Other(positive(repo.id, "pull_request.head.repo.id")?),
+    })
 }
 
 /// The PR.
@@ -147,18 +167,7 @@ impl PullRequestEventDto {
             return Err(EventPayloadError::Field("number"));
         }
         let repository_id = positive(repository.id, "repository.id")?;
-        let base_repo = pull
-            .base
-            .repo
-            .ok_or(EventPayloadError::Field("pull_request.base.repo"))?;
-        if base_repo.id != repository_id.get() {
-            return Err(EventPayloadError::Field("pull_request.base.repo.id"));
-        }
-        let head_repository = match pull.head.repo {
-            None => HeadRepository::Deleted,
-            Some(repo) if repo.id == repository_id.get() => HeadRepository::Base,
-            Some(repo) => HeadRepository::Other(positive(repo.id, "pull_request.head.repo.id")?),
-        };
+        let head_repository = head_repository(pull.head.repo, pull.base.repo, repository_id)?;
         let author = pull
             .user
             .ok_or(EventPayloadError::Field("pull_request.user"))?;
