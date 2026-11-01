@@ -1,7 +1,8 @@
 //! The decide-only payloads' wire DTOs. Unknown fields are ignored, as GitHub adds fields;
 //! every field read is required and checked in the conversion. A key whose absence would be
-//! read as a fact (`performed_via_github_app`, `issue.pull_request`) is read in three states,
-//! and the one GitHub does not document is refused (wi-b5affa).
+//! read as a fact (`performed_via_github_app`, through the adapter's shared reader, and
+//! `issue.pull_request`) is read in three states, and the one GitHub does not document is
+//! refused (wi-b5affa).
 
 use std::num::NonZeroU64;
 
@@ -14,42 +15,32 @@ use super::{
     CommentPayload, DecideOnlyEventError, Label, LabelAction, LabelName, LabelNameError,
     LabelPayload, Sender, SenderKind,
 };
-use crate::github::dto::AppDto;
+use crate::github::dto::ViaApp;
 use assay_app::{
     CommentAction, CommentEvent, CommentId, IssueComment, MAX_COMMENT_BYTES, Timestamp, UserId,
 };
 
-/// What a key that may be `null` or absent says.
+/// What `issue.pull_request` says.
 #[derive(Debug, Default, PartialEq, Eq)]
-enum Presence {
-    /// The key is absent (serde's `default`).
+enum PullLink {
+    /// The key is absent (serde's `default`): the issue is not a PR.
     #[default]
     Absent,
-    /// `null`.
+    /// `null`, which GitHub does not document.
     Null,
-    /// A value of the documented shape.
+    /// An object: the issue is a PR.
     Present,
 }
 
-impl<T> From<Option<T>> for Presence {
-    /// `Present` for `Some`, `Null` for `None` (a present key's value).
-    fn from(value: Option<T>) -> Self {
-        if value.is_some() {
-            Self::Present
-        } else {
-            Self::Null
-        }
-    }
-}
-
-/// A present `performed_via_github_app`: `null`, or an app (whose shape is still checked).
-fn app<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Presence, D::Error> {
-    Option::<AppDto>::deserialize(deserializer).map(Presence::from)
-}
-
 /// A present `issue.pull_request`: `null`, or an object (its fields are not read).
-fn object<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Presence, D::Error> {
-    Option::<Map<String, Value>>::deserialize(deserializer).map(Presence::from)
+fn pull_link<'de, D: Deserializer<'de>>(deserializer: D) -> Result<PullLink, D::Error> {
+    Option::<Map<String, Value>>::deserialize(deserializer).map(|link| {
+        if link.is_some() {
+            PullLink::Present
+        } else {
+            PullLink::Null
+        }
+    })
 }
 
 /// The event's sender.
@@ -81,8 +72,8 @@ impl SenderDto {
 pub(super) struct IssueDto {
     number: u64,
     /// Absent when the issue is not a PR.
-    #[serde(default, deserialize_with = "object")]
-    pull_request: Presence,
+    #[serde(default, deserialize_with = "pull_link")]
+    pull_request: PullLink,
 }
 
 /// The comment in an `issue_comment` payload.
@@ -94,8 +85,8 @@ pub(super) struct CommentDto {
     created_at: String,
     updated_at: String,
     body: String,
-    #[serde(default, deserialize_with = "app")]
-    performed_via_github_app: Presence,
+    #[serde(default, deserialize_with = "crate::github::dto::via_app")]
+    performed_via_github_app: ViaApp,
 }
 
 impl CommentDto {
@@ -105,9 +96,9 @@ impl CommentDto {
             return Err(DecideOnlyEventError::Field("comment.body"));
         }
         let via_app = match self.performed_via_github_app {
-            Presence::Present => true,
-            Presence::Null => false,
-            Presence::Absent => {
+            ViaApp::Yes => true,
+            ViaApp::No => false,
+            ViaApp::Unstated => {
                 return Err(DecideOnlyEventError::Field(
                     "comment.performed_via_github_app",
                 ));
@@ -153,18 +144,24 @@ impl CommentEventDto {
         };
         let number = positive(self.issue.number, "issue.number")?;
         let pr = match self.issue.pull_request {
-            Presence::Absent => None,
-            Presence::Present => Some(number),
-            Presence::Null => return Err(DecideOnlyEventError::Field("issue.pull_request")),
+            PullLink::Absent => None,
+            PullLink::Present => Some(number),
+            PullLink::Null => return Err(DecideOnlyEventError::Field("issue.pull_request")),
         };
+        let sender = self.sender.into_sender()?;
+        let comment = self.comment.into_comment()?;
+        // A comment is created by its author, so the sender the guard judges is the author the
+        // recording rule reads. Another user may edit or delete it, so only `created` is held.
+        if action == CommentAction::Created
+            && comment.user.is_some_and(|author| author != sender.id)
+        {
+            return Err(DecideOnlyEventError::Field("sender.id"));
+        }
         Ok(CommentPayload {
             repository_id: positive(self.repository.id, "repository.id")?,
             pr,
-            sender: self.sender.into_sender()?,
-            event: CommentEvent {
-                action,
-                comment: self.comment.into_comment()?,
-            },
+            sender,
+            event: CommentEvent { action, comment },
         })
     }
 }

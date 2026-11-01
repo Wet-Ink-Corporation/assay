@@ -572,12 +572,44 @@ fn refuses_a_comment_body_over_the_comment_cap() {
 }
 
 #[test]
-fn refuses_a_repeated_key() {
-    let body = br#"{"action": "created", "action": "deleted"}"#;
+fn refuses_a_repeated_key_in_an_otherwise_valid_payload() {
+    let valid = fixture(&path("comment_created_pr.json"));
+    let rest = valid
+        .strip_prefix(b"{")
+        .expect("the fixture is a JSON object");
+    let repeated = [&b"{\"action\": \"created\","[..], rest].concat();
 
-    assert_matches!(
-        DecideOnlyEvent::read(DecideOnlyEventName::IssueComment, &body[..]),
-        Err(DecideOnlyEventError::Shape(_))
+    let unrepeated = DecideOnlyEvent::read(DecideOnlyEventName::IssueComment, valid.as_slice());
+    let read = DecideOnlyEvent::read(DecideOnlyEventName::IssueComment, repeated.as_slice());
+
+    assert_matches!(unrepeated, Ok(DecideOnlyEvent::Comment(_)));
+    assert_matches!(read, Err(DecideOnlyEventError::Shape(_)));
+}
+
+#[test]
+fn refuses_a_created_comment_whose_sender_is_not_its_author() {
+    let read = read_edited(
+        DecideOnlyEventName::IssueComment,
+        "comment_created_pr.json",
+        |v| v["sender"]["id"] = 21_031_067.into(),
+    );
+
+    assert_matches!(read, Err(DecideOnlyEventError::Field("sender.id")));
+}
+
+#[test]
+fn reads_a_deleted_comment_whose_sender_is_not_its_author() {
+    let read = read_edited(
+        DecideOnlyEventName::IssueComment,
+        "comment_deleted.json",
+        |v| v["sender"]["id"] = 21_031_067.into(),
+    );
+
+    let mut expected = octocat_comment(CommentAction::Deleted, Some(id(2)));
+    expected.sender = sender(21_031_067, SenderKind::User);
+    assert_eq!(
+        read.expect("another user may delete a comment"),
+        DecideOnlyEvent::Comment(expected)
     );
 }
 
