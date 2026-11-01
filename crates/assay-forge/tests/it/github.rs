@@ -23,6 +23,8 @@ mod ledger_refs;
 mod ledger_refusals;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod pipeline;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod provenance;
 mod publish_deadline;
 mod pulls;
 mod reads;

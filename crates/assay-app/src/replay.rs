@@ -45,6 +45,27 @@ pub trait BundleSource {
     fn fetch(&self, run: RunUid, file: &str, limit: usize) -> Result<StoredBundle, Self::Error>;
 }
 
+/// The decision bundles decide-only runs persisted (D5), read to replay a re-decision.
+/// Implemented by the forge adapter.
+pub trait DecisionBundleSource {
+    /// Why the artifact store could not be read.
+    type Error: std::error::Error;
+
+    /// The bytes of [`DECISION_FILE`](crate::DECISION_FILE) in the artifact decide-only run
+    /// `run` uploaded for PR `pr` (`assay-decision-<pr>-<nonce>`), read under `limit` bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::Error`] when the artifact store cannot be read or the run's artifacts for `pr`
+    /// are ambiguous; an absent, expired or oversized file is a [`StoredBundle`] instead.
+    fn fetch_decision(
+        &self,
+        run: RunUid,
+        pr: NonZeroU64,
+        limit: usize,
+    ) -> Result<StoredBundle, Self::Error>;
+}
+
 /// What the artifact store holds for a bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoredBundle {

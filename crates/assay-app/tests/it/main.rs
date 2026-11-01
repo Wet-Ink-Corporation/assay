@@ -76,6 +76,8 @@ mod prerequisites_fakes;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod prerequisites_reads;
 mod prompt_bundle;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod provenance;
 mod publish;
 mod publish_deadline;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
@@ -93,6 +95,8 @@ mod reconcile_checks;
 mod reconcile_fakes;
 mod reconcile_ledger;
 mod redaction;
+#[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
+mod redecide_evidence;
 mod release;
 mod replay;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns

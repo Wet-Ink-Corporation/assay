@@ -13,7 +13,10 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
-use assay_app::{AppId, BUNDLE_FILE, BundleSource, StoredBundle, UserId};
+use assay_app::{
+    AppId, BUNDLE_FILE, BundleSource, DECISION_FILE, DecisionBundleSource,
+    MAX_DECISION_BUNDLE_BYTES, StoredBundle, UserId,
+};
 use assay_domain::RunUid;
 use assay_forge::github::{
     Api, AppIdentity, BundleFetchError, GH_DOWNLOAD_TIMEOUT, GhApi, GhCall, GhDownloadError,
@@ -209,6 +212,24 @@ fn fetch(
     file: &str,
     limit: usize,
 ) -> Result<Result<StoredBundle, BundleFetchError>, Box<dyn Error>> {
+    over(gh, |github| github.fetch(run_uid(), file, limit))
+}
+
+/// What the store gives for PR `pr`'s decision bundle under `limit`, over `gh`.
+fn fetch_decision(
+    gh: &ScriptedGh,
+    pr: u64,
+    limit: usize,
+) -> Result<Result<StoredBundle, BundleFetchError>, Box<dyn Error>> {
+    let pr = NonZeroU64::new(pr).ok_or("not zero")?;
+    over(gh, |github| github.fetch_decision(run_uid(), pr, limit))
+}
+
+/// What `read` gives over the adapter on `gh`, whose transport is then closed.
+fn over<T>(
+    gh: &ScriptedGh,
+    read: impl FnOnce(&GitHub<GhApi<&ScriptedGh>, ThreadSleep>) -> T,
+) -> Result<T, Box<dyn Error>> {
     let transport = GhApi::new(
         gh,
         "/usr/bin/gh",
@@ -224,7 +245,7 @@ fn fetch(
         "Wet-Ink-Corporation/assay".parse()?,
         identity,
     );
-    let fetched = github.fetch(run_uid(), file, limit);
+    let fetched = read(&github);
     github.into_api().into_transport().close()?;
     Ok(fetched)
 }
@@ -489,6 +510,144 @@ fn a_failed_download_is_reported_without_the_token() -> Result<(), Box<dyn Error
     assert!(
         gh.dirs.borrow().iter().all(|dir| !dir.exists()),
         "the directory is removed"
+    );
+    Ok(())
+}
+
+// --- decide-only's decision bundles (D5): `assay-decision-<pr>-<nonce>`, one per PR ---
+
+/// The PR the decision bundle is asked for.
+const DECIDED_PR: u64 = 352;
+/// The decision artifact of [`DECIDED_PR`], as decide-only names it.
+const DECISION: &str = "assay-decision-352-fedcba9876543210fedcba9876543210";
+
+/// The decision artifact of [`DECIDED_PR`], `size` bytes zipped and live.
+fn decision(size: u64) -> Value {
+    artifact(DECISION, size)
+}
+
+#[test]
+fn the_pr_s_decision_artifact_is_the_one_downloaded_among_the_run_s_others()
+-> Result<(), Box<dyn Error>> {
+    let gh = ScriptedGh::new(
+        &[
+            artifact("assay-decision-351-fedcba9876543210fedcba9876543210", 300),
+            artifact("assay-decision-3520-fedcba9876543210fedcba9876543210", 300),
+            decision(300),
+            decide(300),
+        ],
+        writes(&[(DECISION_FILE, b"{\"schema\":\"assay.run-decision/1\"}")]),
+    );
+
+    let fetched = fetch_decision(&gh, DECIDED_PR, MAX_DECISION_BUNDLE_BYTES)?;
+
+    assert_eq!(
+        fetched?,
+        StoredBundle::Found(b"{\"schema\":\"assay.run-decision/1\"}".to_vec())
+    );
+    let downloads = gh.downloads();
+    let [download] = downloads.as_slice() else {
+        return Err(format!("one download, got {downloads:?}").into());
+    };
+    let name = download
+        .iter()
+        .position(|arg| arg == "--name")
+        .and_then(|at| download.get(at + 1));
+    assert_eq!(name.map(String::as_str), Some(DECISION));
+    assert_eq!(download.last().map(String::as_str), Some("7"));
+    assert_eq!(*gh.caps.borrow(), [(8 << 20, 16)]);
+    Ok(())
+}
+
+#[test]
+fn only_another_pr_s_decision_artifact_is_missing_and_nothing_is_downloaded()
+-> Result<(), Box<dyn Error>> {
+    let gh = ScriptedGh::new(
+        &[
+            artifact("assay-decision-351-fedcba9876543210fedcba9876543210", 300),
+            artifact("assay-decision-35-fedcba9876543210fedcba9876543210", 300),
+            decide(300),
+        ],
+        writes(&[]),
+    );
+
+    let fetched = fetch_decision(&gh, DECIDED_PR, 1 << 20)?;
+
+    assert_eq!(fetched?, StoredBundle::Missing);
+    assert_eq!(gh.downloads(), Vec::<Vec<String>>::new());
+    Ok(())
+}
+
+#[test]
+fn two_decision_artifacts_for_one_pr_are_ambiguous() -> Result<(), Box<dyn Error>> {
+    for second in [
+        DECISION,
+        "assay-decision-352-0123456789abcdef0123456789abcdef",
+        "Assay-Decision-352-0123456789abcdef0123456789abcdef",
+        "assay-decision-352-",
+    ] {
+        let gh = ScriptedGh::new(&[decision(300), artifact(second, 300)], writes(&[]));
+
+        let fetched = fetch_decision(&gh, DECIDED_PR, 1 << 20)?;
+
+        assert!(
+            matches!(fetched, Err(BundleFetchError::Ambiguous { found: 2 })),
+            "{second}: {fetched:?}"
+        );
+        assert_eq!(gh.downloads(), Vec::<Vec<String>>::new(), "{second}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_decision_artifact_of_the_pr_without_a_nonce_is_refused() -> Result<(), Box<dyn Error>> {
+    for name in [
+        "assay-decision-352-",
+        "assay-decision-352-FEDCBA9876543210FEDCBA9876543210",
+        "ASSAY-DECISION-352-fedcba9876543210fedcba9876543210",
+        "assay-decision-352-fedcba9876543210fedcba9876543210-",
+    ] {
+        let gh = ScriptedGh::new(&[artifact(name, 300)], writes(&[]));
+
+        let fetched = fetch_decision(&gh, DECIDED_PR, 1 << 20)?;
+
+        assert!(
+            matches!(fetched, Err(BundleFetchError::Name)),
+            "{name}: {fetched:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_decision_artifact_listed_for_another_run_is_refused_and_an_expired_one_is_expired()
+-> Result<(), Box<dyn Error>> {
+    let other = ScriptedGh::new(&[of_run(decision(300), "id", RUN_ID + 1)], writes(&[]));
+    let mut expired = decision(300);
+    expired["expired"] = json!(true);
+    let gone = ScriptedGh::new(&[expired], writes(&[]));
+
+    let other_run = fetch_decision(&other, DECIDED_PR, 1 << 20)?;
+    let past_retention = fetch_decision(&gone, DECIDED_PR, 1 << 20)?;
+
+    assert!(
+        matches!(other_run, Err(BundleFetchError::OtherRun)),
+        "{other_run:?}"
+    );
+    assert_eq!(past_retention?, StoredBundle::Expired);
+    Ok(())
+}
+
+#[test]
+fn a_decision_download_holding_the_evidence_file_instead_is_refused() -> Result<(), Box<dyn Error>>
+{
+    let gh = ScriptedGh::new(&[decision(300)], writes(&[(BUNDLE_FILE, b"{}")]));
+
+    let fetched = fetch_decision(&gh, DECIDED_PR, 1 << 20)?;
+
+    assert!(
+        matches!(fetched, Err(BundleFetchError::Contents)),
+        "{fetched:?}"
     );
     Ok(())
 }
