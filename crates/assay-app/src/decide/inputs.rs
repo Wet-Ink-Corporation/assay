@@ -10,8 +10,8 @@
 use std::collections::BTreeSet;
 
 use assay_domain::{
-    DecisionInputs, DecisionKeyParts, Deferral, Fingerprint, LlmStage, PullRequest, Readiness,
-    SupportOutcome, decision_key,
+    DecisionInputs, DecisionKeyParts, Deferral, Fingerprint, InfraPolicy, LlmStage, Override,
+    PullRequest, Readiness, SupportOutcome, Waiver, decision_key,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -90,22 +90,17 @@ pub fn decision_inputs(request: &InputsRequest<'_>) -> Result<DecisionInputs, In
     let waivers = state.waivers_carried(prior, &run.waiver_bindings());
     let override_record = state.override_record();
     let evidence_key = run.run_key.to_string();
-    let approvals = digest("approvals_digest", &approvals(state))?;
-    let waivers_digest = digest("waivers_digest", &waivers)?;
-    let override_state = canonical("override_state", &override_record)?;
-    let dismissals = digest("dismissals_digest", &dismissals(state))?;
-    let deferral_state = canonical("deferral_state", &DeferralState::of(llm, &pr))?;
-    let decision_key = decision_key(&DecisionKeyParts {
+    let decision_key = compose_key(&KeyInputs {
         evidence_key: &evidence_key,
-        approvals_digest: approvals.as_str(),
-        waivers_digest: waivers_digest.as_str(),
-        override_state: &override_state,
-        dismissals_digest: dismissals.as_str(),
         on_infra_failure: run.policy.on_infra_failure,
-        deferral_state: &deferral_state,
-    });
+        state,
+        pr: &pr,
+        llm,
+        waivers: &waivers,
+        override_record: override_record.as_ref(),
+    })?;
     Ok(DecisionInputs {
-        decision_key: decision_key.to_string(),
+        decision_key,
         evidence_key,
         // The inputs own their policy and gates; the run keeps its own for the bundle.
         policy: run.policy.clone(),
@@ -122,6 +117,48 @@ pub fn decision_inputs(request: &InputsRequest<'_>) -> Result<DecisionInputs, In
         waivers,
         override_record,
     })
+}
+
+/// What one decision's key (02 §5, D14) is composed from.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct KeyInputs<'a> {
+    /// The evidence key the decision is made over.
+    pub(crate) evidence_key: &'a str,
+    /// The policy's `on_infra_failure`.
+    pub(crate) on_infra_failure: InfraPolicy,
+    /// The snapshot whose approvals and dismissals the key covers.
+    pub(crate) state: &'a GitHubState,
+    /// The PR as the decision reads it: its draft flag and requeue count.
+    pub(crate) pr: &'a PullRequest,
+    /// The LLM stage as rule 8 reads it.
+    pub(crate) llm: LlmStage,
+    /// The waivers the decision applies.
+    pub(crate) waivers: &'a [Waiver],
+    /// The override it applies, if any.
+    pub(crate) override_record: Option<&'a Override>,
+}
+
+/// The decision key of `parts`: the one composition of `decide`'s and decide-only's inputs.
+///
+/// # Errors
+///
+/// [`InputsError::Encode`] when a part cannot be encoded.
+pub(crate) fn compose_key(parts: &KeyInputs<'_>) -> Result<String, InputsError> {
+    let approvals = digest("approvals_digest", &approvals(parts.state))?;
+    let waivers_digest = digest("waivers_digest", &parts.waivers)?;
+    let override_state = canonical("override_state", &parts.override_record)?;
+    let dismissals = digest("dismissals_digest", &dismissals(parts.state))?;
+    let deferral_state = canonical("deferral_state", &DeferralState::of(parts.llm, parts.pr))?;
+    Ok(decision_key(&DecisionKeyParts {
+        evidence_key: parts.evidence_key,
+        approvals_digest: approvals.as_str(),
+        waivers_digest: waivers_digest.as_str(),
+        override_state: &override_state,
+        dismissals_digest: dismissals.as_str(),
+        on_infra_failure: parts.on_infra_failure,
+        deferral_state: &deferral_state,
+    })
+    .to_string())
 }
 
 /// The LLM stage as `admit` and `review` report it, before rule 8's reading.

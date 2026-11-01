@@ -108,10 +108,11 @@ pub use eligibility::{
     Ineligible, InvalidTimestamp, IssueComment, LedgerRecords, LedgerSnapshot, LedgerSnapshotError,
     MAX_COMMAND_REASON_CHARS, MAX_COMMAND_RECORDS, MAX_COMMANDS_PER_ACTOR, MAX_COMMENT_BYTES,
     MAX_PUSH_RECORDS, MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, Parsed, PriorWaivers,
-    RangeCommit, RangeError, RangeListing, RangeObjects, RangeRequest, Recorded, SnapshotCommand,
-    SnapshotLedger, SnapshotStep, StateError, StatePorts, StateRequest, Timestamp, TreeId,
-    UnreadCommand, VoidCause, WEB_FLOW, WaiverBindings, count_command, github_state, parse_command,
-    range_identities, waiver_events,
+    RangeCommit, RangeError, RangeListing, RangeObjects, RangeRequest, Recorded, RecordedState,
+    RedecidePorts, RedecideRequest, RedecideStateError, SnapshotCommand, SnapshotLedger,
+    SnapshotStep, StateError, StatePorts, StateRequest, Timestamp, TreeId, UnreadCommand,
+    VoidCause, WEB_FLOW, WaiverBindings, count_command, github_state, parse_command,
+    range_identities, redecided_state, waiver_events,
 };
 pub use eval::{
     Acceptance, AuthoringModel, CASE_SCHEMA, CaseKind, CaseOutcome, CaseProblem, CaseSource,
@@ -259,5 +260,5 @@ pub use provenance::{
 mod redecide;
 pub use redecide::{
     Absence, DECISION_FILE, EvidenceBundle, EvidenceError, EvidenceRead, EvidenceRequest, Forgery,
-    MAX_DECISION_BUNDLE_BYTES, read_evidence,
+    MAX_DECISION_BUNDLE_BYTES, RedecisionRequest, read_evidence, redecision_inputs,
 };

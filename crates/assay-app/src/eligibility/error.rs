@@ -4,6 +4,7 @@ use std::fmt;
 
 use thiserror::Error;
 
+use super::JudgeError;
 use super::commands::MAX_COMMAND_RECORDS;
 use super::identities::RangeError;
 use super::pushes::MAX_PUSH_RECORDS;
@@ -98,6 +99,19 @@ impl<F, G, L, C> StateError<F, G, L, C> {
     /// A closure wrapping a ledger error of `step`.
     pub(crate) const fn ledger(step: SnapshotStep) -> impl Fn(L) -> Self {
         move |source| Self::Ledger { step, source }
+    }
+
+    /// The command judgement's failure as the snapshot's.
+    pub(super) fn of_commands(error: JudgeError<L, C>) -> Self {
+        match error {
+            JudgeError::Ledger(source) => Self::Ledger {
+                step: SnapshotStep::CommandRecords,
+                source,
+            },
+            JudgeError::TooMany => Self::TooManyCommandRecords,
+            JudgeError::Repeated(comment) => Self::RepeatedCommand { comment },
+            JudgeError::Comments(source) => Self::Comments(source),
+        }
     }
 
     /// The range reading's failure as the snapshot's: a failed identity read is

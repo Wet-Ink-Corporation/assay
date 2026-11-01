@@ -84,6 +84,11 @@ fn scenario_with(
     Ok(scenario)
 }
 
+/// A scenario whose static temper gate fails on [`raised`] alone, which an owner may waive.
+pub(crate) fn raised_scenario() -> Result<Scenario, Box<dyn Error>> {
+    scenario_with(raised_document(PRIOR_KEY), GateConclusion::Fail, PRIOR_KEY)
+}
+
 /// The next head's run, its static temper gate failing with `document`.
 fn next_run(document: Vec<u8>) -> Result<AuthenticatedRun, Box<dyn Error>> {
     authenticated(scenario_with(document, GateConclusion::Fail, NEXT_KEY)?.authenticate()?)

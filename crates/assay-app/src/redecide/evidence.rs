@@ -14,7 +14,7 @@ use assay_domain::{Decision, DecisionInputs, Rubric, RunUid};
 use thiserror::Error;
 
 use crate::config::{CommitId, Sha256Digest};
-use crate::eligibility::{PriorWaivers, WaiverBindings};
+use crate::eligibility::{PriorWaivers, RecordedState, WaiverBindings};
 use crate::provenance::{ExpectedRun, ProvenanceRefusal, RunProvenance, Workflow, accept_run};
 use crate::publish::{BUNDLE_FILE, EvidencePointer, MAX_BUNDLE_BYTES};
 use crate::replay::{self, Bundle, BundleShape, BundleSource, Mismatch, StoredBundle};
@@ -88,7 +88,7 @@ pub enum EvidenceError<P, S> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvidenceBundle {
     pointer: EvidencePointer,
-    head: CommitId,
+    recorded: RecordedState,
     inputs: DecisionInputs,
     decision: Decision,
     bindings: WaiverBindings,
@@ -102,10 +102,16 @@ impl EvidenceBundle {
         &self.pointer
     }
 
-    /// The head the bundle's run decided.
+    /// The head the bundle's run decided: its GitHub snapshot's.
     #[must_use]
     pub const fn head(&self) -> &CommitId {
-        &self.head
+        self.recorded.head()
+    }
+
+    /// What the bundle's GitHub snapshot recorded of who may act on the head (D3 A).
+    #[must_use]
+    pub const fn recorded(&self) -> &RecordedState {
+        &self.recorded
     }
 
     /// The base branch the bundle's run decided against.
@@ -243,7 +249,7 @@ fn authenticated<P, S>(
     if let Some(mismatch) = replay::inconsistency(&bundle, run) {
         return Ok(forged(Forgery::Mismatch(mismatch)));
     }
-    let Some(head) = bundle.snapshot_head() else {
+    let Some(recorded) = RecordedState::read(&bundle.github) else {
         return Ok(forged(Forgery::Shape(BundleShape::Shape)));
     };
     if bundle.rubric_version != rubric.version() {
@@ -263,7 +269,7 @@ fn authenticated<P, S>(
     Ok(EvidenceRead::Authentic(Box::new(EvidenceBundle {
         // The bundle outlives the request it was read for.
         pointer: pointer.clone(),
-        head,
+        recorded,
         inputs: bundle.inputs,
         decision,
         bindings,
