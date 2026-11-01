@@ -79,6 +79,7 @@ mod pull_request;
 mod reconcile;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod redecide_fakes;
+mod redecide_job;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod redecide_run;
 #[cfg(unix)] // stand-in executables with Unix file modes

@@ -1,6 +1,7 @@
 //! `assay decide-only <step>` (#61, D9 A): the decide-only workflow's steps, like
-//! `assay gate <job>`. `guard` (DO-10) is built; `decide` (DO-11) and `publish` (DO-12) are
-//! refused until they are.
+//! `assay gate <job>`. `guard` (DO-10) is here; `decide` (DO-11) is `crate::redecide_job`,
+//! which `main` dispatches to before this module; `publish` (DO-12) is refused until it is
+//! built.
 //!
 //! `guard` is the workflow's first job and holds no secret (0006, J3). It reads the run from the
 //! Actions variables, the `assay-verdict` App's ids (`ASSAY_VERDICT_APP_ID`,
@@ -211,12 +212,6 @@ pub(crate) fn run(
 ) -> Result<Ended, DecideOnlyCliError> {
     match (args.next(), args.next()) {
         (Some(step), None) if step == "guard" => {}
-        (Some(step), None) if step == "decide" => {
-            return Err(DecideOnlyCliError::NotBuilt {
-                step: "decide",
-                story: "DO-11",
-            });
-        }
         (Some(step), None) if step == "publish" => {
             return Err(DecideOnlyCliError::NotBuilt {
                 step: "publish",

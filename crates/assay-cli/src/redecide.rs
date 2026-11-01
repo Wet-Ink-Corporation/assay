@@ -27,45 +27,33 @@ use assay_app::{
     CurrentPullRequest, DECISION_FILE, DecisionTarget, EligibilityLists, EvidenceBundle,
     EvidencePointer, EvidenceRead, EvidenceRequest, Exempt, Forge, GitHubState, Ledger,
     LedgerSnapshot, LedgerTime, LedgerWriteError, PrState, PreparedBundle, PrerequisiteForge,
-    PullRequestState, RedecidePorts, RedecideRequest, RedecideStateError, Redecided,
-    RedecisionRequest, Reply, RunProvenance, Sha256Digest, StateUpdate, Timestamp, TipListFiles,
-    TipLists, count_command, prepare_decision, read_evidence, read_state, redecided_state,
-    redecision_inputs, update_state,
+    PublicationRegister, PullRequestState, RedecidePorts, RedecideRefusal, RedecideRequest,
+    RedecideStateError, Redecided, RedecisionRequest, Reply, RunProvenance, StateUpdate, Timestamp,
+    TipListFiles, TipLists, count_command, prepare_decision, read_evidence, read_state,
+    redecided_state, redecision_inputs, update_state,
 };
 use assay_domain::Rubric;
 use assay_forge::github::{DecideOnlyEvent, ForgeError, GitHub, Sleep, Transport};
 
 use self::command::{Commanded, settle_command};
 pub use self::error::{PayloadMismatch, RedecideRunError, RedecideRunFailure};
-pub use self::state::{RedecideState, RedecideStateFileError, Unusable};
+pub use self::state::{RedecideState, RedecideStateFileError};
 use self::trigger::{Trigger, trigger};
 use crate::ci::{FirstAttempt, OutDir};
 use crate::decide::write_out;
 use crate::outputs::{DecideOnlyGuardOutputs, RedecideOutputs};
 
-/// The publication register's entry for a PR (D2): the head whose verdict check the ledger says
-/// was last written under the per-head lock, and the key it was written under.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Registered {
-    /// The head the check is on.
-    pub head_sha: CommitId,
-    /// The check's `external_id` key.
-    pub key: Sha256Digest,
-    /// The run that wrote the check: the pipeline run of the evidence pointer, or the
-    /// decide-only run of the decision pointer, for decide-only to write over it (wi-b70b90).
-    pub run_id: NonZeroU64,
-}
-
-impl Registered {
-    /// Whether the check was written from `state`'s own evidence or decision: by the run its
-    /// evidence pointer or its decision pointer names. A register of any other run (a newer
-    /// pipeline run's refusal on the same head) is not decide-only's to overwrite with older
-    /// evidence.
-    fn claims_from(&self, state: &PrState) -> bool {
-        let evidence = state.evidence.as_ref().map(|pointer| pointer.run_id);
-        let decision = state.decision.as_ref().map(|pointer| pointer.run_id);
-        evidence == Some(self.run_id) || decision == Some(self.run_id)
-    }
+/// `state`'s publication register (D2) when decide-only may write over it for `head`: it is of
+/// `head`, and was written from `state`'s own evidence or decision, by the run its evidence
+/// pointer or its decision pointer names (wi-b70b90). A register of any other run (a newer
+/// pipeline run's refusal on the same head) is not decide-only's to overwrite with older
+/// evidence.
+fn claimable<'s>(state: &'s PrState, head: &CommitId) -> Option<&'s PublicationRegister> {
+    let register = state.published.as_ref()?;
+    let evidence = state.evidence.as_ref().map(|pointer| pointer.run_id);
+    let decision = state.decision.as_ref().map(|pointer| pointer.run_id);
+    let claimed = evidence == Some(register.run_id) || decision == Some(register.run_id);
+    (&register.head_sha == head && claimed).then_some(register)
 }
 
 /// The repository's default branch, the only branch a dispatched pipeline run may run on (J4).
@@ -110,7 +98,7 @@ pub struct RedecideJob<'a> {
 
 /// What `decide-only decide` reads and writes through, borrowed for one call.
 #[derive(Debug)]
-pub struct RedecideJobPorts<'p, A, R, L, G> {
+pub struct RedecideJobPorts<'p, A, R, L> {
     /// GitHub with the `assay-verdict` App's token: the live PR, the base tip's lists, reviews,
     /// command comments and replies.
     pub app: &'p A,
@@ -119,8 +107,6 @@ pub struct RedecideJobPorts<'p, A, R, L, G> {
     pub run: &'p R,
     /// The ledger's files.
     pub ledger: &'p L,
-    /// Reads the publication register from the PR's ledger state (D2).
-    pub register: &'p G,
 }
 
 /// What [`run_redecide`] returns over its ports.
@@ -134,7 +120,7 @@ enum Ended {
     /// Nothing to publish.
     Silent,
     /// The evidence is unusable.
-    Refused(Unusable),
+    Refused(RedecideRefusal),
     /// A new decision, as its bundle's bytes.
     Decided(PreparedBundle),
 }
@@ -152,9 +138,9 @@ enum Ended {
 /// [`RedecideRunError`] when `job.pr` is not guard's, the payload is not guard's event, a port
 /// fails or the bundle or `out` cannot be built or written. Nothing is written into `out` before
 /// everything it holds is ready.
-pub fn run_redecide<A, R, L, G, E>(
+pub fn run_redecide<A, R, L, E>(
     job: &RedecideJob<'_>,
-    ports: &RedecideJobPorts<'_, A, R, L, G>,
+    ports: &RedecideJobPorts<'_, A, R, L>,
     out: &OutDir,
 ) -> RedecideRunOutcome<A, R, L>
 where
@@ -165,7 +151,6 @@ where
         + TipLists,
     R: RunProvenance<Error = E> + BundleSource + DefaultBranch<Error = E>,
     L: Ledger<Error: 'static>,
-    G: Fn(&PrState) -> Option<Registered>,
     E: Error,
 {
     if !job.guard.prs().as_slice().contains(&job.pr) {
@@ -177,7 +162,7 @@ where
     };
     let (state, bundle) = match ended {
         Ended::Silent => (RedecideState::Silent, None),
-        Ended::Refused(unusable) => (RedecideState::Refused(unusable), None),
+        Ended::Refused(refusal) => (RedecideState::Refused(refusal), None),
         Ended::Decided(bundle) => {
             // The state owns its copy of the digest; the bundle's bytes are written beside it.
             let digest = bundle.digest().clone();
@@ -196,9 +181,9 @@ where
 }
 
 /// The re-decision of `job.pr` for `trigger`.
-fn redecide<A, R, L, G, E>(
+fn redecide<A, R, L, E>(
     job: &RedecideJob<'_>,
-    ports: &RedecideJobPorts<'_, A, R, L, G>,
+    ports: &RedecideJobPorts<'_, A, R, L>,
     trigger: Trigger<'_>,
 ) -> Step<Ended, A, R, L>
 where
@@ -209,7 +194,6 @@ where
         + TipLists,
     R: RunProvenance<Error = E> + BundleSource + DefaultBranch<Error = E>,
     L: Ledger<Error: 'static>,
-    G: Fn(&PrState) -> Option<Registered>,
     E: Error,
 {
     let (pr, repo_id) = (job.pr, job.run.run_env().run_uid.repo_id);
@@ -239,15 +223,16 @@ where
         }
     }
     let state = read_state(ports.ledger, repo_id, pr).map_err(RedecideRunError::State)?;
-    let register = (ports.register)(&state)
-        .filter(|register| register.head_sha == live.head_sha && register.claims_from(&state));
+    let register = claimable(&state, &live.head_sha);
     let (Some(pointer), Some(register)) = (state.evidence.as_ref(), register) else {
         return silent(Reply::NoEvidence);
     };
     let evidence = match evidence(job, ports.run, pointer)? {
         EvidenceRead::Authentic(evidence) => evidence,
-        EvidenceRead::Forged(_) => return Ok(Ended::Refused(Unusable::Forged)),
-        EvidenceRead::Absent(absence) => return Ok(Ended::Refused(Unusable::Absent(absence))),
+        EvidenceRead::Forged(_) => return Ok(Ended::Refused(RedecideRefusal::Forged)),
+        EvidenceRead::Absent(absence) => {
+            return Ok(Ended::Refused(RedecideRefusal::Absent(absence)));
+        }
         EvidenceRead::OtherRubric => return silent(Reply::RerunNeeded),
     };
     if !unmoved(&evidence, &live) {
@@ -259,7 +244,7 @@ where
         live: &live,
         tip: &tip,
         state: &state,
-        register: &register,
+        register,
         evidence: &evidence,
     };
     decide(&accepted, ports)
@@ -316,14 +301,14 @@ struct Accepted<'a, 'j> {
     live: &'a CurrentPullRequest,
     tip: &'a EligibilityLists,
     state: &'a PrState,
-    register: &'a Registered,
+    register: &'a PublicationRegister,
     evidence: &'a EvidenceBundle,
 }
 
 /// The snapshot, the command, the deferral flag, the inputs and the bundle.
-fn decide<A, R, L, G, E>(
+fn decide<A, R, L, E>(
     accepted: &Accepted<'_, '_>,
-    ports: &RedecideJobPorts<'_, A, R, L, G>,
+    ports: &RedecideJobPorts<'_, A, R, L>,
 ) -> Step<Ended, A, R, L>
 where
     A: PullRequestState<Error = E>
@@ -397,9 +382,9 @@ where
 
 /// The re-decision snapshot of the evidence's head; `None`, once the comment is answered, when
 /// the PR was pushed since its evidence run (a new run decides).
-fn snapshot<A, R, L, G, E>(
+fn snapshot<A, R, L, E>(
     accepted: &Accepted<'_, '_>,
-    ports: &RedecideJobPorts<'_, A, R, L, G>,
+    ports: &RedecideJobPorts<'_, A, R, L>,
 ) -> Step<Option<GitHubState>, A, R, L>
 where
     A: PullRequestState<Error = E>

@@ -8,11 +8,11 @@ use std::num::NonZeroU64;
 use assay_app::{
     BundleSource, CheckFound, CheckName, CheckRunId, CommandComments, CommandReplies, CommentId,
     CommitId, CommitIdentity, CompareAndSetError, CurrentPullRequest, Forge, IssueComment, Ledger,
-    LedgerFile, LedgerPath, LockedWrite, PrState, PullOnHead, PullRequestState, Reaction,
-    ReactionSubject, Reply, Review, RunEvent, RunProvenance, StoredBundle, TimelineEvent,
-    TipListFiles, TipLists, Upserted, UserId, WorkflowRunFacts, WriteCondition, WriteOutcome,
+    LedgerFile, LedgerPath, LockedWrite, PullOnHead, PullRequestState, Reaction, ReactionSubject,
+    Reply, Review, RunEvent, RunProvenance, StoredBundle, TimelineEvent, TipListFiles, TipLists,
+    Upserted, UserId, WorkflowRunFacts, WriteCondition, WriteOutcome,
 };
-use assay_cli::{DefaultBranch, Registered};
+use assay_cli::DefaultBranch;
 use assay_domain::RunUid;
 
 use crate::decide_fakes::Reviewless;
@@ -20,9 +20,6 @@ use crate::open_fakes::{MemoryLedger, Refused};
 
 /// The shared call log.
 pub(crate) type Log = RefCell<Vec<String>>;
-
-/// Reads the publication register from a PR's ledger state.
-pub(crate) type Register<'l> = Box<dyn Fn(&PrState) -> Option<Registered> + 'l>;
 
 /// GitHub as decide-only reads it: the PR live at `current`, the base tip's `owners`, no
 /// review, the pipeline's own run `4242`, and `stored` as its evidence bundle. Replies are
@@ -35,8 +32,6 @@ pub(crate) struct Hub<'l> {
     pub(crate) replies: RefCell<Vec<(NonZeroU64, CommentId, Reply)>>,
     /// The PR's comments, as a command record's re-fetch finds them.
     pub(crate) comments: Vec<IssueComment>,
-    /// The publication register the PR's ledger state holds (D2), until DO-7 stores it there.
-    pub(crate) register: Register<'l>,
     pub(crate) forge: Reviewless,
     pub(crate) log: &'l Log,
 }

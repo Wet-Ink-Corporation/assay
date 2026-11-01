@@ -12,13 +12,14 @@ use std::path::PathBuf;
 use assay_app::{
     Absence, ActorCounter, BUNDLE_FILE, CommandRejected, CommentAction, CommentEvent, CommentId,
     CommitId, DECISION_FILE, DecisionPointer, DeferralRecord, EvidencePointer, Ineligible,
-    IssueComment, MAX_COMMANDS_PER_ACTOR, PrState, PushDraft, PushKind, Reply, Sha256Digest,
-    StoredBundle, Timestamp, append_push, read_commands, read_state, update_state,
+    IssueComment, MAX_COMMANDS_PER_ACTOR, PrState, PublicationRegister, PushDraft, PushKind,
+    RedecideRefusal, Reply, Sha256Digest, StoredBundle, Timestamp, append_push, read_commands,
+    read_state, update_state,
 };
 use assay_cli::outputs::{DecideOnlyGuardOutputs, DecideOnlyPrs, DecideTrigger, RedecideOutputs};
 use assay_cli::{
     FirstAttempt, OutDir, PayloadMismatch, RedecideJob, RedecideJobPorts, RedecideRunError,
-    RedecideState, Registered, RunEnv, RunVariables, STATE_FILE, Unusable, run_redecide,
+    RedecideState, RunEnv, RunVariables, STATE_FILE, run_redecide,
 };
 use assay_domain::{Decision, ReasonCode};
 use assay_forge::github::{
@@ -30,7 +31,7 @@ use crate::decide_fakes::Reviewless;
 use crate::decide_run::Planned;
 use crate::open_fakes::{MemoryLedger, Refused};
 use crate::plan::plugins_toml;
-use crate::redecide_fakes::{Hub, Log, LoggedLedger, Register, pipeline_run, user};
+use crate::redecide_fakes::{Hub, Log, LoggedLedger, pipeline_run, user};
 
 /// The fixture PR, its author, the repository, the pipeline's run and decide-only's.
 const PR: u64 = 55;
@@ -67,20 +68,9 @@ fn id(n: u64) -> Result<NonZeroU64, Box<dyn Error>> {
     Ok(NonZeroU64::new(n).ok_or("a positive id")?)
 }
 
-/// A register of `head` under `key`, written by run `run_id`.
-fn registered<'l>(head: CommitId, key: Sha256Digest, run_id: NonZeroU64) -> Register<'l> {
-    Box::new(move |_: &PrState| {
-        Some(Registered {
-            // The register owns its head and key; the closure keeps them for the next call.
-            head_sha: head.clone(),
-            key: key.clone(),
-            run_id,
-        })
-    })
-}
-
-/// A fixture PR decided by the pipeline, its bundle, and the ledger holding its push record
-/// and evidence pointer.
+/// A fixture PR decided by the pipeline, its bundle, and the ledger holding its push record,
+/// its evidence pointer and a publication register of the head, written by the evidence's
+/// pipeline run under a key no re-decision gives.
 struct Scene {
     planned: Planned,
     files: MemoryLedger,
@@ -123,9 +113,16 @@ impl Scene {
             sha256: Sha256Digest::of(&bundle),
         };
         assert_eq!(pointer.run_id.get(), PIPELINE_RUN);
+        let register = PublicationRegister {
+            head_sha: planned.needs.identity.head_sha.clone(),
+            key: Sha256Digest::of(b"an older decision"),
+            run_id: pointer.run_id,
+        };
         update_state(&files, id(REPO)?, id(PR)?, |state| {
+            // update_state shows a borrowed state and takes an owned next one.
             let mut next = state.clone();
             next.evidence = Some(pointer.clone());
+            next.published = Some(register.clone());
             Some(next)
         })?;
         let run = RunEnv::from_vars(&RunVariables {
@@ -151,9 +148,24 @@ impl Scene {
         self.planned.needs.identity.head_sha.clone()
     }
 
-    /// GitHub with the PR unmoved, the base's owners at the tip, and the bundle stored; the
-    /// register names the head, written by the evidence's pipeline run under a key no
-    /// re-decision gives.
+    /// Sets the PR's publication register to `head` under `key`, written by run `run_id`.
+    fn register(
+        &self,
+        head: &CommitId,
+        key: &Sha256Digest,
+        run_id: NonZeroU64,
+    ) -> Result<(), Box<dyn Error>> {
+        self.edit_state(|state| {
+            // Each edit owns its register.
+            state.published = Some(PublicationRegister {
+                head_sha: head.clone(),
+                key: key.clone(),
+                run_id,
+            });
+        })
+    }
+
+    /// GitHub with the PR unmoved, the base's owners at the tip, and the bundle stored.
     fn hub(&self) -> Result<Hub<'_>, Box<dyn Error>> {
         let mut hub = Hub {
             current: self.planned.unmoved().current,
@@ -162,11 +174,6 @@ impl Scene {
             stored: StoredBundle::Found(self.bundle.clone()),
             replies: RefCell::default(),
             comments: Vec::new(),
-            register: registered(
-                self.head(),
-                Sha256Digest::of(b"an older decision"),
-                id(PIPELINE_RUN)?,
-            ),
             forge: Reviewless::by(user(AUTHOR)?),
             log: &self.log,
         };
@@ -218,7 +225,6 @@ impl Scene {
                 app: hub,
                 run: hub,
                 ledger: &ledger,
-                register: &hub.register,
             },
             &OutDir::new(&out)?,
         );
@@ -568,9 +574,15 @@ fn unusable_evidence_is_a_refusal_with_no_bundle() -> Result<(), Box<dyn Error>>
     let mut tampered = scene.bundle.clone();
     tampered.push(b'\n');
     let cases = [
-        (StoredBundle::Found(tampered), Unusable::Forged),
-        (StoredBundle::Expired, Unusable::Absent(Absence::Expired)),
-        (StoredBundle::Missing, Unusable::Absent(Absence::Missing)),
+        (StoredBundle::Found(tampered), RedecideRefusal::Forged),
+        (
+            StoredBundle::Expired,
+            RedecideRefusal::Absent(Absence::Expired),
+        ),
+        (
+            StoredBundle::Missing,
+            RedecideRefusal::Absent(Absence::Missing),
+        ),
     ];
     for (stored, expected) in cases {
         let mut hub = scene.hub()?;
@@ -587,11 +599,13 @@ fn unusable_evidence_is_a_refusal_with_no_bundle() -> Result<(), Box<dyn Error>>
         );
     }
     assert_eq!(
-        RedecideState::Refused(Unusable::Forged).json(),
+        RedecideState::Refused(RedecideRefusal::Forged).json(),
         br#"{"reason":{"code":"gate-error","detail":"bundle-digest"},"verdict":"refused"}"#
     );
-    let (code, _) = Unusable::Absent(Absence::Expired).code_and_detail();
-    assert_eq!(code, ReasonCode::BundleExpired);
+    assert_eq!(
+        RedecideState::Refused(RedecideRefusal::Absent(Absence::Expired)).json(),
+        br#"{"reason":{"code":"bundle-expired","detail":"expired"},"verdict":"refused"}"#
+    );
     Ok(())
 }
 
@@ -599,17 +613,18 @@ fn unusable_evidence_is_a_refusal_with_no_bundle() -> Result<(), Box<dyn Error>>
 #[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
 fn no_register_of_the_head_is_answered_and_silent() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new()?;
-    let registers: [Register<'_>; 2] = [
-        Box::new(|_: &PrState| None),
-        registered(
-            OTHER_HEAD.parse()?,
-            Sha256Digest::of(b"another head's decision"),
-            id(PIPELINE_RUN)?,
-        ),
+    let registers = [
+        None,
+        Some(PublicationRegister {
+            head_sha: OTHER_HEAD.parse()?,
+            key: Sha256Digest::of(b"another head's decision"),
+            run_id: id(PIPELINE_RUN)?,
+        }),
     ];
     for register in registers {
-        let mut hub = scene.hub()?;
-        hub.register = register;
+        // Each edit owns its register.
+        scene.edit_state(|state| state.published = register.clone())?;
+        let hub = scene.hub()?;
 
         let ran = scene.redecide(&hub, &recheck()?, DecideTrigger::Comment)?;
 
@@ -637,13 +652,13 @@ fn no_evidence_pointer_is_answered_and_silent() -> Result<(), Box<dyn Error>> {
 #[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
 fn a_register_of_another_run_than_the_pointers_is_not_overwritten() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new()?;
-    let mut hub = scene.hub()?;
     // A newer pipeline run refused the same head, after the evidence run (wi-b70b90).
-    hub.register = registered(
-        scene.head(),
-        Sha256Digest::of(b"a newer refusal"),
+    scene.register(
+        &scene.head(),
+        &Sha256Digest::of(b"a newer refusal"),
         id(4300)?,
-    );
+    )?;
+    let hub = scene.hub()?;
 
     let ran = scene.redecide(&hub, &label(&scene)?, DecideTrigger::Label)?;
 
@@ -666,12 +681,12 @@ fn a_register_of_the_decision_pointers_run_is_decided_over() -> Result<(), Box<d
             sha256: Sha256Digest::of(b"an earlier decision bundle"),
         });
     })?;
-    let mut hub = scene.hub()?;
-    hub.register = registered(
-        scene.head(),
-        Sha256Digest::of(b"an earlier re-decision"),
+    scene.register(
+        &scene.head(),
+        &Sha256Digest::of(b"an earlier re-decision"),
         earlier_decision,
-    );
+    )?;
+    let hub = scene.hub()?;
 
     let ran = scene.redecide(&hub, &label(&scene)?, DecideTrigger::Label)?;
 
@@ -685,12 +700,12 @@ fn a_moved_head_is_answered_and_silent() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new()?;
     let moved: CommitId = OTHER_HEAD.parse()?;
     let mut hub = scene.hub()?;
-    hub.current.head_sha = moved.clone();
-    hub.register = registered(
-        moved,
-        Sha256Digest::of(b"the new head's decision"),
+    scene.register(
+        &moved,
+        &Sha256Digest::of(b"the new head's decision"),
         id(PIPELINE_RUN)?,
-    );
+    )?;
+    hub.current.head_sha = moved;
 
     let ran = scene.redecide(&hub, &recheck()?, DecideTrigger::Comment)?;
 
@@ -703,13 +718,13 @@ fn a_moved_head_is_answered_and_silent() -> Result<(), Box<dyn Error>> {
 #[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
 fn an_unchanged_key_is_silent_with_no_bundle() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new()?;
-    let mut hub = scene.hub()?;
+    let hub = scene.hub()?;
     let first = scene.redecide(&hub, &label(&scene)?, DecideTrigger::Label)?;
     let key: Sha256Digest = first.bundle()?["inputs"]["decision_key"]
         .as_str()
         .ok_or("a decision key")?
         .parse()?;
-    hub.register = registered(scene.head(), key, id(PIPELINE_RUN)?);
+    scene.register(&scene.head(), &key, id(PIPELINE_RUN)?)?;
 
     let again = scene.redecide(&hub, &label(&scene)?, DecideTrigger::Label)?;
 

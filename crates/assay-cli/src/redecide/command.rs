@@ -31,8 +31,8 @@ pub(super) enum Commanded {
 /// the live head (an earlier record of the same comment is accepted); one that cannot be
 /// appended is answered that it has no effect, and is an error. A rejected command is answered
 /// with its closed reason, unless it is one no reply is owed for.
-pub(super) fn settle_command<A, R, L, G, E>(
-    ports: &RedecideJobPorts<'_, A, R, L, G>,
+pub(super) fn settle_command<A, R, L, E>(
+    ports: &RedecideJobPorts<'_, A, R, L>,
     (run_uid, pr, at): (RunUid, NonZeroU64, LedgerTime),
     event: &CommentEvent,
     github: &GitHubState,
