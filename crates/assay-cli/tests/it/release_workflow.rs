@@ -124,7 +124,7 @@ fn build_checks_the_tag_is_on_main_before_building() -> Result<(), io::Error> {
 }
 
 /// Whether a `uses:` value is a local action or `owner/repo[/path]@<40 hex> # <tag>`.
-fn is_pinned(uses: &str) -> bool {
+pub(crate) fn is_pinned(uses: &str) -> bool {
     if uses.starts_with("./") {
         return true;
     }

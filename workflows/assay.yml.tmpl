@@ -1,0 +1,600 @@
+# assay's pipeline workflow (#60), installed by a consumer as .github/workflows/assay.yml on its
+# default branch. Spec: docs/architecture/02-architecture.md §1 and §5, 03-contracts.md §4a,
+# 04-pipeline.md §1, 05-security.md §4 and §5, docs/decisions/0006.
+#
+# - pull_request_target runs the default branch's copy of this file; base config is read at the
+#   pinned base SHA, the PR head only as data (gates-static) or in Z2b (gates-lint, gates-test).
+#   There is no branches: filter: decide publishes base-not-protected for a base outside
+#   protected_bases.
+# - guard runs first and holds no secret, environment or App token. It exits 1 for a head that is
+#   not this repository's (0006), so no job holding a secret ever runs for a fork.
+# - Every job holding a secret, an environment or a write token runs only on the first attempt;
+#   recovery is /assay recheck or a new push (02 §1, T22).
+# - No run: holds an expression (T19): every value reaches assay through env:. Each job reads its
+#   upstream outputs only through ASSAY_NEEDS (03 §4a).
+# - Every action is pinned by commit SHA; none uses the Actions cache (ADR-21, 05 T6).
+# - Repository settings: environment assay-publish (deployment branches: default branch only)
+#   holds secrets ASSAY_VERDICT_PRIVATE_KEY and ASSAY_LEDGER_PRIVATE_KEY; repository variables
+#   ASSAY_VERDICT_APP_ID, ASSAY_VERDICT_BOT_ID and ASSAY_LEDGER_APP_ID. `assay doctor` checks them.
+name: assay
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: The pull request to run the pipeline for, by number.
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  # The run identity (I2) and the fork refusal (0006). It checks out the commit the event ran
+  # for, because a dispatch's base SHA is not known until assay reads the PR.
+  guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.guard.outputs.run }}
+      pr: ${{ steps.guard.outputs.pr }}
+      head_sha: ${{ steps.guard.outputs.head_sha }}
+      base_sha: ${{ steps.guard.outputs.base_sha }}
+      base_ref: ${{ steps.guard.outputs.base_ref }}
+      draft: ${{ steps.guard.outputs.draft }}
+      author_id: ${{ steps.guard.outputs.author_id }}
+      sender_id: ${{ steps.guard.outputs.sender_id }}
+      trigger: ${{ steps.guard.outputs.trigger }}
+      before: ${{ steps.guard.outputs.before }}
+      default_branch: ${{ steps.guard.outputs.default_branch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: base
+          sparse-checkout: .assay
+          persist-credentials: false
+      - uses: Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@68f9c188523698bcec37a75dfd70de7d51aa3bae # main, 2026-11-01
+        with:
+          repository: ghcr.io/wet-ink-corporation/assay
+          config: base/.assay/plugins.toml
+          artifact-type: application/vnd.wet-ink.assay.binary.v1
+          out-dir: bin
+      - id: guard
+        env:
+          # Read only for a dispatch, to resolve the PR (pull-requests: read).
+          ASSAY_RUN_TOKEN: ${{ github.event_name == 'workflow_dispatch' && github.token || '' }}
+        run: bin/assay guard
+
+  # S0: the verdict check in_progress under the publish lock, and the push record.
+  open:
+    needs: [guard]
+    if: needs.guard.outputs.run == 'true' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: assay-publish
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.base_sha }}
+          path: base
+          sparse-checkout: .assay
+          persist-credentials: false
+      - uses: Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@68f9c188523698bcec37a75dfd70de7d51aa3bae # main, 2026-11-01
+        with:
+          repository: ghcr.io/wet-ink-corporation/assay
+          config: base/.assay/plugins.toml
+          artifact-type: application/vnd.wet-ink.assay.binary.v1
+          out-dir: bin
+      - id: ledger
+        name: Read the ledger repository from base config
+        run: |
+          python3 -I - base/.assay/plugins.toml >> "$GITHUB_OUTPUT" <<'EOF'
+          import re, sys, tomllib
+          with open(sys.argv[1], "rb") as config:
+              repo = tomllib.load(config)["assay"]["ledger_repo"]
+          if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", repo):
+              sys.exit("[assay].ledger_repo is not owner/name")
+          owner, name = repo.split("/")
+          print(f"owner={owner}")
+          print(f"name={name}")
+          EOF
+      - id: verdict-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        with:
+          app-id: ${{ vars.ASSAY_VERDICT_APP_ID }}
+          private-key: ${{ secrets.ASSAY_VERDICT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-actions: read
+          permission-checks: write
+          permission-contents: read
+      - id: ledger-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        with:
+          app-id: ${{ vars.ASSAY_LEDGER_APP_ID }}
+          private-key: ${{ secrets.ASSAY_LEDGER_PRIVATE_KEY }}
+          owner: ${{ steps.ledger.outputs.owner }}
+          repositories: ${{ steps.ledger.outputs.name }}
+          permission-contents: write
+      - env:
+          ASSAY_NEEDS: ${{ toJSON(needs) }}
+          ASSAY_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
+          ASSAY_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
+          ASSAY_VERDICT_APP_ID: ${{ vars.ASSAY_VERDICT_APP_ID }}
+          ASSAY_VERDICT_BOT_ID: ${{ vars.ASSAY_VERDICT_BOT_ID }}
+        run: bin/assay open --config base/.assay/plugins.toml
+
+  # S1: run.json and the per-job artifact names. No secret, no ledger.
+  plan:
+    needs: [guard]
+    if: needs.guard.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+      pull-requests: read
+    outputs:
+      run_digest: ${{ steps.plan.outputs.run_digest }}
+      run_key: ${{ steps.plan.outputs.run_key }}
+      tier: ${{ steps.plan.outputs.tier }}
+      draft: ${{ steps.plan.outputs.draft }}
+      review: ${{ steps.plan.outputs.review }}
+      merge_base: ${{ steps.plan.outputs.merge_base }}
+      artifact_plan: ${{ steps.plan.outputs.artifact_plan }}
+      artifact_gates_static: ${{ steps.plan.outputs.artifact_gates_static }}
+      artifact_gates_lint: ${{ steps.plan.outputs.artifact_gates_lint }}
+      artifact_gates_test: ${{ steps.plan.outputs.artifact_gates_test }}
+      artifact_admit: ${{ steps.plan.outputs.artifact_admit }}
+      artifact_review: ${{ steps.plan.outputs.artifact_review }}
+      artifact_decide: ${{ steps.plan.outputs.artifact_decide }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.base_sha }}
+          path: base
+          sparse-checkout: .assay
+          persist-credentials: false
+      - uses: Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@68f9c188523698bcec37a75dfd70de7d51aa3bae # main, 2026-11-01
+        with:
+          repository: ghcr.io/wet-ink-corporation/assay
+          config: base/.assay/plugins.toml
+          artifact-type: application/vnd.wet-ink.assay.binary.v1
+          out-dir: bin
+      - id: plan
+        env:
+          ASSAY_NEEDS: ${{ toJSON(needs) }}
+          ASSAY_RUN_TOKEN: ${{ github.token }}
+        run: bin/assay plan --out plan-out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.plan.outputs.artifact_plan }}
+          path: plan-out/run.json
+          if-no-files-found: error
+
+  # S2s: no PR-controlled execution. The head is checked out as data; assay fetches both pinned
+  # commits itself and runs the pinned base temper (D8 A) with node.
+  gates-static:
+    needs: [guard, plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: ${{ needs.guard.outputs.run == 'true' && format('assay-{0}-{1}-gates-static', github.repository_id, needs.guard.outputs.pr) || format('assay-noop-{0}-gates-static', github.run_id) }}
+      cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    outputs:
+      gates: ${{ steps.gates.outputs.gates }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.base_sha }}
+          path: base
+          sparse-checkout: .assay
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.head_sha }}
+          path: pr
+          persist-credentials: false
+      - uses: Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@68f9c188523698bcec37a75dfd70de7d51aa3bae # main, 2026-11-01
+        with:
+          repository: ghcr.io/wet-ink-corporation/assay
+          config: base/.assay/plugins.toml
+          artifact-type: application/vnd.wet-ink.assay.binary.v1
+          out-dir: bin
+      - id: temper
+        uses: Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@68f9c188523698bcec37a75dfd70de7d51aa3bae # main, 2026-11-01
+        with:
+          repository: ghcr.io/wet-ink-corporation/temper
+          config: base/.assay/plugins.toml
+          selector: plugin.temper
+          mode: "0644"
+          out-dir: ${{ runner.temp }}/temper
+      - id: node
+        run: printf 'path=%s\n' "$(command -v node)" >> "$GITHUB_OUTPUT"
+      - id: gates
+        env:
+          ASSAY_RUN_KEY: ${{ needs.plan.outputs.run_key }}
+          ASSAY_BASE_SHA: ${{ needs.guard.outputs.base_sha }}
+          ASSAY_HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
+          ASSAY_RUN_TOKEN: ${{ github.token }}
+          ASSAY_NODE: ${{ steps.node.outputs.path }}
+          ASSAY_TEMPER: ${{ steps.temper.outputs.dir }}
+        run: bin/assay gate gates-static --config base/.assay/plugins.toml --head pr --out gates-out --node "$ASSAY_NODE" --temper "$ASSAY_TEMPER"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ needs.plan.outputs.artifact_gates_static }}
+          path: gates-out/*.json
+          if-no-files-found: ignore
+
+  # S2b: runs PR build code (build.rs, proc-macros, clippy, rustdoc). Holds no secret and no
+  # token that writes; its outputs and artifact are untrusted until decide revalidates them.
+  gates-lint:
+    needs: [guard, plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    concurrency:
+      group: ${{ needs.guard.outputs.run == 'true' && format('assay-{0}-{1}-gates-lint', github.repository_id, needs.guard.outputs.pr) || format('assay-noop-{0}-gates-lint', github.run_id) }}
+      cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      gates: ${{ steps.gates.outputs.gates }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.base_sha }}
+          path: base
+          sparse-checkout: .assay
+          persist-credentials: false
+      # Full history: temper's changed-line diff needs the merge base in the checkout's own git.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.head_sha }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@68f9c188523698bcec37a75dfd70de7d51aa3bae # main, 2026-11-01
+        with:
+          repository: ghcr.io/wet-ink-corporation/assay
+          config: base/.assay/plugins.toml
+          artifact-type: application/vnd.wet-ink.assay.binary.v1
+          out-dir: bin
+      - id: temper
+        uses: Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@68f9c188523698bcec37a75dfd70de7d51aa3bae # main, 2026-11-01
+        with:
+          repository: ghcr.io/wet-ink-corporation/temper
+          config: base/.assay/plugins.toml
+          selector: plugin.temper
+          mode: "0644"
+          out-dir: ${{ runner.temp }}/temper
+      - id: node
+        run: printf 'path=%s\n' "$(command -v node)" >> "$GITHUB_OUTPUT"
+      - id: gates
+        env:
+          ASSAY_RUN_KEY: ${{ needs.plan.outputs.run_key }}
+          ASSAY_BASE_SHA: ${{ needs.guard.outputs.base_sha }}
+          ASSAY_HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
+          ASSAY_MERGE_BASE: ${{ needs.plan.outputs.merge_base }}
+          ASSAY_RUN_TOKEN: ${{ github.token }}
+          ASSAY_NODE: ${{ steps.node.outputs.path }}
+          ASSAY_TEMPER: ${{ steps.temper.outputs.dir }}
+        run: bin/assay gate gates-lint --config base/.assay/plugins.toml --head pr --out gates-out --node "$ASSAY_NODE" --temper "$ASSAY_TEMPER"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ needs.plan.outputs.artifact_gates_lint }}
+          path: gates-out/*.json
+          if-no-files-found: ignore
+
+  # S2b: runs the PR's tests, on a different VM from gates-lint.
+  gates-test:
+    needs: [guard, plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    concurrency:
+      group: ${{ needs.guard.outputs.run == 'true' && format('assay-{0}-{1}-gates-test', github.repository_id, needs.guard.outputs.pr) || format('assay-noop-{0}-gates-test', github.run_id) }}
+      cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      gates: ${{ steps.gates.outputs.gates }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.base_sha }}
+          path: base
+          sparse-checkout: .assay
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.head_sha }}
+          path: pr
+          persist-credentials: false
+      - uses: Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@68f9c188523698bcec37a75dfd70de7d51aa3bae # main, 2026-11-01
+        with:
+          repository: ghcr.io/wet-ink-corporation/assay
+          config: base/.assay/plugins.toml
+          artifact-type: application/vnd.wet-ink.assay.binary.v1
+          out-dir: bin
+      - id: gates
+        env:
+          ASSAY_RUN_KEY: ${{ needs.plan.outputs.run_key }}
+          ASSAY_BASE_SHA: ${{ needs.guard.outputs.base_sha }}
+          ASSAY_HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
+        run: bin/assay gate gates-test --config base/.assay/plugins.toml --head pr --out gates-out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ needs.plan.outputs.artifact_gates_test }}
+          path: gates-out/*.json
+          if-no-files-found: ignore
+
+  # S1a: budget, slot and reservation, and the context pack, from App-authored records only.
+  admit:
+    needs: [guard, plan]
+    if: needs.guard.outputs.run == 'true' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: assay-publish
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    outputs:
+      admission: ${{ steps.admit.outputs.admission }}
+      deferral: ${{ steps.admit.outputs.deferral }}
+      slot: ${{ steps.admit.outputs.slot }}
+      lease_commit: ${{ steps.admit.outputs.lease_commit }}
+      reserved_aeu: ${{ steps.admit.outputs.reserved_aeu }}
+      tier: ${{ steps.admit.outputs.tier }}
+      degrade: ${{ steps.admit.outputs.degrade }}
+      run_digest: ${{ steps.admit.outputs.run_digest }}
+      pack_digest: ${{ steps.admit.outputs.pack_digest }}
+      review: ${{ steps.admit.outputs.review }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.base_sha }}
+          path: base
+          sparse-checkout: .assay
+          persist-credentials: false
+      - uses: Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@68f9c188523698bcec37a75dfd70de7d51aa3bae # main, 2026-11-01
+        with:
+          repository: ghcr.io/wet-ink-corporation/assay
+          config: base/.assay/plugins.toml
+          artifact-type: application/vnd.wet-ink.assay.binary.v1
+          out-dir: bin
+      - id: ledger
+        name: Read the ledger repository from base config
+        run: |
+          python3 -I - base/.assay/plugins.toml >> "$GITHUB_OUTPUT" <<'EOF'
+          import re, sys, tomllib
+          with open(sys.argv[1], "rb") as config:
+              repo = tomllib.load(config)["assay"]["ledger_repo"]
+          if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", repo):
+              sys.exit("[assay].ledger_repo is not owner/name")
+          owner, name = repo.split("/")
+          print(f"owner={owner}")
+          print(f"name={name}")
+          EOF
+      - id: verdict-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        with:
+          app-id: ${{ vars.ASSAY_VERDICT_APP_ID }}
+          private-key: ${{ secrets.ASSAY_VERDICT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-checks: read
+          permission-pull-requests: read
+      - id: ledger-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        with:
+          app-id: ${{ vars.ASSAY_LEDGER_APP_ID }}
+          private-key: ${{ secrets.ASSAY_LEDGER_PRIVATE_KEY }}
+          owner: ${{ steps.ledger.outputs.owner }}
+          repositories: ${{ steps.ledger.outputs.name }}
+          permission-contents: write
+      # Every artifact of the run so far, one directory each (D12 A); assay reads only the names
+      # plan published, after their digests match plan's outputs.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: assay-*
+          path: artifacts
+      - id: admit
+        env:
+          ASSAY_NEEDS: ${{ toJSON(needs) }}
+          ASSAY_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
+          ASSAY_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
+          ASSAY_RUN_TOKEN: ${{ github.token }}
+        run: bin/assay admit --config base/.assay/plugins.toml --artifacts artifacts --out admit-out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ needs.plan.outputs.artifact_admit }}
+          path: admit-out/
+          if-no-files-found: error
+
+  # S3-S6: the placeholder until M2 (D11 A), which writes stage=not-run, so decide applies the
+  # LLM-unavailable policy. It holds no secret yet; the real review takes environment
+  # assay-review and the model secret, and needs no change to its guard.
+  review:
+    needs: [guard, admit]
+    if: needs.guard.outputs.run == 'true' && needs.admit.outputs.review == 'true' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    concurrency:
+      group: ${{ needs.guard.outputs.run == 'true' && format('assay-{0}-{1}-review', github.repository_id, needs.guard.outputs.pr) || format('assay-noop-{0}-review', github.run_id) }}
+      cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    outputs:
+      stage: ${{ steps.review.outputs.stage }}
+      cost_aeu: ${{ steps.review.outputs.cost_aeu }}
+      documents: ${{ steps.review.outputs.documents }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.base_sha }}
+          path: base
+          sparse-checkout: .assay
+          persist-credentials: false
+      - uses: Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@68f9c188523698bcec37a75dfd70de7d51aa3bae # main, 2026-11-01
+        with:
+          repository: ghcr.io/wet-ink-corporation/assay
+          config: base/.assay/plugins.toml
+          artifact-type: application/vnd.wet-ink.assay.binary.v1
+          out-dir: bin
+      - id: review
+        run: bin/assay review --placeholder
+
+  # S10: releases the slot admit holds and writes the final cost record, for cancelled and
+  # superseded runs too. ASSAY_NEEDS holds exactly admit and review (03 §4a).
+  release:
+    needs: [guard, admit, review]
+    if: always() && needs.guard.outputs.run == 'true' && needs.admit.outputs.slot != '' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: assay-publish
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.base_sha }}
+          path: base
+          sparse-checkout: .assay
+          persist-credentials: false
+      - uses: Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@68f9c188523698bcec37a75dfd70de7d51aa3bae # main, 2026-11-01
+        with:
+          repository: ghcr.io/wet-ink-corporation/assay
+          config: base/.assay/plugins.toml
+          artifact-type: application/vnd.wet-ink.assay.binary.v1
+          out-dir: bin
+      - id: ledger
+        name: Read the ledger repository from base config
+        run: |
+          python3 -I - base/.assay/plugins.toml >> "$GITHUB_OUTPUT" <<'EOF'
+          import re, sys, tomllib
+          with open(sys.argv[1], "rb") as config:
+              repo = tomllib.load(config)["assay"]["ledger_repo"]
+          if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", repo):
+              sys.exit("[assay].ledger_repo is not owner/name")
+          owner, name = repo.split("/")
+          print(f"owner={owner}")
+          print(f"name={name}")
+          EOF
+      - id: ledger-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        with:
+          app-id: ${{ vars.ASSAY_LEDGER_APP_ID }}
+          private-key: ${{ secrets.ASSAY_LEDGER_PRIVATE_KEY }}
+          owner: ${{ steps.ledger.outputs.owner }}
+          repositories: ${{ steps.ledger.outputs.name }}
+          permission-contents: write
+      - env:
+          ASSAY_NEEDS: ${{ format('{{"admit":{0},"review":{1}}}', toJSON(needs.admit), toJSON(needs.review)) }}
+          ASSAY_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
+        run: bin/assay release --config base/.assay/plugins.toml
+
+  # S7-S9: authenticate every artifact, decide, persist the bundle, then publish under the
+  # per-head lock (D5 A). No concurrency group: the lock arbitrates (02 §5).
+  decide:
+    needs: [guard, open, plan, gates-static, gates-lint, gates-test, admit, review, release]
+    if: always() && needs.guard.outputs.run == 'true' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: assay-publish
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.base_sha }}
+          path: base
+          sparse-checkout: .assay
+          persist-credentials: false
+      - uses: Wet-Ink-Corporation/assay/.github/actions/fetch-by-digest@68f9c188523698bcec37a75dfd70de7d51aa3bae # main, 2026-11-01
+        with:
+          repository: ghcr.io/wet-ink-corporation/assay
+          config: base/.assay/plugins.toml
+          artifact-type: application/vnd.wet-ink.assay.binary.v1
+          out-dir: bin
+      - id: ledger
+        name: Read the ledger repository from base config
+        run: |
+          python3 -I - base/.assay/plugins.toml >> "$GITHUB_OUTPUT" <<'EOF'
+          import re, sys, tomllib
+          with open(sys.argv[1], "rb") as config:
+              repo = tomllib.load(config)["assay"]["ledger_repo"]
+          if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", repo):
+              sys.exit("[assay].ledger_repo is not owner/name")
+          owner, name = repo.split("/")
+          print(f"owner={owner}")
+          print(f"name={name}")
+          EOF
+      - id: verdict-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        with:
+          app-id: ${{ vars.ASSAY_VERDICT_APP_ID }}
+          private-key: ${{ secrets.ASSAY_VERDICT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-checks: write
+          permission-contents: read
+          permission-pull-requests: write
+      - id: ledger-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        with:
+          app-id: ${{ vars.ASSAY_LEDGER_APP_ID }}
+          private-key: ${{ secrets.ASSAY_LEDGER_PRIVATE_KEY }}
+          owner: ${{ steps.ledger.outputs.owner }}
+          repositories: ${{ steps.ledger.outputs.name }}
+          permission-contents: write
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: assay-*
+          path: artifacts
+      - id: decide
+        env:
+          ASSAY_NEEDS: ${{ toJSON(needs) }}
+          ASSAY_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
+          ASSAY_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
+          ASSAY_RUN_TOKEN: ${{ github.token }}
+          ASSAY_VERDICT_APP_ID: ${{ vars.ASSAY_VERDICT_APP_ID }}
+          ASSAY_VERDICT_BOT_ID: ${{ vars.ASSAY_VERDICT_BOT_ID }}
+        run: bin/assay decide --config base/.assay/plugins.toml --artifacts artifacts --out decide-out
+      # The bundle is uploaded before the lock is taken; publish confirms it by sha256 before it
+      # writes the evidence pointer, and fails closed on a trust-path PR when it did not land (S9).
+      - id: persist
+        if: steps.decide.outputs.bundle == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ needs.plan.outputs.artifact_decide }}
+          path: decide-out/run-inputs.json
+          retention-days: 90
+          if-no-files-found: error
+      - if: ${{ !cancelled() && steps.decide.outcome == 'success' }}
+        env:
+          ASSAY_NEEDS: ${{ toJSON(needs) }}
+          ASSAY_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
+          ASSAY_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
+          ASSAY_RUN_TOKEN: ${{ github.token }}
+          ASSAY_VERDICT_APP_ID: ${{ vars.ASSAY_VERDICT_APP_ID }}
+          ASSAY_VERDICT_BOT_ID: ${{ vars.ASSAY_VERDICT_BOT_ID }}
+          ASSAY_PERSIST: ${{ steps.persist.outcome }}
+        run: bin/assay publish --config base/.assay/plugins.toml --state decide-out

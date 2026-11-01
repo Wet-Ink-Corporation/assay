@@ -1,7 +1,7 @@
-//! Line-level readers for the workflow and composite-action YAML under `.github/`, shared by
-//! the workflow tests. They read the block layout the files are written in (two-space indents,
-//! one key per line), not YAML in general; a file that strays from it reads as missing pieces,
-//! which the tests then report.
+//! Line-level readers for the workflow and composite-action YAML under `.github/` and the
+//! workflow templates under `workflows/`, shared by the workflow tests. They read the block
+//! layout the files are written in (two-space indents, one key per line), not YAML in general;
+//! a file that strays from it reads as missing pieces, which the tests then report.
 
 use std::fs;
 use std::io;
@@ -14,6 +14,11 @@ pub(crate) fn repository_root() -> PathBuf {
 /// The text of `.github/workflows/<name>`.
 pub(crate) fn workflow(name: &str) -> io::Result<String> {
     fs::read_to_string(repository_root().join(".github/workflows").join(name))
+}
+
+/// The text of the consumer workflow template `workflows/<name>` (02 §7).
+pub(crate) fn template(name: &str) -> io::Result<String> {
+    fs::read_to_string(repository_root().join("workflows").join(name))
 }
 
 /// The lines of the top-level mapping `key:`, from its header to the next top-level key.
@@ -64,6 +69,102 @@ pub(crate) fn permissions(body: &[&str]) -> Option<Vec<String>> {
             .map(|line| line.trim().to_owned())
             .collect(),
     )
+}
+
+/// The value of a job's one-line key `key:` (`if`, `needs`, `timeout-minutes`).
+pub(crate) fn job_value<'a>(body: &[&'a str], key: &str) -> Option<&'a str> {
+    let prefix = format!("    {key}: ");
+    body.iter()
+        .find_map(|line| line.strip_prefix(prefix.as_str()))
+}
+
+/// The entries of a job's mapping `key:` (`outputs`, `concurrency`), trimmed, in file order;
+/// empty when the job has none.
+pub(crate) fn job_entries<'a>(body: &[&'a str], key: &str) -> Vec<&'a str> {
+    let header = format!("    {key}:");
+    body.iter()
+        .skip_while(|line| **line != header)
+        .skip(1)
+        .take_while(|line| line.starts_with("      "))
+        .map(|line| line.trim())
+        .collect()
+}
+
+/// One step of a job: its first line without the `      - ` that opens it, and each later line
+/// without the step's own eight-space indent, so the step's keys start a line and their
+/// children are indented by two.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Step<'a> {
+    lines: Vec<&'a str>,
+}
+
+impl<'a> Step<'a> {
+    /// The value of the step's one-line key `key:`.
+    pub(crate) fn value(&self, key: &str) -> Option<&'a str> {
+        let prefix = format!("{key}: ");
+        self.lines
+            .iter()
+            .find_map(|line| line.strip_prefix(prefix.as_str()))
+    }
+
+    /// The entries of the step's mapping `key:` (`with`, `env`) as `(name, value)`.
+    pub(crate) fn entries(&self, key: &str) -> Vec<(&'a str, &'a str)> {
+        let header = format!("{key}:");
+        self.lines
+            .iter()
+            .skip_while(|line| **line != header)
+            .skip(1)
+            .take_while(|line| line.starts_with("  "))
+            .filter_map(|line| line.trim().split_once(": "))
+            .collect()
+    }
+
+    /// The value of the step's mapping entry `key.name`.
+    pub(crate) fn entry(&self, key: &str, name: &str) -> Option<&'a str> {
+        self.entries(key)
+            .into_iter()
+            .find_map(|(entry, value)| (entry == name).then_some(value))
+    }
+
+    /// The step's `run:` text: its one-line value, or the lines of its `|` block joined by
+    /// newlines (comment and blank lines are already dropped by [`jobs`]).
+    pub(crate) fn run(&self) -> Option<String> {
+        let value = self.value("run")?;
+        if value != "|" {
+            return Some(value.to_owned());
+        }
+        let block = self
+            .lines
+            .iter()
+            .skip_while(|line| **line != "run: |")
+            .skip(1)
+            .take_while(|line| line.starts_with("  "))
+            .map(|line| line.get(2..).unwrap_or_default())
+            .collect::<Vec<_>>();
+        Some(block.join("\n"))
+    }
+}
+
+/// The steps of a job body, in file order. A line indented less than a step's ends the
+/// `steps:` block.
+pub(crate) fn steps<'a>(body: &[&'a str]) -> Vec<Step<'a>> {
+    let mut steps: Vec<Step<'a>> = Vec::new();
+    let mut in_steps = false;
+    for &line in body {
+        if !line.starts_with("      ") {
+            in_steps = line == "    steps:";
+            continue;
+        }
+        if !in_steps {
+            continue;
+        }
+        if let Some(first) = line.strip_prefix("      - ") {
+            steps.push(Step { lines: vec![first] });
+        } else if let (Some(step), Some(rest)) = (steps.last_mut(), line.strip_prefix("        ")) {
+            step.lines.push(rest);
+        }
+    }
+    steps
 }
 
 pub(crate) fn job_body<'a>(jobs: &'a [(&str, Vec<&'a str>)], name: &str) -> &'a [&'a str] {
