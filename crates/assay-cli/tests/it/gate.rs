@@ -1,7 +1,7 @@
 //! `assay gate <job>` (#67): the entry point a Z2b job runs. In `gates-test` it runs the base's
 //! declared `test` steps and `exec` gates through `run_gates`, writes each concluded gate's
-//! document as `<out>/<plugin>.json` and prints one line per gate; `gates-lint` is refused
-//! until its inputs are wired, and `gates-static` is `gate_static.rs`'s.
+//! document as `<out>/<plugin>.json` and prints one line per gate. `gates-lint` runs its `lint`
+//! steps here once (the rest is `gate_lint.rs`'s), and `gates-static` is `gate_static.rs`'s.
 //!
 //! The steps are `/bin/sh -c` scripts run from the head tree, so no cargo runs here.
 
@@ -12,6 +12,8 @@ use std::process::{Command, Output};
 
 use assay_app::{Contract, ContractValidator};
 use tempfile::TempDir;
+
+use crate::gate_static_scene::Scene;
 
 const DIGEST: &str = "sha256:dc7c1d8e3ccab68cfdb828ce40a446c3913f7172f899ffe3f439839cfd917a8b";
 const PIN: &str = "git:0123456789abcdef0123456789abcdef01234567";
@@ -344,17 +346,34 @@ fn a_missing_or_empty_run_key_is_refused() -> Result<(), Box<dyn Error>> {
 
 #[test]
 #[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
-fn gates_lint_is_refused_until_its_inputs_are_wired() -> Result<(), Box<dyn Error>> {
-    // gates-static runs since #60 ST-7 (`gate_static.rs`; D13, approved for gates-static only).
-    let job = Job::new(&temper(&[("fmt", "lint", "touch fmt-ran")]))?;
+fn gates_lint_runs_the_lint_steps_and_writes_its_document() -> Result<(), Box<dyn Error>> {
+    // Was `gates_lint_is_refused_until_its_inputs_are_wired` (exit 2, `not wired yet`): gates-lint
+    // runs since #60 ST-8 (D13, owner-approved) over gate_static_scene's fetched fixture PR.
+    // The rest of its behaviour is pinned in `gate_lint.rs`.
+    let scene = Scene::lint(
+        &[],
+        &temper(&[
+            ("fmt", "lint", "touch fmt-ran"),
+            ("tests", "test", "touch tests-ran"),
+        ]),
+    )?;
 
-    let output = job.run("gates-lint")?;
+    let output = scene.run(|_| {})?;
 
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not wired yet"), "{stderr}");
-    assert!(!job.ran("fmt-ran"));
-    assert!(!job.out.exists());
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(stdout(&output), "temper pass\n");
+    assert_eq!(
+        [
+            scene.head.join("fmt-ran").exists(),
+            scene.head.join("tests-ran").exists()
+        ],
+        [true, false],
+        "the lint step ran from the head tree; the test step is gates-test's"
+    );
+    let names: Vec<String> = fs::read_dir(scene.path("out"))?
+        .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<_, std::io::Error>>()?;
+    assert_eq!(names, ["temper.json"]);
     Ok(())
 }
 

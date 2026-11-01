@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{self, Path, PathBuf};
 
-use super::{GateCliError, Program, StaticError};
+use super::{GateCliError, PinnedError, Program};
 
 /// `path` made absolute against the working directory, without touching the file system.
 pub(super) fn absolute(path: &Path) -> Result<PathBuf, GateCliError> {
@@ -77,7 +77,8 @@ pub(super) fn refuse_paths(config: &Path, head: &Path, out: &Path) -> Result<Pla
     Ok(Placed { config, head, out })
 }
 
-/// `gates-static`'s programs: `node` and the pinned temper copy, each named absolute.
+/// `gates-static`'s and `gates-lint`'s programs: `node` and the pinned temper copy, each named
+/// absolute.
 #[derive(Debug)]
 pub(super) struct Programs {
     pub(super) node: PathBuf,
@@ -87,12 +88,12 @@ pub(super) struct Programs {
 impl Programs {
     /// `node` and `temper` as given, refused unless each is absolute: a relative one would be
     /// resolved against the working directory, which the job does not choose.
-    pub(super) fn absolute(node: PathBuf, temper: PathBuf) -> Result<Self, StaticError> {
+    pub(super) fn absolute(node: PathBuf, temper: PathBuf) -> Result<Self, PinnedError> {
         let absolute = |program: Program, path: PathBuf| {
             if path.is_absolute() {
                 Ok(path)
             } else {
-                Err(StaticError::RelativeProgram { program, path })
+                Err(PinnedError::RelativeProgram { program, path })
             }
         };
         Ok(Self {
@@ -107,7 +108,7 @@ impl Programs {
         let resolve = |program: Program, path: &Path| -> Result<PathBuf, GateCliError> {
             let path = canonical(path)?;
             if path.starts_with(head) {
-                return Err(StaticError::ProgramInHead { program, path }.into());
+                return Err(PinnedError::ProgramInHead { program, path }.into());
             }
             Ok(path)
         };
