@@ -234,6 +234,15 @@ const ATTRIBUTE_BODY: &str = "A `cfg_attr` carrying `allow`, `expect`, `path` or
     the attribute plainly, define macros at the top level of a file, and keep modules at their \
     default paths.";
 
+/// The body of a [`Why::Target`] finding.
+const TARGET_BODY: &str = "A `build` script or a `[lib]`, `[[bin]]`, `[[test]]`, `[[bench]]` \
+    or `[[example]]` `path` of this manifest does not name, as a string ending exactly in `.rs` \
+    after a name, a regular file of this tree inside the repository, or is not written as Cargo \
+    reads a target (`build = true` names `build.rs`). rustc would compile text the temper scan \
+    never reads, or a file this tree does not hold, which only a build script could write; \
+    requiring it here narrows that route but does not stop build-script writes, which are \
+    owner-approved exec surface. Name every target file `*.rs` and commit it.";
+
 /// A blind spot's title and the body that explains it.
 const fn wording(why: Why) -> (&'static str, &'static str) {
     match why {
@@ -272,6 +281,7 @@ const fn wording(why: Why) -> (&'static str, &'static str) {
                      modules at the top level of a file, outside brackets and macro bodies, \
                      with their files in the tree, and do not `include!` Rust.",
         ),
+        Why::Target => ("Cargo target the temper scan cannot read", TARGET_BODY),
         Why::Unreported => (
             "`allow` the temper scan did not report",
             "This `allow` attribute is one the temper scan should report at this line, \

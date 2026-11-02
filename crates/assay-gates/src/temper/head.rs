@@ -60,6 +60,9 @@ pub(super) enum Why {
     Reference,
     /// A plain `allow` attribute the scan did not report at its line.
     Unreported,
+    /// A Cargo manifest whose build script or target `path` is not a regular `.rs` file of the
+    /// tree the scan reads, or is not written as Cargo reads one (`cargo_targets.rs`, #169).
+    Target,
     /// A `.rs` file this adapter could not read: not listed with its bytes, or holding a
     /// literal or comment that never ends, code outside ASCII, a token whose boundary depends
     /// on the edition, a shebang line or frontmatter.

@@ -25,7 +25,7 @@ mod index;
 mod targets;
 mod visit;
 
-use index::TreeIndex;
+pub(super) use index::TreeIndex;
 
 /// Most files the closure visits, or the include-target walk reads, before it gives up and
 /// places nothing (H-13). The literals those files hold are bounded by [`MAX_TARGETS`] and,

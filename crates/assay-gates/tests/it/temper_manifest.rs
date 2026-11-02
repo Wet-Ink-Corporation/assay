@@ -88,6 +88,8 @@ fn each_member_switch_fails() -> Result<(), Box<dyn Error>> {
         format!("{CRATE}\n[patch.crates-io]\nserde = {{ path = \"../serde\" }}\n"),
     ] {
         let mut pr = pr(WORKSPACE, &member)?;
+        // The file the `path` case names: a target file the tree lacks is a blind spot.
+        pr.set(Revision::Head, "crates/x/tests/empty.rs", "");
 
         let outcome = pr.outcome()?;
 
@@ -489,6 +491,77 @@ fn a_deleted_package_manifest_fails_whatever_it_set() -> Result<(), Box<dyn Erro
         outcome,
         (FAILED, vec![seen("manifest-switch", MEMBER)]),
         "the package and its tests are gone"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_build_script_that_is_not_rust_fails_as_a_blind_spot() -> Result<(), Box<dyn Error>> {
+    let mut pr = pr(WORKSPACE, &package_with("build = \"build.txt\""))?;
+    pr.set(Revision::Head, "crates/x/build.txt", "fn main() {}\n");
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![seen("blind-spot", MEMBER)]),
+        "rustc compiles `build.txt`; the scan's `*.rs` walk never reads it (#169)"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unchanged_manifest_naming_a_non_rust_target_fails_every_pr() -> Result<(), Box<dyn Error>> {
+    let member = format!("{CRATE}\n[lib]\npath = \"src/lib.txt\"\n");
+    let mut pr = pr(WORKSPACE, &member)?;
+    pr.set(Revision::Base, MEMBER, &member);
+    pr.both("crates/x/src/lib.txt", "pub fn f() {}\n");
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (FAILED, vec![seen("blind-spot", MEMBER)]),
+        "the owner's fail-closed call: a target that predates the PR fails it too"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_target_rust_file_the_tree_does_not_hold_fails() -> Result<(), Box<dyn Error>> {
+    let member = format!("{CRATE}\n[[bin]]\nname = \"gen\"\npath = \"src/gen.rs\"\n");
+    let mut pr = pr(WORKSPACE, &member)?;
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (
+            FAILED,
+            vec![seen("blind-spot", MEMBER), seen("manifest-switch", MEMBER)]
+        ),
+        "a build script that runs first can write `src/gen.rs` after the scan ran"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_target_naming_a_rust_file_of_the_tree_passes() -> Result<(), Box<dyn Error>> {
+    let member = format!(
+        "{}\n[[bin]]\nname = \"x\"\npath = \"src/main.rs\"\n",
+        package_with("build = \"build.rs\"")
+    );
+    let mut pr = pr(WORKSPACE, &member)?;
+    pr.set(Revision::Base, MEMBER, &member);
+    pr.both("crates/x/src/main.rs", "fn main() {}\n");
+    pr.both("crates/x/build.rs", "fn main() {}\n");
+
+    let outcome = pr.outcome()?;
+
+    assert_eq!(
+        outcome,
+        (PASSED, Vec::new()),
+        "both are scanned `.rs` files"
     );
     Ok(())
 }
