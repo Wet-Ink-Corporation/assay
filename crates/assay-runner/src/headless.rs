@@ -3,6 +3,7 @@
 mod canary;
 mod env;
 mod group;
+mod parent_death;
 mod status;
 mod supervise;
 mod workdir;
@@ -19,6 +20,7 @@ use assay_domain::Aeu;
 pub use canary::{CanaryError, ClaudeCanary};
 pub use env::{EnvVarError, HeadlessEnv};
 pub use group::GroupKill;
+pub use parent_death::ParentDeath;
 pub use status::{StatusCommand, StatusError};
 pub use workdir::{Workdir, WorkdirError};
 
@@ -47,12 +49,18 @@ const SETTINGS: &str = r#"{"disableAllHooks":true,"permissions":{"deny":["Read(/
 /// the cap before the CLI is reaped, and after it exits, so no process it started outlives the
 /// call. A call returns only once the group has been shown gone, or with
 /// [`HeadlessError::Kill`].
+///
+/// With [`with_parent_death`](Self::with_parent_death) and a [`ParentDeath`] holding a
+/// `setpriv`, the CLI is started under `setpriv --pdeathsig KILL`, so it also dies when assay
+/// is killed by a signal that runs none of its code. The CLI is spawned, watched and reaped on
+/// the calling thread, which therefore outlives it, so the signal cannot fire early.
 #[derive(Debug)]
 pub struct ClaudeHeadless<K> {
     program: PathBuf,
     workdir: Workdir,
     env: HeadlessEnv,
     killer: K,
+    parent_death: ParentDeath,
     max_output_bytes: u64,
     status_timeout: Duration,
 }
@@ -126,6 +134,7 @@ impl<K> ClaudeHeadless<K> {
             workdir,
             env,
             killer,
+            parent_death: ParentDeath::default(),
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             status_timeout: status::DEFAULT_STATUS_TIMEOUT,
         }
@@ -140,7 +149,27 @@ impl<K> ClaudeHeadless<K> {
         }
     }
 
-    fn command(&self, call: &ModelCall) -> Command {
+    /// This runner starting the CLI under `parent_death` (#154): pass
+    /// [`ParentDeath::probe`]'s guard so the CLI dies with assay where `setpriv` exists.
+    /// Without this call the CLI is started directly.
+    ///
+    /// The program given to [`new`](Self::new) must then be an absolute path: under `setpriv` it
+    /// is checked against assay's working directory but executed by `setpriv` from the CLI's,
+    /// and `setpriv` searches `PATH` for a bare name. The composition root refuses a relative
+    /// program before building this runner.
+    #[must_use]
+    pub fn with_parent_death(self, parent_death: ParentDeath) -> Self {
+        Self {
+            parent_death,
+            ..self
+        }
+    }
+
+    /// The command of `call`.
+    ///
+    /// # Errors
+    /// [`HeadlessError::Spawn`] when the CLI could not be started under `setpriv`.
+    fn command(&self, call: &ModelCall) -> Result<Command, HeadlessError> {
         let invocation = Invocation {
             json_schema: &call.json_schema,
             system_prompt_file: &call.system_prompt_file,
@@ -148,7 +177,11 @@ impl<K> ClaudeHeadless<K> {
             max_turns: call.max_turns,
             budget: call.budget,
         };
-        invocation.command(&self.program, self.workdir.path(), &self.env)
+        let cli = self
+            .parent_death
+            .command(&self.program)
+            .map_err(HeadlessError::Spawn)?;
+        Ok(invocation.command(cli, self.workdir.path(), &self.env))
     }
 }
 
@@ -163,11 +196,10 @@ struct Invocation<'a> {
 }
 
 impl Invocation<'_> {
-    /// `program` with exactly the 03 §8 argv, run in `cwd` with `env` only.
-    fn command(&self, program: &Path, cwd: &Path, env: &HeadlessEnv) -> Command {
-        let mut command = Command::new(program);
-        command
-            .arg("-p")
+    /// `cli`, the command [`ParentDeath::command`] starts the CLI with, given exactly the 03 §8
+    /// argv and run in `cwd` with `env` only.
+    fn command(&self, mut cli: Command, cwd: &Path, env: &HeadlessEnv) -> Command {
+        cli.arg("-p")
             .args(["--output-format", "stream-json", "--verbose"])
             .arg("--json-schema")
             .arg(self.json_schema)
@@ -185,8 +217,8 @@ impl Invocation<'_> {
             .arg("--max-budget-usd")
             .arg(self.budget.to_string())
             .current_dir(cwd);
-        env.apply(&mut command);
-        command
+        env.apply(&mut cli);
+        cli
     }
 }
 
@@ -206,7 +238,7 @@ impl<K: GroupKill> ModelRunner for ClaudeHeadless<K> {
         }
         self.workdir.ensure_empty()?;
         let captured = supervise::run(
-            self.command(call),
+            self.command(call)?,
             call.user_prompt.as_str().as_bytes(),
             supervise::Bounds {
                 timeout: call.timeout,

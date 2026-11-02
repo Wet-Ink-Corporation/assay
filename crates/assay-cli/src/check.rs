@@ -47,7 +47,7 @@ use assay_gates::{
     ExecAdapter, ExecError, ExecLimits, ExecSettings, ExecSettingsError, GateEnvironment,
     Supervisor,
 };
-use assay_runner::{ClaudeHeadless, EnvVarError, HeadlessEnv, Workdir, WorkdirError};
+use assay_runner::{ClaudeHeadless, EnvVarError, HeadlessEnv, ParentDeath, Workdir, WorkdirError};
 use tempfile::TempDir;
 
 use self::events::{EventWriteError, JsonlEvents};
@@ -674,7 +674,8 @@ impl Scratch {
         Ok((bundle, file))
     }
 
-    /// `claude` at `program` with `env`, in an empty working directory.
+    /// `claude` at `program` with `env`, in an empty working directory, started under
+    /// `setpriv --pdeathsig KILL` where this host has one (#154).
     fn model(
         &self,
         program: PathBuf,
@@ -684,12 +685,10 @@ impl Scratch {
         let empty = self.path("empty");
         fs::create_dir(&empty).map_err(CheckCliError::Scratch)?;
         let workdir = Workdir::new(empty).map_err(CheckCliError::Workdir)?;
-        Ok(ClaudeHeadless::new(
-            program,
-            workdir,
-            env,
-            ForgeSupervisor::new(killer),
-        ))
+        Ok(
+            ClaudeHeadless::new(program, workdir, env, ForgeSupervisor::new(killer))
+                .with_parent_death(ParentDeath::probe()),
+        )
     }
 }
 

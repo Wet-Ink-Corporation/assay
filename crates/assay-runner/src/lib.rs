@@ -13,7 +13,7 @@ mod stream;
 
 pub use headless::{
     CanaryError, ClaudeCanary, ClaudeHeadless, EnvVarError, GroupKill, HeadlessEnv, HeadlessError,
-    StatusCommand, StatusError, Workdir, WorkdirError,
+    ParentDeath, StatusCommand, StatusError, Workdir, WorkdirError,
 };
 pub use replay::{Recording, Replay, ReplayError};
 pub use status::read_cli_status;

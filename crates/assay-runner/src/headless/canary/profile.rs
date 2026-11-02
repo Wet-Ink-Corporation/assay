@@ -24,7 +24,7 @@ use assay_domain::Aeu;
 use serde_json::{Value, json};
 
 use super::super::supervise::{self, Bounds};
-use super::super::{DEFAULT_MAX_OUTPUT_BYTES, GroupKill, Invocation};
+use super::super::{DEFAULT_MAX_OUTPUT_BYTES, GroupKill, HeadlessError, Invocation};
 use super::{CanaryError, ClaudeCanary};
 use crate::stream;
 
@@ -73,7 +73,11 @@ impl<K: GroupKill> ClaudeCanary<K> {
             max_turns: TURNS,
             budget: BUDGET,
         };
-        let mut command = invocation.command(&self.program, &layout.cwd, &self.env);
+        let cli = self
+            .parent_death
+            .command(&self.program)
+            .map_err(HeadlessError::Spawn)?;
+        let mut command = invocation.command(cli, &layout.cwd, &self.env);
         command
             .arg("--include-hook-events")
             .env("HOME", &layout.home);
