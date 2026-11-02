@@ -87,20 +87,12 @@ fn runs_clippy_with_base_forbidden_lints_between_the_steps_and_baseline_check()
         .backstop_targets
         .first()
         .ok_or("the backstop saw its target")?;
-    let tail = [
-        "--workspace",
-        "--all-targets",
-        "--all-features",
-        "--locked",
-        "--keep-going",
-        "--message-format=json-diagnostic-short",
-        "--config",
-        "env.CLIPPY_ARGS.value=\"\"",
-        "--config",
-        "env.CLIPPY_ARGS.force=true",
-    ];
-    let debug: Vec<&str> = ["clippy"].into_iter().chain(tail).collect();
-    let release: Vec<&str> = ["clippy", "--release"].into_iter().chain(tail).collect();
+    // Each pass pins `debug_assertions` for its profiles, whatever the manifest sets.
+    let debug = pass_args(&["clippy"], [("dev", true), ("test", true)]);
+    let release = pass_args(
+        &["clippy", "--release"],
+        [("release", false), ("bench", false)],
+    );
     assert_eq!(
         passes.iter().map(|seen| &seen.args).collect::<Vec<_>>(),
         [&debug, &release],
@@ -126,11 +118,42 @@ fn runs_clippy_with_base_forbidden_lints_between_the_steps_and_baseline_check()
                 ("RUSTC_WRAPPER", ""),
                 ("RUSTC", "rustc"),
                 ("CARGO_TARGET_DIR", &target.to_string_lossy()),
+                // Cargo keeps fingerprints in `build.build-dir`, which config could point at
+                // committed artifacts.
+                ("CARGO_BUILD_BUILD_DIR", &target.to_string_lossy()),
                 ("CARGO_TERM_COLOR", "never"),
             ])
         );
     }
     Ok(())
+}
+
+/// The argv of a pass that starts with `head`, with every feature, and pins debug assertions
+/// to each (profile, value) of `pins`.
+fn pass_args(head: &[&str], pins: [(&str, bool); 2]) -> Vec<String> {
+    let tail = [
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--keep-going",
+        "--message-format=json-diagnostic-short",
+        "--config",
+        "env.CLIPPY_ARGS.value=\"\"",
+        "--config",
+        "env.CLIPPY_ARGS.force=true",
+    ];
+    let pinned = pins.into_iter().flat_map(|(profile, value)| {
+        [
+            "--config".to_owned(),
+            format!("profile.{profile}.debug-assertions={value}"),
+        ]
+    });
+    head.iter()
+        .chain(&tail)
+        .map(|arg| (*arg).to_owned())
+        .chain(pinned)
+        .collect()
 }
 
 /// Every backstop pass, in order.
@@ -453,7 +476,22 @@ fn a_backstop_that_cannot_start_is_an_error() -> Result<(), Box<dyn Error>> {
     let ran = run(&pr, &mut lint)?;
 
     assert_matches!(ran, Err(TemperError::Lint { ref process, .. }) if process == "the forbid backstop");
+    assert_eq!(
+        backstop_dirs(&pr)?,
+        Vec::<OsString>::new(),
+        "the target directory is removed on the error path too"
+    );
     Ok(())
+}
+
+/// The `assay-backstop-*` directories left beside `pr`'s head tree.
+fn backstop_dirs(pr: &Pr) -> Result<Vec<OsString>, Box<dyn Error>> {
+    let parent = pr.head_tree.parent().ok_or("the head tree has a parent")?;
+    Ok(fs::read_dir(parent)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .filter(|name| name.to_string_lossy().starts_with("assay-backstop-"))
+        .collect())
 }
 
 #[test]
@@ -583,11 +621,20 @@ const FIXTURE: [(&str, &str); 7] = [
 /// A PR whose head is [`FIXTURE`] on disk and in the tree, with `fx/src/lib.rs` replaced by
 /// `lib` when given, and the workspace's own toolchain (whatever rustup's default is).
 fn fixture(lib: Option<&str>) -> Result<Pr, Box<dyn Error>> {
+    fixture_with(
+        &lib.map(|lib| ("fx/src/lib.rs", lib))
+            .into_iter()
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// [`FIXTURE`] with each of `replaced`, by path, on disk and in the head tree.
+fn fixture_with(replaced: &[(&str, &str)]) -> Result<Pr, Box<dyn Error>> {
     let mut pr = pr()?;
     let toolchain = include_str!("../../../../rust-toolchain.toml");
-    let files = FIXTURE.into_iter().map(|(path, text)| match lib {
-        Some(lib) if path == "fx/src/lib.rs" => (path, lib),
-        _ => (path, text),
+    let files = FIXTURE.into_iter().map(|(path, text)| {
+        let new = replaced.iter().find(|(name, _)| *name == path);
+        new.map_or((path, text), |(_, text)| (path, *text))
     });
     for (path, text) in files.chain([("rust-toolchain.toml", toolchain)]) {
         let file = pr.head_tree.join(path);
@@ -672,16 +719,39 @@ fn a_real_build_refuses_overrides_a_macro_and_a_proc_macro_assemble() -> Result<
         !pr.head_tree.join("elsewhere").exists(),
         "the config's target-dir is not used"
     );
-    let parent = pr.head_tree.parent().ok_or("the head tree has a parent")?;
-    let left: Vec<_> = fs::read_dir(parent)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name())
-        .filter(|name| name.to_string_lossy().starts_with("assay-backstop-"))
-        .collect();
     assert_eq!(
-        left,
+        backstop_dirs(&pr)?,
         Vec::<OsString>::new(),
         "its target directory is removed"
+    );
+    Ok(())
+}
+
+/// Real cargo-clippy: a head whose profiles turn `debug_assertions` off for dev and test hides
+/// `cfg(debug_assertions)` code from both passes unless the backstop pins it (#172 round 3, ADV
+/// F2). The profile change is also Z2s's `manifest-switch`; this pins the backstop's own
+/// defence.
+#[test]
+fn a_real_debug_pass_pins_debug_assertions_whatever_the_profile_says() -> Result<(), Box<dyn Error>>
+{
+    let root = "[workspace]\nmembers = [\"fx\", \"mac\"]\nresolver = \"3\"\n\n\
+                [profile.dev]\ndebug-assertions = false\n\n\
+                [profile.test]\ndebug-assertions = false\n";
+    let lib = "//! Lowers a forbidden lint where debug assertions are on.\n\
+               \n\
+               macro_rules! hole {\n    ($lint:path) => {\n        #[allow($lint)]\n        \
+               pub fn from_macro_rules() {}\n    };\n}\n\
+               #[cfg(debug_assertions)]\n\
+               hole!(unsafe_code);\n";
+    let pr = fixture_with(&[("Cargo.toml", root), ("fx/src/lib.rs", lib)])?;
+
+    let (outcome, found, stderr) = for_real(&pr)?;
+
+    assert_eq!(outcome, FAILED, "{stderr}");
+    assert_eq!(
+        found,
+        [("forbid-override".to_owned(), "fx/src/lib.rs".to_owned(), 10)],
+        "{stderr}"
     );
     Ok(())
 }

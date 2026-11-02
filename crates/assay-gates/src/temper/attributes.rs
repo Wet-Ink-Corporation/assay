@@ -13,6 +13,11 @@ const HIDDEN: [&str; 3] = ["allow", "expect", "path"];
 /// can make them anything.
 const LISTED: [&str; 6] = ["allow", "expect", "warn", "deny", "forbid", "cfg_attr"];
 
+/// The builtin macro that picks code by cfg predicates written without `cfg` (stable in the
+/// pinned 1.98.1): `cfg_select! { clippy => {} _ => {} }`. Any mention of it is reported, since an
+/// import can rename it (`use core::cfg_select as pick;`), as with the include macros.
+const CFG_SELECT: &str = "cfg_select";
+
 /// The macros that read another file into this one; `references.rs` judges their calls.
 pub(super) const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes"];
 
@@ -49,8 +54,9 @@ pub(super) enum Unread {
     Fragment,
     /// A fragment or repetition that can assemble an attribute or name a macro.
     Assembled,
-    /// The `clippy` cfg, or a macro fragment in a `cfg` predicate that could be it: code
-    /// under `cfg(not(clippy))` is hidden from the forbid backstop's clippy run (#172).
+    /// The `clippy` cfg, a macro fragment in a `cfg` predicate that could be it, or
+    /// `cfg_select`, whose arms are predicates without `cfg`: code under `cfg(not(clippy))` is
+    /// hidden from the forbid backstop's clippy run (#172).
     ClippyName,
 }
 
@@ -72,8 +78,8 @@ pub(super) enum Unread {
 /// - `include`, `include_str` or `include_bytes` not called with `!` (`use std::include as
 ///   inc;`), which renames a macro `references.rs` judges;
 /// - the `clippy` cfg (#172): `clippy` anywhere in a `cfg` attribute or `cfg!` call, bare
-///   (not heading a `clippy::` path) inside any attribute, `r#clippy` anywhere, and a macro
-///   fragment in a `cfg` predicate.
+///   (not heading a `clippy::` path) inside any attribute, `r#clippy` anywhere, a macro
+///   fragment in a `cfg` predicate, and `cfg_select` anywhere (raw or not, called or not).
 pub(super) fn unread_why(tokens: &[Lexed<'_>]) -> Vec<(NonZeroU64, Unread)> {
     let mut found = Vec::new();
     let mut rest = tokens;
@@ -95,6 +101,13 @@ pub(super) fn unread_why(tokens: &[Lexed<'_>]) -> Vec<(NonZeroU64, Unread)> {
                 let bare = inside_attribute && !path_separator(tail);
                 (raw || inside_cfg || bare).then_some(Unread::ClippyName)
             }
+            // Raw or not, called, imported or renamed: its arms are predicates with no `cfg`.
+            (
+                Token::Ident {
+                    name: CFG_SELECT, ..
+                },
+                _,
+            ) => Some(Unread::ClippyName),
             (
                 Token::Ident {
                     name: "cfg_attr", ..
@@ -638,6 +651,13 @@ mod tests {
             "macro_rules! m { ($c:meta) => { #[cfg(not($c))] fn f() {} }; }",
             "macro_rules! m { ($c:ident) => { if cfg!(not($c)) {} }; }",
             "#[cfg(all(test, $c))]",
+            // `cfg_select!` branches on predicates with no `cfg` around them, and an import
+            // can rename it, so the name is reported wherever it appears (#172 round 3).
+            "fn f() { cfg_select! { clippy => {} _ => {} } }",
+            "use core::cfg_select as pick;",
+            "use core::{mem, cfg_select as pick};",
+            "core::r#cfg_select! { _ => {} }",
+            "std::cfg_select!{ unix => {} }",
         ];
         let kept = [
             "#[allow(clippy::unwrap_used)]",

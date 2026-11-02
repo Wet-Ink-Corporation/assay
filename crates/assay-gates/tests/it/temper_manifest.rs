@@ -110,6 +110,10 @@ fn each_workspace_switch_fails() -> Result<(), Box<dyn Error>> {
         WORKSPACE.replace("exclude = [\"fuzz\"]", "exclude = [\"fuzz\", \"crates/x\"]"),
         WORKSPACE.replace("rust-version = \"1.96\"", "rust-version = \"1.80\""),
         WORKSPACE.replace("edition = \"2024\"", "edition = \"2021\""),
+        // Profiles decide which code the forbid backstop compiles (#172).
+        format!("{WORKSPACE}\n[profile.dev]\ndebug-assertions = false\n"),
+        format!("{WORKSPACE}\n[profile.dev.package.x]\ndebug-assertions = false\n"),
+        format!("{WORKSPACE}\n[profile.lint]\ninherits = \"release\"\n"),
     ] {
         let mut pr = pr(&root, CRATE)?;
 

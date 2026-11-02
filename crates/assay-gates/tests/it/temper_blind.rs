@@ -277,10 +277,18 @@ fn attributes_the_scan_does_not_read_fail_at_their_line() -> Result<(), Box<dyn 
 /// where it can reach a predicate fails as a blind spot of its own, which no waiver clears.
 #[test]
 fn the_clippy_cfg_fails_as_a_blind_spot_at_its_line() -> Result<(), Box<dyn Error>> {
-    for code in [
-        "#[cfg(not(clippy))]\nfn f() {}",
-        "fn f() -> bool {\n    cfg!(clippy)\n}",
-        "macro_rules! m {\n    ($c:meta) => { #[cfg(not($c))] fn f() {} };\n}",
+    for (code, line) in [
+        ("#[cfg(not(clippy))]\nfn f() {}", 2),
+        ("fn f() -> bool {\n    cfg!(clippy)\n}", 3),
+        (
+            "macro_rules! m {\n    ($c:meta) => { #[cfg(not($c))] fn f() {} };\n}",
+            3,
+        ),
+        ("fn f() {\n    cfg_select! { clippy => {} _ => {} }\n}", 3),
+        (
+            "use core::cfg_select as pick;\npick! {\n    clippy => {}\n    _ => {}\n}",
+            2,
+        ),
     ] {
         let mut pr = Pr::new()?;
         pr.set(Revision::Head, "src/lib.rs", &format!("//! x\n{code}\n"));
@@ -306,7 +314,7 @@ fn the_clippy_cfg_fails_as_a_blind_spot_at_its_line() -> Result<(), Box<dyn Erro
             [(
                 Some("blind-spot".to_owned()),
                 "src/lib.rs".to_owned(),
-                if code.starts_with('#') { 2 } else { 3 },
+                line,
                 "the `clippy` cfg, which the forbid backstop cannot see past: `src/lib.rs`"
                     .to_owned(),
             )],

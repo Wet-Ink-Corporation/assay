@@ -274,11 +274,10 @@ const fn wording(why: Why) -> (&'static str, &'static str) {
         Why::Attribute => ("attribute the temper scan does not read", ATTRIBUTE_BODY),
         Why::ClippyCfg => (
             "the `clippy` cfg, which the forbid backstop cannot see past",
-            "The `clippy` cfg (in a `cfg` attribute or `cfg!` call, raw, or bare inside an \
-                     attribute), or a macro fragment in a `cfg` predicate that could be it: \
-                     code under `cfg(not(clippy))` is never compiled by the forbid backstop's \
-                     clippy run, so a lint exception there would pass unseen. Do not branch \
-                     on the `clippy` cfg, and write `cfg` predicates out in full.",
+            "The `clippy` cfg (in a `cfg` attribute or `cfg!` call, raw, or bare in an attribute), \
+                     a macro fragment in a `cfg` predicate, or `cfg_select`: code under \
+                     `cfg(not(clippy))` is never compiled by the forbid backstop, so a lint \
+                     exception there would pass unseen. Use `#[cfg]` with predicates in full.",
         ),
         Why::Reference => (
             "file the temper scan cannot pin down",

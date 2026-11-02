@@ -16,9 +16,14 @@
 //! could strip the flags, and the artifact it left would later count as fresh);
 //! `CARGO_TARGET_DIR` is a directory created empty beside the head tree for this run and
 //! removed after it, never the head's `target/`, where committed fingerprints and metadata
-//! could make cargo skip the PR's sources; and `--config` sets `[env] CLIPPY_ARGS` empty, which
-//! clippy-driver would otherwise append (`--cap-lints allow`). The `clippy` cfg, which would
-//! hide code from every pass, is a Z2s blind spot (`attributes.rs`).
+//! could make cargo skip the PR's sources, and `CARGO_BUILD_BUILD_DIR` is the same directory, so
+//! a `build.build-dir` in the PR's config cannot move the intermediate artifacts elsewhere;
+//! `--config` sets `[env] CLIPPY_ARGS` empty, which clippy-driver would otherwise append
+//! (`--cap-lints allow`); and `--config` pins `debug-assertions` on for the debug pass's
+//! profiles and off for the release pass's, so a manifest `[profile]` cannot make both passes
+//! compile the same branch (a per-package override would beat the pin, and Z2s reports any
+//! `[profile]` change as a manifest switch). The `clippy` cfg, which would hide code from every
+//! pass, and `cfg_select!`, which can branch on it, are Z2s blind spots (`attributes.rs`).
 //!
 //! The decision is the passes' exit codes: E0453 is a hard error, so cargo exits non-zero, and
 //! any other failure fails the gate too (a crate that does not build hides its dependents). The
@@ -98,6 +103,28 @@ impl Pass {
         match self {
             Self::Debug => None,
             Self::Release => Some("--release"),
+        }
+    }
+
+    /// The `--config` pins of `debug-assertions` for the profiles the pass builds with (its
+    /// own, and the one `--all-targets` takes for test or bench targets), so that no manifest
+    /// `[profile]` table can make both passes compile the same `cfg(debug_assertions)` branch.
+    /// Config overrides a manifest profile; a per-package override would beat it, and Z2s
+    /// reports any `[profile]` change as a manifest switch (`switches.rs`).
+    const fn pins(self) -> [&'static str; 4] {
+        match self {
+            Self::Debug => [
+                "--config",
+                "profile.dev.debug-assertions=true",
+                "--config",
+                "profile.test.debug-assertions=true",
+            ],
+            Self::Release => [
+                "--config",
+                "profile.release.debug-assertions=false",
+                "--config",
+                "profile.bench.debug-assertions=false",
+            ],
         }
     }
 }
@@ -194,18 +221,20 @@ fn arguments(pass: Pass, all_features: bool) -> Vec<String> {
     ];
     head.chain(features)
         .chain(tail)
+        .chain(pass.pins())
         .map(str::to_owned)
         .collect()
 }
 
 /// The variables the backstop sets after the step environment, so they win over anything
 /// there (none of them passes the gate environment's allowlist).
-fn environment(forbidden: &ForbidSet, target: &Path) -> [(OsString, OsString); 5] {
+fn environment(forbidden: &ForbidSet, target: &Path) -> [(OsString, OsString); 6] {
     [
         ("CARGO_ENCODED_RUSTFLAGS".into(), forbidden.encoded().into()),
         ("RUSTC_WRAPPER".into(), OsString::new()),
         ("RUSTC".into(), "rustc".into()),
         ("CARGO_TARGET_DIR".into(), target.into()),
+        ("CARGO_BUILD_BUILD_DIR".into(), target.into()),
         ("CARGO_TERM_COLOR".into(), "never".into()),
     ]
 }
@@ -437,6 +466,10 @@ mod tests {
                 "env.CLIPPY_ARGS.value=\"\"",
                 "--config",
                 "env.CLIPPY_ARGS.force=true",
+                "--config",
+                "profile.dev.debug-assertions=true",
+                "--config",
+                "profile.test.debug-assertions=true",
             ]
         );
         assert_eq!(
@@ -449,12 +482,26 @@ mod tests {
             !with.iter().any(|arg| arg.contains("cap-lints")),
             "nothing caps the lints"
         );
+        let (release_head, release_pins) = release.split_at(release.len().saturating_sub(4));
+        let debug_head = with.get(..with.len().saturating_sub(4));
         assert_eq!(
-            release
-                .iter()
-                .filter(|arg| *arg != "--release")
-                .collect::<Vec<_>>(),
-            with.iter().collect::<Vec<_>>()
+            Some(
+                release_head
+                    .iter()
+                    .filter(|arg| *arg != "--release")
+                    .collect::<Vec<_>>()
+            ),
+            debug_head.map(|head| head.iter().collect::<Vec<_>>())
+        );
+        assert_eq!(
+            release_pins,
+            [
+                "--config",
+                "profile.release.debug-assertions=false",
+                "--config",
+                "profile.bench.debug-assertions=false",
+            ],
+            "the release pass pins debug assertions off"
         );
         assert_eq!(release.get(1).map(String::as_str), Some("--release"));
     }
