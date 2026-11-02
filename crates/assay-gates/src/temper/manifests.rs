@@ -13,7 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use toml::{Table, Value};
 
-use super::head::is_manifest;
+use super::cargo_targets;
+use super::closure::TreeIndex;
+use super::head::{Blind, is_manifest};
 use super::statics::Tree;
 use super::switches::{Roots, changed_switches};
 
@@ -32,6 +34,9 @@ pub(super) struct ManifestChecks<'t> {
     pub(super) weakened: Vec<(&'t str, bool, Vec<String>)>,
     /// Package manifests at head that do not inherit the workspace lints.
     pub(super) uninherited: Vec<&'t str>,
+    /// Manifests at head, changed or not, with a build script or target the scan cannot be
+    /// shown to read (`cargo_targets.rs`): step 2's blind spots, one per manifest.
+    pub(super) blind_targets: Vec<Blind<'t>>,
 }
 
 /// One manifest whose switches changed, with the blob ids that bind an allowlist entry to this
@@ -68,6 +73,7 @@ pub(super) fn check<'t>(base: &Tree<'t>, head: &Tree<'t>) -> ManifestChecks<'t> 
         .collect();
     let (base_owner, head_owner) = (Owner::of(base), Owner::of(head));
     let placed = placement(&paths, &base_owner, &head_owner);
+    found.blind_targets = head_owner.blind_targets(head);
     let empty = Table::new();
     for (path, (excluded, base_outside, head_outside)) in paths.into_iter().zip(placed) {
         let changed = base.object(path) != head.object(path);
@@ -174,6 +180,19 @@ impl<'t> Owner<'t> {
             excluded,
             nested,
         }
+    }
+
+    /// The blind spot of each parsed manifest of this side, `tree`, by path: one per manifest
+    /// whose build script or target the scan cannot be shown to read, changed or not. One
+    /// index of the tree serves every manifest.
+    fn blind_targets(&self, tree: &Tree<'t>) -> Vec<Blind<'t>> {
+        let index = TreeIndex::new(tree);
+        self.manifests
+            .iter()
+            .filter_map(|(path, manifest)| {
+                cargo_targets::refused(path, manifest.as_ref()?, tree, &index)
+            })
+            .collect()
     }
 
     /// The manifest at `path` on this side.
