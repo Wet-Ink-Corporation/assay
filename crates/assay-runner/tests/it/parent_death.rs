@@ -8,6 +8,7 @@
 use std::assert_matches;
 use std::error::Error;
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -43,11 +44,14 @@ impl Scene {
             fs::create_dir(root.path().join(dir))?;
         }
         let bin = root.path().join("bin");
-        fs::copy(
+        // Links, not copies: a copy is written through a descriptor that a child another test
+        // thread is forking can inherit, and executing the copy then fails with ETXTBSY. The
+        // stand-ins find their knobs beside the path they were started by (`$0`).
+        symlink(
             fixtures_dir().join("fake-claude-canary"),
             bin.join("claude-canary"),
         )?;
-        fs::copy(
+        symlink(
             fixtures_dir().join("fake-claude-profile"),
             bin.join("claude-profile"),
         )?;
@@ -305,9 +309,8 @@ fn a_cli_that_cannot_start_under_setpriv_is_a_spawn_error_that_never_ran()
 #[cfg_attr(miri, ignore = "tries to spawn a process; Miri cannot")]
 fn a_setpriv_gone_after_the_probe_is_a_spawn_error_that_never_ran() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new()?;
-    // A copy that is never executed, so no ETXTBSY concern.
     let setpriv = scene.path("bin/setpriv");
-    fs::copy(fixtures_dir().join("fake-setpriv"), &setpriv)?;
+    symlink(fixtures_dir().join("fake-setpriv"), &setpriv)?;
     let runner = scene
         .direct("ok", false)?
         .with_parent_death(guard_at(&setpriv)?);
