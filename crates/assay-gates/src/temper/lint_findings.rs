@@ -15,7 +15,7 @@ use std::num::NonZeroU64;
 use assay_app::plain_name;
 use assay_domain::{Class, Finding, Severity};
 
-use super::backstop::Backstop;
+use super::backstop::{Backstop, Pass};
 use super::baseline::{self, Raise};
 use super::evidence::Lines;
 use super::exceptions::Allowlist;
@@ -116,8 +116,8 @@ pub(super) enum Shown<'c> {
     Error(&'c str, NonZeroU64),
     /// An attribute the forbid backstop's rustc refused (E0453), at a file and line.
     Overridden(&'c str, NonZeroU64),
-    /// A forbid backstop that exited with this code and located no E0453.
-    Unlocated(i32),
+    /// A forbid backstop pass that exited with this code and located no E0453.
+    Unlocated(Pass, i32),
 }
 
 impl<'c> Shown<'c> {
@@ -125,7 +125,7 @@ impl<'c> Shown<'c> {
     pub(super) const fn cites(&self) -> Option<(&'c str, NonZeroU64)> {
         match *self {
             Self::Code(code) => Some((code.file.as_str(), code.line)),
-            Self::Increase(..) | Self::Unlocated(_) => None,
+            Self::Increase(..) | Self::Unlocated(..) => None,
             Self::Error(file, line) | Self::Overridden(file, line) => Some((file, line)),
         }
     }
@@ -137,9 +137,14 @@ impl<'c> Shown<'c> {
 /// so no evidence is read for one that would not be reported.
 pub(super) fn backstop(backstop: &Backstop, room: usize) -> Vec<Shown<'_>> {
     match backstop {
-        Backstop::Failed { code, overrides } if overrides.is_empty() => {
-            [Shown::Unlocated(*code)].into_iter().take(room).collect()
-        }
+        Backstop::Failed {
+            pass,
+            code,
+            overrides,
+        } if overrides.is_empty() => [Shown::Unlocated(*pass, *code)]
+            .into_iter()
+            .take(room)
+            .collect(),
         Backstop::Failed { overrides, .. } => overrides
             .iter()
             .take(room)
@@ -203,12 +208,13 @@ pub(super) fn display(shown: Shown<'_>, lines: &Lines<'_>) -> Finding {
             let overridden = finding(rule, spot, "a forbidden lint is lowered here", body);
             under(overridden, FORBID_OVERRIDE)
         }
-        Shown::Unlocated(code) => {
-            let evidence = format!("the forbid backstop exited {code}");
+        Shown::Unlocated(pass, code) => {
+            let pass = pass.name();
+            let evidence = format!("the forbid backstop's {pass} pass exited {code}");
             let spot = Spot::synthesised(manifests::ROOT, &evidence);
             let body = format!(
-                "The forbid backstop (clippy with base's `deny` and `forbid` lints as `-F`, no \
-                 lint cap) exited {code} without locating an E0453. A forbidden lint is lowered \
+                "The forbid backstop's {pass} pass (clippy with base's `deny` and `forbid` lints \
+                 as `-F`, no lint cap) exited {code} without locating an E0453. A forbidden lint is lowered \
                  or hit, or the workspace does not build; a crate that does not build hides the \
                  crates that depend on it, so the gate fails."
             );

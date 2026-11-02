@@ -1,26 +1,32 @@
-//! The forbid backstop (#172, `docs/architecture/03-contracts.md` §2.1 step 5a): one clippy
-//! build of the head tree in `gates-lint`, with base's forbidden lints ([`ForbidSet`]) as `-F`
-//! through `CARGO_ENCODED_RUSTFLAGS` and no lint cap, so rustc refuses every attribute that
-//! would lower one (E0453), however a macro or proc-macro assembled it.
+//! The forbid backstop (#172, `docs/architecture/03-contracts.md` §2.1 step 5a): clippy builds
+//! of the head tree in `gates-lint`, with base's forbidden lints ([`ForbidSet`]) as `-F` through
+//! `CARGO_ENCODED_RUSTFLAGS` and no lint cap, so rustc refuses every attribute that would lower
+//! one (E0453), however a macro or proc-macro assembled it. A debug pass runs first and, when it
+//! exits 0, a release pass, so code under `cfg(debug_assertions)` or its negation is compiled by
+//! one of them; the two share the plugin's timeout, half each.
 //!
 //! temper's own `baseline --check` cannot carry the flags: it runs clippy with `--cap-lints
 //! warn`, under which a forbid is capped and the `allow` wins. The backstop runs after the
 //! declared steps and before `baseline --check`, so no build script or proc-macro has run in the
 //! tree before it.
 //!
-//! What the PR's `.cargo/config.toml` could do to this run is overridden: `cargo-clippy` runs
-//! directly, so an `[alias] clippy` cannot shadow it; `CARGO_ENCODED_RUSTFLAGS` takes precedence
-//! over every `rustflags` source of config; `RUSTC_WRAPPER` is set empty and `RUSTC` to `rustc`
-//! (a wrapper could strip the flags, and the artifact it left would later count as fresh);
-//! `CARGO_TARGET_DIR` is the head tree's `target`; and `--config` sets `[env] CLIPPY_ARGS`
-//! empty, which clippy-driver would otherwise append (`--cap-lints allow`).
+//! What the PR could do to these runs is overridden: `cargo-clippy` runs directly, so an
+//! `[alias] clippy` cannot shadow it; `CARGO_ENCODED_RUSTFLAGS` takes precedence over every
+//! `rustflags` source of config; `RUSTC_WRAPPER` is set empty and `RUSTC` to `rustc` (a wrapper
+//! could strip the flags, and the artifact it left would later count as fresh);
+//! `CARGO_TARGET_DIR` is a directory created empty beside the head tree for this run and
+//! removed after it, never the head's `target/`, where committed fingerprints and metadata
+//! could make cargo skip the PR's sources; and `--config` sets `[env] CLIPPY_ARGS` empty, which
+//! clippy-driver would otherwise append (`--cap-lints allow`). The `clippy` cfg, which would
+//! hide code from every pass, is a Z2s blind spot (`attributes.rs`).
 //!
-//! The decision is the run's exit code: E0453 is a hard error, so cargo exits non-zero, and any
-//! other failure fails the gate too (a crate that does not build hides its dependents). The JSON
-//! it prints only locates findings.
+//! The decision is the passes' exit codes: E0453 is a hard error, so cargo exits non-zero, and
+//! any other failure fails the gate too (a crate that does not build hides its dependents). The
+//! JSON they print only locates findings.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
+use std::io;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
@@ -31,7 +37,7 @@ use serde::Deserialize;
 use super::forbid::ForbidSet;
 use super::lint_findings::MAX_REPORTED;
 use super::steps::capture_run;
-use super::{ErrorOf, TemperAdapter};
+use super::{ErrorOf, TemperAdapter, TemperError};
 use crate::capture::CaptureSupervisor;
 use crate::revision::RevisionFiles;
 
@@ -52,8 +58,10 @@ pub(super) enum Backstop {
     NotRun,
     /// The build exited 0: no forbidden lint is lowered.
     Passed,
-    /// The build exited `code`, not 0; `overrides` are the E0453s it located.
+    /// A pass exited `code`, not 0; `overrides` are the E0453s it located.
     Failed {
+        /// The pass that failed; none runs after it.
+        pass: Pass,
         /// Its exit code.
         code: i32,
         /// Each located E0453, at most [`MAX_REPORTED`], in file and line order.
@@ -61,6 +69,37 @@ pub(super) enum Backstop {
     },
     /// The build did not exit (timeout, signal, output cap).
     Stopped(Termination),
+}
+
+/// One clippy build of the backstop, by its cargo profile. `debug_assertions` is on in the
+/// debug profile and off in release, so code under it or its negation is seen by one of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Pass {
+    /// The default (dev) profile, first.
+    Debug,
+    /// `--release`, after a debug pass that exited 0.
+    Release,
+}
+
+impl Pass {
+    /// The passes, in the order they run.
+    const ALL: [Self; 2] = [Self::Debug, Self::Release];
+
+    /// How the pass is named in findings.
+    pub(super) const fn name(self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Release => "release",
+        }
+    }
+
+    /// The cargo flag that selects its profile, if any.
+    const fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::Debug => None,
+            Self::Release => Some("--release"),
+        }
+    }
 }
 
 /// An E0453 at a file of the head tree and a line.
@@ -71,8 +110,13 @@ pub(super) struct Override {
 }
 
 impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
-    /// Runs the backstop for `forbidden` from the head tree under `timeout`, with every feature
-    /// when `all_features`; nothing when `forbidden` is empty.
+    /// Runs the backstop for `forbidden` from the head tree, a debug pass and then, when it
+    /// exited 0, a release pass, each under half of `timeout` so both stay within it, with
+    /// every feature when `all_features`; nothing when `forbidden` is empty.
+    ///
+    /// Both build into one directory created empty beside the head tree for this run, never
+    /// the head's `target/`, which the PR could fill with fresh fingerprints and metadata so
+    /// that its sources are never compiled; it is removed afterwards.
     pub(super) fn backstop(
         &mut self,
         forbidden: &ForbidSet,
@@ -83,30 +127,61 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             return Ok(Backstop::NotRun);
         }
         let head_tree = &self.settings.steps.head_tree;
-        let args = arguments(all_features);
+        // The settings hold a head tree below the root, so it has a parent. The error owns
+        // its path.
+        let parent = head_tree
+            .parent()
+            .ok_or_else(|| TemperError::BackstopTarget {
+                path: head_tree.clone(),
+                source: io::Error::new(io::ErrorKind::InvalidInput, "the head tree has no parent"),
+            })?;
+        let unprepared = |source| TemperError::BackstopTarget {
+            path: parent.to_path_buf(),
+            source,
+        };
+        let target = tempfile::Builder::new()
+            .prefix(TARGET_PREFIX)
+            .tempdir_in(parent)
+            .map_err(unprepared)?;
         // The spec takes one slice: a copy of the step environment, then the backstop's own.
         let mut env = self.settings.steps.env.clone();
-        env.extend(environment(forbidden, head_tree));
-        let run = capture_run(
-            &mut self.supervisor,
-            (PROCESS, Path::new(PROGRAM), &args),
-            (head_tree, &env),
-            timeout,
-        )?;
-        Ok(match run.termination {
-            Termination::Exited(0) => Backstop::Passed,
-            Termination::Exited(code) => Backstop::Failed {
-                code,
-                overrides: overrides(&run.stdout),
-            },
-            stopped => Backstop::Stopped(stopped),
-        })
+        env.extend(environment(forbidden, target.path()));
+        let per_pass = timeout.checked_div(2).unwrap_or(timeout);
+        let mut found = Backstop::Passed;
+        for pass in Pass::ALL {
+            let args = arguments(pass, all_features);
+            let run = capture_run(
+                &mut self.supervisor,
+                (PROCESS, Path::new(PROGRAM), &args),
+                (head_tree, &env),
+                per_pass,
+            )?;
+            found = match run.termination {
+                Termination::Exited(0) => continue,
+                Termination::Exited(code) => Backstop::Failed {
+                    pass,
+                    code,
+                    overrides: overrides(&run.stdout),
+                },
+                stopped => Backstop::Stopped(stopped),
+            };
+            break;
+        }
+        let path = target.path().to_path_buf();
+        target
+            .close()
+            .map_err(|source| TemperError::BackstopTarget { path, source })?;
+        Ok(found)
     }
 }
 
+/// How the backstop's target directory is named, before the random part.
+const TARGET_PREFIX: &str = "assay-backstop-";
+
 /// The arguments after the program.
-fn arguments(all_features: bool) -> Vec<String> {
-    let head = ["clippy", "--workspace", "--all-targets"];
+fn arguments(pass: Pass, all_features: bool) -> Vec<String> {
+    let head = ["clippy"].into_iter().chain(pass.flag());
+    let head = head.chain(["--workspace", "--all-targets"]);
     let features = all_features.then_some("--all-features");
     let tail = [
         "--locked",
@@ -117,8 +192,7 @@ fn arguments(all_features: bool) -> Vec<String> {
         "--config",
         "env.CLIPPY_ARGS.force=true",
     ];
-    head.into_iter()
-        .chain(features)
+    head.chain(features)
         .chain(tail)
         .map(str::to_owned)
         .collect()
@@ -126,12 +200,12 @@ fn arguments(all_features: bool) -> Vec<String> {
 
 /// The variables the backstop sets after the step environment, so they win over anything
 /// there (none of them passes the gate environment's allowlist).
-fn environment(forbidden: &ForbidSet, head_tree: &Path) -> [(OsString, OsString); 5] {
+fn environment(forbidden: &ForbidSet, target: &Path) -> [(OsString, OsString); 5] {
     [
         ("CARGO_ENCODED_RUSTFLAGS".into(), forbidden.encoded().into()),
         ("RUSTC_WRAPPER".into(), OsString::new()),
         ("RUSTC".into(), "rustc".into()),
-        ("CARGO_TARGET_DIR".into(), head_tree.join("target").into()),
+        ("CARGO_TARGET_DIR".into(), target.into()),
         ("CARGO_TERM_COLOR".into(), "never".into()),
     ]
 }
@@ -200,6 +274,9 @@ pub(super) fn overrides(stdout: &[u8]) -> Vec<Override> {
             .into_iter()
             .filter(|span| span.is_primary && is_plain_relative(&span.file_name));
         for span in primary {
+            if found.len() >= MAX_REPORTED {
+                break;
+            }
             if let Some(line) = NonZeroU64::new(span.line_start) {
                 found.insert(Override {
                     file: span.file_name,
@@ -208,7 +285,7 @@ pub(super) fn overrides(stdout: &[u8]) -> Vec<Override> {
             }
         }
     }
-    found.into_iter().take(MAX_REPORTED).collect()
+    found.into_iter().collect()
 }
 
 /// Whether `file` is a relative path of plain components (no empty, `.` or `..` one), as a
@@ -321,10 +398,30 @@ mod tests {
         assert_eq!(found.last(), Some(&at("src/lib.rs", 1_000)));
     }
 
+    /// The cap holds inside one message too: its spans past it are never collected, so the
+    /// set never grows beyond it (#172 F4).
+    #[test]
+    fn stops_collecting_spans_at_the_cap_within_one_message() {
+        let spans: Vec<(&str, u64, bool)> = (1..=1_001)
+            .rev()
+            .map(|line| ("src/lib.rs", line, true))
+            .collect();
+
+        let found = overrides(message(Some("E0453"), &spans).as_bytes());
+
+        assert_eq!(found.len(), MAX_REPORTED);
+        assert_eq!(
+            (found.first(), found.last()),
+            (Some(&at("src/lib.rs", 2)), Some(&at("src/lib.rs", 1_001))),
+            "the first 1,000 in output order, then sorted"
+        );
+    }
+
     #[test]
     fn runs_clippy_directly_over_the_workspace_with_every_target_and_no_cap() {
-        let with = arguments(true);
-        let without = arguments(false);
+        let with = arguments(Pass::Debug, true);
+        let without = arguments(Pass::Debug, false);
+        let release = arguments(Pass::Release, true);
 
         assert_eq!(
             with,
@@ -352,5 +449,13 @@ mod tests {
             !with.iter().any(|arg| arg.contains("cap-lints")),
             "nothing caps the lints"
         );
+        assert_eq!(
+            release
+                .iter()
+                .filter(|arg| *arg != "--release")
+                .collect::<Vec<_>>(),
+            with.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(release.get(1).map(String::as_str), Some("--release"));
     }
 }

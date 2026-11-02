@@ -16,22 +16,8 @@ const LISTED: [&str; 6] = ["allow", "expect", "warn", "deny", "forbid", "cfg_att
 /// The macros that read another file into this one; `references.rs` judges their calls.
 pub(super) const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes"];
 
-/// The lines of attributes the scan does not read, once each:
-/// - a `cfg_attr(..)` whose arguments name `allow`, `expect` or `path` anywhere (raw or not),
-///   or a macro fragment `$x`, which could be any of them, and a `cfg_attr` inside another's
-///   arguments;
-/// - a `#[path ..]` or `#![path ..]`, which can compile a file the scan never walks;
-/// - an `allow`, `expect`, `warn`, `deny`, `forbid` or `cfg_attr` attribute whose name is not
-///   followed by `(`;
-/// - an attribute named by a raw identifier (`#[r#allow(..)]`), which temper's patterns do not
-///   match;
-/// - a `#` not followed by `[`, `! [` or `$`, and `#[$m]` or `# $m`: an attribute whose
-///   brackets or path a macro call supplies;
-/// - a fragment `$x`, or a repetition `$(..)op` that can end with one, followed by `[`, `$`,
-///   `#` or `!`: an attribute a macro call can assemble with no `#` beside its brackets
-///   (`$hash $list`), or a call of a macro a fragment names (`$m!`);
-/// - `include`, `include_str` or `include_bytes` not called with `!` (`use std::include as
-///   inc;`), which renames a macro `references.rs` judges.
+/// The lines [`unread_why`] reports, once each.
+#[cfg(test)]
 pub(super) fn unread(tokens: &[Lexed<'_>]) -> Vec<NonZeroU64> {
     let mut lines: Vec<NonZeroU64> = unread_why(tokens)
         .into_iter()
@@ -41,7 +27,7 @@ pub(super) fn unread(tokens: &[Lexed<'_>]) -> Vec<NonZeroU64> {
     lines
 }
 
-/// Why [`unread`] reports a token.
+/// Why [`unread_why`] reports a token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Unread {
     /// A `cfg_attr` naming `path` or a macro fragment, which can make it a `#[path]`.
@@ -63,18 +49,52 @@ pub(super) enum Unread {
     Fragment,
     /// A fragment or repetition that can assemble an attribute or name a macro.
     Assembled,
+    /// The `clippy` cfg, or a macro fragment in a `cfg` predicate that could be it: code
+    /// under `cfg(not(clippy))` is hidden from the forbid backstop's clippy run (#172).
+    ClippyName,
 }
 
-/// Every token [`unread`] reports, at its line, with why, in order.
+/// Every token of an attribute the scan does not read, or that hides code from the forbid
+/// backstop, at its line, with why, in order:
+/// - a `cfg_attr(..)` whose arguments name `allow`, `expect` or `path` anywhere (raw or not),
+///   or a macro fragment `$x`, which could be any of them, and a `cfg_attr` inside another's
+///   arguments;
+/// - a `#[path ..]` or `#![path ..]`, which can compile a file the scan never walks;
+/// - an `allow`, `expect`, `warn`, `deny`, `forbid` or `cfg_attr` attribute whose name is not
+///   followed by `(`;
+/// - an attribute named by a raw identifier (`#[r#allow(..)]`), which temper's patterns do not
+///   match;
+/// - a `#` not followed by `[`, `! [` or `$`, and `#[$m]` or `# $m`: an attribute whose
+///   brackets or path a macro call supplies;
+/// - a fragment `$x`, or a repetition `$(..)op` that can end with one, followed by `[`, `$`,
+///   `#` or `!`: an attribute a macro call can assemble with no `#` beside its brackets
+///   (`$hash $list`), or a call of a macro a fragment names (`$m!`);
+/// - `include`, `include_str` or `include_bytes` not called with `!` (`use std::include as
+///   inc;`), which renames a macro `references.rs` judges;
+/// - the `clippy` cfg (#172): `clippy` anywhere in a `cfg` attribute or `cfg!` call, bare
+///   (not heading a `clippy::` path) inside any attribute, `r#clippy` anywhere, and a macro
+///   fragment in a `cfg` predicate.
 pub(super) fn unread_why(tokens: &[Lexed<'_>]) -> Vec<(NonZeroU64, Unread)> {
     let mut found = Vec::new();
     let mut rest = tokens;
     // How many tokens of the outermost `cfg_attr`'s arguments being read are still ahead.
     let mut cfg_attr_left = 0_usize;
+    let mut within = Within::default();
     while let [first, tail @ ..] = rest {
         let inside_cfg_attr = cfg_attr_left > 0;
         cfg_attr_left = cfg_attr_left.saturating_sub(1);
+        let (inside_attribute, inside_cfg) = within.step(first.token, tail);
         let why = match (first.token, tail) {
+            (
+                Token::Ident {
+                    name: "clippy",
+                    raw,
+                },
+                _,
+            ) => {
+                let bare = inside_attribute && !path_separator(tail);
+                (raw || inside_cfg || bare).then_some(Unread::ClippyName)
+            }
             (
                 Token::Ident {
                     name: "cfg_attr", ..
@@ -100,7 +120,9 @@ pub(super) fn unread_why(tokens: &[Lexed<'_>]) -> Vec<(NonZeroU64, Unread)> {
                     (LISTED.contains(&name) && !opens(rest, '(')).then_some(Unread::Listless)
                 }
             },
-            (Token::Punct('$'), _) => assembles(tail).then_some(Unread::Assembled),
+            (Token::Punct('$'), _) => assembles(tail)
+                .then_some(Unread::Assembled)
+                .or_else(|| inside_cfg.then_some(Unread::ClippyName)),
             _ => None,
         };
         if let Some(why) = why {
@@ -126,6 +148,77 @@ fn cfg_attr(arguments: &[Lexed<'_>]) -> Option<Unread> {
             .any(|lexed| hides(lexed.token))
             .then_some(Unread::CfgAttrLint)
     }
+}
+
+/// Where [`unread_why`]'s walk is: how many tokens of the outermost attribute (its `!`,
+/// brackets and contents) and of the outermost `cfg` attribute or `cfg!` call being read are
+/// still ahead.
+#[derive(Debug, Default)]
+struct Within {
+    attribute_left: usize,
+    cfg_left: usize,
+}
+
+impl Within {
+    /// Moves onto `token`, followed by `tail`: whether it is inside an attribute and inside a
+    /// `cfg` predicate.
+    fn step(&mut self, token: Token<'_>, tail: &[Lexed<'_>]) -> (bool, bool) {
+        let inside_attribute = self.attribute_left > 0;
+        self.attribute_left = self.attribute_left.saturating_sub(1);
+        let inside_cfg = self.cfg_left > 0;
+        self.cfg_left = self.cfg_left.saturating_sub(1);
+        if !inside_cfg {
+            self.cfg_left = cfg_length(token, tail);
+        }
+        if token == Token::Punct('#') && !inside_attribute {
+            self.attribute_left = attribute_length(tail);
+        }
+        (inside_attribute, inside_cfg)
+    }
+}
+
+/// How many tokens after a `#` belong to the attribute it starts (`!`, `[`, the contents and
+/// `]`), in constant time; 0 when no `[` follows.
+fn attribute_length(after_hash: &[Lexed<'_>]) -> usize {
+    match after_hash {
+        [bang, open, ..] if bang.token == Token::Punct('!') && open.token == Token::Punct('[') => {
+            open.inside().saturating_add(3)
+        }
+        [open, ..] if open.token == Token::Punct('[') => open.inside().saturating_add(2),
+        _ => 0,
+    }
+}
+
+/// How many tokens after `token` belong to the `cfg` predicate it starts, in constant time: the
+/// rest of a `#[cfg ..]` or `#![cfg ..]` attribute when `token` is its `#`, the `!` and group of
+/// a `cfg!(..)` call when it is the `cfg`; 0 otherwise.
+fn cfg_length(token: Token<'_>, tail: &[Lexed<'_>]) -> usize {
+    match token {
+        Token::Punct('#') => match attribute(tail) {
+            Some(Attribute::Named { name: "cfg", .. }) => attribute_length(tail),
+            Some(Attribute::Named { .. } | Attribute::Fragment) | None => 0,
+        },
+        Token::Ident { name: "cfg", .. } => match tail {
+            [bang, open, ..] if bang.token == Token::Punct('!') && is_open(open.token) => {
+                open.inside().saturating_add(3)
+            }
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
+
+/// Whether `token` opens a group.
+const fn is_open(token: Token<'_>) -> bool {
+    matches!(token, Token::Punct('(' | '[' | '{'))
+}
+
+/// Whether `tokens` starts with `::`.
+fn path_separator(tokens: &[Lexed<'_>]) -> bool {
+    matches!(
+        tokens,
+        [first, second, ..] if first.token == Token::Punct(':') && second.token == Token::Punct(':')
+    )
 }
 
 /// Whether `tokens` starts with the punctuation `punct`.
@@ -521,5 +614,66 @@ mod tests {
             [0, 0, 0, 1, 1, 1, 1, 1, 1],
             "a `#` a macro passes on can head an attribute assembled elsewhere"
         );
+    }
+
+    /// The `clippy` cfg (#172 F1): code under `cfg(not(clippy))` is never seen by the forbid
+    /// backstop's clippy run, so the name is refused wherever it can reach a predicate: inside
+    /// an attribute unless it heads a `clippy::` path, anywhere in a `cfg` attribute or a
+    /// `cfg!` call, raw anywhere, and a macro fragment in a `cfg` or `cfg!` predicate.
+    #[test]
+    fn the_clippy_name_is_reported_wherever_it_can_reach_a_cfg_predicate() {
+        let reported = [
+            "#[cfg(not(clippy))] fn f() {}",
+            "#![cfg(clippy)]",
+            "# [ cfg_attr ( clippy , derive ( X ) ) ]",
+            "fn f() { if cfg!(clippy) {} }",
+            "fn f() { if cfg!(not(clippy)) {} }",
+            "fn f() { if cfg ! ( clippy :: x ) {} }",
+            "#[allow(r#clippy::x)]",
+            "#[r#clippy::msrv = \"1\"]",
+            "let r#clippy = 1;",
+            "#[cfg(clippy)\n]",
+            "#[cfg(clippy :)]",
+            "#[cfg(clippy::x)]",
+            "macro_rules! m { ($c:meta) => { #[cfg(not($c))] fn f() {} }; }",
+            "macro_rules! m { ($c:ident) => { if cfg!(not($c)) {} }; }",
+            "#[cfg(all(test, $c))]",
+        ];
+        let kept = [
+            "#[allow(clippy::unwrap_used)]",
+            "#![deny(clippy :: all)]",
+            "#[clippy::msrv = \"1.70\"]",
+            "#[expect(clippy::panic, reason = \"r\")] fn f() {}",
+            "fn f() { let s = \"clippy\"; } // clippy",
+            "#[cfg(feature = \"clippy\")]",
+            "fn clippy_lints() {}",
+            "#[cfg_attr(not(test), doc = \"x\")]",
+            "fn f() { let clippy = clippy(1); m!(clippy); }",
+            "macro_rules! m { ($d:expr) => { #[doc = $d] fn f() {} }; }",
+            "#[x] clippy::y",
+        ];
+
+        let found = reported.map(why_in);
+        let none = kept.map(why_in);
+
+        for (text, why) in reported.iter().zip(&found) {
+            assert!(
+                why.iter().any(|(_, why)| *why == Unread::ClippyName),
+                "{text}: {why:?}"
+            );
+        }
+        for (text, why) in kept.iter().zip(&none) {
+            assert_eq!(why, &[], "{text}");
+        }
+        assert_eq!(
+            why_in("fn a() {}\n#[cfg(not(clippy))]\nfn b() {}"),
+            [(line(2), Unread::ClippyName)],
+            "at the name's line"
+        );
+    }
+
+    /// What [`unread_why`] reports in `text`.
+    fn why_in(text: &str) -> Vec<(NonZeroU64, Unread)> {
+        unread_why(&Source::new(text).tokens().expect("terminated"))
     }
 }

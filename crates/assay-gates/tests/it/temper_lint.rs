@@ -111,6 +111,8 @@ pub(crate) struct FakeLint {
     /// What the forbid backstop (`cargo-clippy clippy ..`, by its first argument `clippy`)
     /// prints to stdout; it ends as `steps` says for `clippy`.
     pub(crate) backstop_stdout: Vec<u8>,
+    /// Each backstop run's `CARGO_TARGET_DIR`, and whether it was then an empty directory.
+    pub(crate) backstop_targets: Vec<(PathBuf, bool)>,
     pub(crate) seen: Vec<SeenSpec>,
 }
 
@@ -130,6 +132,7 @@ impl FakeLint {
             attempts: BTreeMap::new(),
             cannot_start: None,
             backstop_stdout: Vec::new(),
+            backstop_targets: Vec::new(),
             seen: Vec::new(),
         }
     }
@@ -140,7 +143,7 @@ impl FakeLint {
     }
 
     /// `step`'s first attempts end as `attempts`, in order; later ones as `steps` says.
-    fn step_attempts(mut self, step: &str, attempts: &[Termination]) -> Self {
+    pub(crate) fn step_attempts(mut self, step: &str, attempts: &[Termination]) -> Self {
         self.attempts
             .insert(step.to_owned(), attempts.iter().copied().collect());
         self
@@ -207,6 +210,15 @@ impl CaptureSupervisor for FakeLint {
                 .unwrap_or(Termination::Exited(0))
         };
         let stdout = if first == "clippy" {
+            let target = spec
+                .env
+                .iter()
+                .rev()
+                .find(|(name, _)| name == "CARGO_TARGET_DIR")
+                .map(|(_, value)| PathBuf::from(value))
+                .unwrap_or_default();
+            let empty = fs::read_dir(&target).is_ok_and(|mut entries| entries.next().is_none());
+            self.backstop_targets.push((target, empty));
             // Each run returns its own copy: the script may be played more than once.
             self.backstop_stdout.clone()
         } else {

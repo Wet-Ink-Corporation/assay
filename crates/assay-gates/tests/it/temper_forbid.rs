@@ -76,54 +76,96 @@ fn runs_clippy_with_base_forbidden_lints_between_the_steps_and_baseline_check()
     let (outcome, _) = outcome(&pr, &mut lint)?;
 
     assert_eq!(outcome, PASSED);
-    assert_eq!(lint.ran(), ["fmt", "deny", "clippy", "baseline"]);
-    let seen = backstop(&lint)?;
-    let head = pr.head_tree.to_string_lossy();
+    assert_eq!(lint.ran(), ["fmt", "deny", "clippy", "clippy", "baseline"]);
+    let passes = backstops(&lint);
     let parent = pr
         .head_tree
         .parent()
         .ok_or("the head tree has a parent")?
         .to_string_lossy();
-    let target = pr.head_tree.join("target");
-    assert_eq!(seen.program, Path::new("cargo-clippy"));
+    let (target, _) = lint
+        .backstop_targets
+        .first()
+        .ok_or("the backstop saw its target")?;
+    let tail = [
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--keep-going",
+        "--message-format=json-diagnostic-short",
+        "--config",
+        "env.CLIPPY_ARGS.value=\"\"",
+        "--config",
+        "env.CLIPPY_ARGS.force=true",
+    ];
+    let debug: Vec<&str> = ["clippy"].into_iter().chain(tail).collect();
+    let release: Vec<&str> = ["clippy", "--release"].into_iter().chain(tail).collect();
     assert_eq!(
-        seen.args,
-        [
-            "clippy",
-            "--workspace",
-            "--all-targets",
-            "--all-features",
-            "--locked",
-            "--keep-going",
-            "--message-format=json-diagnostic-short",
-            "--config",
-            "env.CLIPPY_ARGS.value=\"\"",
-            "--config",
-            "env.CLIPPY_ARGS.force=true",
-        ]
+        passes.iter().map(|seen| &seen.args).collect::<Vec<_>>(),
+        [&debug, &release],
+        "a debug pass, then a release pass"
     );
-    assert_eq!(seen.cwd, pr.head_tree);
-    assert_eq!(
-        seen.timeout,
-        Duration::from_mins(20),
-        "the plugin's timeout_s"
+    for seen in passes {
+        assert_eq!(seen.program, Path::new("cargo-clippy"));
+        assert_eq!(seen.cwd, pr.head_tree);
+        assert_eq!(
+            seen.timeout,
+            Duration::from_mins(10),
+            "half the plugin's timeout_s each"
+        );
+        assert_eq!(seen.max_output_bytes, 16 << 20);
+        assert_eq!(
+            seen.env,
+            os(&[
+                ("PATH", "/usr/bin:/bin"),
+                ("GIT_CONFIG_NOSYSTEM", "1"),
+                ("GIT_CONFIG_GLOBAL", "/dev/null"),
+                ("GIT_CEILING_DIRECTORIES", &parent),
+                ("CARGO_ENCODED_RUSTFLAGS", FORBIDDEN),
+                ("RUSTC_WRAPPER", ""),
+                ("RUSTC", "rustc"),
+                ("CARGO_TARGET_DIR", &target.to_string_lossy()),
+                ("CARGO_TERM_COLOR", "never"),
+            ])
+        );
+    }
+    Ok(())
+}
+
+/// Every backstop pass, in order.
+fn backstops(lint: &FakeLint) -> Vec<&SeenSpec> {
+    lint.seen
+        .iter()
+        .filter(|seen| seen.args.first().map(String::as_str) == Some("clippy"))
+        .collect()
+}
+
+/// A `target/` the PR commits (#348 accepts an untracked root `target/`, and a tracked one is
+/// no trust path) could hold fresh fingerprints and metadata, so cargo would never compile the
+/// PR's sources (#172 F2). The backstop builds into a directory of its own, created empty
+/// beside the head tree for this run and removed after it.
+#[test]
+fn builds_into_a_fresh_directory_outside_the_head_tree_and_removes_it() -> Result<(), Box<dyn Error>>
+{
+    let pr = pr()?;
+    let parent = pr.head_tree.parent().ok_or("the head tree has a parent")?;
+    let mut lint = FakeLint::leaving(DIFF_TOTALS);
+
+    outcome(&pr, &mut lint)?;
+
+    let targets = &lint.backstop_targets;
+    let [(debug, fresh), (release, _)] = targets.as_slice() else {
+        return Err(format!("two passes, got {targets:?}").into());
+    };
+    assert!(
+        *fresh,
+        "{debug:?} was an empty directory when the build started"
     );
-    assert_eq!(seen.max_output_bytes, 16 << 20);
-    assert_eq!(
-        seen.env,
-        os(&[
-            ("PATH", "/usr/bin:/bin"),
-            ("GIT_CONFIG_NOSYSTEM", "1"),
-            ("GIT_CONFIG_GLOBAL", "/dev/null"),
-            ("GIT_CEILING_DIRECTORIES", &parent),
-            ("CARGO_ENCODED_RUSTFLAGS", FORBIDDEN),
-            ("RUSTC_WRAPPER", ""),
-            ("RUSTC", "rustc"),
-            ("CARGO_TARGET_DIR", &target.to_string_lossy()),
-            ("CARGO_TERM_COLOR", "never"),
-        ]),
-        "head tree {head}"
-    );
+    assert_eq!(debug, release, "both passes share it");
+    assert!(!debug.starts_with(&pr.head_tree), "{debug:?}");
+    assert_eq!(debug.parent(), Some(parent), "beside the head tree");
+    assert!(!debug.exists(), "{debug:?} is removed after the run");
     Ok(())
 }
 
@@ -208,6 +250,97 @@ fn base_without_all_features_runs_without_them() -> Result<(), Box<dyn Error>> {
 
     let args = &backstop(&lint)?.args;
     assert!(!args.iter().any(|arg| arg == "--all-features"), "{args:?}");
+    Ok(())
+}
+
+/// Head's `.claude/temper.json` and `.assay/exceptions.toml` are the PR's: neither turns
+/// features off nor lifts a lint (normal review F2).
+#[test]
+fn heads_config_and_exceptions_change_neither_features_nor_the_forbidden_lints()
+-> Result<(), Box<dyn Error>> {
+    let mut pr = pr()?;
+    pr.set(
+        Revision::Head,
+        CONFIG,
+        r#"{"gate": {"allFeatures": false}}"#,
+    );
+    pr.set(
+        Revision::Head,
+        EXCEPTIONS,
+        "[[exception]]\npath = \"src/lib.rs\"\nlint = \"unsafe_code\"\nreason = \"r\"\n",
+    );
+    let mut lint = FakeLint::leaving(DIFF_TOTALS);
+
+    outcome(&pr, &mut lint)?;
+
+    for seen in backstops(&lint) {
+        assert!(
+            seen.args.iter().any(|arg| arg == "--all-features"),
+            "{:?}",
+            seen.args
+        );
+        assert!(
+            seen.env.contains(&(
+                OsString::from("CARGO_ENCODED_RUSTFLAGS"),
+                OsString::from(FORBIDDEN)
+            )),
+            "{:?}",
+            seen.env
+        );
+    }
+    assert_eq!(backstops(&lint).len(), 2, "both passes ran");
+    Ok(())
+}
+
+/// `debug_assertions` is on in one profile and off in the other, so code under either
+/// `cfg(debug_assertions)` or its negation is seen by one pass (#172 F1).
+#[test]
+fn a_failing_release_pass_fails_the_gate_and_a_failing_debug_pass_skips_it()
+-> Result<(), Box<dyn Error>> {
+    let pr = pr()?;
+    let failed = Termination::Exited(101);
+    let cases = [
+        (
+            [Termination::Exited(0), failed],
+            vec!["fmt", "deny", "clippy", "clippy", "baseline"],
+        ),
+        (
+            [failed, Termination::Exited(0)],
+            vec!["fmt", "deny", "clippy", "baseline"],
+        ),
+    ];
+    for (passes, ran) in cases {
+        let mut lint = FakeLint::leaving(DIFF_TOTALS).step_attempts("clippy", &passes);
+
+        let (outcome, document) = outcome(&pr, &mut lint)?;
+
+        assert_eq!(outcome, FAILED, "{passes:?}");
+        assert_eq!(lint.ran(), ran, "{passes:?}");
+        let steps = document.and_then(|document| document.failed_steps);
+        assert_eq!(
+            steps,
+            Some(vec!["forbid-backstop".to_owned()]),
+            "{passes:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_release_pass_that_does_not_exit_is_that_gate_error() -> Result<(), Box<dyn Error>> {
+    let pr = pr()?;
+    let mut lint = FakeLint::leaving(DIFF_TOTALS)
+        .step_attempts("clippy", &[Termination::Exited(0), Termination::TimedOut]);
+
+    let (outcome, _) = outcome(&pr, &mut lint)?;
+
+    assert_eq!(outcome, GateJobOutcome::Error(GateError::Timeout));
+    assert_eq!(lint.ran(), ["fmt", "deny", "clippy", "clippy"]);
+    let removed = lint
+        .backstop_targets
+        .iter()
+        .all(|(target, _)| !target.exists());
+    assert!(removed, "{:?} is removed", lint.backstop_targets);
     Ok(())
 }
 
@@ -447,22 +580,30 @@ const FIXTURE: [(&str, &str); 7] = [
     ),
 ];
 
-/// Real cargo-clippy (a two-crate check build, a few seconds): rustc reports E0453 for both
-/// assembled overrides, the gate fails with both located, and nothing in the head's config
-/// steered the run.
-#[test]
-fn a_real_build_refuses_overrides_a_macro_and_a_proc_macro_assemble() -> Result<(), Box<dyn Error>>
-{
+/// A PR whose head is [`FIXTURE`] on disk and in the tree, with `fx/src/lib.rs` replaced by
+/// `lib` when given, and the workspace's own toolchain (whatever rustup's default is).
+fn fixture(lib: Option<&str>) -> Result<Pr, Box<dyn Error>> {
     let mut pr = pr()?;
-    for (path, text) in FIXTURE {
+    let toolchain = include_str!("../../../../rust-toolchain.toml");
+    let files = FIXTURE.into_iter().map(|(path, text)| match lib {
+        Some(lib) if path == "fx/src/lib.rs" => (path, lib),
+        _ => (path, text),
+    });
+    for (path, text) in files.chain([("rust-toolchain.toml", toolchain)]) {
         let file = pr.head_tree.join(path);
         fs::create_dir_all(file.parent().ok_or("a fixture file has a parent")?)?;
         fs::write(&file, text)?;
         pr.set(Revision::Head, path, text);
     }
-    // The workspace's own toolchain, whatever rustup's default is.
-    let toolchain = include_str!("../../../../rust-toolchain.toml");
-    fs::write(pr.head_tree.join("rust-toolchain.toml"), toolchain)?;
+    Ok(pr)
+}
+
+/// What a real backstop run gave: the outcome, each finding's rule, file and line, and the
+/// backstop's stderr.
+type RealRun = (GateJobOutcome, Vec<(String, String, u64)>, String);
+
+/// Runs gates-lint over `pr` with the real backstop.
+fn for_real(pr: &Pr) -> Result<RealRun, Box<dyn Error>> {
     let environment = GateEnvironment::from_vars(std::env::vars_os());
     let settings = TemperSettings::new(pr.paths(), &environment, "run-1")?;
     let mut fake = FakeLint::leaving(DIFF_TOTALS);
@@ -470,14 +611,48 @@ fn a_real_build_refuses_overrides_a_macro_and_a_proc_macro_assemble() -> Result<
         fake: &mut fake,
         stderr: String::new(),
     };
-
-    let (outcome, document) = outcome_with(&pr, &mut real, settings)?;
-
-    let stderr = real.stderr;
-    let found: Vec<(String, String, u64)> = shown(document)
+    let (outcome, document) = outcome_with(pr, &mut real, settings)?;
+    let found = shown(document)
         .into_iter()
         .map(|(rule, file, line, ..)| (rule, file, line))
         .collect();
+    Ok((outcome, found, real.stderr))
+}
+
+/// Real cargo-clippy, both passes: an override only release compiles (`debug_assertions`
+/// off) passes the debug pass and fails the release pass at its line (#172 F1).
+#[test]
+fn a_real_release_pass_refuses_an_override_under_not_debug_assertions() -> Result<(), Box<dyn Error>>
+{
+    let lib = "//! Lowers a forbidden lint in release builds only.\n\
+               \n\
+               macro_rules! hole {\n    ($lint:path) => {\n        #[allow($lint)]\n        \
+               pub fn from_macro_rules() {}\n    };\n}\n\
+               #[cfg(not(debug_assertions))]\n\
+               hole!(unsafe_code);\n";
+    let pr = fixture(Some(lib))?;
+
+    let (outcome, found, stderr) = for_real(&pr)?;
+
+    assert_eq!(outcome, FAILED, "{stderr}");
+    assert_eq!(
+        found,
+        [("forbid-override".to_owned(), "fx/src/lib.rs".to_owned(), 10)],
+        "{stderr}"
+    );
+    Ok(())
+}
+
+/// Real cargo-clippy (a two-crate check build, a few seconds): rustc reports E0453 for both
+/// assembled overrides, the gate fails with both located, and nothing in the head's config
+/// steered the run.
+#[test]
+fn a_real_build_refuses_overrides_a_macro_and_a_proc_macro_assemble() -> Result<(), Box<dyn Error>>
+{
+    let pr = fixture(None)?;
+
+    let (outcome, found, stderr) = for_real(&pr)?;
+
     assert_eq!(outcome, FAILED, "{stderr}");
     assert_eq!(
         found,
@@ -487,10 +662,26 @@ fn a_real_build_refuses_overrides_a_macro_and_a_proc_macro_assemble() -> Result<
         ],
         "{stderr}"
     );
-    assert!(pr.head_tree.join("target").is_dir(), "CARGO_TARGET_DIR won");
+    // The scripted `baseline --check` leaves `target/temper/findings.json`; cargo would leave
+    // `target/debug` and `target/release`.
+    for profile in ["target/debug", "target/release"] {
+        let built = pr.head_tree.join(profile);
+        assert!(!built.exists(), "the backstop builds outside the head tree");
+    }
     assert!(
         !pr.head_tree.join("elsewhere").exists(),
         "the config's target-dir is not used"
+    );
+    let parent = pr.head_tree.parent().ok_or("the head tree has a parent")?;
+    let left: Vec<_> = fs::read_dir(parent)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .filter(|name| name.to_string_lossy().starts_with("assay-backstop-"))
+        .collect();
+    assert_eq!(
+        left,
+        Vec::<OsString>::new(),
+        "its target directory is removed"
     );
     Ok(())
 }

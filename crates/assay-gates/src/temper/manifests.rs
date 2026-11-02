@@ -337,18 +337,23 @@ fn tool_weakened(tool: &str, base: &Table, head: &Table) -> Vec<String> {
 }
 
 /// The rank of `deny`; `allow` and `warn` rank below it, `forbid` above.
-pub(super) const DENY: u8 = 2;
+const DENY: u8 = 2;
 
 /// One lint's entry: its level's rank, its priority and any other keys (`check-cfg`). The
 /// forbid backstop reads levels through it too (`forbid.rs`).
 #[derive(Debug, PartialEq)]
 pub(super) struct Entry<'v> {
-    pub(super) rank: u8,
+    rank: u8,
     priority: i64,
     rest: Vec<(&'v String, &'v Value)>,
 }
 
 impl<'v> Entry<'v> {
+    /// Whether its level is `deny` or `forbid`.
+    pub(super) const fn at_least_deny(&self) -> bool {
+        self.rank >= DENY
+    }
+
     /// `value` as an entry, or `None` for a shape or level this check does not know.
     pub(super) fn of(value: &'v Value) -> Option<Self> {
         let (level, table) = match value {

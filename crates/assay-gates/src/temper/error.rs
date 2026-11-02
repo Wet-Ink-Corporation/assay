@@ -48,6 +48,16 @@ pub enum TemperError<S, R> {
         #[source]
         source: io::Error,
     },
+    /// The forbid backstop's own target directory, beside the head tree, could not be created
+    /// before its build or removed after it (#172).
+    #[error("could not create or remove the forbid backstop's target directory in {}", path.display())]
+    BackstopTarget {
+        /// The directory, or the one it is created in.
+        path: PathBuf,
+        /// The file system's error.
+        #[source]
+        source: io::Error,
+    },
     /// The findings document is absent, not a regular file, too large, not the shape temper
     /// 1.3.0 writes, or disagrees with temper's exit code; the detail never quotes it.
     #[error("the temper findings document is unusable: {detail}")]

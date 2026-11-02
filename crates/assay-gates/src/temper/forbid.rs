@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use toml::{Table, Value};
 
 use super::exceptions::Allowlist;
-use super::manifests::{DENY, Entry};
+use super::manifests::Entry;
 
 /// Most lints forbidden in one run.
 pub(super) const MAX_FORBIDDEN: usize = 512;
@@ -140,7 +140,8 @@ fn denied(bytes: &[u8], admitted: &BTreeSet<&str>) -> Result<BTreeSet<String>, S
         for (name, value) in lints {
             let entry = read_entry(tool, name, value)?;
             let lint = path(tool, name);
-            if entry.rank < DENY || groups.contains(&name.as_str()) || admitted.contains(&*lint) {
+            let group = groups.contains(&name.as_str());
+            if !entry.at_least_deny() || group || admitted.contains(&*lint) {
                 continue;
             }
             if forbidden.len() == MAX_FORBIDDEN {

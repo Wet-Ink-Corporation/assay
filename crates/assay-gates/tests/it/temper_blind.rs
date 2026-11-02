@@ -273,6 +273,49 @@ fn attributes_the_scan_does_not_read_fail_at_their_line() -> Result<(), Box<dyn 
     Ok(())
 }
 
+/// The `clippy` cfg hides code from the forbid backstop's clippy run (#172 F1), so naming it
+/// where it can reach a predicate fails as a blind spot of its own, which no waiver clears.
+#[test]
+fn the_clippy_cfg_fails_as_a_blind_spot_at_its_line() -> Result<(), Box<dyn Error>> {
+    for code in [
+        "#[cfg(not(clippy))]\nfn f() {}",
+        "fn f() -> bool {\n    cfg!(clippy)\n}",
+        "macro_rules! m {\n    ($c:meta) => { #[cfg(not($c))] fn f() {} };\n}",
+    ] {
+        let mut pr = Pr::new()?;
+        pr.set(Revision::Head, "src/lib.rs", &format!("//! x\n{code}\n"));
+
+        let (outcome, document) = pr.document()?;
+
+        let found: Vec<(Option<String>, String, u64, String)> = document
+            .map(|document| document.findings)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|finding| {
+                (
+                    finding.rule,
+                    finding.file,
+                    finding.line.get(),
+                    finding.title,
+                )
+            })
+            .collect();
+        assert_eq!(outcome, FAILED, "{code}");
+        assert_eq!(
+            found,
+            [(
+                Some("blind-spot".to_owned()),
+                "src/lib.rs".to_owned(),
+                if code.starts_with('#') { 2 } else { 3 },
+                "the `clippy` cfg, which the forbid backstop cannot see past: `src/lib.rs`"
+                    .to_owned(),
+            )],
+            "{code}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn a_cfg_attr_without_lints_or_paths_passes() -> Result<(), Box<dyn Error>> {
     let mut pr = Pr::new()?;
