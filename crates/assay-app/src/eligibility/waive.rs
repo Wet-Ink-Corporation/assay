@@ -23,8 +23,8 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use super::commands::{CommandStatus, SnapshotCommand};
-use super::grammar::Command;
 use super::state::GitHubState;
+use crate::command::Command;
 use crate::config::Sha256Digest;
 use crate::contract::parse_json_strict;
 

@@ -38,7 +38,9 @@ pub(super) struct EndDto {
     #[serde(rename = "ref")]
     pub(super) git_ref: String,
     pub(super) sha: String,
-    /// `null` for a head whose repository was deleted.
+    /// `null` for a head whose repository was deleted; the key itself is required, so a
+    /// missing one is refused rather than read as a deleted head.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub(super) repo: Option<RepoDto>,
 }
 

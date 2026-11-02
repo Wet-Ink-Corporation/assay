@@ -14,10 +14,11 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::approvals::IgnoredApproval;
-use super::commands::{VoidCause, recorded_command};
+use super::commands::VoidCause;
 use super::rule::{Ineligible, RangeFacts};
 use super::state::CommitRange;
 use super::timestamp::Timestamp;
+use crate::command::recorded_command;
 use crate::config::{CommitId, EligibilityLists, RecordedFrom, RecordedLists, Sha256Digest};
 use crate::status::UserId;
 

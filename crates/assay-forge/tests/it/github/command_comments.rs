@@ -93,6 +93,40 @@ fn a_comment_that_omits_performed_via_github_app_is_refused() {
 }
 
 #[test]
+fn a_comment_by_a_deleted_account_has_no_author() {
+    let recorded = edited(|comment| comment["user"] = json!(null));
+    let waits = Waits::default();
+
+    let read = github(&recorded, &waits)
+        .comment(CommentId(id(COMMENT)))
+        .expect("read")
+        .expect("present");
+
+    assert_eq!(read.user, None);
+}
+
+#[test]
+fn a_comment_without_a_user_key_is_refused() {
+    let recorded = edited(|comment| {
+        comment.as_object_mut().expect("an object").remove("user");
+    });
+    let waits = Waits::default();
+
+    let read = github(&recorded, &waits).comment(CommentId(id(COMMENT)));
+
+    assert!(
+        matches!(
+            read,
+            Err(ForgeError::Json {
+                operation: Operation::ReadComment,
+                ..
+            })
+        ),
+        "{read:?}"
+    );
+}
+
+#[test]
 fn a_deleted_comment_is_none() {
     let recorded = Recorded::default().then(
         Method::Get,

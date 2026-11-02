@@ -15,8 +15,8 @@ use super::lines::{Newline, Refusal, check_canonical, check_schema, lines, parse
 use super::port::{Ledger, LedgerPath};
 use super::record::{Appended, field};
 use super::time::LedgerTime;
+use crate::command::recorded_command;
 use crate::config::{CommitId, Sha256Digest};
-use crate::eligibility::recorded_command;
 use crate::publish::CommentId;
 use crate::status::UserId;
 
@@ -181,6 +181,10 @@ impl TryFrom<CommandLine<'_>> for CommandRecord {
     fn try_from(line: CommandLine<'_>) -> Result<Self, Corruption> {
         check_schema(&line.schema, COMMAND_SCHEMA)?;
         let head_sha = line.head_sha.ok_or(Corruption::Field("head_sha"))?;
+        // The length and control-character checks mirror the schema (`maxLength`, the pattern's
+        // control range), so the reader and the schema refuse the same lines. The grammar is
+        // stricter today (a reason is capped and holds no control character), so neither fires
+        // alone; they keep the two in step if the grammar ever widens.
         let chars = line.command.chars().count();
         if !(1..=MAX_COMMAND_CHARS).contains(&chars)
             || line.command.chars().any(char::is_control)

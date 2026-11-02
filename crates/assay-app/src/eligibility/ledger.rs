@@ -5,8 +5,9 @@ use std::num::NonZeroU64;
 
 use thiserror::Error;
 
-use super::commands::{SnapshotCommand, UnreadCommand};
+use super::commands::SnapshotCommand;
 use super::ports::{LedgerRecords, SnapshotLedger};
+use crate::command::UnreadCommand;
 use crate::ledger::{Ledger, LedgerReadError, PushRecord, read_commands, read_pushes};
 use crate::publish::CommentId;
 
@@ -74,10 +75,11 @@ where
             return Ok(LedgerRecords::TooMany);
         }
         records
-            .iter()
+            .into_iter()
             .map(|record| {
+                let comment_id = record.comment_id;
                 SnapshotCommand::try_from(record).map_err(|problem| LedgerSnapshotError::Command {
-                    comment_id: record.comment_id,
+                    comment_id,
                     problem,
                 })
             })
