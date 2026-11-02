@@ -23,6 +23,7 @@
 //! passes.
 
 mod attributes;
+mod backstop;
 mod baseline;
 mod closure;
 #[cfg(test)]
@@ -31,6 +32,7 @@ mod error;
 mod evidence;
 mod exceptions;
 mod findings;
+mod forbid;
 mod gate_config;
 mod head;
 mod inventory;
@@ -231,9 +233,10 @@ impl<S: CaptureSupervisor, R: RevisionFiles> GateRunner for TemperAdapter<S, R> 
 
     /// In `gates-static`, runs the Z2s checks and reports them as one `assay.findings/1`
     /// document that concludes `fail` when `raised`, `exception`, a blind spot, the gate-config
-    /// diff or a step 4 check found anything. In `gates-lint`, runs the pinned `baseline
-    /// --check` and the declared `lint` steps, and concludes `fail` when the ratchet fails, a
-    /// `raised` or unadmitted `exception` entry is reported, or a step exits non-zero; a run
+    /// diff or a step 4 check found anything. In `gates-lint`, runs the declared `lint` steps,
+    /// the forbid backstop (base's deny and forbid lints as `-F`) and the pinned `baseline
+    /// --check`, and concludes `fail` when the ratchet fails, a `raised` or unadmitted
+    /// `exception` entry is reported, or a step or the backstop exits non-zero; a run
     /// that does not exit, or a `baseline --check` exit other than 0 or 1, is reported as that
     /// termination. In `gates-test`, runs the declared `test` steps and concludes `fail` when one
     /// exits non-zero; a step that does not exit is reported as that termination. A declared

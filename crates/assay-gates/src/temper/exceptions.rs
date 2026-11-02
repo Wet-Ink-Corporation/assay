@@ -208,6 +208,11 @@ impl Allowlist {
             .any(|(path, admitted)| path == file && admitted == lint)
     }
 
+    /// Every lint an `[[exception]]` entry names, whatever its file.
+    pub(super) fn exception_lints(&self) -> impl Iterator<Item = &str> {
+        self.exceptions.iter().map(|(_, lint)| lint.as_str())
+    }
+
     /// Whether base admits `key` changing from exactly `base` (`None`: absent) to exactly
     /// `head`.
     pub(super) fn admits_config(&self, key: &str, base: Option<&Value>, head: &Value) -> bool {

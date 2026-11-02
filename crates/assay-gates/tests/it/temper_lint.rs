@@ -38,7 +38,7 @@ const MERGE_BASE: &str = "5e1f0b9c2d3a4e5f60718293a4b5c6d7e8f90a1b";
 const FINDINGS_OUT: &str = "target/temper/findings.json";
 const HEX64: &str = "dc7c1d8e3ccab68cfdb828ce40a446c3913f7172f899ffe3f439839cfd917a8b";
 
-const DIFF_TOTALS: &str = include_str!("../fixtures/temper-check-diff-totals.json");
+pub(crate) const DIFF_TOTALS: &str = include_str!("../fixtures/temper-check-diff-totals.json");
 const GIT_DIFF_FAILED: &str = include_str!("../fixtures/temper-check-git-diff-failed.json");
 const STRICT: &str = include_str!("../fixtures/temper-check-strict.json");
 
@@ -87,7 +87,7 @@ enum Leaves {
 }
 
 #[derive(Debug)]
-struct FakeError(String);
+pub(crate) struct FakeError(pub(crate) String);
 
 impl fmt::Display for FakeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -99,7 +99,7 @@ impl Error for FakeError {}
 
 /// Plays the pinned `temper baseline --check` and the declared steps.
 #[derive(Debug)]
-struct FakeLint {
+pub(crate) struct FakeLint {
     baseline: Termination,
     leaves: Leaves,
     /// How each step ends, by its program's first argument (`fmt`, `deny`); exit 0 otherwise.
@@ -107,12 +107,15 @@ struct FakeLint {
     /// How a step's first attempts end, in order, before `steps` applies.
     attempts: BTreeMap<String, VecDeque<Termination>>,
     /// When set, the supervisor cannot start this step, or `baseline --check` for `baseline`.
-    cannot_start: Option<String>,
-    seen: Vec<SeenSpec>,
+    pub(crate) cannot_start: Option<String>,
+    /// What the forbid backstop (`cargo-clippy clippy ..`, by its first argument `clippy`)
+    /// prints to stdout; it ends as `steps` says for `clippy`.
+    pub(crate) backstop_stdout: Vec<u8>,
+    pub(crate) seen: Vec<SeenSpec>,
 }
 
 impl FakeLint {
-    fn leaving(document: &str) -> Self {
+    pub(crate) fn leaving(document: &str) -> Self {
         Self::ending(
             Termination::Exited(0),
             Leaves::File(document.as_bytes().to_vec()),
@@ -126,11 +129,12 @@ impl FakeLint {
             steps: BTreeMap::new(),
             attempts: BTreeMap::new(),
             cannot_start: None,
+            backstop_stdout: Vec::new(),
             seen: Vec::new(),
         }
     }
 
-    fn step_ends(mut self, step: &str, termination: Termination) -> Self {
+    pub(crate) fn step_ends(mut self, step: &str, termination: Termination) -> Self {
         self.steps.insert(step.to_owned(), termination);
         self
     }
@@ -144,7 +148,7 @@ impl FakeLint {
 
     /// Each process run, in order: a step by its first argument, `baseline --check` as
     /// `baseline`.
-    fn ran(&self) -> Vec<&str> {
+    pub(crate) fn ran(&self) -> Vec<&str> {
         self.seen
             .iter()
             .map(|seen| {
@@ -202,9 +206,15 @@ impl CaptureSupervisor for FakeLint {
                 .copied()
                 .unwrap_or(Termination::Exited(0))
         };
+        let stdout = if first == "clippy" {
+            // Each run returns its own copy: the script may be played more than once.
+            self.backstop_stdout.clone()
+        } else {
+            Vec::new()
+        };
         Ok(CapturedRun {
             termination,
-            stdout: Vec::new(),
+            stdout,
         })
     }
 }
@@ -221,7 +231,10 @@ fn ratchet_base() -> Result<RatchetBase, Box<dyn Error>> {
 }
 
 /// Runs the temper plugin in gates-lint directly.
-fn run(pr: &Pr, lint: &mut FakeLint) -> Result<RanLint, Box<dyn Error>> {
+pub(crate) fn run(
+    pr: &Pr,
+    lint: impl CaptureSupervisor<Error = FakeError>,
+) -> Result<RanLint, Box<dyn Error>> {
     let config = config()?;
     let temper = crate::support::plugin(&config, "temper")?;
     let settings = pr.settings()?.with_ratchet(ratchet_base()?);
@@ -229,15 +242,24 @@ fn run(pr: &Pr, lint: &mut FakeLint) -> Result<RanLint, Box<dyn Error>> {
     Ok(adapter.run(&temper, LINT))
 }
 
-type RanLint = Result<GateRun, TemperError<FakeError, crate::temper_support::FakeError>>;
+pub(crate) type RanLint = Result<GateRun, TemperError<FakeError, crate::temper_support::FakeError>>;
 
 /// Runs gates-lint through the gate use case: the outcome and the validated document.
-fn outcome(
+pub(crate) fn outcome(
     pr: &Pr,
-    lint: &mut FakeLint,
+    lint: impl CaptureSupervisor<Error = FakeError>,
+) -> Result<(GateJobOutcome, Option<FindingsDocument>), Box<dyn Error>> {
+    outcome_with(pr, lint, pr.settings()?)
+}
+
+/// [`outcome`] with `settings` (a ratchet base is added).
+pub(crate) fn outcome_with(
+    pr: &Pr,
+    lint: impl CaptureSupervisor<Error = FakeError>,
+    settings: assay_gates::TemperSettings,
 ) -> Result<(GateJobOutcome, Option<FindingsDocument>), Box<dyn Error>> {
     let config = config()?;
-    let settings = pr.settings()?.with_ratchet(ratchet_base()?);
+    let settings = settings.with_ratchet(ratchet_base()?);
     let mut adapter = assay_gates::TemperAdapter::new(lint, &pr.revisions, settings);
     let reports = run_gates(&config, LINT, &mut adapter, &ContractValidator::new()?);
     let [report] = reports.as_slice() else {
@@ -252,9 +274,9 @@ fn outcome(
 }
 
 /// The rule, file, line, side, severity and evidence of each finding.
-type Shown = (String, String, u64, Option<Side>, Severity, String);
+pub(crate) type Shown = (String, String, u64, Option<Side>, Severity, String);
 
-fn shown(document: Option<FindingsDocument>) -> Vec<Shown> {
+pub(crate) fn shown(document: Option<FindingsDocument>) -> Vec<Shown> {
     document
         .map(|document| {
             document
@@ -319,8 +341,8 @@ fn new_code(document: &mut Value, finding: &Value) -> Option<()> {
     Some(())
 }
 
-const PASSED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Pass);
-const FAILED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Fail);
+pub(crate) const PASSED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Pass);
+pub(crate) const FAILED: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Fail);
 
 #[test]
 fn a_clean_ratchet_against_the_merge_base_passes() -> Result<(), Box<dyn Error>> {

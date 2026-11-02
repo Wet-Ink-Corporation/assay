@@ -1,6 +1,7 @@
 //! The temper adapter in `gates-lint`, zone Z2b (`docs/architecture/03-contracts.md` §2.1 steps
 //! 5-7): first the plugin's declared `lint` steps (`fmt`, `deny`) under their own timeouts,
-//! before any build script or proc-macro has run in the tree; then the base's pinned `temper
+//! before any build script or proc-macro has run in the tree; then the forbid backstop (step
+//! 5a, `backstop.rs`), whose non-zero exit fails the gate; then the base's pinned `temper
 //! baseline --check --locked --base <base_sha> --findings-out target/temper/findings.json` from
 //! the head checkout, its ratchet believed only against the merge base Z2s computed.
 //!
@@ -17,10 +18,13 @@ use std::path::Path;
 use assay_app::{BuildJob, GateDocument, GateRun, Plugin, Step, Termination};
 use assay_domain::{Finding, GateConclusion};
 
+use super::backstop::Backstop;
 use super::evidence::{self, MAX_EVIDENCE_BYTES, Unread};
-use super::exceptions::Allowlist;
+use super::exceptions::{self, Allowlist};
+use super::forbid::{ForbidSet, Unreadable};
 use super::gate_config::{self, TemperConfig};
 use super::lint_findings::{self, Shown};
+use super::manifests;
 use super::ratchet::{self, Checked, Refused, Tool};
 use super::steps::{capture, stopped};
 use super::{ErrorOf, TREE, TemperAdapter, TemperError};
@@ -50,9 +54,11 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             return Err(TemperError::NoRatchetBase);
         };
         let allowlist = self.allowlist()?;
-        let required = self.base_sources()?;
-        // The steps read the tree before `baseline --check` builds it (build scripts and
-        // proc-macros run there).
+        let config = self.base_config()?;
+        let required = config.sources();
+        let forbidden = self.forbid_set(&allowlist)?;
+        // The steps read the tree before anything builds it (build scripts and proc-macros run
+        // there); the backstop builds it first, before `baseline --check`.
         let mut failed = false;
         for step in steps.iter().filter(|step| step.job() == BuildJob::Lint) {
             match self.step_retried(step)? {
@@ -60,6 +66,12 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
                 Termination::Exited(_) => failed = true,
                 other => return Ok(stopped(other)),
             }
+        }
+        let backstop = self.backstop(&forbidden, config.all_features(), plugin.timeout())?;
+        match backstop {
+            Backstop::NotRun | Backstop::Passed => {}
+            Backstop::Failed { .. } => failed = true,
+            Backstop::Stopped(termination) => return Ok(stopped(termination)),
         }
         let out = self.settings.steps.head_tree.join(FINDINGS_OUT);
         remove_stale(&self.settings.steps.head_tree, Path::new(FINDINGS_OUT))?;
@@ -81,7 +93,7 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             });
         }
         failed |= exit_failed;
-        let findings = self.lint_findings(&checked, &allowlist)?;
+        let findings = self.lint_findings(&checked, &allowlist, &backstop)?;
         failed |= findings.failing;
         let conclusion = if failed {
             GateConclusion::Fail
@@ -107,31 +119,49 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
         })
     }
 
-    /// The sources base `.claude/temper.json` enables, which the ratchet must have collected
-    /// whatever head's config says (#210 F3); temper's defaults when base has none. Read before
-    /// anything runs in the tree.
-    fn base_sources(&self) -> Result<Vec<Tool>, ErrorOf<S, R>> {
+    /// Base `.claude/temper.json`, temper's defaults when base has none. Its sources are the
+    /// ones the ratchet must have collected whatever head's config says (#210 F3), and its
+    /// `gate.allFeatures` steers the backstop. Read before anything runs in the tree.
+    fn base_config(&self) -> Result<TemperConfig, ErrorOf<S, R>> {
         let Some(bytes) = self.read(Revision::Base, gate_config::PATH)? else {
-            return Ok(TemperConfig::default().sources());
+            return Ok(TemperConfig::default());
         };
-        TemperConfig::parse(&bytes)
-            .map(|config| config.sources())
-            .map_err(|detail| TemperError::Malformed {
-                revision: Revision::Base,
-                path: gate_config::PATH,
-                detail,
-            })
+        TemperConfig::parse(&bytes).map_err(|detail| TemperError::Malformed {
+            revision: Revision::Base,
+            path: gate_config::PATH,
+            detail,
+        })
     }
 
-    /// The failures and the display findings of `checked`, with evidence from the trees.
+    /// The lints the backstop forbids: base's root manifest and `allowlist` (base's), read
+    /// before anything runs in the tree.
+    fn forbid_set(&self, allowlist: &Allowlist) -> Result<ForbidSet, ErrorOf<S, R>> {
+        let manifest = self.read(Revision::Base, manifests::ROOT)?;
+        ForbidSet::from_base(manifest.as_deref(), allowlist).map_err(|refused| {
+            let (path, detail) = match refused {
+                Unreadable::Manifest(detail) => (manifests::ROOT, detail),
+                Unreadable::Exception(detail) => (exceptions::PATH, detail),
+            };
+            TemperError::Malformed {
+                revision: Revision::Base,
+                path,
+                detail,
+            }
+        })
+    }
+
+    /// The failures and the display findings of `checked` and of `backstop`, with evidence
+    /// from the trees.
     fn lint_findings(
         &self,
         checked: &Checked,
         allowlist: &Allowlist,
+        backstop: &Backstop,
     ) -> Result<LintFindings, ErrorOf<S, R>> {
         let failures = lint_findings::failures(checked, allowlist);
         let mut findings = failures.findings;
-        let shown = lint_findings::shown(checked, findings.len());
+        let mut shown = lint_findings::backstop(backstop);
+        shown.extend(lint_findings::shown(checked, findings.len() + shown.len()));
         let lines = evidence::gather(
             &self.revisions,
             shown.iter().filter_map(Shown::cites),

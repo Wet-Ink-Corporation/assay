@@ -18,7 +18,7 @@ use super::statics::Tree;
 use super::switches::{Roots, changed_switches};
 
 /// The workspace manifest's path.
-const ROOT: &str = "Cargo.toml";
+pub(super) const ROOT: &str = "Cargo.toml";
 
 /// What steps 4b-4d found, each list by path.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -337,19 +337,20 @@ fn tool_weakened(tool: &str, base: &Table, head: &Table) -> Vec<String> {
 }
 
 /// The rank of `deny`; `allow` and `warn` rank below it, `forbid` above.
-const DENY: u8 = 2;
+pub(super) const DENY: u8 = 2;
 
-/// One lint's entry: its level's rank, its priority and any other keys (`check-cfg`).
+/// One lint's entry: its level's rank, its priority and any other keys (`check-cfg`). The
+/// forbid backstop reads levels through it too (`forbid.rs`).
 #[derive(Debug, PartialEq)]
-struct Entry<'v> {
-    rank: u8,
+pub(super) struct Entry<'v> {
+    pub(super) rank: u8,
     priority: i64,
     rest: Vec<(&'v String, &'v Value)>,
 }
 
 impl<'v> Entry<'v> {
     /// `value` as an entry, or `None` for a shape or level this check does not know.
-    fn of(value: &'v Value) -> Option<Self> {
+    pub(super) fn of(value: &'v Value) -> Option<Self> {
         let (level, table) = match value {
             Value::String(level) => (level.as_str(), None),
             Value::Table(table) => (table.get("level")?.as_str()?, Some(table)),

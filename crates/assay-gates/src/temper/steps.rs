@@ -14,7 +14,7 @@ use assay_app::{GateDocument, GateRun, Plugin, Step, Termination};
 use assay_domain::{Finding, FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind};
 
 use super::{ErrorOf, TemperAdapter, TemperError, TemperSettingsError};
-use crate::capture::CaptureSupervisor;
+use crate::capture::{CaptureSupervisor, CapturedRun};
 use crate::environment::GateEnvironment;
 use crate::exec::{ProcessSpec, resolve};
 use crate::revision::RevisionFiles;
@@ -180,20 +180,31 @@ pub(super) fn step_retried<S: CaptureSupervisor, R>(
 pub(super) fn capture<S: CaptureSupervisor, R>(
     supervisor: &mut S,
     settings: &TemperStepSettings,
-    (process, program, args): (&str, &Path, &[String]),
+    process: (&str, &Path, &[String]),
     timeout: Duration,
 ) -> Result<Termination, TemperError<S::Error, R>> {
+    let place = (settings.head_tree.as_path(), settings.env.as_slice());
+    capture_run(supervisor, process, place, timeout).map(|run| run.termination)
+}
+
+/// Runs `(process, program, args)` from `cwd` with exactly `env` under `timeout`, once, and
+/// keeps its stdout; `process` names it in errors. Both outputs are capped at 16 MiB.
+pub(super) fn capture_run<S: CaptureSupervisor, R>(
+    supervisor: &mut S,
+    (process, program, args): (&str, &Path, &[String]),
+    (cwd, env): (&Path, &[(OsString, OsString)]),
+    timeout: Duration,
+) -> Result<CapturedRun, TemperError<S::Error, R>> {
     let spec = ProcessSpec {
         program,
         args,
-        cwd: &settings.head_tree,
-        env: &settings.env,
+        cwd,
+        env,
         timeout,
         max_output_bytes: MAX_STEP_OUTPUT_BYTES,
     };
     supervisor
         .capture(&spec)
-        .map(|run| run.termination)
         .map_err(|source| TemperError::Lint {
             process: process.to_owned(),
             source,
