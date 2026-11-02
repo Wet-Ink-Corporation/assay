@@ -1165,3 +1165,204 @@ fn failures_past_the_cap_still_fail_and_report_only_the_cap() -> Result<(), Box<
     );
     Ok(())
 }
+
+// --- #153: the steps that failed without a finding ---
+
+/// A run's outcome and its document's `failed_steps`.
+type Attested = (GateJobOutcome, Option<Vec<String>>);
+
+/// The outcome and the document's `failed_steps`.
+fn attested(pr: &Pr, lint: &mut FakeLint) -> Result<Attested, Box<dyn Error>> {
+    let (outcome, document) = outcome(pr, lint)?;
+    Ok((outcome, document.and_then(|document| document.failed_steps)))
+}
+
+/// `steps` as owned names.
+fn names(steps: &[&str]) -> Vec<String> {
+    steps.iter().copied().map(str::to_owned).collect()
+}
+
+#[test]
+fn a_clean_run_attests_that_no_step_failed() -> Result<(), Box<dyn Error>> {
+    let pr = Pr::new()?;
+
+    let attested = attested(&pr, &mut FakeLint::leaving(DIFF_TOTALS))?;
+
+    assert_eq!(attested, (PASSED, Some(names(&[]))));
+    Ok(())
+}
+
+#[test]
+fn the_document_names_each_lint_step_that_failed() -> Result<(), Box<dyn Error>> {
+    let pr = Pr::new()?;
+    let cases: [(&[&str], &[&str]); 3] = [
+        (&["fmt"], &["fmt"]),
+        (&["deny"], &["deny"]),
+        (&["deny", "fmt"], &["fmt", "deny"]),
+    ];
+    for (failing, expected) in cases {
+        let mut lint = FakeLint::leaving(DIFF_TOTALS);
+        for step in failing {
+            lint = lint.step_ends(step, Termination::Exited(1));
+        }
+
+        let attested = attested(&pr, &mut lint)?;
+
+        assert_eq!(
+            attested,
+            (FAILED, Some(names(expected))),
+            "{failing:?}, named in the order the steps ran"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_failed_ratchet_is_the_baseline_step() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(
+        Revision::Head,
+        "src/lib.rs",
+        "pub fn one(x: Option<u8>) -> u8 {\n    x.unwrap()\n}\n",
+    );
+    let document = edited(|document| {
+        new_code(
+            document,
+            &clippy("clippy::unwrap_used", ("src/lib.rs", 2), "must"),
+        )
+    })?;
+    let mut lint = FakeLint::ending(Termination::Exited(1), Leaves::File(document.into_bytes()))
+        .step_ends("fmt", Termination::Exited(1));
+
+    let attested = attested(&pr, &mut lint)?;
+
+    assert_eq!(
+        attested,
+        (FAILED, Some(names(&["fmt", "baseline"]))),
+        "temper's ratchet shows only some of its causes as findings, so `baseline --check` \
+         failing is a failed step"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_failed_declared_step_named_baseline_is_listed_once() -> Result<(), Box<dyn Error>> {
+    let config: PluginsConfig = format!(
+        r#"
+[assay]
+digest = "sha256:{HEX64}"
+
+[[plugin]]
+name = "temper"
+adapter = "builtin:temper"
+pin = "git:{GIT}"
+required = true
+
+[[plugin.step]]
+name = "baseline"
+job = "lint"
+cmd = ["cargo", "fmt", "--check"]
+timeout_s = 120
+"#
+    )
+    .parse()?;
+    let pr = Pr::new()?;
+    let document = edited(|document| {
+        new_code(
+            document,
+            &clippy("clippy::unwrap_used", ("src/lib.rs", 1), "must"),
+        )
+    })?;
+    let mut lint = FakeLint::ending(Termination::Exited(1), Leaves::File(document.into_bytes()))
+        .step_ends("fmt", Termination::Exited(1));
+    let settings = pr.settings()?.with_ratchet(ratchet_base()?);
+    let mut adapter = assay_gates::TemperAdapter::new(&mut lint, &pr.revisions, settings);
+
+    let reports = run_gates(&config, LINT, &mut adapter, &ContractValidator::new()?);
+
+    let [report] = reports.as_slice() else {
+        return Err(format!("expected one report, got {reports:?}").into());
+    };
+    let document: Option<FindingsDocument> = report
+        .document
+        .clone()
+        .map(serde_json::from_value)
+        .transpose()?;
+    assert_eq!(
+        (report.outcome, document.and_then(|d| d.failed_steps)),
+        (FAILED, Some(names(&["baseline"]))),
+        "a repeated name would make the document invalid"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_gate_failing_only_on_its_raised_and_exception_findings_names_no_step()
+-> Result<(), Box<dyn Error>> {
+    let pr = Pr::new()?;
+    let document = edited(|document| {
+        let raise = serde_json::json!({
+            "crate": "assay-forge", "lint": "clippy::too_many_lines", "from": 2, "to": 3
+        });
+        ratchet(document)?
+            .get_mut("raised")?
+            .as_array_mut()?
+            .push(raise);
+        push(document, "findings", expect_hit("src/lib.rs"))
+    })?;
+
+    let attested = attested(&pr, &mut FakeLint::leaving(&document))?;
+
+    assert_eq!(attested, (FAILED, Some(names(&[]))));
+    Ok(())
+}
+
+#[test]
+fn failures_past_the_cap_are_not_attested() -> Result<(), Box<dyn Error>> {
+    const MAX_REPORTED: usize = 1_000;
+    let pr = Pr::new()?;
+    let document = edited(|document| {
+        let raised = ratchet(document)?.get_mut("raised")?.as_array_mut()?;
+        raised.extend((0..MAX_REPORTED).map(|index| {
+            serde_json::json!({
+                "crate": format!("crate-{index}"), "lint": "clippy::too_many_lines",
+                "from": 2, "to": 3
+            })
+        }));
+        push(document, "findings", expect_hit("src/lib.rs"))
+    })?;
+
+    let attested = attested(&pr, &mut FakeLint::leaving(&document))?;
+
+    assert_eq!(
+        attested,
+        (FAILED, None),
+        "the unreported exception has no finding to waive, so the adapter cannot attest"
+    );
+    Ok(())
+}
+
+#[test]
+fn failures_exactly_at_the_cap_are_attested() -> Result<(), Box<dyn Error>> {
+    const MAX_REPORTED: usize = 1_000;
+    let pr = Pr::new()?;
+    let document = edited(|document| {
+        let raised = ratchet(document)?.get_mut("raised")?.as_array_mut()?;
+        raised.extend((1..MAX_REPORTED).map(|index| {
+            serde_json::json!({
+                "crate": format!("crate-{index}"), "lint": "clippy::too_many_lines",
+                "from": 2, "to": 3
+            })
+        }));
+        push(document, "findings", expect_hit("src/lib.rs"))
+    })?;
+
+    let attested = attested(&pr, &mut FakeLint::leaving(&document))?;
+
+    assert_eq!(
+        attested,
+        (FAILED, Some(names(&[]))),
+        "every failure is reported"
+    );
+    Ok(())
+}

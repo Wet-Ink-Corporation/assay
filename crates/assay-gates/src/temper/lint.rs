@@ -21,7 +21,7 @@ use super::evidence::{self, MAX_EVIDENCE_BYTES};
 use super::exceptions::Allowlist;
 use super::lint_findings::{self, Shown};
 use super::ratchet::{self, Checked, Refused};
-use super::steps::{capture, stopped};
+use super::steps::{Verdict, capture, stopped};
 use super::{ErrorOf, TREE, TemperAdapter, TemperError};
 use crate::capture::CaptureSupervisor;
 use crate::exec::read_document;
@@ -37,6 +37,9 @@ pub(super) const MAX_FINDINGS_OUT_BYTES: u64 = 64 << 20;
 /// How `baseline --check` is named in errors.
 const BASELINE_CHECK: &str = "temper baseline --check";
 
+/// How a failed `baseline --check` is named among the document's `failed_steps` (#153).
+const BASELINE_STEP: &str = "baseline";
+
 impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
     /// Runs `gates-lint` for `plugin`, whose declared steps are `steps`.
     pub(super) fn run_lint(
@@ -51,11 +54,11 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
         let allowlist = self.allowlist()?;
         // The steps read the tree before `baseline --check` builds it (build scripts and
         // proc-macros run there).
-        let mut failed = false;
+        let mut failed_steps = Vec::new();
         for step in steps.iter().filter(|step| step.job() == BuildJob::Lint) {
             match self.step_retried(step)? {
                 Termination::Exited(0) => {}
-                Termination::Exited(_) => failed = true,
+                Termination::Exited(_) => failed_steps.push(step.name().as_str().to_owned()),
                 other => return Ok(stopped(other)),
             }
         }
@@ -78,15 +81,14 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
                 detail: "temper's exit code disagrees with ratchet.ok".to_owned(),
             });
         }
-        failed |= exit_failed;
+        // temper's ratchet shows its causes as display findings only in part (capped, and
+        // compile errors only when located), so its failure is a step of its own (#153). A
+        // declared step of that name that failed already says so: the names stay distinct.
+        if exit_failed && !failed_steps.iter().any(|name| name == BASELINE_STEP) {
+            failed_steps.push(BASELINE_STEP.to_owned());
+        }
         let findings = self.lint_findings(&checked, &allowlist)?;
-        failed |= findings.failing;
-        let conclusion = if failed {
-            GateConclusion::Fail
-        } else {
-            GateConclusion::Pass
-        };
-        self.document(plugin, pin, (conclusion, findings.findings))
+        self.document(plugin, pin, findings.verdict(failed_steps))
     }
 
     /// The findings document `baseline --check` left at `out`, read strictly and believed only
@@ -132,6 +134,7 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
         findings.truncate(lint_findings::MAX_REPORTED);
         Ok(LintFindings {
             failing: failures.failing,
+            all_reported: failures.all_reported,
             findings,
         })
     }
@@ -141,7 +144,27 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
 struct LintFindings {
     /// Whether a `raised` or unadmitted `exception` entry was found.
     failing: bool,
+    /// Whether each such entry is one of `findings`.
+    all_reported: bool,
     findings: Vec<Finding>,
+}
+
+impl LintFindings {
+    /// The run's verdict, after `failed_steps` failed without a finding: it fails on either.
+    /// Failures past the report cap have no finding a waiver could name, so the run attests no
+    /// step list then (#153).
+    fn verdict(self, failed_steps: Vec<String>) -> Verdict {
+        let conclusion = if self.failing || !failed_steps.is_empty() {
+            GateConclusion::Fail
+        } else {
+            GateConclusion::Pass
+        };
+        Verdict {
+            conclusion,
+            findings: self.findings,
+            failed_steps: self.all_reported.then_some(failed_steps),
+        }
+    }
 }
 
 /// Removes a findings document an earlier run or a restored `target/` left, so only this run's

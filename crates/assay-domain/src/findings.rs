@@ -67,7 +67,7 @@ pub struct Stats {
 /// An `assay.findings/1` document (03 §3).
 ///
 /// A contract record: the schema, checked on read, requires `conclusion` from gates and forbids
-/// it from reviewers (a reviewer cannot say "approve").
+/// it, and `failed_steps`, from reviewers (a reviewer cannot say "approve").
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FindingsDocument {
@@ -80,6 +80,11 @@ pub struct FindingsDocument {
     pub conclusion: Option<GateConclusion>,
     /// The findings, possibly none.
     pub findings: Vec<Finding>,
+    /// The steps (`fmt`, `deny`, `tests`) that failed without a finding, as the gate's adapter
+    /// attests them (03 §2.1, #153): empty when every failure cause is a finding, absent when the
+    /// adapter does not attest. Gates only; the schema allows a non-empty list only on `fail`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_steps: Option<Vec<String>>,
     /// The producer's counters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stats: Option<Stats>,
