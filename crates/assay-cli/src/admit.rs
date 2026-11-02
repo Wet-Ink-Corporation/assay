@@ -28,7 +28,7 @@ pub use self::error::{AdmitRunError, AdmitRunFailure, FetchedSide, StageError, S
 use crate::ci::{FirstAttempt, OutDir};
 use crate::outputs::{AdmitOutputs, Identity, PlanOutputs};
 use crate::plan::RUN_FILE;
-use crate::prior::prior;
+use crate::prior::{Prior, prior};
 use crate::pull_request::ForgePullRequest;
 
 /// The context pack's file name in `--out`, beside [`RUN_FILE`]; written for a spend only.
@@ -234,7 +234,12 @@ where
         },
     )
     .map_err(AdmitRunError::Range)?;
-    let prior = prior(
+    // The previous bundle is dropped here: admit reads its carry set itself (#347 follow-up).
+    let Prior {
+        carry,
+        state,
+        bundle: _,
+    } = prior(
         (job.run.run_env(), identity),
         objects,
         ports.ledger,
@@ -244,8 +249,8 @@ where
     let request = AdmitRequest {
         run_uid,
         plan: job.document,
-        carry: prior.carry,
-        prior: prior.state.evidence.as_ref(),
+        carry,
+        prior: state.evidence.as_ref(),
         identities: &identities,
         author: identity.author,
         range: &range,
