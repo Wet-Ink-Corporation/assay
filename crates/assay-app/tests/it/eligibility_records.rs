@@ -1,6 +1,6 @@
 //! A judged command and its ledger record (`assay.ledger-command/1`, D1 of #61):
 //! `SnapshotCommand::record` writes the command as its canonical line with its head, and
-//! `TryFrom<&CommandRecord>` reads it back, refusing a line the snapshot cannot judge.
+//! `TryFrom<CommandRecord>` reads it back, refusing a line the snapshot cannot judge.
 
 use std::num::NonZeroU64;
 
@@ -62,7 +62,7 @@ fn a_judged_command_is_recorded_with_its_head_and_canonical_line() -> Outcome {
             at: ledger_time("2026-10-13T09:05:02.000Z"),
         }
     );
-    assert_eq!(SnapshotCommand::try_from(&record), Ok(waive));
+    assert_eq!(SnapshotCommand::try_from(record), Ok(waive));
     Ok(())
 }
 
@@ -98,7 +98,7 @@ fn a_record_whose_line_the_snapshot_cannot_judge_is_refused() -> Outcome {
             UnreadCommand::NotCanonical,
         ),
     ] {
-        let read = SnapshotCommand::try_from(&CommandRecord {
+        let read = SnapshotCommand::try_from(CommandRecord {
             command: text.to_owned(),
             ..record.clone()
         });

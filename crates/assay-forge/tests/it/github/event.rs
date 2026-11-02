@@ -382,6 +382,21 @@ fn refuses_a_missing_draft_rather_than_defaulting_it() {
 }
 
 #[test]
+fn refuses_a_head_without_a_repo_key_rather_than_reading_it_as_deleted() {
+    let body = opened_with(|v| {
+        v["pull_request"]["head"]
+            .as_object_mut()
+            .expect("an object")
+            .remove("repo");
+    });
+
+    assert_matches!(
+        EventPayload::read(EventName::PullRequestTarget, body.as_slice()),
+        Err(EventPayloadError::Shape(_))
+    );
+}
+
+#[test]
 fn refuses_a_repeated_key() {
     let body = br#"{"action": "opened", "action": "closed"}"#;
 

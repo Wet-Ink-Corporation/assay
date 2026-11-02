@@ -6,8 +6,9 @@ use std::error::Error;
 
 use assay_app::{
     Appended, CommandRecord, CommentId, Corruption, LedgerPath, LedgerReadError, LedgerWriteError,
-    MAX_COMMAND_CHARS, PushAppended, PushDraft, PushKind, PushRecord, UserId, WriteOutcome,
-    append_command, append_push, read_commands, read_pushes,
+    MAX_COMMAND_CHARS, MAX_COMMAND_REASON_CHARS, Parsed, PushAppended, PushDraft, PushKind,
+    PushRecord, UserId, WriteOutcome, append_command, append_push, parse_command, read_commands,
+    read_pushes,
 };
 
 use crate::ledger_fakes::{MemoryLedger, at, commit, digest, id, run};
@@ -326,11 +327,53 @@ fn a_command_file_with_a_comment_twice_is_refused() {
     );
 }
 
+/// A dismiss of the recorded finding with `reason`.
+fn dismiss(reason: &str) -> String {
+    format!("/assay dismiss 0123456789abcdef {reason}")
+}
+
+// The grammar refuses a control character in a reason, and every other token is a fixed word,
+// a fingerprint or a digest, so a recorded command never holds one. The ledger's control-
+// character pre-filter mirrors the schema's pattern and refuses this line too.
 #[test]
-fn a_command_with_a_control_character_is_never_written() {
+fn a_command_whose_reason_holds_a_control_character_is_never_written() {
     let ledger = MemoryLedger::default();
 
-    let appended = append_command(&ledger, &command(500, "/assay retry bugs\u{1b}[2J"));
+    let line = dismiss("flaky\u{1b}[2J gate");
+    assert_eq!(
+        parse_command(&line),
+        Parsed::Malformed,
+        "the grammar refuses it"
+    );
+
+    let appended = append_command(&ledger, &command(500, &line));
+
+    assert!(
+        matches!(
+            &appended,
+            Err(LedgerWriteError::Invalid {
+                problem: Corruption::Field("command"),
+                ..
+            })
+        ),
+        "{appended:?}"
+    );
+    assert_eq!(ledger.writes(), []);
+}
+
+// The grammar caps a reason at `MAX_COMMAND_REASON_CHARS`, which bounds every recorded line
+// well under `MAX_COMMAND_CHARS` (the schema's `maxLength`), so it is the grammar's cap that
+// refuses a long command; the line here is under `MAX_COMMAND_CHARS`.
+#[test]
+fn a_command_whose_reason_passes_the_grammars_cap_is_never_written() {
+    let ledger = MemoryLedger::default();
+    let line = dismiss(&"y".repeat(MAX_COMMAND_REASON_CHARS + 1));
+    assert!(
+        line.chars().count() <= MAX_COMMAND_CHARS,
+        "under the line cap"
+    );
+
+    let appended = append_command(&ledger, &command(500, &line));
 
     assert!(
         matches!(
@@ -346,19 +389,16 @@ fn a_command_with_a_control_character_is_never_written() {
 }
 
 #[test]
-fn a_command_over_its_length_cap_is_never_written() {
+fn a_command_whose_reason_is_at_the_grammars_cap_is_written() -> Result<(), Box<dyn Error>> {
     let ledger = MemoryLedger::default();
+    let line = dismiss(&"y".repeat(MAX_COMMAND_REASON_CHARS));
 
-    let appended = append_command(&ledger, &command(500, &"x".repeat(MAX_COMMAND_CHARS + 1)));
+    let appended = append_command(&ledger, &command(500, &line))?;
 
-    assert!(
-        matches!(
-            &appended,
-            Err(LedgerWriteError::Invalid {
-                problem: Corruption::Field("command"),
-                ..
-            })
-        ),
-        "{appended:?}"
+    assert_eq!(appended, Appended::Recorded);
+    assert_eq!(
+        read_commands(&ledger, id(42), id(7))?,
+        [command(500, &line)]
     );
+    Ok(())
 }
