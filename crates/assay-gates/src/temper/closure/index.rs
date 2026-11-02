@@ -22,13 +22,13 @@ struct Node {
 
 /// Every name of the tree, keyed by its directory's id and the name itself.
 #[derive(Debug, Default)]
-pub(super) struct TreeIndex<'t> {
+pub(in crate::temper) struct TreeIndex<'t> {
     names: HashMap<(usize, &'t str), Node>,
 }
 
 impl<'t> TreeIndex<'t> {
     /// The index of `tree`, built in one pass over its paths.
-    pub(super) fn new(tree: &Tree<'t>) -> Self {
+    pub(in crate::temper) fn new(tree: &Tree<'t>) -> Self {
         let mut index = Self::default();
         let mut dirs = ROOT;
         for entry in tree.entries() {
@@ -57,7 +57,7 @@ impl<'t> TreeIndex<'t> {
     /// `literal` resolved from `dir`: canonical, inside the repository, every `..` leaving a
     /// real directory, and within the closure's path caps as written and as resolved; `None`
     /// otherwise. A `..` or `.` in `dir` itself is taken as a name.
-    pub(super) fn resolve(&self, dir: &str, literal: &str) -> Option<String> {
+    pub(in crate::temper) fn resolve(&self, dir: &str, literal: &str) -> Option<String> {
         // The caps first, so a long literal is refused before it is scanned.
         let unsafe_text = !within_caps(literal)
             || literal.starts_with('/')

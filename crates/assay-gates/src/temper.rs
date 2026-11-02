@@ -12,8 +12,9 @@
 //!    over the head tree; every `ask` hit not admitted by base `.assay/exceptions.toml` fails,
 //!    as does an `#[expect]` naming more than one lint. What the scan cannot see (Rust under
 //!    the directories it skips, submodules, symlinks, `cfg_attr` suppressions, `#[path]`,
-//!    `include!`, modules without their files, and a plain `allow` it did not report) is a
-//!    `blind-spot` that fails too.
+//!    `include!`, modules without their files, a plain `allow` it did not report, and a Cargo
+//!    build script or target `path` that is not a `.rs` file of the tree) is a `blind-spot`
+//!    that fails too.
 //! 3. Gate-config diff: the keys of `.claude/temper.json` that steer temper, at base and head;
 //!    any difference fails unless base admits that exact base and head value.
 //!
@@ -24,6 +25,7 @@
 
 mod attributes;
 mod baseline;
+mod cargo_targets;
 mod closure;
 #[cfg(test)]
 mod corpus;
@@ -297,10 +299,11 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             &statics::test_inventory(&base_view, &head_view),
             &allowlist,
         ));
-        failing.extend(static_findings::manifests(
-            &manifests::check(&base_view, &head_view),
-            &allowlist,
-        ));
+        let manifest_checks = manifests::check(&base_view, &head_view);
+        // Never admitted: a blind spot is not waivable.
+        let blind_targets: Vec<_> = manifest_checks.blind_targets.iter().collect();
+        failing.extend(findings::blind(&blind_targets));
+        failing.extend(static_findings::manifests(&manifest_checks, &allowlist));
         let drift = self.vendored_drift(&head, &pin)?;
         let conclusion = if failing.is_empty() {
             GateConclusion::Pass
