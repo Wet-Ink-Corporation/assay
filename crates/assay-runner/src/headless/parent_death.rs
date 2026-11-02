@@ -36,6 +36,10 @@ impl ParentDeath {
     /// system directories, so a link there is the system's. A candidate whose metadata cannot
     /// be read is not usable: the probe's answer for it is "no `setpriv` here", which
     /// `assay doctor` reports as the open parent-death gap.
+    ///
+    /// The probe does not run the candidate, so it does not see its version: `--pdeathsig`
+    /// needs util-linux 2.33 or later, and an older `setpriv` found here makes every CLI start
+    /// fail (a usage error, exit 1), which `assay doctor` fails on.
     #[must_use]
     pub fn probe_paths<P: AsRef<Path>>(candidates: impl IntoIterator<Item = P>) -> Self {
         let setpriv = candidates
@@ -61,6 +65,14 @@ impl ParentDeath {
     /// would start and exit 126 or 127 with no transcript, which a model call charges at its
     /// budget. So `program` is checked first, as given: symlinks followed, it must be a regular
     /// file with an execute bit. One removed between the check and the exec is that residual.
+    ///
+    /// The check cannot see everything `execve` refuses: a file whose execute bit is not the
+    /// caller's (the bit of another owner or group), and a script whose interpreter is missing.
+    /// Under `setpriv` those start, exit 126 or 127 with an empty transcript and are charged at
+    /// the call's budget, where a direct start would be an uncharged spawn error. They are left
+    /// charged: the exit status of `setpriv`'s exec failure cannot be told from the CLI's own,
+    /// and an over-charge is the safe side of the cost cap. The pinned `claude` is a regular
+    /// executable, so this is a misconfigured host, which `assay doctor` fails on.
     ///
     /// # Errors
     /// Under `setpriv`, the error reading `program`'s metadata, or `PermissionDenied` when it

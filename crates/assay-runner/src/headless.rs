@@ -152,6 +152,11 @@ impl<K> ClaudeHeadless<K> {
     /// This runner starting the CLI under `parent_death` (#154): pass
     /// [`ParentDeath::probe`]'s guard so the CLI dies with assay where `setpriv` exists.
     /// Without this call the CLI is started directly.
+    ///
+    /// The program given to [`new`](Self::new) must then be an absolute path: under `setpriv` it
+    /// is checked against assay's working directory but executed by `setpriv` from the CLI's,
+    /// and `setpriv` searches `PATH` for a bare name. The composition root refuses a relative
+    /// program before building this runner.
     #[must_use]
     pub fn with_parent_death(self, parent_death: ParentDeath) -> Self {
         Self {
