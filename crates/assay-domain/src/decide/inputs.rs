@@ -211,8 +211,9 @@ closed_enum! {
 ///
 /// A failed gate is cleared by waivers only when its adapter attested that every cause of the
 /// failure is a finding ([`StepAttribution::Known`] with no failed step) and every finding is a
-/// waived human-decision finding. A gate whose steps are [`StepAttribution::Unknown`] (no
-/// contract carries step results yet, 03 §2.1) or that names a failed step is never cleared.
+/// waived human-decision finding. A gate whose steps are [`StepAttribution::Unknown`] (its
+/// document attests none, or its adapter is not temper, 03 §2.1) or that names a failed step is
+/// never cleared.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GateReport {
@@ -251,10 +252,11 @@ pub enum GateOutcome {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum StepAttribution {
     /// The adapter did not attest: some failure may have no finding, so waivers never clear
-    /// the gate. What every gate is until the findings contract carries step results.
+    /// the gate. What every gate but a temper gate whose document carries `failed_steps` is.
     Unknown,
-    /// The steps (`fmt`, `deny`, `tests`) that failed without a finding; empty means every
-    /// failure cause is a finding. Waivers clear the gate only when it is empty.
+    /// The steps (`fmt`, `deny`, `tests`) that failed without a finding, from the temper
+    /// document's `failed_steps` (#153); empty means every failure cause is a finding. Waivers
+    /// clear the gate only when it is empty.
     Known(Vec<String>),
 }
 

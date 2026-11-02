@@ -500,6 +500,27 @@ fn a_baseline_that_is_not_a_regular_file_is_a_gate_error() -> Result<(), Box<dyn
     Ok(())
 }
 
+#[test]
+fn gates_static_attests_that_every_failure_is_a_finding() -> Result<(), Box<dyn Error>> {
+    let mut clean = Pr::new()?;
+    let mut raised = Pr::new()?;
+    raised.set(
+        Revision::Head,
+        BASELINE,
+        &baseline(&[("assay-forge", "clippy::too_many_lines", 3)]),
+    );
+
+    let attested = [clean.document()?, raised.document()?]
+        .map(|(outcome, document)| (outcome, document.and_then(|document| document.failed_steps)));
+
+    assert_eq!(
+        attested,
+        [(PASSED, Some(Vec::new())), (FAILED, Some(Vec::new()))],
+        "#153: a Z2s failure is always one of its findings, so no step failed without one"
+    );
+    Ok(())
+}
+
 /// The 1-based line of the first line of `text` that contains `needle` in quotes.
 fn line_of(text: &str, needle: &str) -> Result<u64, Box<dyn Error>> {
     let quoted = format!("\"{needle}\"");
