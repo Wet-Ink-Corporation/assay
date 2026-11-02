@@ -11,8 +11,8 @@
 //! commits are fetched only for a plan that succeeded, the one case `authenticate` reads them.
 //! For an authenticated run, in order: the base P10 lists ([`assay_app::base_lists`]); the PR's
 //! ledger state and the carry decided on its evidence pointer, as `admit` decides it; the
-//! previous run's carried findings and waivers ([`assay_app::prior_carry`],
-//! [`assay_app::prior_waivers`]); the snapshot ([`assay_app::github_state`]) over the ledger's
+//! previous run's carried findings and waivers, read from the one fetch of its bundle that gave
+//! the previous head ([`assay_app::PriorBundle`], #347); the snapshot ([`assay_app::github_state`]) over the ledger's
 //! push records ([`assay_app::LedgerSnapshot`]); the decision inputs
 //! ([`assay_app::decision_inputs`]) with guard's draft flag and the ledger's requeue count of
 //! this head; and the carry set, unjudged ([`assay_app::CarrySet::unjudged`]): until the real
@@ -29,9 +29,9 @@ use assay_app::{
     ArtifactJob, AuthenticatedRun, Authentication, BUNDLE_FILE, BundleSource, CarriedFinding,
     Carry, CarrySet, CommandComments, ContractValidator, DecidePorts, DecideRequest, Decided,
     EligibilityLists, Forge, GitHubState, InputsRequest, JobResult, Ledger, LedgerSnapshot,
-    PlanJob, PreparedBundle, PriorCarry, PriorWaivers, PullRequestState, RefusalReason, RestFiles,
+    PlanJob, PreparedBundle, PriorBundle, PriorWaivers, PullRequestState, RefusalReason, RestFiles,
     RunArtifacts, Sha256Digest, StatePorts, StateRequest, Target, authenticate, base_lists,
-    decision_inputs, github_state, prepare, prior_carry, prior_waivers,
+    decision_inputs, github_state, prepare,
 };
 use assay_domain::{ContentHash, Readiness, Rubric};
 
@@ -41,7 +41,7 @@ use crate::admit::{FetchCommits, FetchedSide};
 use crate::ci::{FirstAttempt, OutDir, RunEnv};
 use crate::outputs::{DecideNeeds, DecideOutputs, Identity, PlanEnd, PlanOutputs};
 use crate::plan::plan_request;
-use crate::prior::prior;
+use crate::prior::{Prior, prior};
 use crate::pull_request::ForgePullRequest;
 
 /// What `decide` is given besides its ports.
@@ -254,25 +254,23 @@ where
 {
     let (identity, request, run_env) = (accepted.identity, accepted.request, accepted.run_env);
     let lists = base_lists(ports.objects, &identity.base_sha).map_err(DecideRunError::Lists)?;
-    let prior = prior(
+    let Prior {
+        carry,
+        state,
+        bundle,
+    } = prior(
         (run_env, identity),
         ports.objects,
         ports.ledger,
         ports.bundles,
     )?;
-    let requeues = prior
-        .state
+    let requeues = state
         .deferral
         .as_ref()
         .filter(|deferral| deferral.head == identity.head_sha)
         .map_or(0, |deferral| deferral.count);
     let repository = run_env.repo.to_string();
-    let previous = prior.state.evidence.as_ref().map(|pointer| PriorCarry {
-        repo_id: run_env.run_uid.repo_id,
-        pointer,
-        repository: &repository,
-    });
-    let (carried, waivers) = carried(prior.carry, previous.as_ref(), ports.bundles)?;
+    let (carried, waivers) = carried(carry, bundle, &repository)?;
     let github = snapshot(accepted, ports, &lists)?;
     let inputs = decision_inputs(&InputsRequest {
         run: accepted.authenticated,
@@ -350,18 +348,21 @@ where
 type Carried<H, S, A, F, L, B, C> =
     Result<(Vec<CarriedFinding>, PriorWaivers), DecideRunError<H, S, A, F, L, B, C>>;
 
-/// The previous completed run's carried findings and the waivers it applied, read from the
-/// bundle `previous` names when `carry` keeps them; none for a first review.
-fn carried<H, S, A, F, L, B: BundleSource, C>(
+/// The previous completed run's carried findings for `repository` and the waivers it applied,
+/// read from its `bundle` (fetched once, by [`prior`]) when `carry` keeps them; none for a
+/// first review.
+fn carried<H, S, A, F, L, B, C>(
     carry: Carry,
-    previous: Option<&PriorCarry<'_>>,
-    bundles: &B,
-) -> Carried<H, S, A, F, L, B::Error, C> {
-    let Some(previous) = previous else {
+    bundle: Option<PriorBundle>,
+    repository: &str,
+) -> Carried<H, S, A, F, L, B, C> {
+    let Some(bundle) = bundle else {
         return Ok((Vec::new(), PriorWaivers::default()));
     };
-    let findings = prior_carry(carry, previous, bundles).map_err(DecideRunError::Prior)?;
-    let waivers = prior_waivers(carry, previous, bundles).map_err(DecideRunError::Prior)?;
+    let waivers = bundle.waivers(carry).map_err(DecideRunError::Prior)?;
+    let findings = bundle
+        .carried(carry, repository)
+        .map_err(DecideRunError::Prior)?;
     Ok((findings, waivers))
 }
 

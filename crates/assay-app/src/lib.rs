@@ -201,10 +201,10 @@ pub use rereview::{
     Ancestry, CarriedAnchor, CarriedField, CarriedFinding, CarriedOutcome, CarriedParts,
     CarriedProblem, CarriedRefusal, CarriedState, Carry, CarryRefused, CarryReset, CarrySet,
     Cumulative, Increment, MAX_CARRIED, MAX_CARRIED_PATH_BYTES, MAX_RANGE_DIFF_BYTES,
-    NotReverified, OmitReason, Omitted, PriorCarry, PriorCarryError, PriorHistory, RangeDiff,
-    RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError, TargetRequest, next_carry,
-    prior_carry, prior_head, prior_waivers, read_carried, recheck_anchors, review_target,
-    settle_carried,
+    NotReverified, OmitReason, Omitted, PriorBundle, PriorCarry, PriorCarryError, PriorHistory,
+    RangeDiff, RangeDiffCommits, RangeDiffListing, ReviewTarget, TargetError, TargetRequest,
+    next_carry, prior_carry, prior_head, prior_waivers, read_carried, recheck_anchors,
+    review_target, settle_carried,
 };
 pub use shard::{
     Import, MAX_IMPORTS, MAX_SHARD_FILES, MAX_SHARDS, Shard, ShardCount, ShardError, ShardFile,

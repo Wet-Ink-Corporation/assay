@@ -5,6 +5,7 @@
 //! applied, which a later head may carry (#59), and the head it was decided on (#60 ST-11, D6
 //! A). A reset or a first review reads nothing.
 
+use std::fmt;
 use std::num::NonZeroU64;
 
 use assay_domain::{Decision, RunUid};
@@ -93,8 +94,87 @@ pub fn prior_carry<S: BundleSource>(
         Carry::Kept => {}
         Carry::FirstReview | Carry::Reset(_) => return Ok(Vec::new()),
     }
-    let bundle = read_prior(request, source)?;
-    read_carried(bundle.carry.into_parts(), request.repository).map_err(PriorCarryError::Refused)
+    PriorBundle::read(request, source)?.carried(Carry::Kept, request.repository)
+}
+
+/// The previous completed run's bundle, fetched and authenticated once.
+///
+/// Its head, carry set and waivers are read from that one fetch (#347) exactly as
+/// [`prior_head`], [`prior_carry`] and [`prior_waivers`] read them.
+pub struct PriorBundle {
+    bundle: Bundle,
+}
+
+impl fmt::Debug for PriorBundle {
+    /// The bundle's documents are not shown: they can be up to [`MAX_BUNDLE_BYTES`].
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PriorBundle").finish_non_exhaustive()
+    }
+}
+
+impl PriorBundle {
+    /// Fetches and authenticates the bundle `request.pointer` names, as [`prior_carry`] does.
+    ///
+    /// # Errors
+    ///
+    /// As [`prior_carry`], except [`PriorCarryError::Refused`], which this never returns.
+    pub fn read<S: BundleSource>(
+        request: &PriorCarry<'_>,
+        source: &S,
+    ) -> Result<Self, PriorCarryError<S::Error>> {
+        read_prior(request, source).map(|bundle| Self { bundle })
+    }
+
+    /// The head the run was decided on, as [`prior_head`] reads it.
+    ///
+    /// # Errors
+    ///
+    /// [`PriorCarryError::Shape`] when the snapshot's `head_sha` is not a commit id.
+    pub fn head<E>(&self) -> Result<CommitId, PriorCarryError<E>> {
+        self.bundle
+            .snapshot_head()
+            .ok_or(PriorCarryError::Shape(BundleShape::Shape))
+    }
+
+    /// The findings this run carries for `repository`, as [`prior_carry`] reads them: none
+    /// unless `carry` is [`Carry::Kept`]. It takes the bundle, whose carry set the intake
+    /// consumes, so it is the last read of it.
+    ///
+    /// # Errors
+    ///
+    /// [`PriorCarryError::Refused`] when the carried intake refuses the set.
+    pub fn carried<E>(
+        self,
+        carry: Carry,
+        repository: &str,
+    ) -> Result<Vec<CarriedFinding>, PriorCarryError<E>> {
+        match carry {
+            Carry::Kept => {}
+            Carry::FirstReview | Carry::Reset(_) => return Ok(Vec::new()),
+        }
+        read_carried(self.bundle.carry.into_parts(), repository).map_err(PriorCarryError::Refused)
+    }
+
+    /// The waivers the run's decision applied, as [`prior_waivers`] reads them: none unless
+    /// `carry` is [`Carry::Kept`].
+    ///
+    /// # Errors
+    ///
+    /// [`PriorCarryError::Shape`] when the decision does not read as `assay.decision/1`.
+    pub fn waivers<E>(&self, carry: Carry) -> Result<PriorWaivers, PriorCarryError<E>> {
+        match carry {
+            Carry::Kept => {}
+            Carry::FirstReview | Carry::Reset(_) => return Ok(PriorWaivers::default()),
+        }
+        let bundle = &self.bundle;
+        let decision = Decision::deserialize(&bundle.decision)
+            .map_err(|_not_a_decision| PriorCarryError::Shape(BundleShape::Shape))?;
+        let bindings = WaiverBindings::of(&bundle.inputs.gates, bundle.gate_documents());
+        Ok(PriorWaivers::new(
+            decision.waived.iter().map(|waived| waived.fp),
+            bindings,
+        ))
+    }
 }
 
 /// The head of the previous completed run, from the bundle `request.pointer` names.
@@ -112,10 +192,7 @@ pub fn prior_head<S: BundleSource>(
     request: &PriorCarry<'_>,
     source: &S,
 ) -> Result<CommitId, PriorCarryError<S::Error>> {
-    let bundle = read_prior(request, source)?;
-    bundle
-        .snapshot_head()
-        .ok_or(PriorCarryError::Shape(BundleShape::Shape))
+    PriorBundle::read(request, source)?.head()
 }
 
 /// What the previous completed run's decision waived, read from the bundle `request.pointer`
@@ -145,14 +222,7 @@ pub fn prior_waivers<S: BundleSource>(
         Carry::Kept => {}
         Carry::FirstReview | Carry::Reset(_) => return Ok(PriorWaivers::default()),
     }
-    let bundle = read_prior(request, source)?;
-    let decision = Decision::deserialize(&bundle.decision)
-        .map_err(|_not_a_decision| PriorCarryError::Shape(BundleShape::Shape))?;
-    let bindings = WaiverBindings::of(&bundle.inputs.gates, bundle.gate_documents());
-    Ok(PriorWaivers::new(
-        decision.waived.iter().map(|waived| waived.fp),
-        bindings,
-    ))
+    PriorBundle::read(request, source)?.waivers(carry)
 }
 
 /// Fetches and authenticates the bundle `request.pointer` names: attempt 1 only, under
