@@ -11,9 +11,9 @@ use super::commands::{
     CommandRejected, CommandStatus, CommentEvent, JudgedCommand, Recorded, SnapshotCommand,
     VoidCause, applicability, record,
 };
-use super::grammar::Command;
 use super::rule::{Ineligible, Rule};
 use super::timestamp::Timestamp;
+use crate::command::Command;
 use crate::config::{CommitId, EligibilityLists};
 use crate::decide::Snapshot;
 use crate::ledger::PushRecord;

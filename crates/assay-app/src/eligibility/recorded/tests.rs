@@ -11,10 +11,10 @@ use proptest::prelude::*;
 use serde_json::Value;
 
 use super::{RecordedState, StateRecordIn};
+use crate::command::{AckedSet, Command};
 use crate::config::{CommitId, EligibilityLists, Sha256Digest};
 use crate::eligibility::approvals::{Approval, ApprovalStatus};
 use crate::eligibility::commands::{CommandStatus, JudgedCommand, SnapshotCommand, VoidCause};
-use crate::eligibility::grammar::{AckedSet, Command};
 use crate::eligibility::record::StateRecord;
 use crate::eligibility::rule::{Ineligible, RangeFacts, Rule};
 use crate::eligibility::state::{CommitRange, GitHubState};

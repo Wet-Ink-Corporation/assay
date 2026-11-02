@@ -89,6 +89,8 @@ impl Timestamp {
             .checked_mul(MILLIS_PER_DAY)?
             .checked_add(u64::from(self.seconds).checked_mul(MILLIS_PER_SECOND)?)?
             .checked_add(nanos / NANOS_PER_MILLI)?;
+        // Both a timestamp and a ledger time end at 9999-12-31, so this never fails; were the
+        // ranges to part, `None` would refuse the record rather than write a wrong time.
         LedgerTime::from_unix_millis(millis).ok()
     }
 }
