@@ -18,7 +18,7 @@ use super::commands::VoidCause;
 use super::rule::{Ineligible, RangeFacts};
 use super::state::CommitRange;
 use super::timestamp::Timestamp;
-use crate::command::recorded_command;
+use crate::command::RecordedCommand;
 use crate::config::{CommitId, EligibilityLists, RecordedFrom, RecordedLists, Sha256Digest};
 use crate::status::UserId;
 
@@ -281,7 +281,7 @@ impl CommandIn {
             (_, reason) => reason.is_none(),
         };
         reason
-            && recorded_command(&line).is_ok()
+            && line.parse::<RecordedCommand>().is_ok()
             && self.created_at.parse::<Timestamp>().is_ok()
             && self.head_sha.parse::<CommitId>().is_ok()
             && self.body_sha256.parse::<Sha256Digest>().is_ok()

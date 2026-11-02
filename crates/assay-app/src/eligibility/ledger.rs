@@ -7,9 +7,7 @@ use thiserror::Error;
 
 use super::commands::SnapshotCommand;
 use super::ports::{LedgerRecords, SnapshotLedger};
-use crate::command::UnreadCommand;
 use crate::ledger::{Ledger, LedgerReadError, PushRecord, read_commands, read_pushes};
-use crate::publish::CommentId;
 
 /// The snapshot's ledger port for one repository.
 ///
@@ -31,16 +29,6 @@ pub enum LedgerSnapshotError<E> {
     /// The record stream could not be read or is refused.
     #[error("could not read the PR's ledger records")]
     Read(#[source] LedgerReadError<E>),
-    /// A command record's command is not one the snapshot can judge. The strict reader refuses
-    /// such a line first, so this guards the conversion rather than the file (wi-b5affa).
-    #[error("command record of comment {} cannot be judged", comment_id.0)]
-    Command {
-        /// The comment the record came from.
-        comment_id: CommentId,
-        /// What is wrong with its command.
-        #[source]
-        problem: UnreadCommand,
-    },
 }
 
 // `Error::source` hands out `&(dyn Error + 'static)`, so a chained cause must be `'static`.
@@ -71,19 +59,10 @@ where
     ) -> Result<LedgerRecords<SnapshotCommand>, Self::Error> {
         let records =
             read_commands(self.ledger, self.repo_id, number).map_err(LedgerSnapshotError::Read)?;
-        if records.len() > max {
-            return Ok(LedgerRecords::TooMany);
-        }
-        records
-            .into_iter()
-            .map(|record| {
-                let comment_id = record.comment_id;
-                SnapshotCommand::try_from(record).map_err(|problem| LedgerSnapshotError::Command {
-                    comment_id,
-                    problem,
-                })
-            })
-            .collect::<Result<_, _>>()
-            .map(LedgerRecords::Listed)
+        Ok(if records.len() > max {
+            LedgerRecords::TooMany
+        } else {
+            LedgerRecords::Listed(records.into_iter().map(SnapshotCommand::from).collect())
+        })
     }
 }

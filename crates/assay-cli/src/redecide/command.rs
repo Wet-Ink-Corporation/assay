@@ -57,7 +57,7 @@ where
         Err(reason) if answered(reason) => return stop(Reply::Rejected(reason)),
         Err(_unanswered) => return Ok(Commanded::Stop),
     };
-    if matches!(command.command, Command::Retry { .. }) {
+    if matches!(command.command.as_command(), Command::Retry { .. }) {
         return stop(Reply::RetryUnavailable);
     }
     let record = command

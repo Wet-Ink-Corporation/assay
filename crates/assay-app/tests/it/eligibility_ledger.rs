@@ -6,8 +6,9 @@ use std::error::Error;
 
 use assay_app::{
     Command, CommandRecord, CommentId, LedgerRecords, LedgerSnapshot, LedgerSnapshotError,
-    PushDraft, PushKind, PushRecord, Sha256Digest, SnapshotCommand, SnapshotLedger, StatePorts,
-    StateRequest, UserId, append_command, append_push, github_state, read_pushes,
+    PushDraft, PushKind, PushRecord, RecordedCommand, Sha256Digest, SnapshotCommand,
+    SnapshotLedger, StatePorts, StateRequest, UserId, append_command, append_push, github_state,
+    read_pushes,
 };
 
 use crate::eligibility_fakes::{APPROVER, BASE, CONTRIBUTOR, FIRST, World, comment, sha, user};
@@ -60,7 +61,7 @@ fn with_commands(count: u64) -> Result<MemoryLedger, Box<dyn Error>> {
                 comment_id: CommentId(id(comment_id)),
                 actor_id: UserId(id(1001)),
                 head_sha: commit('b'),
-                command: "/assay dismiss 0123456789abcdef not a bug".to_owned(),
+                command: "/assay dismiss 0123456789abcdef not a bug".parse()?,
                 body_sha256: digest('c'),
                 created_at: at("2026-10-12T09:29:58.000Z"),
                 at: at("2026-10-12T09:30:00.000Z"),
@@ -132,10 +133,11 @@ fn command_records_are_read_as_the_snapshot_judges_them() -> Result<(), Box<dyn 
             created_at: "2026-10-12T09:29:58Z".parse()?,
             head_sha: commit('b'),
             body_sha256: digest('c'),
-            command: Command::Dismiss {
+            command: RecordedCommand::new(Command::Dismiss {
                 finding: "0123456789abcdef".parse()?,
                 reason: "not a bug".to_owned(),
-            },
+            })
+            .ok_or("a dismissal")?,
         })
     };
     assert_eq!(
@@ -170,7 +172,7 @@ fn github_state_applies_a_recorded_waive_of_this_head() -> Result<(), Box<dyn Er
             comment_id: posted.id,
             actor_id: user(APPROVER),
             head_sha: sha(FIRST),
-            command: body.to_owned(),
+            command: body.parse()?,
             body_sha256: Sha256Digest::of(body.as_bytes()),
             created_at: at("2026-10-13T09:05:00.000Z"),
             at: at("2026-10-13T09:05:02.000Z"),

@@ -35,7 +35,10 @@ fn command_records(count: u64) -> Result<Vec<SnapshotCommand>, Box<dyn std::erro
                 created_at: at(5),
                 head_sha: sha(FIRST),
                 body_sha256: Sha256Digest::of(b"/assay waive 0123456789abcdef"),
-                command: assay_app::Command::Waive { finding: fp() },
+                command: assay_app::RecordedCommand::new(assay_app::Command::Waive {
+                    finding: fp(),
+                })
+                .ok_or("a waive")?,
             })
         })
         .collect()

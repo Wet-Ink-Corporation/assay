@@ -6,7 +6,8 @@ use std::num::NonZeroU64;
 
 use assay_app::{
     AckedSet, Command, CommandRejected, CommentAction, CommentEvent, CommentId, Ineligible, Parsed,
-    Recorded, ReviewState, Sha256Digest, SnapshotCommand, VoidCause, parse_command,
+    Recorded, RecordedCommand, ReviewState, Sha256Digest, SnapshotCommand, VoidCause,
+    parse_command,
 };
 use assay_domain::{OverrideScope, RequiredRole};
 
@@ -125,7 +126,7 @@ fn an_eligible_waive_is_recorded_with_its_head_and_body_hash() -> Outcome {
             created_at: at(5),
             head_sha: sha(FIRST),
             body_sha256: Sha256Digest::of(body.as_bytes()),
-            command: Command::Waive { finding: fp() },
+            command: RecordedCommand::new(Command::Waive { finding: fp() }).ok_or("a waive")?,
         })
     );
     Ok(())

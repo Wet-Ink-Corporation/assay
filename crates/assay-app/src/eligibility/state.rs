@@ -170,7 +170,7 @@ impl GitHubState {
     #[must_use]
     pub fn waivers(&self) -> Vec<Waiver> {
         self.valid()
-            .filter_map(|record| match &record.command {
+            .filter_map(|record| match record.command.as_command() {
                 Command::Waive { finding } => Some(Waiver {
                     fp: *finding,
                     by: self.login(record.actor),
@@ -184,7 +184,7 @@ impl GitHubState {
     #[must_use]
     pub fn override_record(&self) -> Option<Override> {
         self.latest_override()
-            .and_then(|record| match &record.command {
+            .and_then(|record| match record.command.as_command() {
                 Command::Override {
                     scope,
                     reasons_digest,
@@ -201,7 +201,7 @@ impl GitHubState {
     /// The valid dismissals of the PR, for the context pack.
     pub fn dismissals(&self) -> impl Iterator<Item = &SnapshotCommand> + '_ {
         self.valid()
-            .filter(|record| matches!(record.command, Command::Dismiss { .. }))
+            .filter(|record| matches!(record.command.as_command(), Command::Dismiss { .. }))
     }
 
     /// The command records whose comments no longer stand, for `CommandVoided` events.
@@ -225,7 +225,7 @@ impl GitHubState {
     /// The latest valid override record of this head, by `(created_at, comment_id)`.
     pub(super) fn latest_override(&self) -> Option<&SnapshotCommand> {
         self.valid()
-            .filter(|record| matches!(record.command, Command::Override { .. }))
+            .filter(|record| matches!(record.command.as_command(), Command::Override { .. }))
             .max_by_key(|record| (record.created_at, record.comment_id))
     }
 

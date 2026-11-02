@@ -77,7 +77,7 @@ pub(super) fn valid_dismissals<C: CommandComments>(
         .into_iter()
         .filter(|record| eligible.admits(record.actor_id))
         .filter_map(|record| {
-            let (fp, reason) = parse_dismiss(&record.command)?;
+            let (fp, reason) = parse_dismiss(record.command.as_str())?;
             let dismissal = OwnerDismissal {
                 comment_id: record.comment_id.0,
                 actor_id: record.actor_id.0,

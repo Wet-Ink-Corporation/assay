@@ -5,10 +5,9 @@
 use std::error::Error;
 
 use assay_app::{
-    Appended, CommandRecord, CommentId, Corruption, LedgerPath, LedgerReadError, LedgerWriteError,
-    MAX_COMMAND_CHARS, MAX_COMMAND_REASON_CHARS, Parsed, PushAppended, PushDraft, PushKind,
-    PushRecord, UserId, WriteOutcome, append_command, append_push, parse_command, read_commands,
-    read_pushes,
+    Appended, CommandRecord, CommentId, Corruption, LedgerPath, LedgerReadError,
+    MAX_COMMAND_REASON_CHARS, PushAppended, PushDraft, PushKind, PushRecord, UserId, WriteOutcome,
+    append_command, append_push, read_commands, read_pushes,
 };
 
 use crate::ledger_fakes::{MemoryLedger, at, commit, digest, id, run};
@@ -213,18 +212,18 @@ const WAIVE: &str = "/assay waive 0123456789abcdef";
 /// A recorded command's canonical line: a retry.
 const RETRY: &str = "/assay retry bugs";
 
-fn command(comment_id: u64, text: &str) -> CommandRecord {
-    CommandRecord {
+fn command(comment_id: u64, text: &str) -> Result<CommandRecord, Box<dyn Error>> {
+    Ok(CommandRecord {
         run_uid: run(9),
         pr: id(7),
         comment_id: CommentId(id(comment_id)),
         actor_id: UserId(id(1001)),
         head_sha: commit('b'),
-        command: text.to_owned(),
+        command: text.parse()?,
         body_sha256: digest('c'),
         created_at: at("2026-10-12T09:29:58.000Z"),
         at: at("2026-10-12T09:30:00.000Z"),
-    }
+    })
 }
 
 fn command_line(comment_id: u64, text: &str) -> String {
@@ -247,12 +246,12 @@ fn command_line(comment_id: u64, text: &str) -> String {
 fn a_command_record_is_appended_once_per_comment() -> Result<(), Box<dyn Error>> {
     let ledger = MemoryLedger::default();
 
-    let first = append_command(&ledger, &command(500, WAIVE))?;
-    let again = append_command(&ledger, &command(500, "/assay override llm"))?;
-    let second = append_command(&ledger, &command(501, RETRY))?;
+    let first = append_command(&ledger, &command(500, WAIVE)?)?;
+    let again = append_command(&ledger, &command(500, RETRY)?)?;
+    let second = append_command(&ledger, &command(501, RETRY)?)?;
 
     assert_eq!(first, Appended::Recorded);
-    assert_eq!(again, Appended::AlreadyRecorded(command(500, WAIVE)));
+    assert_eq!(again, Appended::AlreadyRecorded(command(500, WAIVE)?));
     assert_eq!(second, Appended::Recorded);
     assert_eq!(commands().as_str(), "commands/42/7.jsonl");
     assert_eq!(
@@ -261,7 +260,7 @@ fn a_command_record_is_appended_once_per_comment() -> Result<(), Box<dyn Error>>
     );
     assert_eq!(
         read_commands(&ledger, id(42), id(7))?,
-        [command(500, WAIVE), command(501, RETRY)]
+        [command(500, WAIVE)?, command(501, RETRY)?]
     );
     Ok(())
 }
@@ -332,73 +331,17 @@ fn dismiss(reason: &str) -> String {
     format!("/assay dismiss 0123456789abcdef {reason}")
 }
 
-// The grammar refuses a control character in a reason, and every other token is a fixed word,
-// a fingerprint or a digest, so a recorded command never holds one. The ledger's control-
-// character pre-filter mirrors the schema's pattern and refuses this line too.
-#[test]
-fn a_command_whose_reason_holds_a_control_character_is_never_written() {
-    let ledger = MemoryLedger::default();
-
-    let line = dismiss("flaky\u{1b}[2J gate");
-    assert_eq!(
-        parse_command(&line),
-        Parsed::Malformed,
-        "the grammar refuses it"
-    );
-
-    let appended = append_command(&ledger, &command(500, &line));
-
-    assert!(
-        matches!(
-            &appended,
-            Err(LedgerWriteError::Invalid {
-                problem: Corruption::Field("command"),
-                ..
-            })
-        ),
-        "{appended:?}"
-    );
-    assert_eq!(ledger.writes(), []);
-}
-
-// The grammar caps a reason at `MAX_COMMAND_REASON_CHARS`, which bounds every recorded line
-// well under `MAX_COMMAND_CHARS` (the schema's `maxLength`), so it is the grammar's cap that
-// refuses a long command; the line here is under `MAX_COMMAND_CHARS`.
-#[test]
-fn a_command_whose_reason_passes_the_grammars_cap_is_never_written() {
-    let ledger = MemoryLedger::default();
-    let line = dismiss(&"y".repeat(MAX_COMMAND_REASON_CHARS + 1));
-    assert!(
-        line.chars().count() <= MAX_COMMAND_CHARS,
-        "under the line cap"
-    );
-
-    let appended = append_command(&ledger, &command(500, &line));
-
-    assert!(
-        matches!(
-            &appended,
-            Err(LedgerWriteError::Invalid {
-                problem: Corruption::Field("command"),
-                ..
-            })
-        ),
-        "{appended:?}"
-    );
-    assert_eq!(ledger.writes(), []);
-}
-
 #[test]
 fn a_command_whose_reason_is_at_the_grammars_cap_is_written() -> Result<(), Box<dyn Error>> {
     let ledger = MemoryLedger::default();
     let line = dismiss(&"y".repeat(MAX_COMMAND_REASON_CHARS));
 
-    let appended = append_command(&ledger, &command(500, &line))?;
+    let appended = append_command(&ledger, &command(500, &line)?)?;
 
     assert_eq!(appended, Appended::Recorded);
     assert_eq!(
         read_commands(&ledger, id(42), id(7))?,
-        [command(500, &line)]
+        [command(500, &line)?]
     );
     Ok(())
 }

@@ -1,9 +1,10 @@
 //! A command's canonical line (`Command::line`, D1 of #61): the text a command record holds, so
-//! that every later read re-parses it to the command decide-only recorded, byte for byte.
+//! that every later read re-parses it to the command decide-only recorded, byte for byte. A
+//! `RecordedCommand` is such a command with its line, parsed once (#353 F4).
 
 use assay_app::{
-    AckedSet, Command, MAX_COMMAND_CHARS, MAX_COMMAND_REASON_CHARS, Parsed, Sha256Digest,
-    parse_command,
+    AckedSet, Command, MAX_COMMAND_CHARS, MAX_COMMAND_REASON_CHARS, ParseRecordedCommandError,
+    Parsed, RecordedCommand, Sha256Digest, parse_command,
 };
 use assay_domain::{Fingerprint, OverrideScope, RequiredRole};
 use proptest::prelude::*;
@@ -60,6 +61,47 @@ proptest! {
 
         prop_assert_eq!(parse_command(&line), Parsed::Command(command));
         prop_assert!(line.chars().count() <= MAX_COMMAND_CHARS);
+    }
+
+    #[test]
+    fn every_recorded_command_is_held_with_its_line(command in recorded_command()) {
+        let line = command.line();
+
+        let held = RecordedCommand::new(command.clone());
+        let parsed = line.parse::<RecordedCommand>();
+
+        let held = held.expect("only a recheck is refused");
+        prop_assert_eq!(held.as_command(), &command);
+        prop_assert_eq!(held.as_str(), line.as_str());
+        prop_assert_eq!(parsed, Ok(held));
+    }
+}
+
+#[test]
+fn a_recheck_is_never_a_recorded_command() {
+    assert_eq!(RecordedCommand::new(Command::Recheck), None);
+}
+
+#[test]
+fn text_that_is_no_recorded_commands_canonical_line_is_refused() {
+    for (text, problem) in [
+        ("/assay recheck", ParseRecordedCommandError::Recheck),
+        ("/assay approve", ParseRecordedCommandError::Unparsed),
+        ("/assay waive nope", ParseRecordedCommandError::Unparsed),
+        (
+            "waive 0123456789abcdef",
+            ParseRecordedCommandError::Unparsed,
+        ),
+        (
+            "/assay waive 0123456789abcdef\nmore",
+            ParseRecordedCommandError::NotCanonical,
+        ),
+        (
+            "/assay waive 0123456789abcdef\r",
+            ParseRecordedCommandError::NotCanonical,
+        ),
+    ] {
+        assert_eq!(text.parse::<RecordedCommand>(), Err(problem), "{text:?}");
     }
 }
 

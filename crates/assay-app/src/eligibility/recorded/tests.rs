@@ -11,7 +11,7 @@ use proptest::prelude::*;
 use serde_json::Value;
 
 use super::{RecordedState, StateRecordIn};
-use crate::command::{AckedSet, Command};
+use crate::command::{AckedSet, Command, RecordedCommand};
 use crate::config::{CommitId, EligibilityLists, Sha256Digest};
 use crate::eligibility::approvals::{Approval, ApprovalStatus};
 use crate::eligibility::commands::{CommandStatus, JudgedCommand, SnapshotCommand, VoidCause};
@@ -101,8 +101,13 @@ fn digest(digit: char) -> Sha256Digest {
         .expect("a digest")
 }
 
+/// `command` as a record holds it.
+fn recorded(command: Command) -> RecordedCommand {
+    RecordedCommand::new(command).expect("not a recheck")
+}
+
 /// One command of each recorded kind.
-fn commands() -> [Command; 6] {
+fn commands() -> [RecordedCommand; 6] {
     [
         Command::Waive { finding: fp() },
         Command::Override {
@@ -126,6 +131,7 @@ fn commands() -> [Command; 6] {
             set: AckedSet::None,
         },
     ]
+    .map(recorded)
 }
 
 /// `.assay/owners` and `.assay/agents` listing these ids, each with login `u<id>`.
@@ -379,7 +385,7 @@ fn fixed() -> GitHubState {
                 created_at: "2026-10-13T09:06:00Z".parse().expect("a time"),
                 head_sha: commit('b'),
                 body_sha256: digest('c'),
-                command: Command::Waive { finding: fp() },
+                command: recorded(Command::Waive { finding: fp() }),
             },
             status: CommandStatus::Void(VoidCause::Edited),
         }],

@@ -316,7 +316,7 @@ fn command_event(
         {
             Ok(Some(EventPayload::CommandRecorded {
                 // The event names the grammar's word, never the comment's text.
-                command: record.command.name().to_owned(),
+                command: record.command.as_command().name().to_owned(),
                 actor_id: actor_id.0,
                 comment_id: comment_id.0,
             }))

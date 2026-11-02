@@ -171,8 +171,8 @@ fn command(judged: &JudgedCommand) -> CommandOut<'_> {
         created_at: record.created_at,
         head_sha: record.head_sha.as_str(),
         body_sha256: record.body_sha256.as_str(),
-        command: record.command.name(),
-        args: record.command.args(),
+        command: record.command.as_command().name(),
+        args: record.command.as_command().args(),
         status,
         reason,
     }
