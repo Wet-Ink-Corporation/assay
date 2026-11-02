@@ -28,15 +28,27 @@ pub(crate) const ASSAY_FETCH: [(&str, &str); 4] = [
     ("out-dir", "bin"),
 ];
 
-/// The first line of the step reading the ledger repository from base config.
-const LEDGER_RUN: &str = "python3 -I - base/.assay/plugins.toml >> \"$GITHUB_OUTPUT\" <<'EOF'";
+/// The whole `run:` text of the step reading the ledger repository from base config, as
+/// [`Step::run`] reads it, so a line added anywhere in it, after the heredoc included, fails.
+const LEDGER_RUN: &str = r#"python3 -I - base/.assay/plugins.toml >> "$GITHUB_OUTPUT" <<'EOF'
+import re, sys, tomllib
+with open(sys.argv[1], "rb") as config:
+    repo = tomllib.load(config)["assay"]["ledger_repo"]
+if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", repo):
+    sys.exit("[assay].ledger_repo is not owner/name")
+owner, name = repo.split("/")
+print(f"owner={owner}")
+print(f"name={name}")
+EOF"#;
 
 /// What a step is, for its job's ordered step list: its `id`, and its action without the `@`
-/// pin, or else the first line of its `run:` text (empty for a step with neither).
+/// pin, or else its whole `run:` text as [`Step::run`] reads it (empty for a step with
+/// neither).
 pub(crate) type StepIdentity<'a> = (Option<&'a str>, String);
 
 /// The identity of each step of every job, in file order, so a step added anywhere, a
-/// `run: curl … | sh` or a `download-artifact` alike, changes the list.
+/// `run: curl … | sh` or a `download-artifact` alike, changes the list, and so does a line
+/// added to a step's `run: |` block (#369).
 pub(crate) fn step_identities<'a>(
     jobs: &[(&'a str, Vec<&'a str>)],
 ) -> Vec<(&'a str, Vec<StepIdentity<'a>>)> {
@@ -50,7 +62,7 @@ pub(crate) fn step_identities<'a>(
                             .split_once('@')
                             .map_or(action, |(action, _)| action)
                             .to_owned(),
-                        (None, Some(run)) => run.lines().next().unwrap_or_default().to_owned(),
+                        (None, Some(run)) => run,
                         (None, None) => String::new(),
                     };
                     (step.value("id"), what)
@@ -109,7 +121,7 @@ pub(crate) fn identities(
         .collect()
 }
 
-/// The `node` path lookup's `run:` line.
+/// The `node` path lookup's whole `run:` text.
 const NODE_RUN: &str = "printf 'path=%s\\n' \"$(command -v node)\" >> \"$GITHUB_OUTPUT\"";
 
 /// The `&&` terms of a job's `if`.
