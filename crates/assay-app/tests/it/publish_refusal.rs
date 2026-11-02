@@ -133,8 +133,8 @@ fn a_reason_no_refusal_gives_is_handed_back() -> Result<(), Box<dyn Error>> {
 /// One refusal of each kind, plan mismatches included, with details as long, empty or
 /// control-laden as a file or field name could make them.
 fn one_of_each() -> Vec<Refusal> {
-    // Multibyte, so a cut at the byte cap would fall inside a character.
-    let wide = "é".repeat(MAX_REFUSAL_DETAIL_BYTES);
+    // One byte, then two-byte characters, so the byte cap falls inside a character.
+    let wide = format!("x{}", "é".repeat(MAX_REFUSAL_DETAIL_BYTES));
     let refusals = vec![
         Refusal::PlanNotSucceeded {
             result: JobResult::Failure,
@@ -203,19 +203,74 @@ fn every_refusal_s_reason_reads_back_whatever_its_details() {
 }
 
 #[test]
-fn a_plain_detail_is_kept_as_the_refusal_gives_it() {
-    for refusal in one_of_each() {
+fn each_refusal_publishes_its_detail_kept_or_cleaned_exactly() {
+    let cut = |prefix: &str| {
+        let fill = MAX_REFUSAL_DETAIL_BYTES - prefix.len();
+        format!("{prefix}{}", "x".repeat(fill))
+    };
+    // In `one_of_each`'s order; `None` is a detail already plain, kept as given.
+    let cleaned = [
+        None,
+        None,
+        Some("artifact-digest: gates-lint/temper.json\u{FFFD}::warning::forged".to_owned()),
+        Some(cut("document-too-large: admit/")),
+        None,
+        None,
+        None,
+        Some("unnamed".to_owned()),
+        // One byte, then two-byte characters: the cap falls inside the 512th, which is dropped.
+        Some(format!("x{}", "é".repeat(511))),
+        Some("tier\u{FFFD}\u{FFFD}[2J".to_owned()),
+        None,
+        None,
+    ];
+    let refusals = one_of_each();
+    assert_eq!(refusals.len(), cleaned.len());
+
+    for (refusal, cleaned) in refusals.iter().zip(cleaned) {
         let given = refusal.reason().detail;
-        let plain = !given.is_empty()
-            && given.len() <= MAX_REFUSAL_DETAIL_BYTES
-            && !given.chars().any(char::is_control);
 
-        let kept = RefusalReason::from(&refusal).reason().detail.clone();
+        let published = RefusalReason::from(refusal).reason().detail.clone();
 
-        if plain {
-            assert_eq!(kept, given, "{refusal:?}");
-        } else {
-            assert_ne!(kept, given, "{refusal:?}");
+        assert!(published.len() <= MAX_REFUSAL_DETAIL_BYTES, "{refusal:?}");
+        match cleaned {
+            None => assert_eq!(published, given, "{refusal:?}"),
+            Some(cleaned) => {
+                assert_ne!(cleaned, given, "{refusal:?}");
+                assert_eq!(published, cleaned, "{refusal:?}");
+            }
         }
     }
+}
+
+#[test]
+fn every_refusal_publishes_the_same_check_persisted_or_direct() -> Result<(), Box<dyn Error>> {
+    let run = Run::new()?;
+    for refused in one_of_each() {
+        let direct = stamped()?;
+        publish(
+            &Publication {
+                target: run.target(),
+                verdict: Verdict::Refused(&refused),
+            },
+            &ports(&direct),
+        )?;
+        let persisted = stamped()?;
+
+        publish_refusal(
+            &run.target(),
+            &RefusalReason::from(&refused),
+            &persisted,
+            &persisted,
+        )?;
+
+        let (persisted_check, direct_check) = (persisted.app_check(NAME)?, direct.app_check(NAME)?);
+        assert_eq!(
+            persisted_check.external_id, direct_check.external_id,
+            "{refused:?}"
+        );
+        assert_eq!(persisted_check.status, direct_check.status, "{refused:?}");
+        assert_eq!(persisted_check.output, direct_check.output, "{refused:?}");
+    }
+    Ok(())
 }
