@@ -5,9 +5,10 @@
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fs;
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use tempfile::TempDir;
 
@@ -120,6 +121,64 @@ fn a_clean_session_passes_and_exits_0() -> Result<(), Box<dyn Error>> {
                 .to_owned(),
             stderr: String::new(),
         }
+    );
+    Ok(())
+}
+
+/// #154: the canary `claude` dies with an `assay doctor` killed by `SIGKILL`, which runs none of
+/// assay's own code: assay found `setpriv` at `/usr/bin` or `/bin` and started the CLI under
+/// `setpriv --pdeathsig KILL`. This test needs util-linux `setpriv` there (GitHub's Ubuntu
+/// images have it, as this crate's tests need `/proc` and `kill`); without it the stand-in
+/// outlives assay and the test fails after the stand-in's 10 s wait.
+///
+/// The stand-in (`HANG=1`) writes its pid to the FIFO `bin/alive` and holds it open; `cat`
+/// reads it, under `timeout` so that a stand-in that never starts cannot hang the test. EOF
+/// before the stand-in's `survived` line means it died.
+#[test]
+#[cfg_attr(miri, ignore = "spawns processes; Miri cannot")]
+fn the_canary_claude_dies_with_an_assay_killed_by_a_signal() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new("HANG=1")?;
+    let alive = scene.path("bin/alive");
+    let made = Command::new("mkfifo").arg(&alive).status()?;
+    assert!(made.success(), "mkfifo: {made}");
+    // The canary sandbox an assay killed mid-call leaves behind goes in the scene.
+    let mut assay = command(&[&scene.path("plugins.toml"), &scene.program()], Some("t"))
+        .env("TMPDIR", scene.root.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut reader = Command::new("timeout")
+        .args(["60", "/bin/cat"])
+        .arg(&alive)
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let mut lines = BufReader::new(reader.stdout.take().ok_or("cat has no stdout")?);
+    let mut pid = String::new();
+    lines.read_line(&mut pid)?;
+
+    assay.kill()?;
+    assay.wait()?;
+    let mut rest = String::new();
+    lines.read_to_string(&mut rest)?;
+    let read = reader.wait()?;
+    // pdeathsig reaches the CLI only: the stand-in's `sleep` is still in its group.
+    let helper = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{}", pid.trim())])
+        .status()?;
+
+    assert!(
+        pid.trim().parse::<u32>().is_ok(),
+        "the stand-in started: {pid:?}"
+    );
+    assert_eq!(rest, "", "the stand-in claude outlived the killed assay");
+    assert_eq!(
+        read.code(),
+        Some(0),
+        "cat stopped at EOF, not at its timeout"
+    );
+    assert!(
+        helper.success(),
+        "the stand-in's helper was left in its group"
     );
     Ok(())
 }

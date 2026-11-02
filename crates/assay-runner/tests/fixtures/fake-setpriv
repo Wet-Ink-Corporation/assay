@@ -1,0 +1,13 @@
+#!/bin/sh
+# A stand-in for util-linux `setpriv` in the parent-death tests (#154): it appends its argv
+# (NUL-separated, one line per start) to `$FAKE_RECORD/setpriv`, then, when started as
+# `setpriv --pdeathsig KILL -- <program> <args>`, execs the program with its arguments, as the
+# real one does after arming the parent-death signal, so the program keeps this pid.
+# Any other argv exits 97 without running anything.
+set -eu
+{ for arg in "$@"; do printf '%s\0' "$arg"; done; printf '\n'; } >> "$FAKE_RECORD/setpriv"
+if [ "$#" -ge 4 ] && [ "$1" = --pdeathsig ] && [ "$2" = KILL ] && [ "$3" = -- ]; then
+  shift 3
+  exec "$@"
+fi
+exit 97

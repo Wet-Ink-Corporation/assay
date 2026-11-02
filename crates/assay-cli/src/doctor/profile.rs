@@ -16,7 +16,9 @@ use assay_app::{
     EgressToken, EgressTokenError, ProfileContext, ProfileError, ProfilePorts, ProfileReport,
     verify_profile,
 };
-use assay_runner::{CanaryError, ClaudeCanary, ClaudeHeadless, StatusError, Workdir, WorkdirError};
+use assay_runner::{
+    CanaryError, ClaudeCanary, ClaudeHeadless, ParentDeath, StatusError, Workdir, WorkdirError,
+};
 
 use super::{
     DoctorCliError, OAUTH_TOKEN, Urandom, headless_env, program_and_token, read_pins,
@@ -114,9 +116,12 @@ pub(crate) fn run(
     let supervisor = system_supervisor().map_err(ProfileCliError::Setup)?;
     let empty = tempfile::tempdir().map_err(ProfileCliError::Scratch)?;
     let workdir = Workdir::new(empty.path()).map_err(ProfileCliError::Workdir)?;
-    // Each adapter keeps its own program path and environment: the same values, held twice.
-    let cli = ClaudeHeadless::new(program.clone(), workdir, env.clone(), &supervisor);
-    let canary = ClaudeCanary::new(program, env, &supervisor);
+    // Each adapter keeps its own program path, environment and parent-death guard: the same
+    // values, held twice.
+    let parent_death = ParentDeath::probe();
+    let cli = ClaudeHeadless::new(program.clone(), workdir, env.clone(), &supervisor)
+        .with_parent_death(parent_death.clone());
+    let canary = ClaudeCanary::new(program, env, &supervisor).with_parent_death(parent_death);
     let ports = ProfilePorts {
         cli: &cli,
         probe: &canary,

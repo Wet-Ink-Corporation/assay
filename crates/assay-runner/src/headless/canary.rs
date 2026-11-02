@@ -26,7 +26,9 @@ use serde_json::json;
 use tempfile::{Builder, TempDir};
 
 use super::supervise::{self, Bounds};
-use super::{DEFAULT_MAX_OUTPUT_BYTES, GroupKill, HeadlessEnv, HeadlessError, Invocation};
+use super::{
+    DEFAULT_MAX_OUTPUT_BYTES, GroupKill, HeadlessEnv, HeadlessError, Invocation, ParentDeath,
+};
 use crate::stream;
 
 /// The user-scope mod, loaded only through `CLAUDE_CODE_PLUGIN_DIRS`.
@@ -74,6 +76,7 @@ pub struct ClaudeCanary<K> {
     env: HeadlessEnv,
     killer: K,
     parent: Option<PathBuf>,
+    parent_death: ParentDeath,
 }
 
 /// Why a canary could not be planted, run, inspected or removed.
@@ -127,6 +130,18 @@ impl<K> ClaudeCanary<K> {
             env,
             killer,
             parent: None,
+            parent_death: ParentDeath::default(),
+        }
+    }
+
+    /// This canary starting the CLI under `parent_death`, as
+    /// [`ClaudeHeadless::with_parent_death`](super::ClaudeHeadless::with_parent_death) does, so
+    /// it runs the CLI as production does. Without this call the CLI is started directly.
+    #[must_use]
+    pub fn with_parent_death(self, parent_death: ParentDeath) -> Self {
+        Self {
+            parent_death,
+            ..self
         }
     }
 
@@ -206,7 +221,11 @@ impl<K: GroupKill> ClaudeCanary<K> {
             max_turns: TURNS,
             budget: BUDGET,
         };
-        let mut command = invocation.command(&self.program, &layout.cwd, &self.env);
+        let cli = self
+            .parent_death
+            .command(&self.program)
+            .map_err(HeadlessError::Spawn)?;
+        let mut command = invocation.command(cli, &layout.cwd, &self.env);
         command.env("HOME", &layout.home);
         let bounds = Bounds {
             timeout: TIMEOUT,
