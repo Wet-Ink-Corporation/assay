@@ -40,6 +40,8 @@ with open(os.path.join(here, "calls"), "a") as calls:
     calls.write(method + " " + path + "\n")
 state_file = os.path.join(here, "state.json")
 state = json.load(open(state_file))
+with open(os.path.join(here, "tokens"), "a") as tokens:
+    tokens.write(state["tokens"].get(os.environ.get("GH_TOKEN", ""), "other") + " " + path + "\n")
 repo, ledger, run_id = state["repo"], state["ledger"], state["run_id"]
 
 def answer(status, value):
@@ -144,6 +146,7 @@ impl Scene {
             "repo": REPO, "ledger": LEDGER, "run_id": RUN_ID, "app_id": 424_242,
             "created_at": "2026-10-31T09:00:00Z",
             "files": {}, "refs": {}, "commits": {}, "checks": [],
+            "tokens": {APP_TOKEN: "app", LEDGER_TOKEN: "ledger"},
         });
         fs::write(bin.join("state.json"), state.to_string())?;
         Ok(Self { root })
@@ -176,6 +179,16 @@ impl Scene {
         Ok(fs::read_to_string(calls)?
             .lines()
             .map(str::to_owned)
+            .collect())
+    }
+
+    /// Each call's path with the token it carried, as `(label, path)`: `app` for the
+    /// `assay-verdict` App's, `ledger` for the `assay-ledger-writer` App's, `other` otherwise.
+    fn tokens(&self) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+        Ok(fs::read_to_string(self.path("bin/tokens"))?
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(label, path)| (label.to_owned(), path.to_owned()))
             .collect())
     }
 
@@ -311,6 +324,39 @@ fn a_first_attempt_opens_the_verdict_check_end_to_end() -> Result<(), Box<dyn Er
 
 #[test]
 #[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn each_call_carries_the_token_of_the_app_it_acts_for() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new(LEDGER_CONFIG)?;
+    let variables = variables("1", &needs()?);
+
+    let opened = scene.open(&pairs(&variables, ""))?;
+
+    assert_eq!(
+        opened.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&opened.stderr)
+    );
+    let tokens = scene.tokens()?;
+    let on = |prefix: &str| {
+        tokens
+            .iter()
+            .filter(|(_, path)| {
+                path.strip_prefix(prefix)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            })
+            .map(|(label, _)| label.as_str())
+            .collect::<Vec<_>>()
+    };
+    let (repository, ledger) = (on(&format!("repos/{REPO}")), on(&format!("repos/{LEDGER}")));
+    assert!(!repository.is_empty() && !ledger.is_empty(), "{tokens:?}");
+    assert!(repository.iter().all(|label| *label == "app"), "{tokens:?}");
+    assert!(ledger.iter().all(|label| *label == "ledger"), "{tokens:?}");
+    assert_eq!(repository.len() + ledger.len(), tokens.len(), "{tokens:?}");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
 fn a_missing_or_invalid_token_is_named_and_never_shown() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new(LEDGER_CONFIG)?;
     let needs = needs()?;
@@ -332,6 +378,58 @@ fn a_missing_or_invalid_token_is_named_and_never_shown() -> Result<(), Box<dyn E
             assert!(!stderr.contains("not a token value"), "{name}: {stderr}");
         }
     }
+    assert_eq!(scene.calls()?, Vec::<String>::new());
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn a_missing_or_invalid_variable_is_named_before_any_call() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new(LEDGER_CONFIG)?;
+    let variables = variables("1", &needs()?);
+    let mut cases = vec![("ASSAY_NEEDS", None, "ASSAY_NEEDS is not set")];
+    for (name, padded) in [
+        ("ASSAY_VERDICT_APP_ID", "0424242"),
+        ("ASSAY_VERDICT_BOT_ID", "0424243"),
+    ] {
+        cases.push((name, None, "is not set"));
+        cases.push((name, Some(padded), "is not"));
+    }
+
+    for (name, value, says) in cases {
+        let mut set = pairs(&variables, name);
+        set.extend(value.map(|value| (name, value)));
+
+        let output = scene.open(&set)?;
+
+        let stderr = String::from_utf8(output.stderr)?;
+        assert_eq!(output.status.code(), Some(2), "{name}: {stderr}");
+        assert!(
+            stderr.contains(name) && stderr.contains(says),
+            "{name}: {stderr}"
+        );
+        if let Some(value) = value {
+            assert!(!stderr.contains(value), "{name} shown: {stderr}");
+        }
+    }
+    assert_eq!(scene.calls()?, Vec::<String>::new());
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn a_ledger_repo_that_is_not_owner_name_cannot_run() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new("ledger_repo = \"assay-ledger\"\n")?;
+    let variables = variables("1", &needs()?);
+
+    let output = scene.open(&pairs(&variables, ""))?;
+
+    let stderr = String::from_utf8(output.stderr)?;
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("[assay].ledger_repo is not owner/name"),
+        "{stderr}"
+    );
     assert_eq!(scene.calls()?, Vec::<String>::new());
     Ok(())
 }
