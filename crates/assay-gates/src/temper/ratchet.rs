@@ -36,6 +36,9 @@ pub enum RatchetDegradation {
     TotalsNote,
     /// `ratchet.base` is not the merge base assay computed.
     Base,
+    /// The collection's `sources` leave out one that base `.claude/temper.json` enables, so
+    /// temper ratcheted without it (#210 F3).
+    Sources,
 }
 
 impl fmt::Display for RatchetDegradation {
@@ -44,6 +47,7 @@ impl fmt::Display for RatchetDegradation {
             Self::Mode => "its mode is not diff+totals",
             Self::TotalsNote => "a note says only the totals were compared",
             Self::Base => "its base is not the merge base assay computed",
+            Self::Sources => "its sources leave out a check base enables",
         })
     }
 }
@@ -67,13 +71,18 @@ pub(super) enum Level {
     Must,
 }
 
-/// The source that reported a finding.
+/// The source that reported a finding, and one temper collects (its `SOURCES`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(super) enum Tool {
     Clippy,
     Rustdoc,
     Scan,
+}
+
+impl Tool {
+    /// Every source, in temper's order.
+    pub(super) const ALL: [Self; 3] = [Self::Clippy, Self::Rustdoc, Self::Scan];
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,8 +97,7 @@ struct CheckDto {
     _toolchain: IgnoredAny,
     #[serde(rename = "host")]
     _host: IgnoredAny,
-    #[serde(rename = "sources")]
-    _sources: IgnoredAny,
+    sources: Vec<Tool>,
     #[serde(rename = "workspace_root")]
     _workspace_root: IgnoredAny,
     #[serde(rename = "crates")]
@@ -202,11 +210,11 @@ pub(super) struct Checked {
 }
 
 /// Reads `bytes`, temper's `--findings-out` document, and believes its ratchet only when it
-/// diffed against `merge_base`.
+/// diffed against `merge_base` and collected every one of the `required` sources.
 ///
 /// The document is parsed once, refusing any repeated key (`assay_app::parse_json_strict`),
 /// and only that parse is read.
-pub(super) fn check(bytes: &[u8], merge_base: &str) -> Result<Checked, Refused> {
+pub(super) fn check(bytes: &[u8], merge_base: &str, required: &[Tool]) -> Result<Checked, Refused> {
     let malformed = |error: serde_json::Error| Refused::Malformed(json_detail(&error));
     let value = assay_app::parse_json_strict(bytes).map_err(malformed)?;
     let dto: CheckDto = serde_json::from_value(value).map_err(malformed)?;
@@ -224,6 +232,9 @@ pub(super) fn check(bytes: &[u8], merge_base: &str) -> Result<Checked, Refused> 
     }
     if ratchet.base.as_deref() != Some(merge_base) {
         return Err(Refused::Degraded(RatchetDegradation::Base));
+    }
+    if !required.iter().all(|tool| dto.sources.contains(tool)) {
+        return Err(Refused::Degraded(RatchetDegradation::Sources));
     }
     // temper 1.3.0's `ratchet` sets `ok` to exactly this; any other value is not its writing.
     let clean =
@@ -252,7 +263,8 @@ mod tests {
     fn document(ratchet: &str) -> String {
         format!(
             r#"{{"temper_findings": 1, "at": "t", "commit": null, "toolchain": null,
-                "host": null, "sources": [], "workspace_root": ".", "crates": [],
+                "host": null, "sources": ["clippy", "rustdoc", "scan"], "workspace_root": ".",
+                "crates": [],
                 "findings": [], "errors": [], "ratchet": {ratchet}}}"#
         )
     }
@@ -269,7 +281,7 @@ mod tests {
     fn believes_a_diff_and_totals_ratchet_against_the_merge_base() {
         let text = ratchet("diff+totals", &format!("\"{MERGE_BASE}\""), "");
 
-        let checked = check(text.as_bytes(), MERGE_BASE);
+        let checked = check(text.as_bytes(), MERGE_BASE, &Tool::ALL);
 
         assert_eq!(
             checked.map(|checked| checked.ok),
@@ -283,7 +295,10 @@ mod tests {
         let note = "\"the baseline was recorded on Rust 1.97 and this run used 1.98\"";
         let text = ratchet("diff+totals", &format!("\"{MERGE_BASE}\""), note);
 
-        assert_eq!(check(text.as_bytes(), MERGE_BASE).map(|c| c.ok), Ok(true));
+        assert_eq!(
+            check(text.as_bytes(), MERGE_BASE, &Tool::ALL).map(|c| c.ok),
+            Ok(true)
+        );
     }
 
     #[test]
@@ -297,7 +312,7 @@ mod tests {
         for text in [not_ok, ok_with_increase] {
             assert!(
                 matches!(
-                    check(text.as_bytes(), MERGE_BASE),
+                    check(text.as_bytes(), MERGE_BASE, &Tool::ALL),
                     Err(Refused::Malformed(_))
                 ),
                 "{text}"
