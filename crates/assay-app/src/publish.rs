@@ -323,8 +323,13 @@ pub fn publish<F: VerdictForge, L: PublishLedger, B: BundleStore>(
     match publication.verdict {
         Verdict::Silent => Ok(Published::Nothing),
         Verdict::Refused(refusal) => {
-            let reason = refusal.reason();
-            write::write(target, writer, Pending::Refused(refused(target, &reason)))
+            // The same cleaner as `publish_refusal`, so both paths publish one reason and key.
+            let reason = RefusalReason::from(refusal);
+            write::write(
+                target,
+                writer,
+                Pending::Refused(refused(target, reason.reason())),
+            )
         }
         Verdict::Decided(decided) => {
             let inputs = decided.inputs;
