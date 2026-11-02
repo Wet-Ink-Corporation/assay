@@ -231,7 +231,7 @@ fn plan_in(job: Job, rest_files: RestFiles, fetched: Fetched<'_>) -> Result<Stri
     let outputs = run_plan(
         PlanJob {
             run: &run,
-            identity,
+            identity: &identity,
             rest_files,
             prompt_bundle,
         },

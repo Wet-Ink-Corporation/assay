@@ -28,8 +28,8 @@ pub const RUN_FILE: &str = "run.json";
 pub struct PlanJob<'a> {
     /// The run.
     pub run: &'a RunEnv,
-    /// guard's identity of the PR (I2), moved into the plan request.
-    pub identity: Identity,
+    /// guard's identity of the PR (I2); the plan request copies the fields it stores.
+    pub identity: &'a Identity,
     /// GitHub's list of the PR's files, which git's must match.
     pub rest_files: RestFiles,
     /// The embedded prompt bundle's hash, part of the evidence key.
@@ -135,7 +135,7 @@ pub fn run_plan<N: NonceSource>(
 #[must_use]
 pub(crate) fn plan_request(
     run: &RunEnv,
-    identity: Identity,
+    identity: &Identity,
     rest_files: RestFiles,
     prompt_bundle: ContentHash,
 ) -> PlanRequest {
@@ -152,13 +152,14 @@ pub(crate) fn plan_request(
 
 /// `identity`'s PR in `run`'s repository, as the run was planned for it.
 #[must_use]
-pub(crate) fn pull_request_event(run: &RunEnv, identity: Identity) -> PullRequestEvent {
+pub(crate) fn pull_request_event(run: &RunEnv, identity: &Identity) -> PullRequestEvent {
+    // The event owns the fields it stores; the caller keeps the identity (OWN-02).
     PullRequestEvent {
         repo: run.repo.to_string(),
         number: identity.pr,
-        base_sha: identity.base_sha,
-        head_sha: identity.head_sha,
-        base_ref: identity.base_ref,
+        base_sha: identity.base_sha.clone(),
+        head_sha: identity.head_sha.clone(),
+        base_ref: identity.base_ref.clone(),
         draft: identity.draft,
     }
 }

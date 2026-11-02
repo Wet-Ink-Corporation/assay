@@ -150,8 +150,7 @@ where
     let decided = DecideState::read(&read(state, STATE_FILE, MAX_STATE_BYTES)?)
         .map_err(PublishRunError::State)?;
     let run_env = job.run.run_env();
-    // The event owns its copy of the PR's fields; the identity keeps the default branch.
-    let pull_request = pull_request_event(run_env, job.identity.clone());
+    let pull_request = pull_request_event(run_env, job.identity);
     let target = Target {
         run_uid: run_env.run_uid,
         pull_request: &pull_request,

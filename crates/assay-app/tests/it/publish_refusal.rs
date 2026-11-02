@@ -6,17 +6,18 @@ use std::assert_matches;
 use std::error::Error;
 
 use assay_app::{
-    CheckConclusion, CheckState, JobResult, MAX_REFUSAL_DETAIL_BYTES, NotARefusal, Publication,
-    Published, RefusalReason, Verdict, publish, publish_refusal,
+    ArtifactJob, CheckConclusion, CheckState, JobResult, MAX_REFUSAL_DETAIL_BYTES, NotARefusal,
+    OutputsProblem, PlanMismatch, PlanRefusal, Publication, Published, Refusal, RefusalReason,
+    Unreadable, UpstreamJob, Verdict, publish, publish_refusal,
 };
-use assay_domain::{Fingerprint, Reason, ReasonCode};
+use assay_domain::{Fingerprint, Reason, ReasonCode, Tier};
 
 use crate::decide_fakes::{Scenario, refusal};
 use crate::publish_fakes::Call;
 use crate::publish_support::{NAME, Run, ports, stamped};
 
 /// The refusal of a run whose plan job failed: `gate-error`, `plan: failure`.
-fn plan_failed() -> Result<assay_app::Refusal, Box<dyn Error>> {
+fn plan_failed() -> Result<Refusal, Box<dyn Error>> {
     let mut scenario = Scenario::new()?;
     scenario.request.plan_job.result = JobResult::Failure;
     refusal(scenario.authenticate()?)
@@ -127,4 +128,94 @@ fn a_reason_no_refusal_gives_is_handed_back() -> Result<(), Box<dyn Error>> {
     };
     assert_matches!(RefusalReason::try_from(at_cap), Ok(_));
     Ok(())
+}
+
+/// One refusal of each kind, plan mismatches included, with details as long, empty or
+/// control-laden as a file or field name could make them.
+fn one_of_each() -> Vec<Refusal> {
+    // Multibyte, so a cut at the byte cap would fall inside a character.
+    let wide = "é".repeat(MAX_REFUSAL_DETAIL_BYTES);
+    let refusals = vec![
+        Refusal::PlanNotSucceeded {
+            result: JobResult::Failure,
+        },
+        Refusal::Cancelled {
+            job: UpstreamJob::Review,
+        },
+        Refusal::ArtifactDigest {
+            job: ArtifactJob::GatesLint,
+            file: "temper.json\n::warning::forged".to_owned(),
+        },
+        Refusal::ArtifactUnreadable {
+            job: ArtifactJob::Admit,
+            file: "x".repeat(MAX_REFUSAL_DETAIL_BYTES * 2),
+            why: Unreadable::TooLarge,
+        },
+        Refusal::Outputs {
+            job: UpstreamJob::GatesTest,
+            problem: OutputsProblem::FileName,
+        },
+        Refusal::PlanMismatch(PlanMismatch::Invalid),
+        Refusal::PlanMismatch(PlanMismatch::ArtifactNames),
+        Refusal::PlanMismatch(PlanMismatch::Field {
+            name: String::new(),
+        }),
+        Refusal::PlanMismatch(PlanMismatch::Field { name: wide }),
+        Refusal::PlanMismatch(PlanMismatch::Field {
+            name: "tier\u{7f}\u{1b}[2J".to_owned(),
+        }),
+        Refusal::PlanMismatch(PlanMismatch::Recompute(PlanRefusal::DiffTooSlow)),
+        Refusal::PlanMismatch(PlanMismatch::Degrade {
+            tier: Tier::Lite,
+            classes: Vec::new(),
+        }),
+    ];
+    // No wildcard: a new kind of refusal does not compile until it is listed above.
+    for refusal in &refusals {
+        match refusal {
+            Refusal::PlanNotSucceeded { .. }
+            | Refusal::Cancelled { .. }
+            | Refusal::ArtifactDigest { .. }
+            | Refusal::ArtifactUnreadable { .. }
+            | Refusal::Outputs { .. }
+            | Refusal::PlanMismatch(
+                PlanMismatch::Invalid
+                | PlanMismatch::ArtifactNames
+                | PlanMismatch::Field { .. }
+                | PlanMismatch::Recompute(_)
+                | PlanMismatch::Degrade { .. },
+            ) => {}
+        }
+    }
+    refusals
+}
+
+#[test]
+fn every_refusal_s_reason_reads_back_whatever_its_details() {
+    for refusal in one_of_each() {
+        let reason = RefusalReason::from(&refusal);
+
+        let read = RefusalReason::try_from(reason.reason().clone());
+
+        assert_eq!(read.as_ref(), Ok(&reason), "{refusal:?}");
+        assert_eq!(reason.reason().code, refusal.reason().code, "{refusal:?}");
+    }
+}
+
+#[test]
+fn a_plain_detail_is_kept_as_the_refusal_gives_it() {
+    for refusal in one_of_each() {
+        let given = refusal.reason().detail;
+        let plain = !given.is_empty()
+            && given.len() <= MAX_REFUSAL_DETAIL_BYTES
+            && !given.chars().any(char::is_control);
+
+        let kept = RefusalReason::from(&refusal).reason().detail.clone();
+
+        if plain {
+            assert_eq!(kept, given, "{refusal:?}");
+        } else {
+            assert_ne!(kept, given, "{refusal:?}");
+        }
+    }
 }

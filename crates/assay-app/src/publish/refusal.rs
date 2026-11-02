@@ -32,9 +32,38 @@ impl RefusalReason {
 }
 
 impl From<&Refusal> for RefusalReason {
-    /// [`Refusal::reason`].
+    /// [`Refusal::reason`], its detail made plain: each control character replaced with
+    /// U+FFFD, cut to at most [`MAX_REFUSAL_DETAIL_BYTES`] at a character boundary, and
+    /// `unnamed` when nothing is left. A detail that is already plain is kept as given,
+    /// so the conversion is total and always reads back through `TryFrom<Reason>`.
     fn from(refusal: &Refusal) -> Self {
-        Self(refusal.reason())
+        let mut reason = refusal.reason();
+        reason.detail = plain_detail(&reason.detail);
+        Self(reason)
+    }
+}
+
+/// The detail a refusal with an empty one is published with.
+const EMPTY_DETAIL: &str = "unnamed";
+
+/// `detail` without control characters, at most [`MAX_REFUSAL_DETAIL_BYTES`], never empty.
+fn plain_detail(detail: &str) -> String {
+    let mut plain = String::with_capacity(detail.len().min(MAX_REFUSAL_DETAIL_BYTES));
+    for character in detail.chars() {
+        let character = if character.is_control() {
+            char::REPLACEMENT_CHARACTER
+        } else {
+            character
+        };
+        if plain.len().saturating_add(character.len_utf8()) > MAX_REFUSAL_DETAIL_BYTES {
+            break;
+        }
+        plain.push(character);
+    }
+    if plain.is_empty() {
+        EMPTY_DETAIL.to_owned()
+    } else {
+        plain
     }
 }
 

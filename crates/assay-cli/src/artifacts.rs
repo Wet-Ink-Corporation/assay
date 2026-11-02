@@ -4,12 +4,16 @@
 //!
 //! Only the names the authenticated plan gives are asked for, so anything else a job uploaded
 //! is never read. Each name must be one plain path component, and each file a regular file
-//! reached without a symlink, read under the caller's limit; the digest check is `decide`'s.
+//! read under the caller's limit. Neither the artifact's directory nor the file may be a
+//! symlink when checked, the file opened must be the one checked (same device and inode), and
+//! the directory must still be the one checked once the file is read; a swap undone before
+//! that last look is not caught (std has no `openat`), and the digest check is `decide`'s.
 
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::{self, File, Metadata};
 use std::io::{self, Read};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use assay_app::{Fetched, RunArtifacts};
@@ -102,35 +106,72 @@ pub(crate) fn read_in(
         return Err(DirArtifactsError::Name);
     }
     match kind(directory)? {
-        Kind::Absent => return Ok(Fetched::Missing),
-        Kind::Directory => {}
-        Kind::File | Kind::Other => {
-            return Err(DirArtifactsError::NotARegularFile {
+        Kind::Absent => Ok(Fetched::Missing),
+        Kind::Directory(checked) => read_checked_in(directory, checked, file, limit),
+        Kind::File(_) | Kind::Other => Err(DirArtifactsError::NotARegularFile {
+            path: directory.to_path_buf(),
+        }),
+    }
+}
+
+/// File `file` of `directory`, which was checked as the directory `checked`: read as
+/// [`read_in`] reads it, then refused when `directory` is no longer that directory, so a
+/// directory swapped for a symlink while the file was opened is caught. A swap that is undone
+/// before this second look is not (std has no `openat`); `authenticate`'s sha256 check still
+/// applies to whatever was read.
+fn read_checked_in(
+    directory: &Path,
+    checked: Checked,
+    file: &str,
+    limit: usize,
+) -> Result<Fetched, DirArtifactsError> {
+    let path = directory.join(file);
+    let fetched = match kind(&path)? {
+        Kind::Absent => Fetched::Missing,
+        Kind::File(file) => read(&path, file, limit)?,
+        Kind::Directory(_) | Kind::Other => {
+            return Err(DirArtifactsError::NotARegularFile { path });
+        }
+    };
+    match kind(directory)? {
+        Kind::Directory(now) if now == checked => Ok(fetched),
+        Kind::Absent | Kind::Directory(_) | Kind::File(_) | Kind::Other => {
+            Err(DirArtifactsError::NotARegularFile {
                 path: directory.to_path_buf(),
-            });
+            })
         }
     }
-    let path = directory.join(file);
-    match kind(&path)? {
-        Kind::Absent => Ok(Fetched::Missing),
-        Kind::File => read(&path, limit),
-        Kind::Directory | Kind::Other => Err(DirArtifactsError::NotARegularFile { path }),
+}
+
+/// Which file a checked path was: its device and inode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Checked {
+    dev: u64,
+    ino: u64,
+}
+
+impl Checked {
+    fn of(metadata: &Metadata) -> Self {
+        Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        }
     }
 }
 
 /// What is at a path, the path itself not followed.
 enum Kind {
     Absent,
-    Directory,
-    File,
+    Directory(Checked),
+    File(Checked),
     Other,
 }
 
 /// What is at `path`, without following a symlink there.
 fn kind(path: &Path) -> Result<Kind, DirArtifactsError> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() => Ok(Kind::Directory),
-        Ok(metadata) if metadata.is_file() => Ok(Kind::File),
+        Ok(metadata) if metadata.is_dir() => Ok(Kind::Directory(Checked::of(&metadata))),
+        Ok(metadata) if metadata.is_file() => Ok(Kind::File(Checked::of(&metadata))),
         Ok(_) => Ok(Kind::Other),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Kind::Absent),
         Err(source) => Err(DirArtifactsError::Read {
@@ -140,16 +181,19 @@ fn kind(path: &Path) -> Result<Kind, DirArtifactsError> {
     }
 }
 
-/// The regular file at `path`, read under `limit` bytes: one byte more is read, so a file that
-/// grew past the limit since it was listed is still too large.
-fn read(path: &Path, limit: usize) -> Result<Fetched, DirArtifactsError> {
+/// The regular file at `path`, which was checked as `checked`, read under `limit` bytes: one
+/// byte more is read, so a file that grew past the limit since it was listed is still too
+/// large.
+fn read(path: &Path, checked: Checked, limit: usize) -> Result<Fetched, DirArtifactsError> {
     let failed = |source| DirArtifactsError::Read {
         path: path.to_path_buf(),
         source,
     };
     let file = File::open(path).map_err(failed)?;
-    // Opened by name after the check: what was opened must still be a regular file.
-    if !file.metadata().map_err(failed)?.is_file() {
+    // Opened by name after the check: what was opened must be the regular file checked, not
+    // one a symlink swapped in since leads to.
+    let opened = file.metadata().map_err(failed)?;
+    if !opened.is_file() || Checked::of(&opened) != checked {
         return Err(DirArtifactsError::NotARegularFile {
             path: path.to_path_buf(),
         });
@@ -169,3 +213,6 @@ fn read(path: &Path, limit: usize) -> Result<Fetched, DirArtifactsError> {
 fn is_component(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0'])
 }
+
+#[cfg(test)]
+mod tests;

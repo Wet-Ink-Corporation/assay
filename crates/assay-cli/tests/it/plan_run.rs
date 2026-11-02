@@ -89,10 +89,11 @@ fn planned(pr: &Pr, rest: RestFiles, draft: bool, out: &Out) -> Result<Ran, Box<
     let objects = ForgePullRequest::new(&pr.repo, TreeLimits::default(), Duration::from_secs(60));
     let validator = ContractValidator::new()?;
     let out = OutDir::new(&out.path)?;
+    let identity = identity(pr, draft)?;
     Ok(run_plan(
         PlanJob {
             run: &run,
-            identity: identity(pr, draft)?,
+            identity: &identity,
             rest_files: rest,
             prompt_bundle: ContentHash::of_files([]),
         },

@@ -81,9 +81,9 @@ fn an_upload_the_store_confirms_records_the_evidence() -> Result<(), Box<dyn Err
     };
     assert!(written.persist.is_none(), "{:?}", written.persist);
     assert_eq!(
-        world.store.asked.borrow().len(),
-        1,
-        "the store is read once"
+        *world.store.asked.borrow(),
+        [(planned.run.run_env().run_uid, BUNDLE_FILE.to_owned())],
+        "the store is read once, for this run's bundle"
     );
     assert_eq!(
         world.lock.evidence.borrow().len(),

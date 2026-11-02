@@ -238,14 +238,15 @@ impl PublishLedger for FreeLock {
 #[derive(Debug)]
 pub(crate) struct Uploaded {
     pub(crate) stored: StoredBundle,
-    pub(crate) asked: RefCell<Vec<RunUid>>,
+    /// Each run and file name asked for, in order.
+    pub(crate) asked: RefCell<Vec<(RunUid, String)>>,
 }
 
 impl BundleSource for Uploaded {
     type Error = Refused;
 
-    fn fetch(&self, run: RunUid, _: &str, _: usize) -> Result<StoredBundle, Refused> {
-        self.asked.borrow_mut().push(run);
+    fn fetch(&self, run: RunUid, file: &str, _: usize) -> Result<StoredBundle, Refused> {
+        self.asked.borrow_mut().push((run, file.to_owned()));
         // The caller owns what the store answers; the fake answers the same on every call.
         Ok(self.stored.clone())
     }

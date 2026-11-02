@@ -97,8 +97,7 @@ impl Planned {
         let plan = run_plan(
             PlanJob {
                 run: &run,
-                // plan's job owns its identity; decide's needs take the original.
-                identity: identity.clone(),
+                identity: &identity,
                 rest_files: rest_files(),
                 prompt_bundle: ContentHash::of_files([]),
             },

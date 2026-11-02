@@ -127,8 +127,21 @@ impl<L, R, B, C, F, H> AdmitRunError<L, R, B, C, F, H> {
             Self::Write { held, .. } => held.clone(),
             Self::Admit(error) => match error.as_ref() {
                 AdmitError::AfterSlot(after) => Some(HeldSlot::from(&after.hold)),
-                // Every other admission failure comes before a slot is taken.
-                _ => None,
+                // Every other admission failure comes before a slot is taken. Listed without a
+                // wildcard, so a new failure has to say whether it leaves a slot held.
+                AdmitError::NotFirstAttempt { .. }
+                | AdmitError::Plan(_)
+                | AdmitError::LedgerRead(_)
+                | AdmitError::LedgerWrite(_)
+                | AdmitError::Lease(_)
+                | AdmitError::NoPriorPointer
+                | AdmitError::PriorMoved
+                | AdmitError::Prior(_)
+                | AdmitError::Comments(_)
+                | AdmitError::SuppressTooLarge { .. }
+                | AdmitError::Pack(_)
+                | AdmitError::Events(_)
+                | AdmitError::Clock => None,
             },
             Self::PlanDigest
             | Self::Plan(_)
