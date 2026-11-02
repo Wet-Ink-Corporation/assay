@@ -14,6 +14,9 @@ use super::transport::{Sleep, Transport};
 #[derive(Debug, Deserialize)]
 struct CommandCommentDto {
     id: u64,
+    /// `null` for a deleted account; the key itself is required, so a missing one is refused
+    /// rather than read as a deleted account.
+    #[serde(deserialize_with = "Option::deserialize")]
     user: Option<UserDto>,
     created_at: String,
     updated_at: String,
