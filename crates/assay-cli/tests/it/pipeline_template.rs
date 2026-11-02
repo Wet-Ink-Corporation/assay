@@ -696,6 +696,37 @@ fn decide_uploads_its_bundle_between_decide_and_publish() -> io::Result<()> {
     Ok(())
 }
 
+/// #347 (owner, 2026-11-02, T8 option B, wi-613db8): a run plan gives no LLM stage (`review`
+/// false: a draft, `trivial`, `needs-split`) mints no App token in admit, and does not read
+/// the ledger repository the ledger token is for; `assay admit` reads neither for it. Every
+/// other admit step runs unconditionally.
+#[test]
+fn admit_mints_its_tokens_only_for_a_run_that_reviews() -> io::Result<()> {
+    let workflow = pipeline()?;
+    let jobs = jobs(&workflow);
+
+    let conditions = steps(job_body(&jobs, "admit"))
+        .iter()
+        .map(|step| (step.value("id"), step.value("if")))
+        .collect::<Vec<_>>();
+
+    let spends = Some("needs.plan.outputs.review == 'true'");
+    assert_eq!(
+        conditions,
+        [
+            (None, None),
+            (None, None),
+            (Some("ledger"), spends),
+            (Some("verdict-token"), spends),
+            (Some("ledger-token"), spends),
+            (None, None),
+            (Some("admit"), None),
+            (None, None),
+        ]
+    );
+    Ok(())
+}
+
 #[test]
 fn admit_and_decide_read_artifacts_from_one_download_of_assay_artifacts() -> io::Result<()> {
     let workflow = pipeline()?;

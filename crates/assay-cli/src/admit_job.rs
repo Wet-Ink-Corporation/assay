@@ -5,14 +5,17 @@
 //! any attempt but the first (R3-05, I1); the regular file `GITHUB_OUTPUT` names (opened, never
 //! created); guard's identity and plan's outputs from `ASSAY_NEEDS` (I2); `--out` as an
 //! [`OutDir`]; plan's `run.json` in `<artifacts>/<artifact_plan>/` (a regular file, no symlink,
-//! at most [`MAX_DOCUMENT_BYTES`]); the contract schemas. Then the ledger repository from base
-//! config's `[assay].ledger_repo` (D3 A) and the three tokens: `ASSAY_LEDGER_TOKEN` (the
+//! at most [`MAX_DOCUMENT_BYTES`]); the contract schemas. Then [`stage_admit`]: the document
+//! must be plan's `run_digest`, and a run with no LLM stage (a draft, `trivial`,
+//! `needs-split`) is admitted and reported there, with no base config, token or port read
+//! (#347, T8 option B). Only a run that spends reads the ledger repository from base config's
+//! `[assay].ledger_repo` (D3 A) and the three tokens: `ASSAY_LEDGER_TOKEN` (the
 //! ledger's files and refs, the slot's deletion pushed from an object-only repository in a
 //! scratch directory, [`crate::ledger_job`]), `ASSAY_GITHUB_TOKEN` (the `assay-verdict` App's,
 //! for the command records' comments) and `ASSAY_RUN_TOKEN` (the job's `github.token`: the
 //! pinned commits fetched into a second object-only repository, the range's commit identities
-//! and the previous run's bundle). [`run_admit`] does the rest; a run with no LLM stage calls
-//! no port. admit's outputs (03 §4a) are appended after its documents; when the documents
+//! and the previous run's bundle), and [`admit_spending`] does the rest. admit's outputs
+//! (03 §4a) are appended after its documents; when the documents
 //! cannot be written once a slot is held, `slot` and `lease_commit` alone are appended so
 //! release still releases it. A variable's value is never shown.
 
@@ -28,8 +31,9 @@ use std::time::{Duration, SystemTime};
 use assay_app::{ArtifactJob, Clock, CommitId, ContractValidator, MAX_DOCUMENT_BYTES};
 use assay_cli::outputs::{AdmitOutputs, Identity, PlanOutputs};
 use assay_cli::{
-    AdmitJob, AdmitJobPorts, FetchCommits, FirstAttempt, ForgePullRequest, JobName, Needs, OutDir,
-    OutputName, Outputs, RUN_FILE, RunEnv, RunEnvError, RunVariables, run_admit,
+    AdmitJob, AdmitJobPorts, AdmitStage, FetchCommits, FirstAttempt, ForgePullRequest, JobName,
+    Needs, OutDir, OutputName, Outputs, RUN_FILE, RunEnv, RunEnvError, RunVariables, Spending,
+    admit_spending, stage_admit,
 };
 use assay_forge::git::{
     Authorization, CommitSha, GitEnvironment, GitLimits, HttpsRemote, ObjectRepo, TreeLimits,
@@ -106,21 +110,68 @@ struct Tokens {
     run: GhToken,
 }
 
-/// Everything admit reads before it starts a process.
-struct Prepared {
-    job: Job,
+/// What only a run that spends reads: the ledger repository from base config and the tokens.
+struct Credentials {
     ledger: Repository,
     tokens: Tokens,
     /// The run token as git's header, and where git sends it.
     fetch: (HttpsRemote, Authorization),
 }
 
+/// A run that spends, with where its outputs go.
+struct Spend<'a> {
+    spending: Spending<'a>,
+    run: &'a FirstAttempt,
+    output: File,
+    out: &'a OutDir,
+}
+
 /// Runs `assay admit` with `args` (after `admit`) and `variables`.
 pub(crate) fn run(args: impl Iterator<Item = OsString>, variables: AdmitVariables) -> Ended {
     let mut left = Vec::new();
-    let line =
-        prepare(args, &variables).and_then(|prepared| connect(prepared, variables, &mut left));
+    let line = prepare(args, &variables)
+        .and_then(|(config, job)| admit(job, &config, variables, &mut left));
     Ended { line, left }
+}
+
+/// The no-spend shortcut first: a run with no LLM stage is admitted and reported with no base
+/// config, token or port read (#347, T8 option B). Only a run that spends reads its
+/// credentials and connects.
+fn admit(
+    job: Job,
+    config: &Path,
+    variables: AdmitVariables,
+    left: &mut Vec<Left>,
+) -> Result<String, AdmitCliError> {
+    let Job {
+        run,
+        output,
+        identity,
+        plan,
+        out,
+        document,
+        validator,
+    } = job;
+    let admit_job = AdmitJob {
+        run: &run,
+        identity: &identity,
+        plan: &plan,
+        document: &document,
+        validator: &validator,
+    };
+    let spending = match stage_admit(admit_job, &out) {
+        Ok(AdmitStage::Written(outputs)) => return report(Ok(outputs), output, &out),
+        Ok(AdmitStage::Spends(spending)) => spending,
+        Err(error) => return report(Err(error.into()), output, &out),
+    };
+    let credentials = credentials(config, &variables, &run)?;
+    let spend = Spend {
+        spending,
+        run: &run,
+        output,
+        out: &out,
+    };
+    connect(spend, credentials, variables, left)
 }
 
 /// `--config <plugins-toml> --artifacts <dir> --out <dir>`, exactly.
@@ -140,11 +191,12 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, AdmitCliError
     }
 }
 
-/// Everything admit can refuse before it starts a process, the arguments and the run first.
+/// Everything admit can refuse before the no-spend shortcut, the arguments and the run first:
+/// `--config` (not yet read) and the job.
 fn prepare(
     args: impl Iterator<Item = OsString>,
     variables: &AdmitVariables,
-) -> Result<Prepared, AdmitCliError> {
+) -> Result<(PathBuf, Job), AdmitCliError> {
     let args = parse(args)?;
     let run = RunEnv::from_vars(&variables.run)
         .and_then(|run| run.first_attempt().map_err(RunEnvError::from))
@@ -158,7 +210,26 @@ fn prepare(
     let out = OutDir::new(&args.out).map_err(AdmitCliError::Out)?;
     let document = read_plan(&args.artifacts, &plan)?;
     let validator = ContractValidator::new().map_err(AdmitCliError::Validator)?;
-    let ledger = ledger_repo(ADMIT, &args.config).map_err(AdmitCliError::Setup)?;
+    let job = Job {
+        run,
+        output,
+        identity,
+        plan,
+        out,
+        document,
+        validator,
+    };
+    Ok((args.config, job))
+}
+
+/// What a run that spends reads before it starts a process: base config's ledger repository,
+/// then the three tokens, and git's header and remote for `run`'s repository.
+fn credentials(
+    config: &Path,
+    variables: &AdmitVariables,
+    run: &FirstAttempt,
+) -> Result<Credentials, AdmitCliError> {
+    let ledger = ledger_repo(ADMIT, config).map_err(AdmitCliError::Setup)?;
     let token = |variable: Variable, value: Option<&OsString>| {
         ledger_job::token(value.map(OsString::as_os_str))
             .map_err(|problem| AdmitCliError::Variable { variable, problem })
@@ -176,16 +247,7 @@ fn prepare(
     let remote = format!("https://github.com/{}.git", run.run_env().repo)
         .parse()
         .map_err(AdmitCliError::Remote)?;
-    Ok(Prepared {
-        job: Job {
-            run,
-            output,
-            identity,
-            plan,
-            out,
-            document,
-            validator,
-        },
+    Ok(Credentials {
         ledger,
         tokens,
         fetch: (remote, authorization),
@@ -234,16 +296,16 @@ fn read_plan(artifacts: &Path, plan: &PlanOutputs) -> Result<Vec<u8>, AdmitCliEr
 /// Builds the ledger's transport, admits over it, and removes the directories, pushing onto
 /// `left` each one that could not be removed.
 fn connect(
-    prepared: Prepared,
+    spend: Spend<'_>,
+    credentials: Credentials,
     variables: AdmitVariables,
     left: &mut Vec<Left>,
 ) -> Result<String, AdmitCliError> {
-    let Prepared {
-        job,
+    let Credentials {
         ledger,
         tokens,
         fetch,
-    } = prepared;
+    } = credentials;
     // git's environment keeps its own copy of PATH; the ledger's transport takes the other.
     let git_path = variables.path.clone().ok_or(AdmitCliError::NoGit)?;
     let programs = Programs {
@@ -263,7 +325,7 @@ fn connect(
                 repos: &repos,
                 ledger: &ports,
             };
-            admit_over(job, (app, run), live, left)
+            admit_over(spend, (app, run), live, left)
         })
 }
 
@@ -284,7 +346,7 @@ struct Live<'a, 'p, 'r> {
 /// identities and bundles), the object repository in a scratch directory, then the admission;
 /// each transport and directory is closed after, and pushed onto `left` when it cannot be.
 fn admit_over(
-    job: Job,
+    spend: Spend<'_>,
     (app, run): (GhToken, GhToken),
     live: Live<'_, '_, '_>,
     left: &mut Vec<Left>,
@@ -292,7 +354,7 @@ fn admit_over(
     let ledger = live.ledger;
     // Each adapter stores the repository; the run keeps its own for the job. No read admit
     // makes is attributed to an App, so both carry guard's identity, which none consults.
-    let repository = job.run.run_env().repo.clone();
+    let repository = spend.run.run_env().repo.clone();
     let app_gh = ledger.gh.transport(app).map_err(AdmitCliError::Setup)?;
     let comments = GitHub::new(Api::new(app_gh, ThreadSleep), repository.clone(), ACTIONS);
     let admitted = ledger
@@ -301,7 +363,7 @@ fn admit_over(
         .map_err(AdmitCliError::Setup)
         .and_then(|run_gh| {
             let github = GitHub::new(Api::new(run_gh, ThreadSleep), repository, ACTIONS);
-            let admitted = in_scratch(job, live, (&github, &comments), left);
+            let admitted = in_scratch(spend, live, (&github, &comments), left);
             close(github, Variable::RunToken.name(), left);
             admitted
         });
@@ -319,7 +381,7 @@ fn close(github: GitHub<Gh, ThreadSleep>, token: &'static str, left: &mut Vec<Le
 /// A scratch directory for the object repository, the admission in it, and the directory
 /// removed after, pushed onto `left` when it cannot be.
 fn in_scratch(
-    job: Job,
+    spend: Spend<'_>,
     live: Live<'_, '_, '_>,
     github: (&GitHub<Gh, ThreadSleep>, &GitHub<Gh, ThreadSleep>),
     left: &mut Vec<Left>,
@@ -334,7 +396,7 @@ fn in_scratch(
         GitLimits::default(),
     )
     .map_err(AdmitCliError::Git)
-    .and_then(|repo| admit_in(job, live, github, &repo));
+    .and_then(|repo| admit_in(spend, live, github, &repo));
     if let Err(error) = scratch.close() {
         left.push(Left::Scratch(ADMIT.name, error));
     }
@@ -343,7 +405,7 @@ fn in_scratch(
 
 /// The admission over `repo`, then the outputs.
 fn admit_in(
-    job: Job,
+    spend: Spend<'_>,
     live: Live<'_, '_, '_>,
     (github, comments): (&GitHub<Gh, ThreadSleep>, &GitHub<Gh, ThreadSleep>),
     repo: &ObjectRepo,
@@ -365,23 +427,13 @@ fn admit_in(
         comments,
         clock: &mut WallClock,
     };
-    let Job {
-        run,
+    let Spend {
+        spending,
         output,
-        identity,
-        plan,
         out,
-        document,
-        validator,
-    } = job;
-    let admit_job = AdmitJob {
-        run: &run,
-        identity: &identity,
-        plan: &plan,
-        document: &document,
-        validator: &validator,
-    };
-    report(run_admit(admit_job, ports, &out), output, &out)
+        ..
+    } = spend;
+    report(admit_spending(spending, ports, out), output, out)
 }
 
 /// Appends admit's outputs for what it wrote, or, when it holds a slot it could not report

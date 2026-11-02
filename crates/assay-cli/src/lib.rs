@@ -23,7 +23,9 @@
 //! and returns plan's outputs (`assay plan`, #60 ST-5). [`run_admit`] authenticates plan's
 //! document, admits the run over the ledger, refs, bundle store, comments and fetched objects,
 //! writes the admitted documents into an [`OutDir`] and returns admit's outputs (`assay admit`,
-//! #60 ST-11). [`run_decide`] authenticates the run's artifacts, read through [`DirArtifacts`],
+//! #60 ST-11); the binary calls its two halves, [`stage_admit`] (no port, the no-spend
+//! shortcut) and [`admit_spending`], so it reads its tokens for a run that spends only (#347).
+//! [`run_decide`] authenticates the run's artifacts, read through [`DirArtifacts`],
 //! and writes its [`DecideState`] and, for an authenticated run, its bundle into an [`OutDir`],
 //! returning decide's outputs; [`run_publish`] publishes that state over the verdict check, the
 //! publish lock and the artifact store (`assay decide` and `assay publish`, #60 ST-14, D5 A).
@@ -52,8 +54,8 @@ mod status;
 mod supervisor;
 
 pub use admit::{
-    AdmitJob, AdmitJobPorts, AdmitRunError, AdmitRunFailure, FetchCommits, FetchedSide, PACK_FILE,
-    SuppressError, run_admit,
+    AdmitJob, AdmitJobPorts, AdmitRunError, AdmitRunFailure, AdmitStage, FetchCommits, FetchedSide,
+    PACK_FILE, Spending, StageError, SuppressError, admit_spending, run_admit, stage_admit,
 };
 pub use artifacts::{DirArtifacts, DirArtifactsError};
 pub use ci::{

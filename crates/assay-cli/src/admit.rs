@@ -24,7 +24,7 @@ use assay_app::{
     range_identities, read_pushes,
 };
 
-pub use self::error::{AdmitRunError, AdmitRunFailure, FetchedSide, SuppressError};
+pub use self::error::{AdmitRunError, AdmitRunFailure, FetchedSide, StageError, SuppressError};
 use crate::ci::{FirstAttempt, OutDir};
 use crate::outputs::{AdmitOutputs, Identity, PlanOutputs};
 use crate::plan::RUN_FILE;
@@ -86,22 +86,90 @@ pub struct AdmitJobPorts<'p, 'r, L, R, B, C, F, H, K> {
     pub clock: &'p mut K,
 }
 
-/// Admits `job`'s run through `ports` and writes the admitted documents into `out`.
+/// What [`stage_admit`] made of a job before any port, token or base config is read.
+#[derive(Debug)]
+pub enum AdmitStage<'a> {
+    /// The run has no LLM stage (a draft, `trivial`, `needs-split`): its plan document is
+    /// written into `out` unchanged, and these are admit's outputs for it.
+    Written(AdmitOutputs),
+    /// The run's LLM stage would spend: [`admit_spending`] admits it over the ports.
+    Spends(Spending<'a>),
+}
+
+/// A job whose plan document is plan's `run_digest` and whose LLM stage would spend. Only
+/// [`stage_admit`] makes one, so [`admit_spending`] never admits a document it has not checked.
+#[derive(Debug, Clone, Copy)]
+pub struct Spending<'a> {
+    job: AdmitJob<'a>,
+}
+
+/// Admits `job`'s run through `ports` and writes the admitted documents into `out`:
+/// [`stage_admit`], then [`admit_spending`] for a run that spends.
 ///
 /// It creates `out` and writes the admitted `run.json` into it as [`RUN_FILE`] (the plan's
 /// unchanged for a run that does not spend) and, for a spend, the context pack as
 /// [`PACK_FILE`], and returns admit's outputs for what it wrote.
 ///
-/// Before anything else the plan document's sha256 must be plan's `run_digest`; a run with no
-/// LLM stage then reads no port.
+/// # Errors
+///
+/// As [`stage_admit`] and [`admit_spending`].
+pub fn run_admit<L, R, B, C, F, H, K>(
+    job: AdmitJob<'_>,
+    ports: AdmitJobPorts<'_, '_, L, R, B, C, F, H, K>,
+    out: &OutDir,
+) -> Result<AdmitOutputs, AdmitRunFailure<L, R, B, C, F, H>>
+where
+    L: Ledger,
+    R: LedgerRefs,
+    B: BundleSource,
+    C: CommandComments,
+    F: Forge,
+    H: FetchCommits,
+    K: Clock,
+{
+    match stage_admit(job, out).map_err(AdmitRunError::from)? {
+        AdmitStage::Written(outputs) => Ok(outputs),
+        AdmitStage::Spends(spending) => admit_spending(spending, ports, out),
+    }
+}
+
+/// Authenticates `job`'s plan document and, for a run with no LLM stage, admits it and writes
+/// it into `out`, reading no port: the no-spend shortcut, before any token is read (#347, T8
+/// option B).
+///
+/// The plan document's sha256 must be plan's `run_digest` before anything else; then
+/// [`plan_stage`] applies admit's own spend rule. A run that spends is handed back as
+/// [`AdmitStage::Spends`], with nothing written.
 ///
 /// # Errors
 ///
-/// [`AdmitRunError`]: [`AdmitRunError::PlanDigest`] before anything is read, and every other
-/// failure before or inside the admission. A failure to write `out` once a slot is held is
-/// [`AdmitRunError::Write`] with the slot, so the job can still report it for release.
-pub fn run_admit<L, R, B, C, F, H, K>(
-    job: AdmitJob<'_>,
+/// [`StageError::PlanDigest`] before anything is read, [`StageError::Plan`] for a refused plan
+/// document, [`StageError::Write`] when `out` or the document cannot be written.
+pub fn stage_admit<'a>(job: AdmitJob<'a>, out: &OutDir) -> Result<AdmitStage<'a>, StageError> {
+    if Sha256Digest::of(job.document) != *job.plan.run_digest() {
+        return Err(StageError::PlanDigest);
+    }
+    let run_uid = job.run.run_env().run_uid;
+    let admitted =
+        match plan_stage(job.validator, job.document, run_uid).map_err(StageError::Plan)? {
+            PlanStage::NoSpend(admitted) => admitted,
+            PlanStage::Spends => return Ok(AdmitStage::Spends(Spending { job })),
+        };
+    let outputs = AdmitOutputs::new(&admitted, job.plan.tier());
+    write_admitted(out, &admitted).map_err(|(path, source)| StageError::Write { path, source })?;
+    Ok(AdmitStage::Written(outputs))
+}
+
+/// Admits a run that spends through `ports` and writes the admitted `run.json` and context pack
+/// into `out`.
+///
+/// # Errors
+///
+/// [`AdmitRunError`] for every failure before or inside the admission. A failure to write
+/// `out` once a slot is held is [`AdmitRunError::Write`] with the slot, so the job can still
+/// report it for release.
+pub fn admit_spending<L, R, B, C, F, H, K>(
+    spending: Spending<'_>,
     mut ports: AdmitJobPorts<'_, '_, L, R, B, C, F, H, K>,
     out: &OutDir,
 ) -> Result<AdmitOutputs, AdmitRunFailure<L, R, B, C, F, H>>
@@ -114,15 +182,8 @@ where
     H: FetchCommits,
     K: Clock,
 {
-    if Sha256Digest::of(job.document) != *job.plan.run_digest() {
-        return Err(AdmitRunError::PlanDigest);
-    }
-    let run_uid = job.run.run_env().run_uid;
-    let admitted =
-        match plan_stage(job.validator, job.document, run_uid).map_err(AdmitRunError::Plan)? {
-            PlanStage::NoSpend(admitted) => *admitted,
-            PlanStage::Spends => spend(job, &mut ports)?,
-        };
+    let job = spending.job;
+    let admitted = spend(job, &mut ports)?;
     let outputs = AdmitOutputs::new(&admitted, job.plan.tier());
     write_admitted(out, &admitted).map_err(|(path, source)| AdmitRunError::Write {
         path,

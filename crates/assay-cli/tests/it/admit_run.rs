@@ -38,21 +38,22 @@ fn id(n: u64) -> Result<NonZeroU64, Box<dyn Error>> {
     Ok(NonZeroU64::new(n).ok_or("a positive id")?)
 }
 
-/// A planned PR changing the library, with plan's outputs and the document it wrote.
-struct Planned {
+/// A planned PR changing the library, with plan's outputs and the document it wrote, for run
+/// 4242 of repository 42, `Wet-Ink-Corporation/assay`.
+pub(crate) struct Planned {
     pr: Pr,
     _scratch: TempDir,
     out: PathBuf,
     run: FirstAttempt,
-    identity: Identity,
-    plan: PlanOutputs,
-    document: Vec<u8>,
+    pub(crate) identity: Identity,
+    pub(crate) plan: PlanOutputs,
+    pub(crate) document: Vec<u8>,
     validator: ContractValidator,
 }
 
 impl Planned {
     /// A ready (`draft` false) or draft PR, planned as `plan` would.
-    fn new(draft: bool) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn new(draft: bool) -> Result<Self, Box<dyn Error>> {
         let pr = pr(&[], &[("src/lib.rs", "pub fn two() {}\n")])?;
         let run = RunEnv::from_vars(&RunVariables {
             run_id: Some(OsString::from("4242")),
