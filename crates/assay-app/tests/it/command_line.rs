@@ -6,7 +6,7 @@ use assay_app::{
     AckedSet, Command, MAX_COMMAND_CHARS, MAX_COMMAND_REASON_CHARS, ParseRecordedCommandError,
     Parsed, RecordedCommand, Sha256Digest, parse_command,
 };
-use assay_domain::{Fingerprint, OverrideScope, RequiredRole};
+use assay_domain::{Fingerprint, OverrideScope, ParseFingerprintError, RequiredRole};
 use proptest::prelude::*;
 use proptest::sample::select;
 
@@ -80,6 +80,72 @@ proptest! {
 #[test]
 fn a_recheck_is_never_a_recorded_command() {
     assert_eq!(RecordedCommand::new(Command::Recheck), None);
+}
+
+/// A dismiss of the recorded finding with `reason`, built by hand (its fields are public).
+fn dismiss(reason: &str) -> Result<Command, ParseFingerprintError> {
+    Ok(Command::Dismiss {
+        finding: "0123456789abcdef".parse()?,
+        reason: reason.to_owned(),
+    })
+}
+
+// The grammar refuses a control character in a reason, and every other token is a fixed word,
+// a fingerprint or a digest, so a hand-built command holding one has no line that reads back
+// as it, and is never a recorded command (formerly
+// `ledger_streams::a_command_whose_reason_holds_a_control_character_is_never_written`).
+#[test]
+fn a_command_whose_reason_holds_a_control_character_is_never_recorded()
+-> Result<(), ParseFingerprintError> {
+    for reason in [
+        "flaky\u{1b}[2J gate",
+        "two\nlines",
+        "carriage\r",
+        "tab\there",
+    ] {
+        // Its line is malformed, or (a line break) reads as another command: the first line's.
+        let command = dismiss(reason)?;
+        assert_ne!(
+            parse_command(&command.line()),
+            // A copy to compare against; `new` takes the command itself.
+            Parsed::Command(command.clone()),
+            "{reason:?}"
+        );
+
+        assert_eq!(RecordedCommand::new(command), None, "{reason:?}");
+    }
+    Ok(())
+}
+
+// The grammar caps a reason at `MAX_COMMAND_REASON_CHARS`, which bounds every recorded line
+// well under `MAX_COMMAND_CHARS` (the schema's `maxLength`), so it is the grammar's cap that
+// refuses a long command (formerly
+// `ledger_streams::a_command_whose_reason_passes_the_grammars_cap_is_never_written`).
+#[test]
+fn a_command_whose_reason_passes_the_grammars_cap_is_never_recorded()
+-> Result<(), ParseFingerprintError> {
+    let command = dismiss(&"y".repeat(MAX_COMMAND_REASON_CHARS + 1))?;
+    assert!(
+        command.line().chars().count() <= MAX_COMMAND_CHARS,
+        "under the line cap"
+    );
+
+    assert_eq!(RecordedCommand::new(command), None);
+    Ok(())
+}
+
+#[test]
+fn a_hand_built_command_whose_line_reads_back_otherwise_is_never_recorded()
+-> Result<(), ParseFingerprintError> {
+    for reason in ["", " leading", "trailing "] {
+        assert_eq!(RecordedCommand::new(dismiss(reason)?), None, "{reason:?}");
+    }
+    let at_cap = dismiss(&"y".repeat(MAX_COMMAND_REASON_CHARS))?;
+    assert!(
+        RecordedCommand::new(at_cap).is_some(),
+        "the cap itself is recorded"
+    );
+    Ok(())
 }
 
 #[test]

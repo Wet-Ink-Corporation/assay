@@ -9,7 +9,7 @@ use assay_domain::{EventPayload, RunUid, VoidReason};
 
 use super::rule::{Ineligible, Rule};
 use super::timestamp::Timestamp;
-use crate::command::{Parsed, RecordedCommand, command_word, parse_command};
+use crate::command::{Command, Parsed, RecordedCommand, command_word, parse_command};
 use crate::config::{CommitId, Sha256Digest};
 use crate::ledger::{CommandRecord, LedgerTime};
 use crate::publish::CommentId;
@@ -335,11 +335,11 @@ pub(crate) fn record(
         Parsed::NotACommand => return Err(CommandRejected::NotACommand),
         Parsed::Unknown => return Err(CommandRejected::Unknown),
         Parsed::Malformed => return Err(CommandRejected::Malformed),
+        Parsed::Command(Command::Recheck) => return Ok(Recorded::Recheck),
         Parsed::Command(command) => command,
     };
-    let Some(command) = RecordedCommand::new(command) else {
-        return Ok(Recorded::Recheck);
-    };
+    // A parsed command reads back from its line, so this refuses nothing the grammar gave.
+    let command = RecordedCommand::new(command).ok_or(CommandRejected::Malformed)?;
     rule.judge(actor).map_err(CommandRejected::Ineligible)?;
     let clock = clock.ok_or(CommandRejected::NoPushClock)?;
     if comment.created_at <= clock {
