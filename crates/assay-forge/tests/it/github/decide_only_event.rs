@@ -223,19 +223,62 @@ fn refuses_an_app_that_is_not_an_app_object() {
 }
 
 #[test]
-fn reads_a_comment_by_a_deleted_account_as_no_author() {
+fn reads_an_edited_comment_by_a_deleted_account_as_no_author() {
+    let read = read_edited(
+        DecideOnlyEventName::IssueComment,
+        "comment_edited.json",
+        |v| v["comment"]["user"] = serde_json::Value::Null,
+    );
+
+    let mut expected = octocat_comment(CommentAction::Edited, Some(id(2)));
+    expected.event.comment.body = "/assay dismiss ab12 the gate is flaky".to_owned();
+    expected.event.comment.updated_at = time("2019-05-15T15:22:10Z");
+    expected.event.comment.user = None;
+    assert_eq!(
+        read.expect("an edited comment by a ghost"),
+        DecideOnlyEvent::Comment(expected)
+    );
+}
+
+#[test]
+fn refuses_a_created_comment_by_a_deleted_account() {
     let read = read_edited(
         DecideOnlyEventName::IssueComment,
         "comment_created_pr.json",
         |v| v["comment"]["user"] = serde_json::Value::Null,
     );
 
-    let mut expected = octocat_comment(CommentAction::Created, Some(id(2)));
-    expected.event.comment.user = None;
-    assert_eq!(
-        read.expect("a comment by a ghost"),
-        DecideOnlyEvent::Comment(expected)
+    assert_matches!(read, Err(DecideOnlyEventError::Field("comment.user")));
+}
+
+#[test]
+fn refuses_a_comment_without_a_user_key() {
+    for name in ["comment_created_pr.json", "comment_edited.json"] {
+        let read = read_edited(DecideOnlyEventName::IssueComment, name, |v| {
+            v["comment"]
+                .as_object_mut()
+                .expect("an object")
+                .remove("user");
+        });
+
+        assert_matches!(read, Err(DecideOnlyEventError::Shape(_)), "{name}");
+    }
+}
+
+#[test]
+fn refuses_a_label_event_whose_head_has_no_repo_key() {
+    let read = read_edited(
+        DecideOnlyEventName::PullRequestTarget,
+        "label_labeled_user.json",
+        |v| {
+            v["pull_request"]["head"]
+                .as_object_mut()
+                .expect("an object")
+                .remove("repo");
+        },
     );
+
+    assert_matches!(read, Err(DecideOnlyEventError::Shape(_)));
 }
 
 #[test]
