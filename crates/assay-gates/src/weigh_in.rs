@@ -121,6 +121,8 @@ impl<R: RevisionFiles> GateRunner for WeighInAdapter<R> {
             },
             conclusion: Some(conclusion),
             findings,
+            // Weigh-In does not attest step results (#153): `decide` reads its gate as unknown.
+            failed_steps: None,
             stats: None,
         };
         let bytes = serde_json::to_vec(&document).map_err(WeighInError::Document)?;
