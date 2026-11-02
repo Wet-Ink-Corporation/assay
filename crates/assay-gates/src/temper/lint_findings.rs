@@ -44,6 +44,8 @@ const COMPILE_ERROR: &str = "compile-error";
 pub(super) struct Failures {
     /// Whether there is any: decided over every entry, never over the reported ones.
     pub(super) failing: bool,
+    /// Whether every one of them is in `findings`, none past the cap (#153).
+    pub(super) all_reported: bool,
     /// At most [`MAX_REPORTED`] of their findings, `raised` first.
     pub(super) findings: Vec<Finding>,
 }
@@ -53,13 +55,14 @@ pub(super) struct Failures {
 /// A `raised` finding's spot is synthesised at the baseline rather than located in the head
 /// baseline, which the PR controls: locating each would scan the file once per entry.
 pub(super) fn failures(checked: &Checked, allowlist: &Allowlist) -> Failures {
-    let mut unadmitted = checked
+    let unadmitted: Vec<_> = checked
         .findings
         .iter()
         .filter_map(|hit| Some((hit, hit.exception.as_deref()?)))
         .filter(|(hit, lint)| !allowlist.admits_exception(&hit.file, lint))
-        .peekable();
-    let failing = !checked.raised.is_empty() || unadmitted.peek().is_some();
+        .collect();
+    let failing = !checked.raised.is_empty() || !unadmitted.is_empty();
+    let all_reported = checked.raised.len().saturating_add(unadmitted.len()) <= MAX_REPORTED;
     let raises: Vec<Raise<'_>> = checked
         .raised
         .iter()
@@ -74,7 +77,7 @@ pub(super) fn failures(checked: &Checked, allowlist: &Allowlist) -> Failures {
         .collect();
     let mut found = findings::raised(&raises, None);
     let room = MAX_REPORTED.saturating_sub(found.len());
-    found.extend(unadmitted.take(room).map(|(hit, lint)| {
+    found.extend(unadmitted.into_iter().take(room).map(|(hit, lint)| {
         // The request, and then the document, own the path and the lint.
         findings::unadmitted(Request {
             file: hit.file.clone(),
@@ -86,6 +89,7 @@ pub(super) fn failures(checked: &Checked, allowlist: &Allowlist) -> Failures {
     }));
     Failures {
         failing,
+        all_reported,
         findings: found,
     }
 }

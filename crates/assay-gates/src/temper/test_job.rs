@@ -16,7 +16,7 @@ use std::convert::Infallible;
 use assay_app::{Adapter, BuildJob, GateJob, GateRun, GateRunner, Plugin, Step, Termination};
 use assay_domain::GateConclusion;
 
-use super::steps::{TemperStepSettings, step_retried, stopped};
+use super::steps::{TemperStepSettings, Verdict, step_retried, stopped};
 use super::{ErrorOf, TemperAdapter, TemperError};
 use crate::capture::CaptureSupervisor;
 use crate::revision::RevisionFiles;
@@ -103,18 +103,24 @@ fn run_test<S: CaptureSupervisor, R>(
         // Nothing to run is never a pass; `run_gates` does not schedule such a plugin here.
         return Err(TemperError::UnsupportedJob { job: TEST });
     }
-    let mut failed = false;
+    let mut failed_steps = Vec::new();
     for step in tests {
         match step_retried(supervisor, settings, step)? {
             Termination::Exited(0) => {}
-            Termination::Exited(_) => failed = true,
+            Termination::Exited(_) => failed_steps.push(step.name().as_str().to_owned()),
             other => return Ok(stopped(other)),
         }
     }
-    let conclusion = if failed {
-        GateConclusion::Fail
-    } else {
+    let conclusion = if failed_steps.is_empty() {
         GateConclusion::Pass
+    } else {
+        GateConclusion::Fail
     };
-    settings.document(plugin, pin, (conclusion, Vec::new()))
+    // This job has no findings, so every failure is a failed step (#153).
+    let verdict = Verdict {
+        conclusion,
+        findings: Vec::new(),
+        failed_steps: Some(failed_steps),
+    };
+    settings.document(plugin, pin, verdict)
 }

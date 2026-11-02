@@ -1,0 +1,12 @@
+{
+  "schema": "assay.findings/1",
+  "source": {
+    "kind": "reviewer",
+    "name": "claude",
+    "version": "git:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "role": "bugs",
+    "run_key": "run-42-1"
+  },
+  "findings": [],
+  "failed_steps": []
+}
