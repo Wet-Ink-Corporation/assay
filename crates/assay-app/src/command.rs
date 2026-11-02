@@ -2,6 +2,10 @@
 //! exact tokens separated by single spaces. A first line that does not start with `/assay`
 //! (a blockquote `>`, a fence, indentation, other text) is not a command, so a quote-reply of
 //! agent text never is one.
+//!
+//! The grammar sits at the crate's top level because two layers read it: the eligibility rule
+//! judges commands, and the ledger's strict reader refuses a command record that is not a
+//! recorded command's canonical line ([`recorded_command`]). Neither imports the other for it.
 
 use assay_domain::{Fingerprint, OverrideScope, RequiredRole};
 
@@ -221,6 +225,39 @@ const WORDS: [&str; 6] = [
     "retry",
     "weigh-in-ack",
 ];
+
+/// Why a [`CommandRecord`](crate::CommandRecord)'s `command` is not a command the snapshot can
+/// judge. The strict reader refuses all three, so only a record built by hand can carry one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum UnreadCommand {
+    /// It is not a command of the grammar.
+    #[error("the recorded command is not a command of the grammar")]
+    Unparsed,
+    /// It is `/assay recheck`, which is never recorded.
+    #[error("the recorded command is a recheck, which is never recorded")]
+    Recheck,
+    /// It reads as a command, but is not that command's canonical line.
+    #[error("the recorded command is not its command's canonical line")]
+    NotCanonical,
+}
+
+/// The command a record's `text` holds: a command of the grammar other than `recheck`, written
+/// exactly as its [`Command::line`]. The one rule of the ledger's strict reader and of
+/// [`SnapshotCommand`](crate::SnapshotCommand)'s `TryFrom<CommandRecord>`.
+pub(crate) fn recorded_command(text: &str) -> Result<Command, UnreadCommand> {
+    let command = match parse_command(text) {
+        Parsed::Command(Command::Recheck) => return Err(UnreadCommand::Recheck),
+        Parsed::Command(command) => command,
+        Parsed::NotACommand | Parsed::Unknown | Parsed::Malformed => {
+            return Err(UnreadCommand::Unparsed);
+        }
+    };
+    if command.line() == text {
+        Ok(command)
+    } else {
+        Err(UnreadCommand::NotCanonical)
+    }
+}
 
 /// `llm|all <reasons_digest> <reason>`.
 fn override_command(args: &str) -> Option<Command> {

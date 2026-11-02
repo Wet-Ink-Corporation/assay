@@ -18,8 +18,9 @@ use thiserror::Error;
 
 use super::AuthenticatedRun;
 use super::request::{AdmitJob, AdmitOutcome, JobResult, ReviewJob, ReviewStage};
+use crate::command::Command;
 use crate::config::Sha256Digest;
-use crate::eligibility::{Command, GitHubState, PriorWaivers, canonical_json};
+use crate::eligibility::{GitHubState, PriorWaivers, canonical_json};
 
 /// What one decision is composed from, borrowed for the call.
 #[derive(Debug, Clone, Copy)]
