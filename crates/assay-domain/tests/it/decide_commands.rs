@@ -5,8 +5,9 @@ use std::error::Error;
 
 use assay_domain::{
     CallFailure, Conclusion, Counts, Decision, DecisionInputs, Deferral, DegradedReport,
-    Disposition, FindingDisposition, InfraPolicy, LlmStage, Override, OverrideScope, OwnerApproval,
-    PrClass, ReasonCode, Severity, StageRole, Tier, Waived, Waiver, decide,
+    Disposition, FindingDisposition, GateConclusion, GateOutcome, InfraPolicy, LlmStage, Override,
+    OverrideScope, OwnerApproval, PrClass, ReasonCode, Severity, StageRole, StepAttribution, Tier,
+    Waived, Waiver, decide,
 };
 
 use crate::support::{attested_gate, clean_inputs, confirmed, fp, gate_finding, reason, rubric_v1};
@@ -89,6 +90,30 @@ fn waiving_the_only_human_decision_finding_clears_the_gate() -> Result<(), Box<d
             fp: fp("00000000000000a1"),
             code: Disposition::WaivedByOwner,
         }]
+    );
+    Ok(())
+}
+
+/// A neutral conclusion is not attributed to its findings, so waiving every one of them leaves
+/// a required neutral gate failing (#161, fail closed).
+#[test]
+fn waiving_every_finding_of_a_neutral_required_gate_leaves_it_failing() -> Result<(), Box<dyn Error>>
+{
+    let mut inputs = temper_failed(false);
+    for gate in &mut inputs.gates {
+        gate.outcome = GateOutcome::Ran {
+            conclusion: GateConclusion::Neutral,
+            steps: StepAttribution::Known(Vec::new()),
+        };
+    }
+    inputs.waivers = vec![waiver("00000000000000a1")];
+
+    let decision = decided(&inputs)?;
+
+    assert_eq!(decision.conclusion, Conclusion::Failure);
+    assert_eq!(
+        decision.reasons,
+        [reason(ReasonCode::GateNeutral, "temper")]
     );
     Ok(())
 }
