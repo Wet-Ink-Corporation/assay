@@ -54,6 +54,7 @@ fn the_golden_corpus_exercises_every_rubric_reason() -> Result<(), Box<dyn Error
         ReasonCode::GateFailed,
         ReasonCode::GateError,
         ReasonCode::GateSkipped,
+        ReasonCode::GateNeutral,
         ReasonCode::BaseNotProtected,
         ReasonCode::AmbiguousHead,
         ReasonCode::NeedsSplit,

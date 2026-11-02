@@ -12,6 +12,7 @@ use std::num::NonZeroU64;
 use assay_domain::Side;
 
 use super::report::{Spot, line_evidence};
+use super::statics::BlobCount;
 use crate::revision::{EntryKind, Revision, RevisionFiles, TreeEntry};
 
 /// Most bytes of cited files read for evidence in one run (H-13).
@@ -37,16 +38,37 @@ impl Lines<'_> {
     }
 }
 
+/// Why a side's cited files could not be read.
+#[derive(Debug)]
+pub(super) enum Unread<E> {
+    /// The reader failed to list the tree or read its blobs.
+    Reader {
+        /// The side.
+        revision: Revision,
+        /// The reader's error.
+        source: E,
+    },
+    /// The reader returned another number of blobs than it was asked for, so which bytes
+    /// belong to which file is unknown.
+    Count {
+        /// The side.
+        revision: Revision,
+        /// How many were asked for and read.
+        count: BlobCount,
+    },
+}
+
 /// Reads the lines `wanted` cites: head first, then base for the files head does not hold.
 ///
 /// # Errors
 ///
-/// The side whose tree or blobs could not be read, with the reader's error.
+/// The side whose tree or blobs could not be read, with the reader's error, or whose reader
+/// returned another number of blobs than it was asked for.
 pub(super) fn gather<'w, R: RevisionFiles>(
     revisions: &R,
     wanted: impl IntoIterator<Item = (&'w str, NonZeroU64)>,
     budget: u64,
-) -> Result<Lines<'w>, (Revision, R::Error)> {
+) -> Result<Lines<'w>, Unread<R::Error>> {
     let mut pending: BTreeMap<&'w str, BTreeSet<NonZeroU64>> = BTreeMap::new();
     for (file, line) in wanted {
         pending.entry(file).or_default().insert(line);
@@ -57,7 +79,7 @@ pub(super) fn gather<'w, R: RevisionFiles>(
         if pending.is_empty() {
             break;
         }
-        let failed = |error| (revision, error);
+        let failed = |source| Unread::Reader { revision, source };
         let entries = revisions.list(revision, None).map_err(failed)?;
         let present: Vec<&TreeEntry> = entries
             .iter()
@@ -69,6 +91,15 @@ pub(super) fn gather<'w, R: RevisionFiles>(
             .filter(|entry| entry.kind == EntryKind::File);
         let chosen = within_budget(files, &mut left);
         let blobs = revisions.read(&chosen).map_err(failed)?;
+        if blobs.len() != chosen.len() {
+            return Err(Unread::Count {
+                revision,
+                count: BlobCount {
+                    asked: chosen.len(),
+                    read: blobs.len(),
+                },
+            });
+        }
         for (entry, bytes) in chosen.iter().zip(blobs) {
             if let Some((file, needed)) = pending.get_key_value(entry.path.as_str()) {
                 quote_into(&mut lines, (file, side), needed, &bytes);
@@ -143,6 +174,53 @@ mod tests {
             object: "0".repeat(40),
             size: Some(size),
         }
+    }
+
+    /// A reader that lists `entries` on head and returns one blob fewer than it is asked for.
+    struct ShortReader(Vec<TreeEntry>);
+
+    impl RevisionFiles for ShortReader {
+        type Error = std::io::Error;
+
+        fn list(
+            &self,
+            revision: Revision,
+            _path: Option<&str>,
+        ) -> Result<Vec<TreeEntry>, Self::Error> {
+            Ok(match revision {
+                Revision::Head => self.0.clone(),
+                Revision::Base => Vec::new(),
+            })
+        }
+
+        fn read(&self, entries: &[&TreeEntry]) -> Result<Vec<Vec<u8>>, Self::Error> {
+            Ok(entries.iter().skip(1).map(|_| b"line\n".to_vec()).collect())
+        }
+
+        fn blob_id(&self, _bytes: &[u8]) -> Result<String, Self::Error> {
+            Ok(String::new())
+        }
+    }
+
+    /// #210: zipping the chosen files with fewer blobs would quote one file's line under
+    /// another's name, or drop it; a count mismatch is refused, as the reach code does.
+    #[test]
+    fn a_reader_returning_fewer_blobs_than_asked_is_refused() {
+        let reader = ShortReader(vec![entry("a.rs", 5), entry("b.rs", 5)]);
+        let one = NonZeroU64::MIN;
+
+        let gathered = gather(&reader, [("a.rs", one), ("b.rs", one)], 1 << 10);
+
+        assert!(
+            matches!(
+                gathered,
+                Err(Unread::Count {
+                    revision: Revision::Head,
+                    count: BlobCount { asked: 2, read: 1 },
+                })
+            ),
+            "{gathered:?}"
+        );
     }
 
     #[test]
