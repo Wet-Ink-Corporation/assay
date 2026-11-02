@@ -6,7 +6,9 @@
 //! `[patch]` by another name), every `auto*` discovery switch (`autobins = false` drops the
 //! unit tests of every binary) and a target's `required-features` and `path` (a test target
 //! that needs a feature the test job does not enable, or that points at another file, stops
-//! running its tests), and by workspace membership: `[workspace] members` and
+//! running its tests), by every `[profile]` table (#172: profiles decide `debug_assertions`,
+//! `overflow-checks` and `panic`, so which code the forbid backstop's passes compile; per-package
+//! overrides and custom profiles included), and by workspace membership: `[workspace] members` and
 //! `default-members`, the presence of a `[workspace]` table and `package.workspace` (a crate
 //! leaving the workspace leaves its lints and its test job). Values are compared parsed, so
 //! formatting does not count; targets are compared in file order, so reordering targets that
@@ -36,10 +38,11 @@ enum Switch {
     DefaultMembers,
     Workspace,
     PackageWorkspace,
+    Profile,
 }
 
 /// Every switch, with its name in findings.
-const SWITCHES: [(Switch, &str); 15] = [
+const SWITCHES: [(Switch, &str); 16] = [
     (Switch::Patch, "[patch]"),
     (Switch::Replace, "[replace]"),
     (Switch::Exclude, "[workspace] exclude"),
@@ -58,6 +61,7 @@ const SWITCHES: [(Switch, &str); 15] = [
     (Switch::Harness, "target harness"),
     (Switch::RequiredFeatures, "target required-features"),
     (Switch::Path, "target path"),
+    (Switch::Profile, "[profile]"),
 ];
 
 /// What a table that is present projects to, whatever it holds: its presence is the switch.
@@ -215,6 +219,7 @@ fn projection(manifest: &Table, switch: Switch, new: bool) -> Vec<Option<&Value>
     };
     match switch {
         Switch::Patch => vec![at(&["patch"])],
+        Switch::Profile => vec![at(&["profile"])],
         Switch::Replace => vec![at(&["replace"])],
         Switch::Exclude => vec![at(&["workspace", "exclude"])],
         Switch::Members => vec![at(&["workspace", "members"])],
@@ -297,6 +302,32 @@ mod tests {
             Vec::<&str>::new(),
             "compared parsed"
         );
+    }
+
+    /// Profiles decide `debug_assertions`, `overflow-checks` and `panic`, so which code the
+    /// forbid backstop's passes compile (#172): any change to any profile table is a switch,
+    /// per-package overrides and custom profiles included, and an unchanged one is not.
+    #[test]
+    fn any_profile_change_is_a_switch() {
+        let base = table("[profile.release]\nlto = true\n");
+        let changed = [
+            "[profile.release]\nlto = true\n\n[profile.dev]\ndebug-assertions = false\n",
+            "[profile.release]\nlto = true\n[profile.release.package.x]\ndebug-assertions = true\n",
+            "[profile.release]\nlto = true\n\n[profile.ci]\ninherits = \"dev\"\n",
+            "[profile.release]\nlto = false\n",
+            "",
+        ];
+
+        for head in changed {
+            let switches = changed_switches(Some(&base), Some(&table(head)), &Roots::default());
+
+            assert_eq!(switches, ["[profile]"], "{head}");
+        }
+        let same = table("profile = { release = { lto = true } }\n");
+        let unchanged = changed_switches(Some(&base), Some(&same), &Roots::default());
+        assert_eq!(unchanged, Vec::<&str>::new(), "compared parsed");
+        let new = changed_switches(None, Some(&base), &Roots::default());
+        assert_eq!(new, ["[profile]"], "a new manifest's profile counts too");
     }
 
     #[test]

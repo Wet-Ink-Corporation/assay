@@ -38,6 +38,34 @@ fn keeps_only_path_home_ci_and_assay_variables() {
     );
 }
 
+/// The forbid backstop (#172) sets these after the gate environment; none may come from the
+/// runner, where it could cap or strip the forbidden lints before the backstop's own values.
+#[test]
+fn drops_every_variable_that_steers_rustc_flags_or_the_compiler() {
+    let inherited = vars(&[
+        ("RUSTFLAGS", "--cap-lints=allow"),
+        ("CARGO_ENCODED_RUSTFLAGS", "-Aunsafe_code"),
+        ("CARGO_BUILD_RUSTFLAGS", "-Aunsafe_code"),
+        (
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+            "-Aunsafe_code",
+        ),
+        ("RUSTC_WRAPPER", "/bin/strip"),
+        ("RUSTC_WORKSPACE_WRAPPER", "/bin/strip"),
+        ("CARGO_BUILD_RUSTC_WRAPPER", "/bin/strip"),
+        ("RUSTC", "/bin/fake"),
+        ("CARGO_TARGET_DIR", "/poisoned"),
+        ("CLIPPY_ARGS", "--cap-lints__CLIPPY_HACKERY__allow"),
+        ("CLIPPY_CONF_DIR", "/elsewhere"),
+        ("RUSTUP_TOOLCHAIN", "nightly"),
+        ("PATH", "/usr/bin"),
+    ]);
+
+    let environment = GateEnvironment::from_vars(inherited);
+
+    assert_eq!(environment.vars(), vars(&[("PATH", "/usr/bin")]));
+}
+
 #[test]
 fn matches_names_exactly_and_case_sensitively() {
     let inherited = vars(&[

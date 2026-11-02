@@ -52,6 +52,14 @@ impl TemperConfig {
             })
             .collect()
     }
+
+    /// Whether temper builds with `--all-features` under this config: unless `gate.allFeatures`
+    /// is exactly `false` (temper's default is on; any other value counts as on, the stricter
+    /// reading, since more features compile more code).
+    pub(super) fn all_features(&self) -> bool {
+        let gate = self.0.get("gate").and_then(Value::as_object);
+        gate.and_then(|gate| gate.get("allFeatures")) != Some(&Value::Bool(false))
+    }
 }
 
 impl Default for TemperConfig {

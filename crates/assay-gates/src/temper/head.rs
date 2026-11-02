@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 use std::path::Path;
 
-use super::attributes::{self, Expect};
+use super::attributes::{self, Expect, Unread};
 use super::layout::{Declared, Index, exactly_rs, skipped};
 use super::references::{self, Reference};
 use super::statics::BlobCount;
@@ -55,6 +55,9 @@ pub(super) enum Why {
     Extension,
     /// An attribute the scan does not read.
     Attribute,
+    /// The `clippy` cfg, or a macro fragment in a `cfg` predicate, which hides code from the
+    /// forbid backstop's clippy run (#172).
+    ClippyCfg,
     /// An `include!`, or a `mod name;` whose file is not a `.rs` file of the tree the scan
     /// reads wherever rustc can look for it, or that names no file this check can resolve.
     Reference,
@@ -334,9 +337,12 @@ fn blind_lines(
     let LexedFile {
         path, references, ..
     } = file;
-    let mut lines: Vec<(NonZeroU64, Why)> = attributes::unread(lexed)
+    let mut lines: Vec<(NonZeroU64, Why)> = attributes::unread_why(lexed)
         .into_iter()
-        .map(|line| (line, Why::Attribute))
+        .map(|(line, unread)| match unread {
+            Unread::ClippyName => (line, Why::ClippyCfg),
+            _ => (line, Why::Attribute),
+        })
         .chain(
             references
                 .iter()

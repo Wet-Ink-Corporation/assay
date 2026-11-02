@@ -17,6 +17,9 @@ assay-app = { workspace = true }
 assay-domain = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The forbid backstop's own target directory, created fresh beside the head tree and removed
+# after the build (#172). Pre-approved and already a workspace dependency.
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 
@@ -25,4 +28,3 @@ toml = { workspace = true }
 proptest = { workspace = true }
 # The lexer's token boundaries against proc-macro2's (src/temper/corpus.rs).
 syn = { workspace = true }
-tempfile = { workspace = true }

@@ -2,7 +2,9 @@
 //!
 //! Failures: every `raised` entry, and every `exception` hit base `.assay/exceptions.toml` does
 //! not admit by file and lint. They can only add to temper's verdict, and their absence proves
-//! nothing (Z2s checks both from the trees). Display: the findings on changed lines, each count
+//! nothing (Z2s checks both from the trees). A failed forbid backstop (step 5a) is explained
+//! next: `forbid-override` at each E0453 it located, or one `forbid-backstop`; its exit code
+//! already failed the gate. Display: the findings on changed lines, each count
 //! above the baseline, and each located compile error, with temper's severity mapped
 //! `must` to `blocker`, `should` to `major`, `consider` and `unmapped` to `minor`. Display never
 //! decides the gate. At most [`MAX_REPORTED`] findings are reported, failures first.
@@ -13,10 +15,12 @@ use std::num::NonZeroU64;
 use assay_app::plain_name;
 use assay_domain::{Class, Finding, Severity};
 
+use super::backstop::{Backstop, Pass};
 use super::baseline::{self, Raise};
 use super::evidence::Lines;
 use super::exceptions::Allowlist;
 use super::findings;
+use super::manifests;
 use super::ratchet::{self, BuildError, Checked, Increase, Level, Tool};
 use super::report::{Rule, Spot, finding};
 use super::scan::Request;
@@ -39,6 +43,13 @@ const WAIVABLE: [&str; 5] = [
 
 /// Rule of a compile error.
 const COMPILE_ERROR: &str = "compile-error";
+
+/// Rule of an attribute the forbid backstop's rustc refused (E0453); temper's scan names the
+/// same check `forbid-override`.
+const FORBID_OVERRIDE: &str = "forbid-override";
+
+/// Rule of a forbid backstop that failed without locating an E0453.
+const FORBID_BACKSTOP: &str = "forbid-backstop";
 
 /// The `raised` and unadmitted `exception` entries, which fail the gate.
 pub(super) struct Failures {
@@ -103,6 +114,10 @@ pub(super) enum Shown<'c> {
     Increase(&'c Increase, Level),
     /// A compile error at a file and line.
     Error(&'c str, NonZeroU64),
+    /// An attribute the forbid backstop's rustc refused (E0453), at a file and line.
+    Overridden(&'c str, NonZeroU64),
+    /// A forbid backstop pass that exited with this code and located no E0453.
+    Unlocated(Pass, i32),
 }
 
 impl<'c> Shown<'c> {
@@ -110,9 +125,32 @@ impl<'c> Shown<'c> {
     pub(super) const fn cites(&self) -> Option<(&'c str, NonZeroU64)> {
         match *self {
             Self::Code(code) => Some((code.file.as_str(), code.line)),
-            Self::Increase(..) => None,
-            Self::Error(file, line) => Some((file, line)),
+            Self::Increase(..) | Self::Unlocated(..) => None,
+            Self::Error(file, line) | Self::Overridden(file, line) => Some((file, line)),
         }
+    }
+}
+
+/// What explains a failed forbid backstop: each E0453 it located, or the failed run itself
+/// when it located none. Nothing for a backstop that passed or did not run. They come before
+/// the display findings; the gate already fails on the backstop's exit code. At most `room`,
+/// so no evidence is read for one that would not be reported.
+pub(super) fn backstop(backstop: &Backstop, room: usize) -> Vec<Shown<'_>> {
+    match backstop {
+        Backstop::Failed {
+            pass,
+            code,
+            overrides,
+        } if overrides.is_empty() => [Shown::Unlocated(*pass, *code)]
+            .into_iter()
+            .take(room)
+            .collect(),
+        Backstop::Failed { overrides, .. } => overrides
+            .iter()
+            .take(room)
+            .map(|found| Shown::Overridden(&found.file, found.line))
+            .collect(),
+        Backstop::NotRun | Backstop::Passed | Backstop::Stopped(_) => Vec::new(),
     }
 }
 
@@ -159,6 +197,30 @@ pub(super) fn display(shown: Shown<'_>, lines: &Lines<'_>) -> Finding {
             let rule = rule(Class::Logic, Severity::Blocker);
             let error = finding(rule, spot, "the workspace does not build here", body);
             under(error, COMPILE_ERROR)
+        }
+        Shown::Overridden(file, line) => {
+            let spot = lines.spot(file, line, "an attribute that lowers a forbidden lint");
+            let body = "rustc refuses an attribute here (E0453): it lowers a lint base's \
+                        `[workspace.lints]` sets to `deny` or `forbid`, which the forbid backstop \
+                        forbids (H-05). A macro or proc-macro may have written it. Remove it and \
+                        fix the code; only base `.assay/exceptions.toml` admits an exception.";
+            let rule = rule(Class::Compliance, Severity::Blocker);
+            let overridden = finding(rule, spot, "a forbidden lint is lowered here", body);
+            under(overridden, FORBID_OVERRIDE)
+        }
+        Shown::Unlocated(pass, code) => {
+            let pass = pass.name();
+            let evidence = format!("the forbid backstop's {pass} pass exited {code}");
+            let spot = Spot::synthesised(manifests::ROOT, &evidence);
+            let body = format!(
+                "The forbid backstop's {pass} pass (clippy with base's `deny` and `forbid` lints \
+                 as `-F`, no lint cap) exited {code} without locating an E0453. A forbidden lint is lowered \
+                 or hit, or the workspace does not build; a crate that does not build hides the \
+                 crates that depend on it, so the gate fails."
+            );
+            let rule = rule(Class::Compliance, Severity::Blocker);
+            let failed = finding(rule, spot, "the forbid backstop failed", &body);
+            under(failed, FORBID_BACKSTOP)
         }
     }
 }
