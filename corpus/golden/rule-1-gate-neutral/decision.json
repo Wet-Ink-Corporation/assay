@@ -1,0 +1,24 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-rule-1-gate-neutral",
+  "evidence_key": "run-rule-1-gate-neutral",
+  "conclusion": "failure",
+  "reasons": [
+    {
+      "code": "gate-neutral",
+      "detail": "custom-lint"
+    }
+  ],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [],
+  "waived": [],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:66b7f807faa51478be5bd83d5248d6b905de47d49f2e38d1f6e082e51320e4ca"
+}

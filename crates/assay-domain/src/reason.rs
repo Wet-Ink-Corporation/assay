@@ -11,6 +11,8 @@ closed_enum! {
         GateError => "gate-error",
         /// A required gate did not run; never a pass.
         GateSkipped => "gate-skipped",
+        /// A required gate concluded `neutral`: required means pass (#161).
+        GateNeutral => "gate-neutral",
         /// The verifier confirmed a blocker.
         BlockerVerified => "blocker-verified",
         /// More majors than the rubric allows.

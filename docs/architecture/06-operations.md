@@ -110,7 +110,7 @@ Levers if over budget, in order: (1) raise the `micro` floor; (2) merge `design`
 
 | Component | Policy | Rationale |
 |---|---|---|
-| Required gate (temper; weigh-in once required) | **closed** (including skipped/timeout/invalid) | Compliance; error ≠ pass |
+| Required gate (temper; weigh-in once required) | **closed** (including neutral/skipped/timeout/invalid) | Compliance; error ≠ pass |
 | Rubric/schema validation, `plan-mismatch`, artifact and bundle digests | **closed** | Garbage in cannot yield success |
 | `base-not-protected` | **`failure`** (the check is not required there, so nothing is blocked) | A stale result is fail-safe if the head is later retargeted to a protected base; `neutral` counted as passing and opened a retarget-and-merge window (R3-03) |
 | Publish | **closed** after retries | A stuck pending check is worse |

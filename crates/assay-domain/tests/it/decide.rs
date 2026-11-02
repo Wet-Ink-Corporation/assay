@@ -81,6 +81,37 @@ fn a_skipped_required_gate_fails_the_pr() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Required means pass (#161, owner 2026-11-01): a required gate that concluded `neutral` fails
+/// rule 1 with its own reason.
+#[test]
+fn a_neutral_required_gate_fails_the_pr() -> Result<(), Box<dyn Error>> {
+    let mut inputs = clean_inputs();
+    inputs.gates = vec![gate("custom-lint", GateConclusion::Neutral, Vec::new())];
+
+    let decision = decided(&inputs)?;
+
+    assert_eq!(decision.conclusion, Conclusion::Failure);
+    assert_eq!(
+        decision.reasons,
+        [reason(ReasonCode::GateNeutral, "custom-lint")]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_neutral_optional_gate_does_not_fail_the_pr() -> Result<(), Box<dyn Error>> {
+    let mut inputs = clean_inputs();
+    let mut optional = gate("custom-lint", GateConclusion::Neutral, Vec::new());
+    optional.required = false;
+    inputs.gates.push(optional);
+
+    let decision = decided(&inputs)?;
+
+    assert_eq!(decision.conclusion, Conclusion::Success);
+    assert_eq!(decision.reasons, []);
+    Ok(())
+}
+
 #[test]
 fn a_failed_optional_gate_does_not_fail_the_pr() -> Result<(), Box<dyn Error>> {
     let mut inputs = clean_inputs();
