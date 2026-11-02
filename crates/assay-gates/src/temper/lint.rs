@@ -17,15 +17,16 @@ use std::path::Path;
 use assay_app::{BuildJob, GateDocument, GateRun, Plugin, Step, Termination};
 use assay_domain::{Finding, GateConclusion};
 
-use super::evidence::{self, MAX_EVIDENCE_BYTES};
+use super::evidence::{self, MAX_EVIDENCE_BYTES, Unread};
 use super::exceptions::Allowlist;
+use super::gate_config::{self, TemperConfig};
 use super::lint_findings::{self, Shown};
-use super::ratchet::{self, Checked, Refused};
+use super::ratchet::{self, Checked, Refused, Tool};
 use super::steps::{capture, stopped};
 use super::{ErrorOf, TREE, TemperAdapter, TemperError};
 use crate::capture::CaptureSupervisor;
 use crate::exec::read_document;
-use crate::revision::RevisionFiles;
+use crate::revision::{Revision, RevisionFiles};
 
 /// Where `baseline --check` writes its collection and ratchet, relative to the head tree; temper
 /// accepts only paths under `target/` or `.temper/`.
@@ -49,6 +50,7 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             return Err(TemperError::NoRatchetBase);
         };
         let allowlist = self.allowlist()?;
+        let required = self.base_sources()?;
         // The steps read the tree before `baseline --check` builds it (build scripts and
         // proc-macros run there).
         let mut failed = false;
@@ -72,7 +74,7 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             Termination::Exited(1) => true,
             other => return Ok(stopped(other)),
         };
-        let checked = self.checked(&out)?;
+        let checked = self.checked(&out, &required)?;
         if checked.ok == exit_failed {
             return Err(TemperError::FindingsOutput {
                 detail: "temper's exit code disagrees with ratchet.ok".to_owned(),
@@ -90,8 +92,8 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
     }
 
     /// The findings document `baseline --check` left at `out`, read strictly and believed only
-    /// against the expected merge base.
-    fn checked(&self, out: &Path) -> Result<Checked, ErrorOf<S, R>> {
+    /// against the expected merge base and with every source in `required`.
+    fn checked(&self, out: &Path, required: &[Tool]) -> Result<Checked, ErrorOf<S, R>> {
         let bytes = findings_out(out, MAX_FINDINGS_OUT_BYTES)?;
         let merge_base = self
             .settings
@@ -99,10 +101,26 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             .as_ref()
             .map(|ratchet| ratchet.merge_base.as_str())
             .ok_or(TemperError::NoRatchetBase)?;
-        ratchet::check(&bytes, merge_base).map_err(|refused| match refused {
+        ratchet::check(&bytes, merge_base, required).map_err(|refused| match refused {
             Refused::Malformed(detail) => TemperError::FindingsOutput { detail },
             Refused::Degraded(why) => TemperError::RatchetDegraded { why },
         })
+    }
+
+    /// The sources base `.claude/temper.json` enables, which the ratchet must have collected
+    /// whatever head's config says (#210 F3); temper's defaults when base has none. Read before
+    /// anything runs in the tree.
+    fn base_sources(&self) -> Result<Vec<Tool>, ErrorOf<S, R>> {
+        let Some(bytes) = self.read(Revision::Base, gate_config::PATH)? else {
+            return Ok(TemperConfig::default().sources());
+        };
+        TemperConfig::parse(&bytes)
+            .map(|config| config.sources())
+            .map_err(|detail| TemperError::Malformed {
+                revision: Revision::Base,
+                path: gate_config::PATH,
+                detail,
+            })
     }
 
     /// The failures and the display findings of `checked`, with evidence from the trees.
@@ -119,10 +137,20 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             shown.iter().filter_map(Shown::cites),
             MAX_EVIDENCE_BYTES,
         )
-        .map_err(|(revision, source)| TemperError::Revision {
-            revision,
-            path: TREE,
-            source,
+        .map_err(|unread| match unread {
+            Unread::Reader { revision, source } => TemperError::Revision {
+                revision,
+                path: TREE,
+                source,
+            },
+            Unread::Count { revision, count } => TemperError::Malformed {
+                revision,
+                path: TREE,
+                detail: format!(
+                    "the reader returned {} blobs for {} files",
+                    count.read, count.asked
+                ),
+            },
         })?;
         findings.extend(
             shown

@@ -30,7 +30,7 @@ use assay_gates::{
 use serde_json::Value;
 
 use crate::support::{GIT, SeenSpec};
-use crate::temper_support::{EXCEPTIONS, NODE, Pr};
+use crate::temper_support::{CONFIG, EXCEPTIONS, NODE, Pr};
 
 const LINT: GateJob = GateJob::Build(assay_app::BuildJob::Lint);
 const BASE_SHA: &str = "ba5e000000000000000000000000000000000001";
@@ -492,6 +492,125 @@ fn a_ratchet_on_another_base_or_none_is_degraded() -> Result<(), Box<dyn Error>>
             "{base}"
         );
     }
+    Ok(())
+}
+
+/// The diff+totals fixture collected from `sources` only.
+fn collected_from(sources: &[&str]) -> Result<String, Box<dyn Error>> {
+    edited(|document| {
+        document
+            .as_object_mut()?
+            .insert("sources".to_owned(), Value::from(sources.to_vec()));
+        Some(())
+    })
+}
+
+/// #210 F3: a head `.claude/temper.json` that turns rustdoc or the scan off makes temper ratchet
+/// without them while it still reports `diff+totals` and `ok`; a collection that leaves out a
+/// source base enables is not believed.
+#[test]
+fn a_ratchet_without_a_source_base_enables_is_degraded() -> Result<(), Box<dyn Error>> {
+    let pr = Pr::new()?;
+    for sources in [
+        &["clippy", "scan"][..],
+        &["clippy", "rustdoc"][..],
+        &["rustdoc", "scan"][..],
+        &[][..],
+    ] {
+        let document = collected_from(sources)?;
+
+        let ran = run(&pr, &mut FakeLint::leaving(&document))?;
+        let (outcome, _) = outcome(&pr, &mut FakeLint::leaving(&document))?;
+
+        assert_matches!(
+            ran,
+            Err(TemperError::RatchetDegraded {
+                why: RatchetDegradation::Sources
+            }),
+            "{sources:?}"
+        );
+        assert_eq!(outcome, GateJobOutcome::Error(GateError::RatchetDegraded));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_ratchet_without_the_sources_base_turns_off_is_believed() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(
+        Revision::Base,
+        CONFIG,
+        r#"{"gate": {"doc": false, "scan": false}}"#,
+    );
+    let mut lint = FakeLint::leaving(&collected_from(&["clippy"])?);
+
+    let (outcome, _) = outcome(&pr, &mut lint)?;
+
+    assert_eq!(outcome, PASSED, "base enables only clippy");
+    Ok(())
+}
+
+/// With no `.claude/temper.json` at base, temper's defaults enable every source.
+#[test]
+fn without_a_base_config_every_source_is_required() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.remove(Revision::Base, CONFIG);
+    let document = collected_from(&["clippy", "scan"])?;
+
+    let ran = run(&pr, &mut FakeLint::leaving(&document))?;
+    let (clean, _) = outcome(&pr, &mut FakeLint::leaving(DIFF_TOTALS))?;
+
+    assert_matches!(
+        ran,
+        Err(TemperError::RatchetDegraded {
+            why: RatchetDegradation::Sources
+        })
+    );
+    assert_eq!(clean, PASSED);
+    Ok(())
+}
+
+/// An unreadable base config is refused before any step or `baseline --check` runs.
+#[test]
+fn a_base_config_that_is_not_a_json_object_is_refused_before_anything_runs()
+-> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(Revision::Base, CONFIG, "[]");
+    let mut lint = FakeLint::leaving(DIFF_TOTALS);
+
+    let ran = run(&pr, &mut lint)?;
+
+    assert_matches!(
+        ran,
+        Err(TemperError::Malformed {
+            revision: Revision::Base,
+            path: ".claude/temper.json",
+            ..
+        })
+    );
+    assert_eq!(lint.ran(), Vec::<&str>::new(), "nothing ran");
+    Ok(())
+}
+
+/// Only an exact JSON `false` turns a source off, as temper's `cfg.gate.doc !== false`.
+#[test]
+fn a_base_config_value_other_than_false_keeps_the_source_on() -> Result<(), Box<dyn Error>> {
+    let mut pr = Pr::new()?;
+    pr.set(
+        Revision::Base,
+        CONFIG,
+        r#"{"gate": {"doc": 0, "scan": "false"}}"#,
+    );
+    let document = collected_from(&["clippy"])?;
+
+    let ran = run(&pr, &mut FakeLint::leaving(&document))?;
+
+    assert_matches!(
+        ran,
+        Err(TemperError::RatchetDegraded {
+            why: RatchetDegradation::Sources
+        })
+    );
     Ok(())
 }
 
