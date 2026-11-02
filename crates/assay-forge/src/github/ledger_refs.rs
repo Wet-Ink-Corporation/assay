@@ -181,9 +181,10 @@ impl<T: Transport, S: Sleep> LedgerRefsRepo<T, S> {
             .map_err(|_short| malformed("the lease commit's id is not a full id"))
     }
 
-    /// Creates `name` at `commit`. A 422 or an unanswered attempt is resolved by reading the ref:
-    /// at `commit`, this call created it; at another commit, it exists; absent after a 422,
-    /// GitHub refused the creation.
+    /// Creates `name` at `commit`. A 422, or an attempt answered with a retried 5xx or rate limit,
+    /// is resolved by reading the ref: at `commit`, this call created it; at another commit, it
+    /// exists; absent after a 422, GitHub refused the creation. A transport failure (no response)
+    /// stops the call with no read-back.
     fn create_ref(
         &self,
         name: &LeaseRef,
