@@ -35,8 +35,9 @@ use super::statics::Tree;
 /// Which part of a manifest names a file Cargo compiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    /// The `[package]` (or `[project]`) table itself, when it is not a table.
-    Package,
+    /// The `[package]` or `[project]` table itself, by the key the manifest used, when it is
+    /// not a table.
+    Package(&'static str),
     /// `[package] build` (or `[project] build`).
     Build,
     /// `[lib] path`.
@@ -81,7 +82,7 @@ impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let entry = self.entry;
         match self.kind {
-            Kind::Package => f.write_str("`[package]`"),
+            Kind::Package(key) => write!(f, "`[{key}]`"),
             Kind::Build => write!(f, "`build` {entry}"),
             Kind::Lib => f.write_str("`[lib]` `path`"),
             Kind::Bin => write!(f, "`[[bin]]` {entry} `path`"),
@@ -172,7 +173,7 @@ fn first_refused(manifest: &Table, head: &Head<'_, '_>) -> Option<(Target, Probl
             continue;
         };
         let Some(package) = package.as_table() else {
-            return Some((Target::at(Kind::Package, 0), Problem::Shape));
+            return Some((Target::at(Kind::Package(key), 0), Problem::Shape));
         };
         if let Some((at, problem)) = build(package.get("build"), head) {
             return Some((Target::at(Kind::Build, at), problem));
@@ -461,8 +462,8 @@ mod tests {
                 "[[test]]\nname = \"t\"\npath = [\"t.rs\"]\n",
                 at(Kind::Test, 1),
             ),
-            ("package = \"x\"\n", at(Kind::Package, 1)),
-            ("project = 1\n", at(Kind::Package, 1)),
+            ("package = \"x\"\n", at(Kind::Package("package"), 1)),
+            ("project = 1\n", at(Kind::Package("project"), 1)),
             ("[package]\nbuild = 1\n", at(Kind::Build, 1)),
             (
                 "[package]\nbuild = { workspace = true }\n",
@@ -524,19 +525,22 @@ mod tests {
     }
 
     #[test]
-    fn a_package_that_is_not_a_table_is_named_as_the_package() {
+    fn a_package_that_is_not_a_table_is_named_by_the_key_the_manifest_used() {
         let entries = files(&["crates/x/src/lib.rs"]);
         let tree = Tree::new(entries.iter().map(|entry| (entry, None)));
         let index = TreeIndex::new(&tree);
-        let manifest: Table = "package = \"x\"\n".parse().expect("TOML");
-
-        let quote =
-            refused("crates/x/Cargo.toml", &manifest, &tree, &index).and_then(|spot| spot.quote);
+        let quote = |text: &str| {
+            let manifest: Table = text.parse().expect("TOML");
+            refused("crates/x/Cargo.toml", &manifest, &tree, &index).and_then(|spot| spot.quote)
+        };
 
         assert_eq!(
-            quote.as_deref(),
-            Some("`[package]`: not written as Cargo reads a target"),
-            "not its `build`, which it cannot hold"
+            [quote("package = \"x\"\n"), quote("project = 1\n")],
+            [
+                Some("`[package]`: not written as Cargo reads a target".to_owned()),
+                Some("`[project]`: not written as Cargo reads a target".to_owned()),
+            ],
+            "not its `build`, which it cannot hold, and not a key the manifest does not use"
         );
     }
 }
