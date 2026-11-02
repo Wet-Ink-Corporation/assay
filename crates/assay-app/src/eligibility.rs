@@ -44,6 +44,7 @@ pub use self::ledger::{LedgerSnapshot, LedgerSnapshotError};
 pub use self::ports::{CommandComments, LedgerRecords, MAX_COMMENT_BYTES, SnapshotLedger};
 pub use self::pushes::MAX_PUSH_RECORDS;
 use self::pushes::{push_clock, pushed};
+pub(crate) use self::range::Attribution;
 pub use self::range::{
     MAX_RANGE_COMMITS, MergeTree, ParseTreeIdError, RangeCommit, RangeListing, RangeObjects,
     TreeId, WEB_FLOW,

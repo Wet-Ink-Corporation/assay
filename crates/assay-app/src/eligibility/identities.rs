@@ -60,9 +60,9 @@ pub(super) struct ReadRange {
 /// The authors and committers of `request`'s range for clause (b).
 ///
 /// They are read from `objects` and `forge` exactly as [`github_state`](super::github_state)
-/// reads them: GitHub's first author
-/// and the committer of each commit (web-flow only as committer), clean merges from base that a
-/// push record pushed left out. A range past [`MAX_RANGE_COMMITS`] cannot be attributed, so it
+/// reads them, and by the rule [`RangeIdentities::of`] uses: every author GitHub lists
+/// (co-authors included, #347) and the committer of each commit (web-flow only as committer),
+/// clean merges from base that a push record pushed left out. A range past [`MAX_RANGE_COMMITS`] cannot be attributed, so it
 /// leaves nobody eligible.
 ///
 /// # Errors

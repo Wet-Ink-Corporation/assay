@@ -69,6 +69,73 @@ fn a_merge_that_is_not_clean_counts_its_author() -> Outcome {
     Ok(())
 }
 
+/// #347 (owner, 2026-11-02, A): one rule for clause (b), so admit's reading of a range and
+/// `RangeIdentities::of` over the same identities agree, co-authors and `web-flow` included.
+#[test]
+fn the_range_reading_and_of_attribute_every_author_alike() -> Outcome {
+    let cases = [
+        vec![Actor::User(user(OWNER)), Actor::User(user(CONTRIBUTOR))],
+        vec![Actor::User(user(OWNER)), Actor::NotAUser],
+        vec![Actor::User(user(OWNER)), Actor::User(user(WEB_FLOW))],
+        vec![Actor::User(user(WEB_FLOW))],
+        Vec::new(),
+    ];
+    for authors in cases {
+        let mut world = World::opened_by(CONTRIBUTOR);
+        let by = By {
+            authors: authors.clone(),
+            committer: Actor::User(user(OWNER)),
+        };
+        world.commit('2', &[FIRST], by);
+        world.push((FIRST, '2'), OWNER, 5);
+        world.head('2');
+        let commits = [
+            CommitIdentity {
+                commit: sha(FIRST),
+                authors: vec![Actor::User(user(CONTRIBUTOR))],
+                committer: Actor::User(user(CONTRIBUTOR)),
+            },
+            CommitIdentity {
+                commit: sha('2'),
+                authors: authors.clone(),
+                committer: Actor::User(user(OWNER)),
+            },
+        ];
+
+        let range = world.range_identities()?;
+
+        assert_eq!(
+            range,
+            RangeIdentities::of(&commits, HashSet::new()),
+            "{authors:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_co_author_is_an_identity_of_the_range() -> Outcome {
+    let mut world = World::opened_by(CONTRIBUTOR);
+    world.commit(
+        '2',
+        &[FIRST],
+        By {
+            authors: vec![Actor::User(user(CONTRIBUTOR)), Actor::User(user(OWNER))],
+            committer: Actor::User(user(CONTRIBUTOR)),
+        },
+    );
+    world.push((FIRST, '2'), CONTRIBUTOR, 5);
+    world.head('2');
+
+    let range = world.range_identities()?;
+
+    assert_eq!(
+        range,
+        identities(&[(FIRST, CONTRIBUTOR), ('2', OWNER)], &[])
+    );
+    Ok(())
+}
+
 #[test]
 fn a_range_past_the_cap_leaves_nobody_eligible() -> Outcome {
     let mut world = World::opened_by(CONTRIBUTOR);
