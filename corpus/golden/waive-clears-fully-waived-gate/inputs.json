@@ -1,0 +1,90 @@
+{
+  "decision_key": "dec-waive-clears-fully-waived-gate",
+  "evidence_key": "run-waive-clears-fully-waived-gate",
+  "policy": {
+    "protected_bases": [
+      "main"
+    ],
+    "llm_blockers": "advisory",
+    "llm_majors": "advisory",
+    "on_infra_failure": "warn",
+    "block_on_infra_for": [
+      "trust-path",
+      "exec-surface"
+    ]
+  },
+  "pr": {
+    "base_ref": "main",
+    "open_prs_on_head": 1,
+    "tier": "lite",
+    "classes": [],
+    "owner_approval": "not-approved",
+    "authorship": "other",
+    "readiness": "ready",
+    "requeues": 0
+  },
+  "gates": [
+    {
+      "name": "temper",
+      "required": true,
+      "outcome": {
+        "status": "ran",
+        "conclusion": "fail",
+        "steps": {
+          "known": []
+        }
+      },
+      "findings": [
+        {
+          "fp": "00000000000000a1",
+          "rule": "raised",
+          "severity": "blocker"
+        },
+        {
+          "fp": "00000000000000a2",
+          "rule": "exception",
+          "severity": "blocker"
+        }
+      ]
+    },
+    {
+      "name": "temper",
+      "required": true,
+      "outcome": {
+        "status": "ran",
+        "conclusion": "pass",
+        "steps": {
+          "known": []
+        }
+      },
+      "findings": []
+    }
+  ],
+  "weigh_in": "not-required",
+  "llm": {
+    "status": "completed"
+  },
+  "findings": [],
+  "dispositions": [],
+  "completed_roles": [
+    "combined"
+  ],
+  "coordinator": {
+    "status": "not-needed"
+  },
+  "verifier": {
+    "status": "not-needed"
+  },
+  "degraded": [],
+  "waivers": [
+    {
+      "fp": "00000000000000a1",
+      "by": "owner"
+    },
+    {
+      "fp": "00000000000000a2",
+      "by": "owner"
+    }
+  ],
+  "override_record": null
+}

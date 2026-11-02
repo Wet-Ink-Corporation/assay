@@ -1,0 +1,37 @@
+{
+  "schema": "assay.decision/1",
+  "decision_key": "dec-waive-clears-fully-waived-gate",
+  "evidence_key": "run-waive-clears-fully-waived-gate",
+  "conclusion": "success",
+  "reasons": [],
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0
+  },
+  "advisory_blockers": [],
+  "dispositions": [
+    {
+      "fp": "00000000000000a1",
+      "code": "waived-by-owner"
+    },
+    {
+      "fp": "00000000000000a2",
+      "code": "waived-by-owner"
+    }
+  ],
+  "waived": [
+    {
+      "fp": "00000000000000a1",
+      "by": "owner"
+    },
+    {
+      "fp": "00000000000000a2",
+      "by": "owner"
+    }
+  ],
+  "degraded": [],
+  "rubric_version": "1",
+  "inputs_digest": "sha256:d05e57b19304dd3dce3af3de6c1bdb1a33f8ac2e4b1e28c6b64ddfa42fcbd26a"
+}

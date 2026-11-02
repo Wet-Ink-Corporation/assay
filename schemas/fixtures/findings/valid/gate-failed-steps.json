@@ -1,0 +1,24 @@
+{
+  "schema": "assay.findings/1",
+  "source": {
+    "kind": "gate",
+    "name": "temper",
+    "version": "git:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "run_key": "run-42-1"
+  },
+  "conclusion": "fail",
+  "findings": [
+    {
+      "class": "error-handling",
+      "rule": "clippy::unwrap_used",
+      "kind": "defect",
+      "severity": "blocker",
+      "file": "crates/x/src/lib.rs",
+      "line": 88,
+      "evidence": "let x = y.unwrap();",
+      "title": "used `unwrap()` on an `Option` value",
+      "body": "H-02: no unwrap in production code."
+    }
+  ],
+  "failed_steps": ["fmt", "baseline"]
+}

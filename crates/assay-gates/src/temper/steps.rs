@@ -74,14 +74,19 @@ impl TemperStepSettings {
         })
     }
 
-    /// The run's `assay.findings/1` document: `plugin` at `pin` concludes `conclusion` with
-    /// `findings`, as a clean exit.
+    /// The run's `assay.findings/1` document: `plugin` at `pin` concludes `verdict`, as a clean
+    /// exit.
     pub(super) fn document<SE, RE>(
         &self,
         plugin: &Plugin,
         pin: String,
-        (conclusion, findings): (GateConclusion, Vec<Finding>),
+        verdict: Verdict,
     ) -> Result<GateRun, TemperError<SE, RE>> {
+        let Verdict {
+            conclusion,
+            findings,
+            failed_steps,
+        } = verdict;
         let document = FindingsDocument {
             schema: FindingsSchema::V1,
             source: Source {
@@ -94,6 +99,7 @@ impl TemperStepSettings {
             },
             conclusion: Some(conclusion),
             findings,
+            failed_steps,
             stats: None,
         };
         let bytes = serde_json::to_vec(&document).map_err(TemperError::Document)?;
@@ -112,6 +118,19 @@ fn search_path_is_absolute(environment: &GateEnvironment) -> bool {
         .iter()
         .filter(|(name, _)| name == "PATH")
         .all(|(_, value)| env::split_paths(value).all(|entry| entry.is_absolute()))
+}
+
+/// What one clean temper run concludes, as its document states it.
+#[derive(Debug)]
+pub(super) struct Verdict {
+    /// The gate's conclusion.
+    pub(super) conclusion: GateConclusion,
+    /// Its findings, failures first.
+    pub(super) findings: Vec<Finding>,
+    /// The steps that failed without a finding (#153, 03 §2.1), in the order they ran; `None`
+    /// when the run cannot attest that every other failure cause is one of `findings`, which
+    /// `decide` reads as unknown.
+    pub(super) failed_steps: Option<Vec<String>>,
 }
 
 /// A process run that ended without exiting: the gate use case reports its termination.

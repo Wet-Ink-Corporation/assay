@@ -111,6 +111,8 @@ pub fn replay_golden(replay: &GoldenReplay<'_>, source: Source) -> FindingsDocum
         source,
         conclusion: Some(conclusion),
         findings,
+        // An `exec` gate's attestation is never believed (#153), so the replay makes none.
+        failed_steps: None,
         stats: None,
     }
 }

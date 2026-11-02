@@ -32,6 +32,7 @@ mod decide_only_poll;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns
 mod decide_only_ports;
 mod decide_refusals;
+mod decide_steps;
 mod doctor;
 mod doctor_profile;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns

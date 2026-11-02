@@ -272,6 +272,43 @@ fn failing_tests_fail_the_gate_and_the_doctests_still_run() -> Result<(), Box<dy
 }
 
 #[test]
+fn the_document_names_each_test_step_that_failed() -> Result<(), Box<dyn Error>> {
+    let exit = |code| [Termination::Exited(code)];
+    let cases: [(FakeSteps, GateJobOutcome, Vec<&str>); 4] = [
+        (FakeSteps::default(), PASSED, vec![]),
+        (
+            FakeSteps::default().ends("nextest", &exit(101)),
+            FAILED,
+            vec!["tests"],
+        ),
+        (
+            FakeSteps::default().ends("test", &exit(101)),
+            FAILED,
+            vec!["doctests"],
+        ),
+        (
+            FakeSteps::default()
+                .ends("nextest", &exit(4))
+                .ends("test", &exit(101)),
+            FAILED,
+            vec!["tests", "doctests"],
+        ),
+    ];
+    for (mut steps, expected, failed) in cases {
+        let (outcome, document) = outcome(&mut steps)?;
+
+        let attested = document.and_then(|document| document.failed_steps);
+        let failed = failed.into_iter().map(str::to_owned).collect();
+        assert_eq!(
+            (outcome, attested),
+            (expected, Some(failed)),
+            "#153: gates-test has no findings, so every failure is a failed step, by its name"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn a_step_a_signal_ended_is_retried_once() -> Result<(), Box<dyn Error>> {
     for (step, ran) in [
         ("nextest", ["nextest", "nextest", "test"]),

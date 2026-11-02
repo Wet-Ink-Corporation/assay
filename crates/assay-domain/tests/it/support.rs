@@ -169,7 +169,7 @@ pub(crate) fn full_trust_path() -> DecisionInputs {
 }
 
 /// A required gate that ran and concluded `conclusion` with `findings`, whose adapter did not
-/// attest its steps (what any adapter gives until the findings contract carries step results).
+/// attest its steps (what every adapter but temper gives, 03 §2.1).
 pub(crate) fn gate(
     name: &str,
     conclusion: GateConclusion,

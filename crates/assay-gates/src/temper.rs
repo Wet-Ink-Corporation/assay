@@ -72,6 +72,7 @@ use self::exceptions::Allowlist;
 use self::gate_config::TemperConfig;
 use self::head::HeadTree;
 use self::statics::{Files, Tree};
+use self::steps::Verdict;
 use self::vendored::PinnedIds;
 use crate::capture::CaptureSupervisor;
 use crate::environment::GateEnvironment;
@@ -310,20 +311,24 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
             GateConclusion::Fail
         };
         failing.extend(drift);
-        self.document(plugin, pin, (conclusion, failing))
+        // Z2s fails only on its findings, so no step failed without one (#153).
+        let verdict = Verdict {
+            conclusion,
+            findings: failing,
+            failed_steps: Some(Vec::new()),
+        };
+        self.document(plugin, pin, verdict)
     }
 
-    /// The run's `assay.findings/1` document: `plugin` at `pin` concludes `conclusion` with
-    /// `findings`, as a clean exit.
+    /// The run's `assay.findings/1` document: `plugin` at `pin` concludes `verdict`, as a clean
+    /// exit.
     fn document(
         &self,
         plugin: &Plugin,
         pin: String,
-        (conclusion, findings): (GateConclusion, Vec<Finding>),
+        verdict: Verdict,
     ) -> Result<GateRun, ErrorOf<S, R>> {
-        self.settings
-            .steps
-            .document(plugin, pin, (conclusion, findings))
+        self.settings.steps.document(plugin, pin, verdict)
     }
 
     /// Step 1: the baseline diff, counts and crates.

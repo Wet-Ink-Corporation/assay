@@ -17,7 +17,7 @@ use super::recompute::AuthenticPlan;
 use super::refusal::{OutputsProblem, PlanMismatch, Refusal};
 use super::request::{DecideRequest, GateJobOutputs, JobResult, Reported, UpstreamJob};
 use super::{DecideError, Halt, Reader, RunDocument};
-use crate::config::{Plugin, Sha256Digest};
+use crate::config::{Adapter, Plugin, Sha256Digest};
 use crate::contract::{Contract, ContractValidator};
 use crate::gate::{BuildJob, GateError, GateJob, scheduled};
 use crate::plan::{ArtifactJob, PullRequestObjects};
@@ -42,6 +42,7 @@ enum State {
     /// Ran, with an authenticated, schema-valid document.
     Ran {
         conclusion: GateConclusion,
+        steps: StepAttribution,
         findings: Vec<assay_domain::Finding>,
     },
 }
@@ -226,9 +227,22 @@ fn read_document(
         // The job and the document disagree on a conclusion that is not a failure.
         _ => return invalid(),
     };
+    let steps = attribution(plugin, written == conclusion, document.failed_steps);
     State::Ran {
         conclusion,
+        steps,
         findings: document.findings,
+    }
+}
+
+/// What `decide` believes of a gate document's `failed_steps` (#153, 03 §2.1): the temper
+/// adapter's attestation, when the document's own conclusion is the gate's (`own`). Every other
+/// adapter cannot attest, and a job that failed a passing document failed for a cause no
+/// document names, so either is unknown, as is a document that attests nothing.
+fn attribution(plugin: &Plugin, own: bool, failed_steps: Option<Vec<String>>) -> StepAttribution {
+    match (plugin.adapter(), failed_steps) {
+        (Adapter::Temper { .. }, Some(failed)) if own => StepAttribution::Known(failed),
+        _ => StepAttribution::Unknown,
     }
 }
 
@@ -269,12 +283,10 @@ fn anchored<O: PullRequestObjects, S, A>(
             State::Settled(outcome) => (outcome, Vec::new()),
             State::Ran {
                 conclusion,
+                steps,
                 mut findings,
             } => {
-                let outcome = GateOutcome::Ran {
-                    conclusion,
-                    steps: StepAttribution::Unknown,
-                };
+                let outcome = GateOutcome::Ran { conclusion, steps };
                 let fingerprints: Option<Vec<GateFinding>> = findings
                     .iter_mut()
                     .map(|finding| {

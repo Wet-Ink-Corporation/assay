@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:assay:schema:findings:1",
   "title": "assay.findings/1",
-  "description": "Findings from one gate or one reviewer role (docs/architecture/03-contracts.md §3). Unknown fields are rejected; producers never supply `fp` or `group_id`; reviewers never supply `conclusion`.",
+  "description": "Findings from one gate or one reviewer role (docs/architecture/03-contracts.md §3). Unknown fields are rejected; producers never supply `fp` or `group_id`; reviewers never supply `conclusion` or `failed_steps`. `failed_steps` (#153) is a gate's attestation of the steps that failed without a finding: absent when the adapter does not attest, empty when every failure cause is a finding, and non-empty only on a failed gate.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "source", "findings"],
@@ -11,6 +11,12 @@
     "source": { "$ref": "#/$defs/source" },
     "conclusion": { "enum": ["pass", "fail", "neutral"] },
     "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "failed_steps": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" }
+    },
     "stats": {
       "type": "object",
       "additionalProperties": false,
@@ -23,11 +29,20 @@
     "properties": { "source": { "properties": { "kind": { "const": "reviewer" } } } }
   },
   "then": {
-    "not": { "required": ["conclusion"] }
+    "not": { "anyOf": [{ "required": ["conclusion"] }, { "required": ["failed_steps"] }] }
   },
   "else": {
     "required": ["conclusion"]
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "conclusion": { "enum": ["pass", "neutral"] } },
+        "required": ["conclusion"]
+      },
+      "then": { "properties": { "failed_steps": { "maxItems": 0 } } }
+    }
+  ],
   "$defs": {
     "nonEmpty": { "type": "string", "minLength": 1 },
     "source": {

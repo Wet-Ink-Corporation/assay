@@ -32,7 +32,7 @@ const SNAPSHOT: Snapshot = Snapshot {
 
 /// The decision inputs of `run`: its authenticated facts, with a completed LLM stage in which
 /// exactly `completed` reported.
-fn inputs(run: &AuthenticatedRun, completed: &[RequiredRole]) -> DecisionInputs {
+pub(crate) fn inputs(run: &AuthenticatedRun, completed: &[RequiredRole]) -> DecisionInputs {
     DecisionInputs {
         decision_key: "dec".to_owned(),
         evidence_key: run.run_key().to_string(),

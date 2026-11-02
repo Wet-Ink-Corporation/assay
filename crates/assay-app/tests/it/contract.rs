@@ -20,7 +20,7 @@ enum Rejection<'a> {
     Violation(&'a str, &'a str),
 }
 
-const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 72] = [
+const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 75] = [
     (
         Contract::Status,
         "unknown-field",
@@ -270,6 +270,22 @@ const EXPECTED_REJECTIONS: [(Contract, &str, Rejection<'static>); 72] = [
         Contract::Findings,
         "gate-without-conclusion",
         Rejection::Violation("", "required"),
+    ),
+    // #153: step results are a gate's, and only a failed gate names failed steps.
+    (
+        Contract::Findings,
+        "reviewer-failed-steps",
+        Rejection::Violation("", "not"),
+    ),
+    (
+        Contract::Findings,
+        "pass-with-failed-steps",
+        Rejection::Violation("/failed_steps", "maxItems"),
+    ),
+    (
+        Contract::Findings,
+        "neutral-with-failed-steps",
+        Rejection::Violation("/failed_steps", "maxItems"),
     ),
     (
         Contract::Findings,
@@ -594,6 +610,60 @@ fn violation_message_does_not_echo_the_rejected_value() -> Result<(), Box<dyn Er
         "untrusted text must not reach error messages: {}",
         violation.message()
     );
+    Ok(())
+}
+
+/// #153: `failed_steps` holds distinct step names. Built in code rather than as invalid
+/// fixtures: a failed gate's document says `fail`, which every message about `failed_steps`
+/// contains, so the redaction check would read the field's own name as a quote.
+#[test]
+fn failed_steps_are_distinct_step_names() -> Result<(), Box<dyn Error>> {
+    let validator = ContractValidator::new()?;
+    let valid = fixtures(Contract::Findings, Validity::Valid)?;
+    let attested: Value = serde_json::from_slice(
+        valid
+            .get("gate-failed-steps")
+            .ok_or("findings fixture `gate-failed-steps` is missing")?,
+    )?;
+    let cases = [
+        (serde_json::json!(["Fmt"]), "/failed_steps/0", "pattern"),
+        (serde_json::json!(["-fmt"]), "/failed_steps/0", "pattern"),
+        (serde_json::json!([""]), "/failed_steps/0", "pattern"),
+        (
+            serde_json::json!(["a".repeat(65)]),
+            "/failed_steps/0",
+            "pattern",
+        ),
+        (
+            serde_json::json!(["fmt", "fmt"]),
+            "/failed_steps",
+            "uniqueItems",
+        ),
+        (
+            Value::Array((0..257).map(|n| Value::String(format!("s{n}"))).collect()),
+            "/failed_steps",
+            "maxItems",
+        ),
+    ];
+    for (steps, pointer, keyword) in cases {
+        // Each case edits its own copy of the fixture.
+        let mut document = attested.clone();
+        let field = document
+            .get_mut("failed_steps")
+            .ok_or("the fixture attests steps")?;
+        *field = steps;
+
+        let read = validator.read(Contract::Findings, &serde_json::to_vec(&document)?);
+
+        let Err(ReadContractError::Invalid { violation, .. }) = read else {
+            return Err(format!("expected a schema violation, got {read:?}").into());
+        };
+        assert_eq!(
+            (violation.instance_path(), violation.keyword()),
+            (pointer, keyword),
+            "the case refused by {keyword}"
+        );
+    }
     Ok(())
 }
 

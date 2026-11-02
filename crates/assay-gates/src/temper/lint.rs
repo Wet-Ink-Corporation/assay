@@ -26,7 +26,7 @@ use super::gate_config::{self, TemperConfig};
 use super::lint_findings::{self, Shown};
 use super::manifests;
 use super::ratchet::{self, Checked, Refused, Tool};
-use super::steps::{capture, stopped};
+use super::steps::{Verdict, capture, stopped};
 use super::{ErrorOf, TREE, TemperAdapter, TemperError};
 use crate::capture::CaptureSupervisor;
 use crate::exec::read_document;
@@ -41,6 +41,12 @@ pub(super) const MAX_FINDINGS_OUT_BYTES: u64 = 64 << 20;
 
 /// How `baseline --check` is named in errors.
 const BASELINE_CHECK: &str = "temper baseline --check";
+
+/// How a failed `baseline --check` is named among the document's `failed_steps` (#153).
+const BASELINE_STEP: &str = "baseline";
+
+/// How a failed forbid backstop is named among the document's `failed_steps` (#153, #172).
+const BACKSTOP_STEP: &str = "forbid-backstop";
 
 impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
     /// Runs `gates-lint` for `plugin`, whose declared steps are `steps`.
@@ -59,18 +65,19 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
         let forbidden = self.forbid_set(&allowlist)?;
         // The steps read the tree before anything builds it (build scripts and proc-macros run
         // there); the backstop builds it first, before `baseline --check`.
-        let mut failed = false;
+        let mut failed_steps = Vec::new();
         for step in steps.iter().filter(|step| step.job() == BuildJob::Lint) {
             match self.step_retried(step)? {
                 Termination::Exited(0) => {}
-                Termination::Exited(_) => failed = true,
+                Termination::Exited(_) => failed_steps.push(step.name().as_str().to_owned()),
                 other => return Ok(stopped(other)),
             }
         }
         let backstop = self.backstop(&forbidden, config.all_features(), plugin.timeout())?;
         match backstop {
             Backstop::NotRun | Backstop::Passed => {}
-            Backstop::Failed { .. } => failed = true,
+            // Its exit code is the verdict, whatever its findings explain (#153).
+            Backstop::Failed { .. } => push_once(&mut failed_steps, BACKSTOP_STEP),
             Backstop::Stopped(termination) => return Ok(stopped(termination)),
         }
         let out = self.settings.steps.head_tree.join(FINDINGS_OUT);
@@ -92,15 +99,14 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
                 detail: "temper's exit code disagrees with ratchet.ok".to_owned(),
             });
         }
-        failed |= exit_failed;
+        // temper's ratchet shows its causes as display findings only in part (capped, and
+        // compile errors only when located), so its failure is a step of its own (#153). A
+        // declared step of that name that failed already says so: the names stay distinct.
+        if exit_failed {
+            push_once(&mut failed_steps, BASELINE_STEP);
+        }
         let findings = self.lint_findings(&checked, &allowlist, &backstop)?;
-        failed |= findings.failing;
-        let conclusion = if failed {
-            GateConclusion::Fail
-        } else {
-            GateConclusion::Pass
-        };
-        self.document(plugin, pin, (conclusion, findings.findings))
+        self.document(plugin, pin, findings.verdict(failed_steps))
     }
 
     /// The findings document `baseline --check` left at `out`, read strictly and believed only
@@ -160,7 +166,8 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
     ) -> Result<LintFindings, ErrorOf<S, R>> {
         let failures = lint_findings::failures(checked, allowlist);
         let mut findings = failures.findings;
-        let mut shown = lint_findings::backstop(backstop);
+        let room = lint_findings::MAX_REPORTED.saturating_sub(findings.len());
+        let mut shown = lint_findings::backstop(backstop, room);
         shown.extend(lint_findings::shown(checked, findings.len() + shown.len()));
         let lines = evidence::gather(
             &self.revisions,
@@ -190,8 +197,17 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
         findings.truncate(lint_findings::MAX_REPORTED);
         Ok(LintFindings {
             failing: failures.failing,
+            all_reported: failures.all_reported,
             findings,
         })
+    }
+}
+
+/// Adds `name` to `failed_steps` unless a step of that name already failed: the names stay
+/// distinct.
+fn push_once(failed_steps: &mut Vec<String>, name: &str) {
+    if !failed_steps.iter().any(|failed| failed == name) {
+        failed_steps.push(name.to_owned());
     }
 }
 
@@ -199,7 +215,27 @@ impl<S: CaptureSupervisor, R: RevisionFiles> TemperAdapter<S, R> {
 struct LintFindings {
     /// Whether a `raised` or unadmitted `exception` entry was found.
     failing: bool,
+    /// Whether each such entry is one of `findings`.
+    all_reported: bool,
     findings: Vec<Finding>,
+}
+
+impl LintFindings {
+    /// The run's verdict, after `failed_steps` failed without a finding: it fails on either.
+    /// Failures past the report cap have no finding a waiver could name, so the run attests no
+    /// step list then (#153).
+    fn verdict(self, failed_steps: Vec<String>) -> Verdict {
+        let conclusion = if self.failing || !failed_steps.is_empty() {
+            GateConclusion::Fail
+        } else {
+            GateConclusion::Pass
+        };
+        Verdict {
+            conclusion,
+            findings: self.findings,
+            failed_steps: self.all_reported.then_some(failed_steps),
+        }
+    }
 }
 
 /// Removes a findings document an earlier run or a restored `target/` left, so only this run's
