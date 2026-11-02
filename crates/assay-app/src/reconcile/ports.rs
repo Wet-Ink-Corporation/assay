@@ -4,7 +4,7 @@
 use std::num::NonZeroU64;
 
 use crate::config::CommitId;
-use crate::forge::{CompareAndSetError, LockedWrite};
+use crate::forge::{CompareAndSetError, Deadline, LockedWrite};
 use crate::ledger::LedgerTime;
 use crate::publish::{CheckRunId, CheckStatus};
 
@@ -47,12 +47,14 @@ pub trait ReconcileForge {
     /// [`Self::Error`] when the labels cannot be listed.
     fn labels(&self, number: NonZeroU64) -> Result<Vec<String>, Self::Error>;
 
-    /// PR `number` as it is now: open on a head, or closed.
+    /// PR `number` as it is now: open on a head, or closed. Read under the per-head publish
+    /// lock, so nothing is sent, and no retry waited for, unless it ends before `deadline`, the
+    /// lock lease's `expires_at` (#290, #318 F2).
     ///
     /// # Errors
     ///
-    /// [`Self::Error`] when the PR cannot be read.
-    fn pull_head(&self, number: NonZeroU64) -> Result<PullHead, Self::Error>;
+    /// [`Self::Error`] when the PR cannot be read before `deadline`.
+    fn pull_head(&self, number: NonZeroU64, deadline: Deadline) -> Result<PullHead, Self::Error>;
 
     /// Overwrites check `id` with `write.update` only when its `external_id` is still
     /// `expected`, as [`Forge::update_check_if`](crate::Forge::update_check_if): a

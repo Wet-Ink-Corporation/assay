@@ -14,6 +14,7 @@ use assay_domain::RunUid;
 
 use crate::lease_fakes::{Before, Call, MemoryRefs, RefsDown, lease_line};
 use crate::ledger_fakes::{Down, MemoryLedger, at, commit, id};
+use crate::open_fakes::{ClockBroken, FakeClock};
 use crate::reconcile_fakes::{FakeRepo, GitHubDown, NoDelete, check, head};
 
 const NOW: &str = "2026-10-12T12:00:00.000Z";
@@ -38,14 +39,26 @@ fn request() -> ChecksReconcileRequest<'static> {
     }
 }
 
-type Swept = Result<ChecksReconciled, ChecksReconcileError<GitHubDown, Down, RefsDown>>;
+type Swept =
+    Result<ChecksReconciled, ChecksReconcileError<GitHubDown, Down, RefsDown, ClockBroken>>;
 
 fn sweep(forge: &FakeRepo, ledger: &MemoryLedger, refs: &MemoryRefs) -> Swept {
+    sweep_at(forge, ledger, refs, &FakeClock::reading(&[NOW]))
+}
+
+/// The sweep with each lock taken at `clock`'s next reading.
+fn sweep_at(
+    forge: &FakeRepo,
+    ledger: &MemoryLedger,
+    refs: &MemoryRefs,
+    clock: &FakeClock,
+) -> Swept {
     reconcile_checks(
         ReconcilePorts {
             forge,
             ledger,
             refs,
+            clock,
         },
         &request(),
     )
@@ -143,6 +156,7 @@ fn a_re_run_is_refused_before_any_port_is_called() {
             forge: &forge,
             ledger: &ledger,
             refs: &refs,
+            clock: &FakeClock::reading(&[NOW]),
         },
         &request,
     );
@@ -200,6 +214,68 @@ fn a_close_is_bounded_by_its_locks_lease_expiry() {
 
     let deadlines: Vec<_> = forge.writes().iter().map(|write| write.deadline).collect();
     assert_eq!(deadlines, [Deadline::at(at("2026-10-12T12:02:00.000Z"))]);
+}
+
+/// PRs 7 on `b…` and 8 on `c…`, each with a stuck verdict check (checks 1 and 2).
+fn two_stuck() -> FakeRepo {
+    stuck()
+        .pull(id(8), commit('c'))
+        .check(commit('c'), check(2, VERDICT, "pending:101:1"))
+        .run(101, RunProgress::Completed, at(OLD))
+}
+
+#[test]
+fn each_lock_is_taken_at_a_fresh_clock_reading() {
+    // A sweep that reaches its second lock three minutes in: that lock's lease, and so the
+    // write it bounds, runs from then, not from `request.now` (#318 F1).
+    let refs = MemoryRefs::default();
+    let forge = two_stuck();
+    let clock = FakeClock::reading(&["2026-10-12T12:01:00.000Z", "2026-10-12T12:04:00.000Z"]);
+
+    let done = sweep_at(&forge, &MemoryLedger::default(), &refs, &clock).expect("the ports are up");
+
+    assert_eq!(done.closed.len(), 2, "{done:?}");
+    let deadlines: Vec<_> = forge.writes().iter().map(|write| write.deadline).collect();
+    assert_eq!(
+        deadlines,
+        [
+            Deadline::at(at("2026-10-12T12:03:00.000Z")),
+            Deadline::at(at("2026-10-12T12:06:00.000Z")),
+        ]
+    );
+}
+
+#[test]
+fn a_clock_that_cannot_be_read_stops_the_sweep_before_its_lock() {
+    let refs = MemoryRefs::default();
+    let forge = stuck();
+
+    let swept = sweep_at(
+        &forge,
+        &MemoryLedger::default(),
+        &refs,
+        &FakeClock::broken(),
+    );
+
+    assert!(
+        matches!(swept, Err(ChecksReconcileError::Clock(ClockBroken))),
+        "{swept:?}"
+    );
+    assert_eq!(forge.writes(), Vec::new());
+    assert_eq!(refs.names(), Vec::<String>::new(), "no lock taken");
+}
+
+#[test]
+fn the_head_re_read_under_the_lock_is_bounded_by_its_lease_expiry() {
+    let refs = MemoryRefs::default();
+    let forge = stuck();
+
+    sweep(&forge, &MemoryLedger::default(), &refs).expect("the ports are up");
+
+    assert_eq!(
+        forge.heads_read(),
+        [(id(7), Deadline::at(at("2026-10-12T12:02:00.000Z")))]
+    );
 }
 
 #[test]
@@ -542,6 +618,7 @@ fn a_failed_write_and_a_failed_release_are_both_reported() {
             forge: &forge,
             ledger: &MemoryLedger::default(),
             refs: &NoDelete(&refs),
+            clock: &FakeClock::reading(&[NOW]),
         },
         &request(),
     );

@@ -81,6 +81,7 @@ pub(crate) struct FakeRepo {
     writes: RefCell<Vec<CheckWrite>>,
     listed: RefCell<Vec<CommitId>>,
     runs_read: RefCell<Vec<NonZeroU64>>,
+    heads_read: RefCell<Vec<(NonZeroU64, Deadline)>>,
     restamp_before_write: RefCell<Option<String>>,
     probe: Option<Probe>,
     probed: RefCell<Vec<bool>>,
@@ -176,6 +177,11 @@ impl FakeRepo {
         self.runs_read.borrow().clone()
     }
 
+    /// The PRs whose heads were re-read under a lock, with the deadline each read was given.
+    pub(crate) fn heads_read(&self) -> Vec<(NonZeroU64, Deadline)> {
+        self.heads_read.borrow().clone()
+    }
+
     /// What the probe returned before each check write.
     pub(crate) fn probed(&self) -> Vec<bool> {
         self.probed.borrow().clone()
@@ -218,8 +224,9 @@ impl ReconcileForge for FakeRepo {
         Ok(self.labels.get(&number).cloned().unwrap_or_default())
     }
 
-    fn pull_head(&self, number: NonZeroU64) -> Result<PullHead, GitHubDown> {
+    fn pull_head(&self, number: NonZeroU64, deadline: Deadline) -> Result<PullHead, GitHubDown> {
         self.up()?;
+        self.heads_read.borrow_mut().push((number, deadline));
         if let Some(now) = self.heads_now.get(&number) {
             return Ok(now.clone());
         }

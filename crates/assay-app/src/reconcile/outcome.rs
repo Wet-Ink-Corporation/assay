@@ -104,7 +104,7 @@ pub enum Listing {
 /// A listing past its cap, or any failure while the sweep reads, stops it before any check is
 /// written; a failure while it writes leaves the checks closed before it closed.
 #[derive(Debug, Error)]
-pub enum ChecksReconcileError<F, L, R> {
+pub enum ChecksReconcileError<F, L, R, C> {
     /// A re-run of the reconcile (R3-05): nothing was read or written.
     #[error("run attempt {attempt} is a re-run; only attempt 1 reconciles (R3-05)")]
     NotFirstAttempt {
@@ -120,6 +120,10 @@ pub enum ChecksReconcileError<F, L, R> {
     /// A publish lock could not be taken, or released after a write that succeeded.
     #[error("a publish lock could not be taken or released")]
     Lock(#[source] LeaseError<R>),
+    /// The clock could not be read before a publish lock was taken; that lock was not taken,
+    /// and checks closed earlier in the sweep stay closed.
+    #[error("the clock could not be read before a publish lock")]
+    Clock(#[source] C),
     /// Under the head's lock, the PR could not be re-read or the check could not be written.
     #[error(
         "a check could not be closed under its head's publish lock{}",

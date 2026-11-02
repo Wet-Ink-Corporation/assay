@@ -31,7 +31,7 @@ fn decision() -> CheckUpdate {
 
 /// What the adapter refused for `operation` when the deadline stopped it.
 fn past(error: &ForgeError<Unscripted>, operation: Operation) -> bool {
-    matches!(error, ForgeError::PastDeadline { operation: refused } if *refused == operation)
+    matches!(error, ForgeError::PastDeadline { operation: refused, .. } if *refused == operation)
 }
 
 /// Every call of `VerdictForge` and `CommentForge` under `deadline`, with the operation the

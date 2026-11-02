@@ -84,8 +84,10 @@ pub enum LockAcquired {
 /// [`LockAcquired::Busy`] even when it names `request.run_uid`: the lock's holder is the
 /// workflow run, shared by all its jobs, so re-entering it would let two jobs of one run hold it
 /// at once and the first release end the other's critical section (#288 R2-1). A creation
-/// whose answer was lost within this call is settled by the refs adapter, which reads the ref
-/// back; one lost in an earlier call is left to expire with its TTL.
+/// whose answer was lost is settled only when the refs adapter reads the ref back: the GitHub
+/// adapter does so before it retries a failure it retries (a 5xx or a rate limit) and after a
+/// 422. One lost to a failure that stops the call (no response at all), to the last attempt
+/// the retries allow, or in an earlier call, is left to expire with its TTL (#318 F3).
 ///
 /// # Errors
 ///
