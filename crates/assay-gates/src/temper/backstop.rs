@@ -24,6 +24,9 @@
 //! compile the same branch (a per-package override would beat the pin, and Z2s reports any
 //! `[profile]` change as a manifest switch). The `clippy` cfg, which would hide code from every
 //! pass, and `cfg_select!`, which can branch on it, are Z2s blind spots (`attributes.rs`).
+//! Not overridden: a build script's `cargo::rustc-env` (`CLIPPY_ARGS`, `CLIPPY_CONF_DIR`),
+//! which cargo applies after `[env]`, and its `cargo::rustc-cfg`, which can key on
+//! `CARGO_ENCODED_RUSTFLAGS`; build scripts are owner-approved exec surface (05 T6).
 //!
 //! The decision is the passes' exit codes: E0453 is a hard error, so cargo exits non-zero, and
 //! any other failure fails the gate too (a crate that does not build hides its dependents). The
@@ -61,7 +64,7 @@ const OVERRULED: &str = "E0453";
 pub(super) enum Backstop {
     /// Base forbids nothing, so nothing ran.
     NotRun,
-    /// The build exited 0: no forbidden lint is lowered.
+    /// Both passes exited 0: no forbidden lint is lowered.
     Passed,
     /// A pass exited `code`, not 0; `overrides` are the E0453s it located.
     Failed {
