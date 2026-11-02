@@ -239,8 +239,9 @@ const TARGET_BODY: &str = "A `build` script or a `[lib]`, `[[bin]]`, `[[test]]`,
     or `[[example]]` `path` of this manifest does not name, as a string ending exactly in `.rs` \
     after a name, a regular file of this tree inside the repository, or is not written as Cargo \
     reads a target (`build = true` names `build.rs`). rustc would compile text the temper scan \
-    never reads, or a file a build script writes after the scan ran. Name every target file \
-    `*.rs` and commit it.";
+    never reads, or a file this tree does not hold, which only a build script could write; \
+    requiring it here narrows that route but does not stop build-script writes, which are \
+    owner-approved exec surface. Name every target file `*.rs` and commit it.";
 
 /// A blind spot's title and the body that explains it.
 const fn wording(why: Why) -> (&'static str, &'static str) {

@@ -1,7 +1,7 @@
 //! Cargo targets the temper scan cannot be shown to read (#169, 03 §2.1 step 2): a build
 //! script or a target `path` that rustc would compile from a file the scan's `*.rs` walk does
 //! not read, either because its name does not end in `.rs` or because the head tree does not
-//! hold it, so a build script that runs first could write it after the scan ran.
+//! hold it.
 //!
 //! Refuses rather than models (Weigh-In default wi-b5affa): a path is accepted only when it
 //! is a string whose last `/` segment is a stem followed by exactly `.rs` (byte for byte, so
@@ -11,8 +11,14 @@
 //! not a table, a `path` that is not a string, a `build` that is not a bool, a string or an
 //! array of strings) is refused too. A target without `path`, an absent `build` and
 //! `build = false` name no file: Cargo infers a `.rs` path and refuses a missing one when it
-//! loads the manifest, before any build script runs. `build = true` names `build.rs`, which
-//! Cargo does not look for until it compiles it, so it must be in the tree.
+//! resolves the invocation's targets. `build = true` names `build.rs`, which Cargo does not
+//! look for until it compiles it, so it must be in the tree.
+//!
+//! Requiring the file in the tree is a fail-closed refusal that narrows one route (a target
+//! that names a file only a build script writes); it does not stop build-script writes in
+//! general. A build script can overwrite a scanned `.rs` file, or add one a later cargo run
+//! discovers; build scripts are the owner-approved exec surface (05 T6, R-07), not this
+//! check's.
 //!
 //! Every head manifest is checked whether or not the PR changed it (owner decision on #169,
 //! 2026-11-01), so a target that predates the PR fails every PR until it is fixed.
@@ -28,8 +34,10 @@ use super::statics::Tree;
 
 /// Which part of a manifest names a file Cargo compiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Kind {
-    /// `[package] build` (or `[project] build`), or the package table itself.
+enum Kind {
+    /// The `[package]` (or `[project]`) table itself, when it is not a table.
+    Package,
+    /// `[package] build` (or `[project] build`).
     Build,
     /// `[lib] path`.
     Lib,
@@ -54,7 +62,7 @@ const ARRAYS: [(&str, Kind); 4] = [
 /// One target of a manifest: its kind, and its position (from 1) among its kind's entries
 /// (the scripts of a `build` array, the tables of a `[[bin]]` array).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Target {
+struct Target {
     kind: Kind,
     entry: usize,
 }
@@ -73,6 +81,7 @@ impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let entry = self.entry;
         match self.kind {
+            Kind::Package => f.write_str("`[package]`"),
             Kind::Build => write!(f, "`build` {entry}"),
             Kind::Lib => f.write_str("`[lib]` `path`"),
             Kind::Bin => write!(f, "`[[bin]]` {entry} `path`"),
@@ -85,7 +94,7 @@ impl fmt::Display for Target {
 
 /// Why a target is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Problem {
+enum Problem {
     /// Not written as Cargo reads a target.
     Shape,
     /// Its path's last segment is not a stem followed by exactly `.rs`.
@@ -163,7 +172,7 @@ fn first_refused(manifest: &Table, head: &Head<'_, '_>) -> Option<(Target, Probl
             continue;
         };
         let Some(package) = package.as_table() else {
-            return Some((Target::at(Kind::Build, 0), Problem::Shape));
+            return Some((Target::at(Kind::Package, 0), Problem::Shape));
         };
         if let Some((at, problem)) = build(package.get("build"), head) {
             return Some((Target::at(Kind::Build, at), problem));
@@ -452,7 +461,8 @@ mod tests {
                 "[[test]]\nname = \"t\"\npath = [\"t.rs\"]\n",
                 at(Kind::Test, 1),
             ),
-            ("package = \"x\"\n", at(Kind::Build, 1)),
+            ("package = \"x\"\n", at(Kind::Package, 1)),
+            ("project = 1\n", at(Kind::Package, 1)),
             ("[package]\nbuild = 1\n", at(Kind::Build, 1)),
             (
                 "[package]\nbuild = { workspace = true }\n",
@@ -510,6 +520,23 @@ mod tests {
                 quote: Some("`[[bin]]` 1 `path`: not a file name ending in `.rs`".to_owned()),
             }),
             "the first refused target only"
+        );
+    }
+
+    #[test]
+    fn a_package_that_is_not_a_table_is_named_as_the_package() {
+        let entries = files(&["crates/x/src/lib.rs"]);
+        let tree = Tree::new(entries.iter().map(|entry| (entry, None)));
+        let index = TreeIndex::new(&tree);
+        let manifest: Table = "package = \"x\"\n".parse().expect("TOML");
+
+        let quote =
+            refused("crates/x/Cargo.toml", &manifest, &tree, &index).and_then(|spot| spot.quote);
+
+        assert_eq!(
+            quote.as_deref(),
+            Some("`[package]`: not written as Cargo reads a target"),
+            "not its `build`, which it cannot hold"
         );
     }
 }
