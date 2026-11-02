@@ -393,7 +393,9 @@ fn a_missing_or_invalid_variable_is_named_before_any_call() -> Result<(), Box<dy
         ("ASSAY_VERDICT_BOT_ID", "0424243"),
     ] {
         cases.push((name, None, "is not set"));
-        cases.push((name, Some(padded), "is not the assay-verdict App's"));
+        // The invalid wording differs per variable; "is not the" is in both and not in
+        // "is not set", which is asserted absent below.
+        cases.push((name, Some(padded), "is not the"));
     }
 
     for (name, value, says) in cases {
