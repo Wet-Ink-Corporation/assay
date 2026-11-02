@@ -71,6 +71,45 @@ type LiveFailure = OpenRunError<
     >,
 >;
 
+/// A variable `assay open` reads besides the run's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenVariable {
+    /// [`NEEDS`].
+    Needs,
+    /// [`TOKEN`].
+    Token,
+    /// [`LEDGER_TOKEN`].
+    LedgerToken,
+    /// [`APP_ID`].
+    AppId,
+    /// [`BOT_ID`].
+    BotId,
+}
+
+impl OpenVariable {
+    /// Its name.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Needs => NEEDS,
+            Self::Token => TOKEN,
+            Self::LedgerToken => LEDGER_TOKEN,
+            Self::AppId => APP_ID,
+            Self::BotId => BOT_ID,
+        }
+    }
+
+    /// What it holds, as a refusal says it.
+    pub(crate) const fn holds(self) -> &'static str {
+        match self {
+            Self::Needs => "guard's outputs as ${{ toJSON(needs) }} gives them",
+            Self::Token => "the assay-verdict App's installation token",
+            Self::LedgerToken => "the assay-ledger-writer App's installation token",
+            Self::AppId => "the assay-verdict App's id, a positive decimal number",
+            Self::BotId => "the id of the assay-verdict App's bot user, a positive decimal number",
+        }
+    }
+}
+
 /// Why `assay open` stopped.
 #[derive(Debug)]
 pub(crate) enum OpenCliError {
@@ -78,7 +117,7 @@ pub(crate) enum OpenCliError {
     Usage(OpenUsage),
     /// A variable is missing or invalid.
     Variable {
-        name: &'static str,
+        variable: OpenVariable,
         problem: Problem,
     },
     /// `guard`'s outputs were refused.
@@ -93,22 +132,13 @@ impl fmt::Display for OpenCliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Usage(source) => source.fmt(f),
-            Self::Variable { name, problem } => {
-                let holds = match *name {
-                    NEEDS => "guard's outputs as ${{ toJSON(needs) }} gives them",
-                    TOKEN => "the assay-verdict App's installation token",
-                    LEDGER_TOKEN => "the assay-ledger-writer App's installation token",
-                    APP_ID => "the assay-verdict App's id, a positive decimal number",
-                    _ => "the id of the assay-verdict App's bot user, a positive decimal number",
-                };
-                VariableRefusal {
-                    job: OPEN.name,
-                    name,
-                    holds,
-                    problem: *problem,
-                }
-                .fmt(f)
+            Self::Variable { variable, problem } => VariableRefusal {
+                job: OPEN.name,
+                name: variable.name(),
+                holds: variable.holds(),
+                problem: *problem,
             }
+            .fmt(f),
             Self::Needs(source) => {
                 write!(f, "open: {NEEDS}: ")?;
                 write_chain(f, source)
@@ -152,7 +182,7 @@ fn prepare(
     let needs = variables
         .needs
         .as_ref()
-        .ok_or_else(|| refused(NEEDS)(Problem::Missing))?;
+        .ok_or_else(|| refused(OpenVariable::Needs)(Problem::Missing))?;
     let needs =
         Needs::parse(needs.as_encoded_bytes(), &[JobName::Guard]).map_err(OpenCliError::Needs)?;
     let identity = Identity::from_needs(&needs).map_err(OpenCliError::Needs)?;
@@ -161,19 +191,20 @@ fn prepare(
         command,
         identity,
         ledger,
-        token: ledger_job::token(variables.token.as_deref()).map_err(refused(TOKEN))?,
+        token: ledger_job::token(variables.token.as_deref())
+            .map_err(refused(OpenVariable::Token))?,
         ledger_token: ledger_job::token(variables.ledger_token.as_deref())
-            .map_err(refused(LEDGER_TOKEN))?,
+            .map_err(refused(OpenVariable::LedgerToken))?,
         app: AppIdentity {
-            app: AppId(id(APP_ID, variables.app_id.as_deref())?),
-            bot: UserId(id(BOT_ID, variables.bot_id.as_deref())?),
+            app: AppId(id(OpenVariable::AppId, variables.app_id.as_deref())?),
+            bot: UserId(id(OpenVariable::BotId, variables.bot_id.as_deref())?),
         },
     })
 }
 
-/// Refuses variable `name` with a problem.
-fn refused(name: &'static str) -> impl Fn(Problem) -> OpenCliError {
-    move |problem| OpenCliError::Variable { name, problem }
+/// Refuses `variable` with a problem.
+fn refused(variable: OpenVariable) -> impl Fn(Problem) -> OpenCliError {
+    move |problem| OpenCliError::Variable { variable, problem }
 }
 
 /// Builds the ports in a scratch directory, opens the check, and removes the directories,
@@ -282,7 +313,7 @@ impl fmt::Display for Chain<'_> {
     }
 }
 
-/// Variable `name` as an id in canonical decimal.
-fn id(name: &'static str, value: Option<&OsStr>) -> Result<NonZeroU64, OpenCliError> {
-    ledger_job::id(value).map_err(refused(name))
+/// `variable`'s `value` as an id in canonical decimal.
+fn id(variable: OpenVariable, value: Option<&OsStr>) -> Result<NonZeroU64, OpenCliError> {
+    ledger_job::id(value).map_err(refused(variable))
 }
