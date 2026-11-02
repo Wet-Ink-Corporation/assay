@@ -80,7 +80,9 @@ pub(super) struct IssueDto {
 #[derive(Debug, Deserialize)]
 pub(super) struct CommentDto {
     id: u64,
-    /// `null` for a deleted account.
+    /// `null` for a deleted account; the key itself is required, so a missing one is refused
+    /// rather than read as a deleted account.
+    #[serde(deserialize_with = "Option::deserialize")]
     user: Option<UserDto>,
     created_at: String,
     updated_at: String,
@@ -151,11 +153,14 @@ impl CommentEventDto {
         let sender = self.sender.into_sender()?;
         let comment = self.comment.into_comment()?;
         // A comment is created by its author, so the sender the guard judges is the author the
-        // recording rule reads. Another user may edit or delete it, so only `created` is held.
-        if action == CommentAction::Created
-            && comment.user.is_some_and(|author| author != sender.id)
-        {
-            return Err(DecideOnlyEventError::Field("sender.id"));
+        // recording rule reads. Another user may edit or delete it, so only `created` is held;
+        // a created comment with no author (a deleted account) cannot be by its sender.
+        if action == CommentAction::Created {
+            match comment.user {
+                Some(author) if author == sender.id => {}
+                Some(_) => return Err(DecideOnlyEventError::Field("sender.id")),
+                None => return Err(DecideOnlyEventError::Field("comment.user")),
+            }
         }
         Ok(CommentPayload {
             repository_id: positive(self.repository.id, "repository.id")?,
