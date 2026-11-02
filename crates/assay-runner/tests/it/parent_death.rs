@@ -28,8 +28,13 @@ use crate::support::{Asked, RecordingKill, call, fixtures_dir, stream_path};
 const TOKEN: &str = "sk-ant-oat01-test-token";
 /// A fresh nonce from the OS, as `assay doctor` draws one: nothing here depends on its value.
 fn fresh_nonce() -> Result<ArtifactNonce, Box<dyn Error>> {
-    let mut bytes = [0_u8; 16];
-    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    let mut bytes = Vec::with_capacity(16);
+    fs::File::open("/dev/urandom")?
+        .take(16)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() != 16 {
+        return Err("short read from /dev/urandom".into());
+    }
     let mut hex = String::with_capacity(32);
     for byte in bytes {
         write!(hex, "{byte:02x}")?;
