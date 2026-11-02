@@ -15,7 +15,7 @@ use std::num::NonZeroU64;
 use assay_app::{CommitId, UserId};
 
 pub use self::admit::{AdmitOutputs, HeldSlot};
-pub use self::decide::{DECIDE_NEEDS, DecideNeeds, DecideOutputs, PlanEnd, admit_job};
+pub use self::decide::{DECIDE_NEEDS, DecideNeeds, DecideOutputs, PlanEnd};
 pub use self::decide_only::{
     DECIDE_ONLY_SKIP, DecideOnlyGuardOutputs, DecideOnlyPrs, DecideTrigger, MAX_DECIDE_ONLY_PRS,
     PrsError, RedecideOutputs,

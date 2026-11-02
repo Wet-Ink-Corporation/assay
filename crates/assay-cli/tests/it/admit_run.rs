@@ -80,7 +80,7 @@ impl Planned {
         let plan = run_plan(
             PlanJob {
                 run: &run,
-                identity: identity.clone(),
+                identity: &identity,
                 rest_files: assay_app::RestFiles {
                     changed_files: 1,
                     files: vec![assay_app::RestFile {

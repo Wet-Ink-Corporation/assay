@@ -190,8 +190,7 @@ fn decide_request(
         release,
     } = needs;
     let request = DecideRequest {
-        // The request owns the identity's PR; decide keeps the identity for the snapshot.
-        plan: plan_request(run, identity.clone(), rest_files, prompt_bundle),
+        plan: plan_request(run, &identity, rest_files, prompt_bundle),
         plan_job,
         gates_static,
         gates_lint,

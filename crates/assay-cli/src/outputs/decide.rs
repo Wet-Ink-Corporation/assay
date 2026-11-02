@@ -83,7 +83,7 @@ impl DecideNeeds {
     ///
     /// [`NeedsError`] for a missing job, guard's identity, plan's outputs or a gates job's
     /// `gates` refused as their own readers refuse them, and for admit's and the review's
-    /// outputs as [`admit_job`] and [`ReviewEnd::from_needs`] refuse them.
+    /// outputs as the admit reader and [`ReviewEnd::from_needs`] refuse them.
     pub fn from_needs(needs: &Needs) -> Result<Self, NeedsError> {
         let identity = Identity::from_needs(needs)?;
         let plan = match result(needs, JobName::Plan)? {
@@ -148,7 +148,10 @@ fn gate_job(needs: &Needs, job: GateJob) -> Result<GateJobOutputs, NeedsError> {
 /// not admit's; [`NeedsError::MissingOutput`] for a required one absent; and
 /// [`NeedsError::Output`] for an `admission`, `deferral`, `tier`, `degrade` or `review` that
 /// does not parse or contradicts the plan or the admission.
-pub fn admit_job(needs: &Needs, planned: Option<&PlanOutputs>) -> Result<AdmitJob, NeedsError> {
+pub(crate) fn admit_job(
+    needs: &Needs,
+    planned: Option<&PlanOutputs>,
+) -> Result<AdmitJob, NeedsError> {
     let job = JobName::Admit;
     let read = Read::any_result(needs, job, &OutputName::ADMIT)?;
     let ended = result(needs, job)?;
