@@ -3,7 +3,6 @@
 //! cleared environment and process-group kill) under a short timeout and a small output cap.
 
 use std::fmt;
-use std::process::Command;
 use std::time::Duration;
 
 use assay_app::{CliProbe, CliStatus, StatusReadError};
@@ -85,7 +84,10 @@ impl<K: GroupKill> ClaudeHeadless<K> {
     /// The output of `command`, run like a model call with an empty stdin.
     fn status_output(&self, command: StatusCommand) -> Result<Vec<u8>, StatusError> {
         self.workdir.ensure_empty().map_err(HeadlessError::from)?;
-        let mut process = Command::new(&self.program);
+        let mut process = self
+            .parent_death
+            .command(&self.program)
+            .map_err(HeadlessError::Spawn)?;
         process
             .args(command.args())
             .current_dir(self.workdir.path());

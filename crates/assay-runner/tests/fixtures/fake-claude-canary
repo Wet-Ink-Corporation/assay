@@ -10,6 +10,10 @@
 #   REMOVE_SANDBOX=1    delete the whole canary sandbox before exiting
 #   REPLACE_SANDBOX=1   replace the whole canary sandbox with a file, so neither the markers
 #                       can be inspected nor the sandbox removed
+#   HANG=1              after the stream, open the FIFO `alive` beside it (blocking until a
+#                       reader opens it), write its pid there and hold it open for 10 s, then
+#                       write `survived`: a reader sees EOF before `survived` only when this
+#                       process was killed (assay-cli's parent-death test, #154)
 # It deletes only paths inside a canary sandbox (`*/assay-canary-*/`), and stops at the first
 # failing command.
 set -eu
@@ -62,4 +66,10 @@ if [ "${REPLACE_SANDBOX:-}" = 1 ]; then
   root=$(sandbox)
   /bin/rm -rf "$root"
   : > "$root"
+fi
+if [ "${HANG:-}" = 1 ]; then
+  exec 3> "$dir/alive"
+  echo $$ >&3
+  /bin/sleep 10 3>&-
+  echo survived >&3
 fi

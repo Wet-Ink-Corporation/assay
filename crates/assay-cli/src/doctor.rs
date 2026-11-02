@@ -29,7 +29,7 @@ use assay_app::{
 };
 use assay_cli::ForgeSupervisor;
 use assay_forge::process::{GroupKiller, KillerError};
-use assay_runner::{CanaryError, ClaudeCanary, EnvVarError, HeadlessEnv};
+use assay_runner::{CanaryError, ClaudeCanary, EnvVarError, HeadlessEnv, ParentDeath};
 
 /// The variable carrying the OAuth token, read by `main` (ARC-11).
 pub(crate) const OAUTH_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
@@ -59,16 +59,19 @@ pub(crate) struct DoctorVariables {
     pub(crate) now: SystemTime,
 }
 
-/// What `doctor` found: the session checks and the token's expiry.
+/// What `doctor` found: the session checks, the token's expiry and the parent-death guard.
 pub(crate) struct DoctorOutcome {
     /// The session checks.
     pub(crate) report: DoctorReport,
     /// The expiry warning, when an expiry is recorded and near or past.
     pub(crate) expiry: Option<ExpiryWarning>,
+    /// The guard the canary ran under: without a `setpriv` it is a warning (#154).
+    pub(crate) parent_death: ParentDeath,
 }
 
 impl DoctorOutcome {
-    /// Whether every check passed and the token is not past its recorded expiry.
+    /// Whether every check passed and the token is not past its recorded expiry. The
+    /// parent-death guard does not count: a host without `setpriv` only warns (#154).
     pub(crate) fn passed(&self) -> bool {
         self.report.passed() && !expiry_fails(self.expiry.as_ref())
     }
@@ -181,10 +184,17 @@ pub(crate) fn run(
     let pinned = assay.claude_cli.as_ref().ok_or(DoctorCliError::NoPin)?;
     let env = headless_env(token, variables.path)?;
     let supervisor = system_supervisor()?;
-    let canary = ClaudeCanary::new(program, env, &supervisor);
+    let parent_death = ParentDeath::probe();
+    // Held twice: the canary starts the CLI under it, and the outcome reports it.
+    let canary =
+        ClaudeCanary::new(program, env, &supervisor).with_parent_death(parent_death.clone());
     let report = doctor(&canary, &mut Urandom, pinned, &assay.claude_cli_builtins)
         .map_err(DoctorCliError::Doctor)?;
-    Ok(DoctorOutcome { report, expiry })
+    Ok(DoctorOutcome {
+        report,
+        expiry,
+        parent_death,
+    })
 }
 
 /// The absolute `program` and the token, refused before anything is read or run.
@@ -251,7 +261,8 @@ fn judge_expiry(
     Ok(token_expiry_warning(expires_on, today))
 }
 
-/// Writes one line per check, `ok <check>` or `FAIL <check>: <why>`, then the expiry line.
+/// Writes one line per check, `ok <check>` or `FAIL <check>: <why>`, then the expiry line and
+/// the parent-death warning, each when there is one.
 pub(crate) fn write_report(outcome: &DoctorOutcome, mut out: impl Write) -> io::Result<()> {
     for result in outcome.report.results() {
         match &result.failure {
@@ -262,7 +273,22 @@ pub(crate) fn write_report(outcome: &DoctorOutcome, mut out: impl Write) -> io::
     if let Some(warning) = &outcome.expiry {
         write_expiry(warning, &mut out)?;
     }
+    write_parent_death(&outcome.parent_death, &mut out)?;
     out.flush()
+}
+
+/// `warn parent-death: <why>` when no `setpriv` was found (#154): the CLI is then started
+/// directly and outlives an assay killed by a signal. A warning, never a failure.
+fn write_parent_death(parent_death: &ParentDeath, mut out: impl Write) -> io::Result<()> {
+    if parent_death.setpriv().is_some() {
+        return Ok(());
+    }
+    let [first, second] = ParentDeath::SETPRIV_PATHS;
+    writeln!(
+        out,
+        "warn parent-death: no setpriv at {first} or {second}, so a claude assay starts \
+         outlives an assay killed by a signal (06-operations.md §5 F22)"
+    )
 }
 
 /// `warn token-expiry: <why>` before the expiry, `FAIL token-expiry: <why>` from it on.
@@ -314,6 +340,7 @@ impl NonceSource for Urandom {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
     use super::*;
@@ -371,6 +398,36 @@ mod tests {
             ],
             [false, false, true]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn no_setpriv_is_a_parent_death_warning_line() -> Result<(), Box<dyn std::error::Error>> {
+        let mut out = Vec::new();
+
+        write_parent_death(&ParentDeath::default(), &mut out)?;
+
+        assert_eq!(
+            String::from_utf8(out)?,
+            "warn parent-death: no setpriv at /usr/bin/setpriv or /bin/setpriv, so a claude \
+             assay starts outlives an assay killed by a signal (06-operations.md §5 F22)\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_setpriv_writes_no_parent_death_line() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let setpriv = dir.path().join("setpriv");
+        std::fs::write(&setpriv, "#!/bin/sh\n")?;
+        std::fs::set_permissions(&setpriv, std::fs::Permissions::from_mode(0o755))?;
+        let guard = ParentDeath::probe_paths([&setpriv]);
+        assert_eq!(guard.setpriv(), Some(setpriv.as_path()), "the precondition");
+        let mut out = Vec::new();
+
+        write_parent_death(&guard, &mut out)?;
+
+        assert!(out.is_empty(), "{:?}", String::from_utf8_lossy(&out));
         Ok(())
     }
 

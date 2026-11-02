@@ -5,6 +5,7 @@ mod canary;
 mod coordinate;
 mod headless;
 mod init;
+mod parent_death;
 mod profile_canary;
 mod replay;
 mod status;
