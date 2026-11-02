@@ -7,7 +7,9 @@
 
 use std::assert_matches;
 use std::error::Error;
+use std::fmt::Write as _;
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -24,7 +26,16 @@ use tempfile::TempDir;
 use crate::support::{Asked, RecordingKill, call, fixtures_dir, stream_path};
 
 const TOKEN: &str = "sk-ant-oat01-test-token";
-const NONCE: &str = "0123456789abcdef0123456789abcdef";
+/// A fresh nonce from the OS, as `assay doctor` draws one: nothing here depends on its value.
+fn fresh_nonce() -> Result<ArtifactNonce, Box<dyn Error>> {
+    let mut bytes = [0_u8; 16];
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    let mut hex = String::with_capacity(32);
+    for byte in bytes {
+        write!(hex, "{byte:02x}")?;
+    }
+    Ok(hex.parse()?)
+}
 
 /// The arguments `setpriv` is started with before the program.
 const GUARD: [&str; 3] = ["--pdeathsig", "KILL", "--"];
@@ -237,7 +248,7 @@ fn the_status_commands_are_started_under_setpriv() -> Result<(), Box<dyn Error>>
 #[cfg_attr(miri, ignore = "spawns the stand-ins; Miri cannot run processes")]
 fn the_mod_canary_is_started_under_setpriv() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new()?;
-    let token = CanaryToken::new(&NONCE.parse::<ArtifactNonce>()?);
+    let token = CanaryToken::new(&fresh_nonce()?);
 
     scene.canary("claude-canary")?.probe(&token)?;
 
@@ -254,7 +265,7 @@ fn the_mod_canary_is_started_under_setpriv() -> Result<(), Box<dyn Error>> {
 #[cfg_attr(miri, ignore = "spawns the stand-ins; Miri cannot run processes")]
 fn the_profile_canary_is_started_under_setpriv() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new()?;
-    let nonce: ArtifactNonce = NONCE.parse()?;
+    let nonce = fresh_nonce()?;
     let words = ProfileWords::new([&nonce, &nonce, &nonce, &nonce]);
 
     scene.canary("claude-profile")?.probe_profile(&words)?;
