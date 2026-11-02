@@ -4,6 +4,7 @@
 use serde_json::{Map, Value};
 
 use super::exceptions::Allowlist;
+use super::ratchet::Tool;
 use super::report::json_detail;
 
 /// The config's path in a repository.
@@ -35,6 +36,28 @@ impl TemperConfig {
             Value::Object(map) => Ok(Self(map)),
             _ => Err("not a JSON object".to_owned()),
         }
+    }
+
+    /// The sources temper collects under this config (its `configuredSources`): clippy always,
+    /// rustdoc unless `gate.doc` is exactly `false`, the scan unless `gate.scan` is.
+    pub(super) fn sources(&self) -> Vec<Tool> {
+        let gate = self.0.get("gate").and_then(Value::as_object);
+        let off = |key: &str| gate.and_then(|gate| gate.get(key)) == Some(&Value::Bool(false));
+        Tool::ALL
+            .into_iter()
+            .filter(|tool| match tool {
+                Tool::Clippy => true,
+                Tool::Rustdoc => !off("doc"),
+                Tool::Scan => !off("scan"),
+            })
+            .collect()
+    }
+}
+
+impl Default for TemperConfig {
+    /// No config: temper's defaults.
+    fn default() -> Self {
+        Self(Map::new())
     }
 }
 

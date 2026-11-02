@@ -113,7 +113,8 @@ Mechanical validation runs as one library function twice: non-authoritatively in
 Inputs: validated gate documents; validated verified findings; the Z4-recomputed plan; the GitHub state snapshot (approvals, command records for waivers, override, dismissals, retry and Weigh-In ack, owners, approvers, maintainers, agent identities, pusher set, push clock, open PRs on the head); policy from base config.
 
 ```
-1  required gate failed | gate-error | gate-skipped (minus findings waived, see below)  → failure
+1  required gate failed (minus findings waived, see below) | neutral | gate-error | gate-skipped
+                                                                      → failure (gate-neutral: required means pass, #161)
 2  base ref not in protected_bases                                    → failure (base-not-protected; the check is not required there)
 2a more than one open PR on head_sha into this protected base          → failure (ambiguous-head)
 3  tier == needs-split                                                → failure
@@ -131,7 +132,7 @@ Inputs: validated gate documents; validated verified findings; the Z4-recomputed
 8c LLM unavailable or a required role degraded, otherwise            → success + visible llm-degraded warning
 9  else                                                               → success
 waive    /assay waive <finding-id>: removes ONE human-decision gate finding (raised baseline, ask exception, gate-config drift,
-         test-inventory decrease, manifest switch) from rule 1. Never clippy, build, test or deny failures. Recorded in the decision.
+         test-inventory decrease, manifest switch) from rule 1. Never clippy, build, test or deny failures, and never a neutral gate. Recorded in the decision.
 override /assay override llm|all <reasons_digest> <reason> → neutral, original reasons retained. reasons_digest = sha256 of the sorted current reason
          codes, printed in the summary; void if any reason is ADDED. `llm` neutralises only rule 8; `all` is the break-glass. Weekly report lists both separately.
          Neither ever neutralises rule 2: on an unprotected base `neutral` would only let a stale check pass after a retarget (R3-03).

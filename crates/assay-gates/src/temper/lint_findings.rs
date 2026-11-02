@@ -264,7 +264,8 @@ mod tests {
                 "legacy_total": 0, "baseline_total": 0, "raised": [], "errors": [], "notes": [],
             },
         });
-        ratchet::check(document.to_string().as_bytes(), MERGE_BASE).expect("a believed ratchet")
+        ratchet::check(document.to_string().as_bytes(), MERGE_BASE, &[])
+            .expect("a believed ratchet")
     }
 
     #[test]
