@@ -595,22 +595,24 @@ fn a_base_config_that_is_not_a_json_object_is_refused_before_anything_runs()
 /// Only an exact JSON `false` turns a source off, as temper's `cfg.gate.doc !== false`.
 #[test]
 fn a_base_config_value_other_than_false_keeps_the_source_on() -> Result<(), Box<dyn Error>> {
-    let mut pr = Pr::new()?;
-    pr.set(
-        Revision::Base,
-        CONFIG,
+    for config in [
         r#"{"gate": {"doc": 0, "scan": "false"}}"#,
-    );
-    let document = collected_from(&["clippy"])?;
+        r#"{"gate": false}"#,
+    ] {
+        let mut pr = Pr::new()?;
+        pr.set(Revision::Base, CONFIG, config);
+        let document = collected_from(&["clippy"])?;
 
-    let ran = run(&pr, &mut FakeLint::leaving(&document))?;
+        let ran = run(&pr, &mut FakeLint::leaving(&document))?;
 
-    assert_matches!(
-        ran,
-        Err(TemperError::RatchetDegraded {
-            why: RatchetDegradation::Sources
-        })
-    );
+        assert_matches!(
+            ran,
+            Err(TemperError::RatchetDegraded {
+                why: RatchetDegradation::Sources
+            }),
+            "{config}"
+        );
+    }
     Ok(())
 }
 
