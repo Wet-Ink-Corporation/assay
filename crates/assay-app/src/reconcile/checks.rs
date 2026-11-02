@@ -20,6 +20,7 @@ use crate::ledger::{
     Ledger, LedgerRefs, LedgerTime, LockAcquired, LockRequest, PushKind, Released, acquire_lock,
     read_pushes, read_state, release_lock,
 };
+use crate::open::OpenClock;
 use crate::publish::CheckStatus;
 
 /// How long after the run that opened a verdict check started the check may stay in progress
@@ -60,21 +61,25 @@ pub struct ChecksReconcileRequest<'a> {
 }
 
 /// The ports the per-repo reconcile uses: GitHub, the ledger's files (push records and PR state,
-/// read only) and its refs (the per-head publish lock only).
+/// read only), its refs (the per-head publish lock only) and the clock each lock is taken at.
 #[derive(Debug, Clone, Copy)]
-pub struct ReconcilePorts<'a, F, L, R> {
+pub struct ReconcilePorts<'a, F, L, R, C> {
     /// The consumer repository.
     pub forge: &'a F,
     /// The ledger repository's files.
     pub ledger: &'a L,
     /// The ledger repository's refs.
     pub refs: &'a R,
+    /// Read before each publish lock, so each lease expires 2 minutes after it is taken rather
+    /// than after the sweep started (#318 F1). Its `pause` is never called.
+    pub clock: &'a C,
 }
 
-type Failed<F, L, R> = ChecksReconcileError<
+type Failed<F, L, R, C> = ChecksReconcileError<
     <F as ReconcileForge>::Error,
     <L as Ledger>::Error,
     <R as LedgerRefs>::Error,
+    <C as OpenClock>::Error,
 >;
 
 /// Sweeps the consumer repository's verdict checks at `request.now`.
@@ -91,17 +96,19 @@ type Failed<F, L, R> = ChecksReconcileError<
 /// is closed `cancelled`.
 ///
 /// The sweep reads everything and checks every cap before it writes anything. Each write holds
-/// the head's publish lock (02 §5), re-reads the PR's head, and is conditioned on the
-/// `external_id` read, so a run that re-stamped the check meanwhile wins.
+/// the head's publish lock (02 §5), taken at a fresh reading of `ports.clock`, re-reads the PR's
+/// head, and is conditioned on the `external_id` read, so a run that re-stamped the check
+/// meanwhile wins. Both calls under the lock are bounded by its lease's expiry.
 ///
 /// # Errors
 ///
 /// [`ChecksReconcileError::NotFirstAttempt`] for a re-run, before any port is called; a listing
-/// past its cap, or a failed read, before any write; otherwise the first failed write or lock.
-pub fn reconcile_checks<F: ReconcileForge, L: Ledger, R: LedgerRefs>(
-    ports: ReconcilePorts<'_, F, L, R>,
+/// past its cap, or a failed read, before any write; otherwise the first failed clock reading,
+/// write or lock.
+pub fn reconcile_checks<F: ReconcileForge, L: Ledger, R: LedgerRefs, C: OpenClock>(
+    ports: ReconcilePorts<'_, F, L, R, C>,
     request: &ChecksReconcileRequest<'_>,
-) -> Result<ChecksReconciled, Failed<F, L, R>> {
+) -> Result<ChecksReconciled, Failed<F, L, R, C>> {
     let attempt = request.run_uid.run_attempt;
     if attempt.get() != 1 {
         return Err(ChecksReconcileError::NotFirstAttempt { attempt });
@@ -131,8 +138,8 @@ pub fn reconcile_checks<F: ReconcileForge, L: Ledger, R: LedgerRefs>(
 }
 
 /// One sweep's ports, request and the heads of the open PRs.
-struct Sweep<'a, F, L, R> {
-    ports: ReconcilePorts<'a, F, L, R>,
+struct Sweep<'a, F, L, R, C> {
+    ports: ReconcilePorts<'a, F, L, R, C>,
     request: &'a ChecksReconcileRequest<'a>,
     current: HashSet<&'a CommitId>,
 }
@@ -147,9 +154,9 @@ enum Judged {
     Unjudged(Skip),
 }
 
-impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
+impl<F: ReconcileForge, L: Ledger, R: LedgerRefs, C: OpenClock> Sweep<'_, F, L, R, C> {
     /// The verdict checks on `head` that have not completed.
-    fn open_verdicts(&self, head: &CommitId) -> Result<Vec<ReconcileCheck>, Failed<F, L, R>> {
+    fn open_verdicts(&self, head: &CommitId) -> Result<Vec<ReconcileCheck>, Failed<F, L, R, C>> {
         let checks = capped(
             self.ports
                 .forge
@@ -169,7 +176,7 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
         pull: &OpenPull,
         due: &mut Vec<Due>,
         skipped: &mut Vec<SkippedCheck>,
-    ) -> Result<(), Failed<F, L, R>> {
+    ) -> Result<(), Failed<F, L, R, C>> {
         // Each reported or due check owns its head: they are reported one by one.
         let mut old = Vec::new();
         for check in self.open_verdicts(&pull.head_sha)? {
@@ -197,7 +204,7 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
     }
 
     /// Reads the run `check`'s stamp names and judges the check by it.
-    fn judge(&self, check: &ReconcileCheck) -> Result<Judged, Failed<F, L, R>> {
+    fn judge(&self, check: &ReconcileCheck) -> Result<Judged, Failed<F, L, R, C>> {
         let Some(run_id) = check.external_id.as_deref().and_then(stamped_run_id) else {
             return Ok(Judged::Unjudged(Skip::NotPending));
         };
@@ -223,7 +230,7 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
 
     /// Whether `pull` is deferred with a requeue still scheduled: labelled, and its ledger
     /// deferral record is for its head with requeues left (the ledger decides, R3-15).
-    fn requeue_scheduled(&self, pull: &OpenPull) -> Result<bool, Failed<F, L, R>> {
+    fn requeue_scheduled(&self, pull: &OpenPull) -> Result<bool, Failed<F, L, R, C>> {
         let labels = self
             .ports
             .forge
@@ -241,7 +248,7 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
 
     /// Adds the open verdict checks on `pull`'s superseded heads to `due`, latest head first,
     /// down to the first head with none: a head below it was swept when it was superseded.
-    fn superseded(&self, pull: &OpenPull, due: &mut Vec<Due>) -> Result<(), Failed<F, L, R>> {
+    fn superseded(&self, pull: &OpenPull, due: &mut Vec<Due>) -> Result<(), Failed<F, L, R, C>> {
         for head in self.superseded_heads(pull)? {
             let checks = self.open_verdicts(&head)?;
             if checks.is_empty() {
@@ -260,7 +267,7 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
 
     /// `pull`'s latest earlier heads from its ledger push records, latest first, none of them
     /// the head of an open PR.
-    fn superseded_heads(&self, pull: &OpenPull) -> Result<Vec<CommitId>, Failed<F, L, R>> {
+    fn superseded_heads(&self, pull: &OpenPull) -> Result<Vec<CommitId>, Failed<F, L, R, C>> {
         let pushes = read_pushes(self.ports.ledger, self.request.run_uid.repo_id, pull.number)
             .map_err(ChecksReconcileError::Ledger)?;
         let mut heads: Vec<CommitId> = Vec::with_capacity(MAX_SUPERSEDED_HEADS);
@@ -285,7 +292,7 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
 
     /// Closes the check `due` names under its head's publish lock, recording what happened in
     /// `done`.
-    fn close(&self, due: Due, done: &mut ChecksReconciled) -> Result<(), Failed<F, L, R>> {
+    fn close(&self, due: Due, done: &mut ChecksReconciled) -> Result<(), Failed<F, L, R, C>> {
         let Some(expected) = due
             .check
             .external_id
@@ -301,8 +308,14 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
             // The request owns its head; `due` still reports it.
             head: due.head.clone(),
         };
-        let LockAcquired::Held(hold) = acquire_lock(self.ports.refs, &lock, self.request.now)
-            .map_err(ChecksReconcileError::Lock)?
+        // Ages stay judged at `request.now`; the lease runs from when it is taken (#318 F1).
+        let now = self
+            .ports
+            .clock
+            .now()
+            .map_err(ChecksReconcileError::Clock)?;
+        let LockAcquired::Held(hold) =
+            acquire_lock(self.ports.refs, &lock, now).map_err(ChecksReconcileError::Lock)?
         else {
             done.skipped.push(due.skipped(Skip::LockBusy));
             return Ok(());
@@ -333,15 +346,15 @@ impl<F: ReconcileForge, L: Ledger, R: LedgerRefs> Sweep<'_, F, L, R> {
 
     /// Under the lock: re-reads the PR's head and writes `due`'s closure to its check if the
     /// head still makes it that closure and the check still carries `expected`. `None` when
-    /// written, else why not. The write sends and waits for nothing past `deadline`, the lock
-    /// lease's expiry (#290).
+    /// written, else why not. The read and the write send and wait for nothing past `deadline`,
+    /// the lock lease's expiry (#290, #318 F2).
     fn write(
         &self,
         due: &Due,
         expected: &str,
         deadline: Deadline,
     ) -> Result<Option<Skip>, F::Error> {
-        let now = self.ports.forge.pull_head(due.pr)?;
+        let now = self.ports.forge.pull_head(due.pr, deadline)?;
         let on_head = matches!(&now, PullHead::Open(current) if *current == due.head);
         let still = match due.closure {
             Closure::Stuck => on_head,
@@ -423,11 +436,11 @@ fn is_verdict(name: &str) -> bool {
 }
 
 /// The listing `listed`, refused when it holds more than `limit` items.
-fn capped<T, F, L, R>(
+fn capped<T, F, L, R, C>(
     listed: Result<Vec<T>, F>,
     what: Listing,
     limit: usize,
-) -> Result<Vec<T>, ChecksReconcileError<F, L, R>> {
+) -> Result<Vec<T>, ChecksReconcileError<F, L, R, C>> {
     let listed = listed.map_err(ChecksReconcileError::Forge)?;
     if listed.len() > limit {
         return Err(ChecksReconcileError::TooMany { what, limit });

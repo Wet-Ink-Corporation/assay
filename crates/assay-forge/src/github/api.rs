@@ -117,7 +117,10 @@ impl<T: Transport, S: Sleep> Api<T, S> {
         if fits {
             Ok(())
         } else {
-            Err(ForgeError::PastDeadline { operation })
+            Err(ForgeError::PastDeadline {
+                operation,
+                deadline,
+            })
         }
     }
 
@@ -452,6 +455,32 @@ mod tests {
             next_page("https://api.github.com/x; rel=\"next\""),
             Err("Link header is not a list of <url>; params")
         );
+    }
+
+    /// A deadline `minutes` after a fixed instant.
+    fn deadline(minutes: u64) -> Deadline {
+        let millis = 1_791_000_000_000 + minutes * 60_000;
+        Deadline::at(assay_app::LedgerTime::from_unix_millis(millis).expect("in range"))
+    }
+
+    #[test]
+    fn a_bounded_view_keeps_the_earlier_of_its_own_deadline_and_the_given_one() {
+        let api = Api {
+            transport: (),
+            sleeper: (),
+            deadline: None,
+        };
+        let (early, late) = (deadline(1), deadline(2));
+
+        let narrowed = api.bounded(Some(late)).bounded(Some(early)).deadline;
+        let kept = api.bounded(Some(early)).bounded(Some(late)).deadline;
+        let unbounded = api.bounded(Some(early)).bounded(None).deadline;
+
+        assert_eq!(
+            (narrowed, kept, unbounded),
+            (Some(early), Some(early), Some(early))
+        );
+        assert_eq!(api.bounded(None).deadline, None);
     }
 
     #[test]

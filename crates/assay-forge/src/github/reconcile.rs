@@ -5,8 +5,8 @@
 use std::num::NonZeroU64;
 
 use assay_app::{
-    CheckRunId, CommitId, CompareAndSetError, LockedWrite, OpenPull, PullHead, ReconcileCheck,
-    ReconcileForge, RunProgress, StampedRun,
+    CheckRunId, CommitId, CompareAndSetError, Deadline, LockedWrite, OpenPull, PullHead,
+    ReconcileCheck, ReconcileForge, RunProgress, StampedRun,
 };
 use serde::Deserialize;
 
@@ -104,10 +104,10 @@ impl<T: Transport, S: Sleep> ReconcileForge for GitHub<T, S> {
         self.list_labels(number)
     }
 
-    fn pull_head(&self, number: NonZeroU64) -> Result<PullHead, Self::Error> {
+    fn pull_head(&self, number: NonZeroU64, deadline: Deadline) -> Result<PullHead, Self::Error> {
         let operation = Operation::ReadPull;
         let path = self.path(operation, &format!("pulls/{number}"))?;
-        let pull: PullDto = self.api.get(operation, &path)?;
+        let pull: PullDto = self.api.bounded(Some(deadline)).get(operation, &path)?;
         if pull.number != number.get() {
             return Err(ForgeError::Malformed {
                 operation,

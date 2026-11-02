@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use assay_app::{AppId, CheckRunId};
+use assay_app::{AppId, CheckRunId, Deadline};
 
 /// Why a call to GitHub failed. Every variant fails closed: nothing is inferred from a
 /// response the adapter could not read exactly.
@@ -39,13 +39,18 @@ pub enum ForgeError<E> {
         /// How many requests were sent.
         attempts: u8,
     },
-    /// The call's [`Deadline`](assay_app::Deadline), the publish lock lease's expiry, came
+    /// The call's [`Deadline`], the publish lock lease's expiry, came
     /// before its next request or retry wait could end, so neither was made (#290). Requests
     /// sent earlier may have landed. Like [`Exhausted`](Self::Exhausted), a `publish-error`.
-    #[error("publish-error: {operation}: stopped at the publish lock's deadline")]
+    #[error(
+        "publish-error: {operation}: stopped at the publish lock's deadline {}",
+        deadline.instant()
+    )]
     PastDeadline {
         /// The call.
         operation: Operation,
+        /// The deadline it stopped at (#318 F7).
+        deadline: Deadline,
     },
     /// The response is not what the API documents.
     #[error("{operation}: unexpected response from GitHub: {detail}")]

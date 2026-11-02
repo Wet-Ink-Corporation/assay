@@ -14,8 +14,8 @@ use assay_forge::github::{ForgeError, Method, Operation};
 use serde_json::json;
 
 use super::recorded::{
-    Recorded, Unscripted, Waits, first_write, fixture, fixture_json, github, id, json, locked,
-    path, reply,
+    Recorded, SEND_TIMEOUT, Unscripted, Waits, deadline_after, far, first_write, fixture,
+    fixture_json, github, id, json, locked, path, reply,
 };
 
 /// PR 270's head while its run was live.
@@ -255,7 +255,7 @@ fn an_open_pull_reads_its_head() {
     let recorded = Recorded::default().ok(Method::Get, &path("pulls/268"), json(&pull));
     let waits = Waits::default();
 
-    let now = github(&recorded, &waits).pull_head(id(268));
+    let now = github(&recorded, &waits).pull_head(id(268), far());
 
     assert_eq!(
         now.expect("read"),
@@ -272,9 +272,28 @@ fn a_closed_pull_reads_closed() {
     let recorded = Recorded::default().ok(Method::Get, &path("pulls/268"), fixture("pull.json"));
     let waits = Waits::default();
 
-    let now = github(&recorded, &waits).pull_head(id(268));
+    let now = github(&recorded, &waits).pull_head(id(268), far());
 
     assert_eq!(now.expect("read"), PullHead::Closed);
+}
+
+#[test]
+fn a_head_re_read_whose_deadline_has_come_sends_nothing() {
+    let recorded = Recorded::default();
+    let waits = Waits::default();
+    let deadline = deadline_after(SEND_TIMEOUT);
+
+    let now = github(&recorded, &waits).pull_head(id(268), deadline);
+
+    assert!(
+        matches!(
+            now,
+            Err(ForgeError::PastDeadline { operation: Operation::ReadPull, deadline: at })
+                if at == deadline
+        ),
+        "ending exactly at the deadline is past it: {now:?}"
+    );
+    assert_eq!(recorded.sent(), Vec::new());
 }
 
 #[test]

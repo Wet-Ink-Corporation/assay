@@ -5,8 +5,8 @@
 use std::time::Duration;
 
 use assay_app::{
-    CheckName, CheckRunId, CheckState, CheckUpdate, CompareAndSetError, Deadline, Forge,
-    LockedWrite,
+    CheckFound, CheckName, CheckRun, CheckRunId, CheckState, CheckStatus, CheckUpdate,
+    CompareAndSetError, Deadline, Forge, LockedWrite,
 };
 use assay_forge::github::{ForgeError, Method, Operation};
 
@@ -45,7 +45,7 @@ fn by(update: &CheckUpdate, deadline: Deadline) -> LockedWrite<'_> {
 
 /// What the adapter refused for `operation` when the deadline stopped it.
 fn past(error: &ForgeError<super::recorded::Unscripted>, operation: Operation) -> bool {
-    matches!(error, ForgeError::PastDeadline { operation: refused } if *refused == operation)
+    matches!(error, ForgeError::PastDeadline { operation: refused, .. } if *refused == operation)
 }
 
 #[test]
@@ -182,6 +182,40 @@ fn a_far_deadline_changes_nothing() {
         by(&pending(), deadline_after(Duration::from_secs(3_600))),
     );
 
-    assert!(found.is_ok(), "{found:?}");
+    assert_eq!(
+        found.expect("found past one retry"),
+        CheckFound::Found(CheckRun {
+            id: check(),
+            external_id: "pending:39168909542:3".to_owned(),
+            status: CheckStatus::InProgress,
+        })
+    );
     assert_eq!(waits.taken(), [Duration::from_secs(1)]);
+}
+
+#[test]
+fn a_refusal_names_the_deadline_it_stopped_at() {
+    let recorded = Recorded::default();
+    let waits = Waits::default();
+    let deadline = deadline_after(Duration::ZERO);
+
+    let found = github(&recorded, &waits).find_or_create_check(
+        &head(),
+        &verdict(),
+        by(&pending(), deadline),
+    );
+
+    let error = found.expect_err("the deadline has come");
+    assert!(
+        matches!(
+            error,
+            ForgeError::PastDeadline { operation: Operation::ListChecks, deadline: at }
+                if at == deadline
+        ),
+        "{error:?}"
+    );
+    assert!(
+        error.to_string().contains(&deadline.instant().to_string()),
+        "{error}"
+    );
 }
