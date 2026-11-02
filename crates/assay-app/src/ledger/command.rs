@@ -15,7 +15,7 @@ use super::lines::{Newline, Refusal, check_canonical, check_schema, lines, parse
 use super::port::{Ledger, LedgerPath};
 use super::record::{Appended, field};
 use super::time::LedgerTime;
-use crate::command::recorded_command;
+use crate::command::RecordedCommand;
 use crate::config::{CommitId, Sha256Digest};
 use crate::publish::CommentId;
 use crate::status::UserId;
@@ -42,10 +42,9 @@ pub struct CommandRecord {
     pub actor_id: UserId,
     /// The PR head the comment was posted on: a head-bound command applies to it alone (04 §5).
     pub head_sha: CommitId,
-    /// The command as its canonical [`Command::line`](crate::Command::line)
-    /// (`/assay waive 0123456789abcdef`): any command of the grammar but `recheck`, at most
-    /// [`MAX_COMMAND_CHARS`] characters. Every read re-parses it.
-    pub command: String,
+    /// The command, any of the grammar but `recheck`; the record holds its canonical line
+    /// (`/assay waive 0123456789abcdef`), which the strict reader parses back into it.
+    pub command: RecordedCommand,
     /// The sha256 of the comment body at `created`: a later body with another hash voids the
     /// record (T21).
     pub body_sha256: Sha256Digest,
@@ -61,8 +60,7 @@ pub struct CommandRecord {
 /// # Errors
 ///
 /// [`LedgerWriteError`]: the file could not be read or is refused, the write failed or kept
-/// conflicting, the file would pass its cap, or `command` breaks a rule of its contract (a
-/// command that is not a recorded command's canonical line, or one over its cap).
+/// conflicting, the file would pass its cap, or `command` breaks a rule of its contract.
 pub fn append_command<L: Ledger>(
     ledger: &L,
     command: &CommandRecord,
@@ -167,7 +165,7 @@ impl<'a> From<&'a CommandRecord> for CommandLine<'a> {
             comment_id: record.comment_id.0,
             actor_id: record.actor_id.0,
             head_sha: Some(Cow::Borrowed(record.head_sha.as_str())),
-            command: Cow::Borrowed(&record.command),
+            command: Cow::Borrowed(record.command.as_str()),
             body_sha256: record.body_sha256.to_string(),
             created_at: record.created_at.to_string(),
             at: record.at.to_string(),
@@ -186,19 +184,20 @@ impl TryFrom<CommandLine<'_>> for CommandRecord {
         // stricter today (a reason is capped and holds no control character), so neither fires
         // alone; they keep the two in step if the grammar ever widens.
         let chars = line.command.chars().count();
-        if !(1..=MAX_COMMAND_CHARS).contains(&chars)
-            || line.command.chars().any(char::is_control)
-            || recorded_command(&line.command).is_err()
-        {
+        if !(1..=MAX_COMMAND_CHARS).contains(&chars) || line.command.chars().any(char::is_control) {
             return Err(Corruption::Field("command"));
         }
+        let command = line
+            .command
+            .parse::<RecordedCommand>()
+            .map_err(|_unread| Corruption::Field("command"))?;
         Ok(Self {
             run_uid: line.run_uid,
             pr: line.pr,
             comment_id: CommentId(line.comment_id),
             actor_id: UserId(line.actor_id),
             head_sha: field(&head_sha, "head_sha")?,
-            command: line.command.into_owned(),
+            command,
             body_sha256: field(&line.body_sha256, "body_sha256")?,
             created_at: field(&line.created_at, "created_at")?,
             at: field(&line.at, "at")?,

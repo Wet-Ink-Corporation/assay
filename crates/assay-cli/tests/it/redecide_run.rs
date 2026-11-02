@@ -495,7 +495,7 @@ fn an_eligible_override_is_recorded_with_the_live_head_and_applied() -> Result<(
         return Err(format!("one command record, got {}", records.len()).into());
     };
     assert_eq!(record.head_sha, scene.head());
-    assert_eq!(record.command, line);
+    assert_eq!(record.command.as_str(), line);
     assert_eq!(record.actor_id, user(OWNER)?);
     assert_eq!(record.comment_id, CommentId(id(COMMENT)?));
     let digest = Sha256Digest::of(&fs::read(ran.out.join(DECISION_FILE))?);

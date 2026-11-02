@@ -201,7 +201,7 @@ impl GitHubState {
             return None;
         }
         let record = self.latest_override()?;
-        match &record.command {
+        match record.command.as_command() {
             Command::Override { reason, .. } => Some(EventPayload::OverrideApplied {
                 who: self.login(record.actor),
                 // The event owns its copy of the reason; the record keeps its own.
@@ -218,7 +218,7 @@ impl GitHubState {
             .iter()
             .filter(|judged| judged.status == CommandStatus::OtherHead)
             .map(|judged| &judged.record)
-            .filter(|record| matches!(record.command, Command::Waive { finding } if finding == fp))
+            .filter(|record| matches!(record.command.as_command(), Command::Waive { finding } if *finding == fp))
             .filter(|record| self.rule.judge(record.actor).is_ok())
             .min_by_key(|record| (record.created_at, record.comment_id))
     }

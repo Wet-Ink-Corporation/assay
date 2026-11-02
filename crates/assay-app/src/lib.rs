@@ -47,7 +47,8 @@ pub use admit::{
 pub use calendar::{CalendarDate, CalendarDateError};
 pub use clock::Clock;
 pub use command::{
-    AckedSet, Command, MAX_COMMAND_REASON_CHARS, Parsed, UnreadCommand, parse_command,
+    AckedSet, Command, MAX_COMMAND_REASON_CHARS, ParseRecordedCommandError, Parsed,
+    RecordedCommand, parse_command,
 };
 pub use doctor::{
     AGENTS_PATH, Access, AppliedRule, BaseError, BranchPolicy, BypassActor, CanaryProbe, CanaryRun,

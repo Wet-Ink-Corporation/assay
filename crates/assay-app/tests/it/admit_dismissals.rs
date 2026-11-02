@@ -47,7 +47,11 @@ fn dismissals_of(world: &mut World) -> Result<Value, Box<dyn Error>> {
 }
 
 /// A comment `id` by `actor` saying `body`, recorded by decide-only, and as GitHub shows it now.
-fn command(id: u64, actor: u64, body: &str) -> (CommandRecord, IssueComment) {
+fn command(
+    id: u64,
+    actor: u64,
+    body: &str,
+) -> Result<(CommandRecord, IssueComment), Box<dyn Error>> {
     let created = at("2026-10-19T10:00:00.000Z");
     let record = CommandRecord {
         run_uid: RunUid {
@@ -59,7 +63,7 @@ fn command(id: u64, actor: u64, body: &str) -> (CommandRecord, IssueComment) {
         comment_id: CommentId(nz(id)),
         actor_id: UserId(nz(actor)),
         head_sha: crate::ledger_fakes::commit('b'),
-        command: body.to_owned(),
+        command: body.parse()?,
         body_sha256: Sha256Digest::of(body.as_bytes()),
         created_at: created,
         at: at("2026-10-19T10:00:05.000Z"),
@@ -72,7 +76,7 @@ fn command(id: u64, actor: u64, body: &str) -> (CommandRecord, IssueComment) {
         body: body.to_owned(),
         via_app: false,
     };
-    (record, now)
+    Ok((record, now))
 }
 
 /// `record` is in the ledger and its comment reads `now`.
@@ -151,15 +155,15 @@ fn dismissals_of_every_kind(world: &mut World) -> Result<(), Box<dyn Error>> {
     )?;
     pushed(world, 9, PUSHER, (commit('a')?, commit('b')?))?;
     let cases = [
-        command(1, OWNER, &dismiss),
-        command(2, AUTHOR, &dismiss),
-        command(3, AGENT, &dismiss),
-        command(4, OWNER, &dismiss),
-        command(5, OWNER, &dismiss),
-        command(6, OWNER, &dismiss),
-        command(7, PUSHER, &dismiss),
-        command(8, OWNER, &format!("/assay waive {FP}")),
-        command(9, OWNER, &dismiss),
+        command(1, OWNER, &dismiss)?,
+        command(2, AUTHOR, &dismiss)?,
+        command(3, AGENT, &dismiss)?,
+        command(4, OWNER, &dismiss)?,
+        command(5, OWNER, &dismiss)?,
+        command(6, OWNER, &dismiss)?,
+        command(7, PUSHER, &dismiss)?,
+        command(8, OWNER, &format!("/assay waive {FP}"))?,
+        command(9, OWNER, &dismiss)?,
     ];
     for (record, mut now) in cases {
         match record.comment_id.0.get() {
@@ -218,7 +222,7 @@ fn an_author_or_committer_of_a_range_commit_may_not_dismiss() -> Result<(), Box<
             }],
             HashSet::new(),
         );
-        recorded(&mut world, command(1, OWNER, &dismiss()))?;
+        recorded(&mut world, command(1, OWNER, &dismiss())?)?;
 
         let dismissals = dismissals_of(&mut world)?;
 
@@ -242,7 +246,7 @@ fn a_range_commit_attributed_to_no_user_voids_every_dismissal() -> Result<(), Bo
         }],
         HashSet::new(),
     );
-    recorded(&mut world, command(1, OWNER, &dismiss()))?;
+    recorded(&mut world, command(1, OWNER, &dismiss())?)?;
 
     let dismissals = dismissals_of(&mut world)?;
 
@@ -265,7 +269,7 @@ fn an_empty_range_voids_every_dismissal() -> Result<(), Box<dyn Error>> {
             &only_merges
         };
         world.range = RangeIdentities::of(commits, clean_merges);
-        recorded(&mut world, command(1, OWNER, &dismiss()))?;
+        recorded(&mut world, command(1, OWNER, &dismiss())?)?;
 
         let dismissals = dismissals_of(&mut world)?;
 
@@ -295,7 +299,7 @@ fn a_clean_merge_from_the_base_disqualifies_neither_its_committer_nor_its_pusher
         HashSet::from([commit('c')?]),
     );
     pushed(&world, 9, OWNER, (commit('b')?, merge))?;
-    recorded(&mut world, command(1, OWNER, &dismiss()))?;
+    recorded(&mut world, command(1, OWNER, &dismiss())?)?;
 
     let dismissals = dismissals_of(&mut world)?;
 
@@ -306,7 +310,7 @@ fn a_clean_merge_from_the_base_disqualifies_neither_its_committer_nor_its_pusher
 #[test]
 fn a_comment_store_that_cannot_be_read_fails_admit_before_the_slot() -> Result<(), Box<dyn Error>> {
     let mut world = World::new();
-    let (record, _) = command(1, OWNER, &dismiss());
+    let (record, _) = command(1, OWNER, &dismiss())?;
     append_command(&world.ledger, &record)?;
     world.comments.down = true;
 

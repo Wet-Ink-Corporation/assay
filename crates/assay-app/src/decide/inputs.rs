@@ -227,7 +227,7 @@ struct DismissalPart<'a> {
 fn dismissals(state: &GitHubState) -> Vec<DismissalPart<'_>> {
     state
         .dismissals()
-        .filter_map(|record| match &record.command {
+        .filter_map(|record| match record.command.as_command() {
             Command::Dismiss { finding, reason } => Some(DismissalPart {
                 comment_id: record.comment_id.0.get(),
                 actor_id: record.actor.0.get(),
