@@ -6,7 +6,8 @@
 use std::collections::{BTreeSet, HashSet};
 
 use crate::config::CommitId;
-use crate::forge::{Actor, CommitIdentity};
+use crate::eligibility::Attribution;
+use crate::forge::CommitIdentity;
 use crate::status::UserId;
 
 /// The identities of a PR's range as clause (b) of the eligibility rule reads them.
@@ -25,27 +26,19 @@ impl RangeIdentities {
     /// every commit in `clean_merges`: the clean merges from the base (two parents, the first the
     /// push's `before`, the second an ancestor of the base, a tree equal to a conflict-free
     /// merge), which the caller finds (04 §5). A push record whose `after` is one of them is left
-    /// out of clause (c) too. `web-flow` as committer is a GitHub user, so it never makes a commit
-    /// unattributed. A range with no counted commit counts as unattributed, so it leaves no
+    /// out of clause (c) too. Each counted commit is attributed by the one rule
+    /// [`range_identities`](crate::range_identities) and decide's snapshot use (#347): every
+    /// author, co-authors included, and the committer; `web-flow` is a GitHub user only as
+    /// committer. A range with no counted commit counts as unattributed, so it leaves no
     /// identity eligible (fail closed): a real PR range is never empty.
     #[must_use]
     pub fn of(commits: &[CommitIdentity], clean_merges: HashSet<CommitId>) -> Self {
-        let mut users = BTreeSet::new();
-        let mut unattributed = false;
-        let counted = commits
+        let mut attribution = Attribution::default();
+        commits
             .iter()
-            .filter(|commit| !clean_merges.contains(&commit.commit));
-        for commit in counted {
-            for actor in commit.authors.iter().chain([&commit.committer]) {
-                match actor {
-                    Actor::User(user) => {
-                        users.insert(*user);
-                    }
-                    Actor::NotAUser => unattributed = true,
-                }
-            }
-        }
-        Self::attributed(users, unattributed, clean_merges)
+            .filter(|commit| !clean_merges.contains(&commit.commit))
+            .for_each(|commit| attribution.count(commit));
+        Self::attributed(attribution.users, attribution.unattributed, clean_merges)
     }
 
     /// The identities clause (b)'s one range reading attributed: `users` made a counted commit,

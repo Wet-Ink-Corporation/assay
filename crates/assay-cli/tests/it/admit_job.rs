@@ -7,7 +7,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+use assay_app::ArtifactJob;
+use assay_cli::{OutputName, RUN_FILE};
+use serde_json::{Map, Value, json};
 use tempfile::TempDir;
+
+use crate::admit_run::Planned;
 
 const CONFIG: &str = "base/.assay/plugins.toml";
 const ARGS: [&str; 6] = [
@@ -32,7 +37,7 @@ impl Scene {
         fs::create_dir_all(root.path().join("home"))?;
         fs::write(
             root.path().join(CONFIG),
-            "[assay]\nledger_repo = \"Wet-Ink-Corporation/assay-ledger\"\n",
+            "[assay]\ndigest = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\nledger_repo = \"Wet-Ink-Corporation/assay-ledger\"\n",
         )?;
         fs::write(root.path().join("github-output"), "")?;
         Ok(Self { root })
@@ -117,6 +122,101 @@ fn flags_other_than_config_artifacts_and_out_are_a_usage_error() -> Result<(), B
         assert!(!scene.path("admit-out").exists());
     }
     Ok(())
+}
+
+/// `toJSON(needs)` for a guard that wrote `planned`'s identity and a plan that wrote its outputs.
+fn planned_needs(planned: &Planned) -> String {
+    let outputs = |outputs: Vec<(OutputName, String)>| {
+        outputs
+            .into_iter()
+            .map(|(name, value)| (name.as_str().to_owned(), Value::String(value)))
+            .collect::<Map<String, Value>>()
+    };
+    json!({
+        "guard": {"result": "success", "outputs": outputs(planned.identity.outputs())},
+        "plan": {"result": "success", "outputs": outputs(planned.plan.outputs())},
+    })
+    .to_string()
+}
+
+/// `planned`'s document downloaded as plan's artifact under `<scene>/artifacts`, and the run's
+/// variables (run 4242 of repository 42, as planned) with no token.
+fn downloaded(scene: &Scene, planned: &Planned) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+    let artifact = planned
+        .plan
+        .artifacts()
+        .get(&ArtifactJob::Plan)
+        .ok_or("a plan artifact")?;
+    let dir = scene.path("artifacts").join(artifact);
+    fs::create_dir_all(&dir)?;
+    fs::write(dir.join(RUN_FILE), &planned.document)?;
+    let output = scene.path("github-output");
+    let output = output.to_str().ok_or("a UTF-8 temporary path")?;
+    Ok([
+        ("GITHUB_RUN_ID", "4242"),
+        ("GITHUB_RUN_ATTEMPT", "1"),
+        ("GITHUB_REPOSITORY_ID", "42"),
+        ("GITHUB_REPOSITORY", "Wet-Ink-Corporation/assay"),
+        ("GITHUB_OUTPUT", output),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.to_owned(), value.to_owned()))
+    .chain([("ASSAY_NEEDS".to_owned(), planned_needs(planned))])
+    .collect())
+}
+
+/// #347 (owner, 2026-11-02, T8 option B, wi-613db8): a run that spends nothing reads no
+/// credential, so admit admits a draft with no token set and no base config to read.
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn a_draft_is_admitted_without_any_token_or_base_config() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new()?;
+    fs::remove_file(scene.path(CONFIG))?;
+    let planned = Planned::new(true)?;
+    let variables = downloaded(&scene, &planned)?;
+
+    let ran = scene.admit(&ARGS, &as_pairs(&variables))?;
+
+    let stderr = String::from_utf8(ran.stderr)?;
+    assert_eq!(ran.status.code(), Some(0), "{stderr}");
+    assert_eq!(
+        fs::read(scene.path("admit-out").join(RUN_FILE))?,
+        planned.document
+    );
+    let written = fs::read_to_string(scene.path("github-output"))?;
+    assert!(written.starts_with("admission=no-spend\n"), "{written}");
+    assert!(written.ends_with("review=false\n"), "{written}");
+    Ok(())
+}
+
+/// A run that spends still needs its tokens, read after the no-spend shortcut and before any
+/// port: nothing is written without them.
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn a_spend_without_its_tokens_is_refused_and_writes_nothing() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new()?;
+    let planned = Planned::new(false)?;
+    let variables = downloaded(&scene, &planned)?;
+
+    let ran = scene.admit(&ARGS, &as_pairs(&variables))?;
+
+    let stderr = String::from_utf8(ran.stderr)?;
+    assert_eq!(ran.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("admit: ASSAY_GITHUB_TOKEN is not set"),
+        "{stderr}"
+    );
+    assert_eq!(fs::read_to_string(scene.path("github-output"))?, "");
+    assert!(!scene.path("admit-out").exists());
+    Ok(())
+}
+
+/// `variables` as the borrowed pairs [`Scene::admit`] takes.
+fn as_pairs(variables: &[(String, String)]) -> Vec<(&str, &str)> {
+    variables
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect()
 }
 
 #[test]

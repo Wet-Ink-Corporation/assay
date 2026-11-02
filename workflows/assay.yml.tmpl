@@ -376,7 +376,10 @@ jobs:
           config: base/.assay/plugins.toml
           artifact-type: application/vnd.wet-ink.assay.binary.v1
           out-dir: bin
+      # A run with no LLM stage (plan's review false: a draft, trivial, needs-split) spends
+      # nothing, so it mints no token and admit reads none (#347, T8 option B).
       - id: ledger
+        if: needs.plan.outputs.review == 'true'
         name: Read the ledger repository from base config
         run: |
           python3 -I - base/.assay/plugins.toml >> "$GITHUB_OUTPUT" <<'EOF'
@@ -390,6 +393,7 @@ jobs:
           print(f"name={name}")
           EOF
       - id: verdict-token
+        if: needs.plan.outputs.review == 'true'
         uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         with:
           app-id: ${{ vars.ASSAY_VERDICT_APP_ID }}
@@ -398,6 +402,7 @@ jobs:
           permission-checks: read
           permission-pull-requests: read
       - id: ledger-token
+        if: needs.plan.outputs.review == 'true'
         uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         with:
           app-id: ${{ vars.ASSAY_LEDGER_APP_ID }}

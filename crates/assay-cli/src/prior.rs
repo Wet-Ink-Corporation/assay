@@ -6,8 +6,8 @@ use std::error::Error;
 use std::fmt;
 
 use assay_app::{
-    BundleSource, Carry, Ledger, LedgerReadError, PrState, PriorCarry, PriorCarryError,
-    TargetError, TargetRequest, prior_head, read_state, review_target,
+    BundleSource, Carry, Ledger, LedgerReadError, PrState, PriorBundle, PriorCarry,
+    PriorCarryError, TargetError, TargetRequest, read_state, review_target,
 };
 use assay_forge::git::GitError;
 use assay_forge::process::ProcessError;
@@ -23,6 +23,10 @@ pub(crate) struct Prior {
     pub(crate) carry: Carry,
     /// The PR's ledger state, whose evidence pointer the carry was decided on.
     pub(crate) state: PrState,
+    /// The bundle the state's evidence pointer names, fetched once for the previous head, so
+    /// its carry set and waivers are read without fetching it again (#347); `None` when the
+    /// state names no evidence.
+    pub(crate) bundle: Option<PriorBundle>,
 }
 
 /// Why the previous run could not be read. `L` and `B` are the ledger's and the bundle store's
@@ -74,8 +78,8 @@ pub(crate) fn prior<L: Ledger, B: BundleSource>(
     bundles: &B,
 ) -> Result<Prior, PriorError<L::Error, B::Error>> {
     let state = read_state(ledger, run.run_uid.repo_id, identity.pr).map_err(PriorError::State)?;
-    let previous = match &state.evidence {
-        None => None,
+    let (bundle, previous) = match &state.evidence {
+        None => (None, None),
         Some(pointer) => {
             let repository = run.repo.to_string();
             let prior = PriorCarry {
@@ -83,7 +87,9 @@ pub(crate) fn prior<L: Ledger, B: BundleSource>(
                 pointer,
                 repository: &repository,
             };
-            Some(prior_head(&prior, bundles).map_err(PriorError::PriorHead)?)
+            let bundle = PriorBundle::read(&prior, bundles).map_err(PriorError::PriorHead)?;
+            let head = bundle.head().map_err(PriorError::PriorHead)?;
+            (Some(bundle), Some(head))
         }
     };
     let request = TargetRequest {
@@ -98,6 +104,7 @@ pub(crate) fn prior<L: Ledger, B: BundleSource>(
     Ok(Prior {
         carry: target.carry(),
         state,
+        bundle,
     })
 }
 

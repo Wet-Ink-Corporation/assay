@@ -10,9 +10,9 @@ use std::num::NonZeroU64;
 use assay_app::{
     BUNDLE_FILE, BundleShape, CarriedAnchor, CarriedField, CarriedFinding, CarriedProblem,
     CarriedRefusal, Carry, CarryRefused, CarryReset, CarrySet, Change, DiffPaths, EvidencePointer,
-    FileDiff, MAX_BUNDLE_BYTES, MAX_CARRIED, Mismatch, OmitReason, Omitted, PriorCarry,
-    PriorCarryError, RunField, Sha256Digest, ValidFinding, Verification, VerifierTier, next_carry,
-    prior_carry, recheck_anchors, verify,
+    FileDiff, MAX_BUNDLE_BYTES, MAX_CARRIED, Mismatch, OmitReason, Omitted, PriorBundle,
+    PriorCarry, PriorCarryError, RunField, Sha256Digest, ValidFinding, Verification, VerifierTier,
+    next_carry, prior_carry, prior_head, prior_waivers, recheck_anchors, verify,
 };
 use assay_domain::{Fingerprint, RunUid, Severity, Side, VerifierVerdict};
 use serde_json::{Value, json};
@@ -452,6 +452,46 @@ fn a_reset_or_first_review_carries_nothing_and_fetches_nothing() -> Result<(), B
         assert_eq!(read?, [], "{carry:?} carries nothing");
         assert_eq!(source.asked.borrow().len(), 0, "{carry:?} fetches nothing");
     }
+    Ok(())
+}
+
+/// #347: one fetch gives the head, the carry set and the waivers, each as the reader that
+/// fetches for itself gives it; a carry that is not kept reads none from the fetched bundle.
+#[test]
+fn one_fetched_bundle_reads_as_each_prior_reader_does() -> Result<(), Box<dyn Error>> {
+    let set = two_carried()?;
+    let (run, bytes, pointer) = published(set.clone())?;
+    let source = FakeBundles::new(Stored::Bytes(bytes));
+    let request = PriorCarry {
+        repo_id: run.request.plan.run_uid.repo_id,
+        pointer: &pointer,
+        repository: REPOSITORY,
+    };
+
+    let bundle = PriorBundle::read(&request, &source)?;
+
+    assert_eq!(source.asked.borrow().len(), 1, "one fetch");
+    assert_eq!(bundle.head::<FakeError>()?, prior_head(&request, &source)?);
+    for carry in [
+        Carry::FirstReview,
+        Carry::Reset(CarryReset::Rewritten),
+        Carry::Kept,
+    ] {
+        assert_eq!(
+            bundle.waivers::<FakeError>(carry)?,
+            prior_waivers(carry, &request, &source)?,
+            "{carry:?}"
+        );
+    }
+    assert_eq!(
+        PriorBundle::read(&request, &source)?
+            .carried::<FakeError>(Carry::FirstReview, REPOSITORY)?,
+        []
+    );
+    assert_eq!(
+        bundle.carried::<FakeError>(Carry::Kept, REPOSITORY)?,
+        set.findings()
+    );
     Ok(())
 }
 

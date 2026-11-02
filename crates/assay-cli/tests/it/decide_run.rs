@@ -12,9 +12,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use assay_app::{
-    AdmitJob, AdmitOutcome, ArtifactJob, BUNDLE_FILE, ContractValidator, CurrentPullRequest,
-    GateJobOutputs, JobResult, Reported, ReportedGate, RestFile, RestFiles, ReviewJob, ReviewStage,
-    Sha256Digest, TierDegrade, UserId, read_rubric,
+    AdmitJob, AdmitOutcome, ArtifactJob, BUNDLE_FILE, BundleSource, ContractValidator,
+    CurrentPullRequest, EvidencePointer, GateJobOutputs, JobResult, PrState, Reported,
+    ReportedGate, RestFile, RestFiles, ReviewJob, ReviewStage, Sha256Digest, StoredBundle,
+    TierDegrade, UserId, read_rubric, update_state,
 };
 use assay_cli::outputs::{DecideNeeds, DecideOutputs, Identity, PlanEnd, PlanOutputs, Trigger};
 use assay_cli::{
@@ -22,13 +23,13 @@ use assay_cli::{
     ForgePullRequest, OutDir, PlanJob, PlanPorts, RUN_FILE, RunEnv, RunVariables, STATE_FILE,
     run_decide, run_plan,
 };
-use assay_domain::{Aeu, ContentHash, GateConclusion, ReasonCode, Rubric};
+use assay_domain::{Aeu, ContentHash, GateConclusion, ReasonCode, Rubric, RunUid};
 use assay_forge::git::TreeLimits;
 use serde_json::json;
 use tempfile::TempDir;
 
 use crate::admit_fakes::{Fetches, NoBundles, NoComments};
-use crate::decide_fakes::{LiveState, Reviewless};
+use crate::decide_fakes::{LiveState, Reviewless, Uploaded};
 use crate::open_fakes::{MemoryLedger, Refused};
 use crate::plan::{Counting, Pr, pr};
 
@@ -168,6 +169,20 @@ impl Planned {
         state: &LiveState,
         ledger: &MemoryLedger,
     ) -> Result<Ran, Box<dyn Error>> {
+        self.decide_with(state, ledger, (&NoBundles::default(), &self.out()))
+    }
+
+    /// Like [`Self::decide_over`], with the previous runs' bundles in `bundles` and `out` as
+    /// `--out`.
+    pub(crate) fn decide_with<B>(
+        &self,
+        state: &LiveState,
+        ledger: &MemoryLedger,
+        (bundles, out): (&B, &Path),
+    ) -> Result<Ran, Box<dyn Error>>
+    where
+        B: BundleSource<Error = Refused>,
+    {
         let objects = ForgePullRequest::new(
             &self.pr.repo,
             TreeLimits::default(),
@@ -182,7 +197,7 @@ impl Planned {
             artifacts: &artifacts,
             forge: &forge,
             ledger,
-            bundles: &NoBundles::default(),
+            bundles,
             comments: &NoComments,
         };
         let job = DecideJob {
@@ -194,7 +209,7 @@ impl Planned {
             rubric: &self.rubric,
             validator: &self.validator,
         };
-        Ok(run_decide(job, &ports, &OutDir::new(&self.out())?))
+        Ok(run_decide(job, &ports, &OutDir::new(out)?))
     }
 }
 
@@ -366,6 +381,51 @@ fn a_superseded_head_publishes_nothing_and_reads_no_further() -> Result<(), Box<
         *moved.calls.borrow(),
         ["current"],
         "nothing read after the move"
+    );
+    Ok(())
+}
+
+/// #347: the previous completed run's bundle gives decide the previous head, the carried
+/// findings and the waivers its decision applied; it is fetched once for all three.
+#[test]
+#[cfg_attr(miri, ignore = "runs git; Miri cannot spawn processes")]
+fn a_kept_carry_fetches_the_previous_bundle_once() -> Result<(), Box<dyn Error>> {
+    let planned = Planned::new()?;
+    planned.decide(&planned.unmoved())??;
+    let bundle = fs::read(planned.out().join(BUNDLE_FILE))?;
+    let previous = RunUid {
+        repo_id: id(42)?,
+        run_id: id(4242)?,
+        run_attempt: NonZeroU64::MIN,
+    };
+    let ledger = MemoryLedger::default();
+    let pointer = EvidencePointer {
+        run_id: previous.run_id,
+        run_attempt: previous.run_attempt,
+        sha256: Sha256Digest::of(&bundle),
+    };
+    update_state(&ledger, previous.repo_id, id(PR)?, |_| {
+        Some(PrState {
+            evidence: Some(pointer.clone()),
+            ..PrState::default()
+        })
+    })?;
+    let bundles = Uploaded {
+        stored: StoredBundle::Found(bundle),
+        asked: RefCell::default(),
+    };
+    let out = planned.root.join("decide-again");
+
+    let outputs = planned.decide_with(&planned.unmoved(), &ledger, (&bundles, &out))??;
+
+    assert!(
+        matches!(outputs, DecideOutputs::Bundle { .. }),
+        "{outputs:?}"
+    );
+    assert_eq!(
+        *bundles.asked.borrow(),
+        [(previous, BUNDLE_FILE.to_owned())],
+        "one fetch of the previous run's bundle"
     );
     Ok(())
 }

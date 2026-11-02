@@ -159,7 +159,7 @@ pub struct CommitIdentity {
     /// The commit.
     pub commit: CommitId,
     /// Its authors, co-authors included, as GitHub lists them: the git author first, then the
-    /// `Co-authored-by:` trailers. The eligibility rule reads the first only (04 §5).
+    /// `Co-authored-by:` trailers. The eligibility rule counts every one (04 §5, #347).
     pub authors: Vec<Actor>,
     /// Its committer.
     pub committer: Actor,

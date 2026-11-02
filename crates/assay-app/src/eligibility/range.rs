@@ -127,11 +127,36 @@ impl fmt::Display for TreeId {
 /// Who the range says touched the PR, apart from clean merges from base.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Attribution {
-    /// The GitHub users who authored (git author only) or committed a counted commit.
+    /// The GitHub users who authored (git author and `Co-authored-by:` trailers) or committed a
+    /// counted commit.
     pub(crate) users: BTreeSet<UserId>,
     /// Whether a counted commit has an author or committer that is no GitHub user (web-flow
-    /// counts as one only as committer): every owner then counts as its author.
+    /// counts as one only as committer), or no author at all: every owner then counts as its
+    /// author.
     pub(crate) unattributed: bool,
+}
+
+impl Attribution {
+    /// Counts one commit's identity: clause (b)'s one rule, for both of its readings (#347,
+    /// owner 2026-11-02, A). Every author GitHub lists counts, the git author and each
+    /// `Co-authored-by:` trailer alike: the trailers are text the PR controls, so counting them
+    /// can only add an identity to check. `web-flow` is a user only as committer; as an author
+    /// it hides who wrote the commit, so it counts as no user. A commit with no author counts
+    /// as unattributed (fail closed).
+    pub(crate) fn count(&mut self, identity: &CommitIdentity) {
+        if identity.authors.is_empty() {
+            self.unattributed = true;
+        }
+        let authors = identity.authors.iter().map(|author| (*author, false));
+        for (actor, web_flow_allowed) in authors.chain([(identity.committer, true)]) {
+            match actor {
+                Actor::User(id) if id != WEB_FLOW || web_flow_allowed => {
+                    self.users.insert(id);
+                }
+                Actor::User(_) | Actor::NotAUser => self.unattributed = true,
+            }
+        }
+    }
 }
 
 /// Why a range commit's identity could not be read.
@@ -180,8 +205,7 @@ pub(crate) fn merge_candidates<'a>(
 }
 
 /// The attribution of `identities` (one per range commit, in order) without the clean merges
-/// from base (`clean`'s keys). Co-author trailers are ignored: only GitHub's first author, the
-/// git author, counts.
+/// from base (`clean`'s keys), each counted by [`Attribution::count`].
 pub(crate) fn attribute(
     commits: &[RangeCommit],
     identities: &[CommitIdentity],
@@ -198,15 +222,7 @@ pub(crate) fn attribute(
         if clean.contains_key(&commit.commit) {
             continue;
         }
-        let author = identity.authors.first().copied();
-        for (actor, web_flow_allowed) in [(author, false), (Some(identity.committer), true)] {
-            match actor {
-                Some(Actor::User(id)) if id != WEB_FLOW || web_flow_allowed => {
-                    attribution.users.insert(id);
-                }
-                Some(Actor::User(_) | Actor::NotAUser) | None => attribution.unattributed = true,
-            }
-        }
+        attribution.count(identity);
     }
     Ok(attribution)
 }

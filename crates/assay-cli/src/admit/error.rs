@@ -70,6 +70,65 @@ impl Error for SuppressError {
     }
 }
 
+/// Why [`stage_admit`](super::stage_admit) wrote no outputs: nothing was read but the plan
+/// document, and no slot was taken.
+#[derive(Debug)]
+pub enum StageError {
+    /// The plan artifact's `run.json` does not hash to plan's `run_digest`.
+    PlanDigest,
+    /// The plan's document was refused.
+    Plan(PlanDocument),
+    /// `--out` or the document in it could not be written.
+    Write {
+        /// The directory or file.
+        path: PathBuf,
+        /// The failure.
+        source: io::Error,
+    },
+}
+
+impl fmt::Display for StageError {
+    /// As the matching [`AdmitRunError`] reads.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PlanDigest => f.write_str(PLAN_DIGEST),
+            Self::Plan(_) => f.write_str(PLAN_REFUSED),
+            Self::Write { path, .. } => write!(f, "cannot write {}", path.display()),
+        }
+    }
+}
+
+impl Error for StageError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::PlanDigest => None,
+            Self::Plan(source) => Some(source),
+            Self::Write { source, .. } => Some(source),
+        }
+    }
+}
+
+impl<L, R, B, C, F, H> From<StageError> for AdmitRunError<L, R, B, C, F, H> {
+    /// The staging failure as a run failure; no slot is held.
+    fn from(error: StageError) -> Self {
+        match error {
+            StageError::PlanDigest => Self::PlanDigest,
+            StageError::Plan(source) => Self::Plan(source),
+            StageError::Write { path, source } => Self::Write {
+                path,
+                source,
+                held: None,
+            },
+        }
+    }
+}
+
+/// [`AdmitRunError::PlanDigest`]'s and [`StageError::PlanDigest`]'s message.
+const PLAN_DIGEST: &str = "the plan artifact's run.json is not plan's run_digest";
+
+/// [`AdmitRunError::Plan`]'s and [`StageError::Plan`]'s message.
+const PLAN_REFUSED: &str = "the plan's run description is refused";
+
 /// Why `admit` wrote no outputs (exit 2). `L`, `R`, `B`, `C`, `F` and `H` are the ledger's, the
 /// refs', the bundle store's, the comments', GitHub's and the fetch's errors.
 #[derive(Debug)]
@@ -183,10 +242,8 @@ pub type AdmitRunFailure<L, R, B, C, F, H> = AdmitRunError<
 impl<L, R, B, C, F, H> fmt::Display for AdmitRunError<L, R, B, C, F, H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PlanDigest => {
-                f.write_str("the plan artifact's run.json is not plan's run_digest")
-            }
-            Self::Plan(_) => f.write_str("the plan's run description is refused"),
+            Self::PlanDigest => f.write_str(PLAN_DIGEST),
+            Self::Plan(_) => f.write_str(PLAN_REFUSED),
             Self::Fetch { side, .. } => match side {
                 FetchedSide::Base => f.write_str("could not fetch the base commit"),
                 FetchedSide::Head => f.write_str("could not fetch the head commit"),

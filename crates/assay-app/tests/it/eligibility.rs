@@ -396,18 +396,16 @@ fn web_flow_as_author_hides_the_author_and_taints_the_range() -> Outcome {
     Ok(())
 }
 
+/// #347 (owner, 2026-11-02, A): a `Co-authored-by:` trailer is PR-controlled text, so counting
+/// it can only add an identity to check (fail closed).
 #[test]
-fn co_author_trailers_are_ignored() -> Outcome {
+fn a_co_author_counts_as_an_author_of_the_range() -> Outcome {
     let mut world = World::opened_by(CONTRIBUTOR);
     world.commit(
         '2',
         &[FIRST],
         By {
-            authors: vec![
-                Actor::User(user(CONTRIBUTOR)),
-                Actor::User(user(APPROVER)),
-                Actor::NotAUser,
-            ],
+            authors: vec![Actor::User(user(CONTRIBUTOR)), Actor::User(user(APPROVER))],
             committer: Actor::User(user(CONTRIBUTOR)),
         },
     );
@@ -416,8 +414,35 @@ fn co_author_trailers_are_ignored() -> Outcome {
 
     let state = world.state()?;
 
-    assert_eq!(state.eligibility(user(APPROVER)), Ok(()));
+    assert_eq!(state.eligibility(user(APPROVER)), Err(Ineligible::InRange));
     assert_eq!(state.eligibility(user(OWNER)), Ok(()));
+    Ok(())
+}
+
+#[test]
+fn a_co_author_that_is_no_user_or_web_flow_taints_the_range() -> Outcome {
+    for co_author in [Actor::NotAUser, Actor::User(user(WEB_FLOW))] {
+        let mut world = World::opened_by(CONTRIBUTOR);
+        world.commit(
+            '2',
+            &[FIRST],
+            By {
+                authors: vec![Actor::User(user(CONTRIBUTOR)), co_author],
+                committer: Actor::User(user(CONTRIBUTOR)),
+            },
+        );
+        world.push((FIRST, '2'), CONTRIBUTOR, 5);
+        world.head('2');
+
+        let state = world.state()?;
+
+        assert_eq!(
+            state.eligibility(user(OWNER)),
+            Err(Ineligible::UnattributedRange),
+            "{co_author:?}"
+        );
+        assert_eq!(state.eligibility(user(APPROVER)), Ok(()), "{co_author:?}");
+    }
     Ok(())
 }
 
