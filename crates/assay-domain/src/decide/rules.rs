@@ -64,7 +64,8 @@ pub(super) fn evaluate(
     firings
 }
 
-/// Rule 1: a required gate failed, errored or was skipped, minus waived findings.
+/// Rule 1: a required gate failed (minus waived findings), concluded `neutral`, errored or was
+/// skipped.
 fn gates<'a>(
     inputs: &'a DecisionInputs,
     waivers: &'a Waivers<'_>,
@@ -80,6 +81,12 @@ fn gates<'a>(
             } if !steps.all_failures_are_findings() || !fully_waived(gate, waivers) => {
                 Some(firing(Effect::Fail, ReasonCode::GateFailed, &*gate.name))
             }
+            // Required means pass (#161): a neutral conclusion is not attributed to findings, so
+            // no waiver clears it.
+            GateOutcome::Ran {
+                conclusion: GateConclusion::Neutral,
+                ..
+            } => Some(firing(Effect::Fail, ReasonCode::GateNeutral, &*gate.name)),
             GateOutcome::Ran { .. } => None,
             GateOutcome::Error { detail } => Some(firing(
                 Effect::Fail,

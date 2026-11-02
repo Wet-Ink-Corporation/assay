@@ -113,7 +113,7 @@ Mechanical validation runs as one library function twice: non-authoritatively in
 Inputs: validated gate documents; validated verified findings; the Z4-recomputed plan; the GitHub state snapshot (approvals, command records for waivers, override, dismissals, retry and Weigh-In ack, owners, approvers, maintainers, agent identities, pusher set, push clock, open PRs on the head); policy from base config.
 
 ```
-1  required gate failed | gate-error | gate-skipped (minus findings waived, see below)  → failure
+1  required gate failed (minus findings waived, see below) | neutral | gate-error | gate-skipped → failure (gate-neutral: required means pass, #161)
 2  base ref not in protected_bases                                    → failure (base-not-protected; the check is not required there)
 2a more than one open PR on head_sha into this protected base          → failure (ambiguous-head)
 3  tier == needs-split                                                → failure

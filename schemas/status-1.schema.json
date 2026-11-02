@@ -338,7 +338,7 @@
     },
     "reasonCode": {
       "enum": [
-        "gate-failed", "gate-error", "gate-skipped", "blocker-verified", "majors-over-threshold",
+        "gate-failed", "gate-error", "gate-skipped", "gate-neutral", "blocker-verified", "majors-over-threshold",
         "weigh-in-open-blocking", "weigh-in-no-evidence", "weigh-in-pending-triage", "needs-split",
         "infra-llm-unavailable", "llm-degraded", "required-role-degraded", "trust-path-unapproved",
         "plan-mismatch", "publish-error", "persist-error", "bundle-expired", "override",
