@@ -17,25 +17,35 @@ use super::GitError;
 use super::command::{GitOperation, Scope};
 use super::repository::{Call, ObjectRepo};
 use super::sha::CommitSha;
+use super::tree::TreeLimits;
 use super::worktree::{alternates_line, empty_destination};
 
 impl ObjectRepo {
     /// Writes a reading checkout of `commit` (fetched into this repository) into `dest`, which
     /// must be absent or empty: a repository at `dest/.git` whose objects are this
     /// repository's, `HEAD` detached at `commit`, and its files written with every symlink as
-    /// a plain file.
+    /// a plain file. The commit's tree is listed first and must fit `limits` (its entries,
+    /// and the listed sizes of its blobs summed), so the PR's tree cannot make the checkout
+    /// write without bound (H-13); past them nothing is written.
     ///
     /// # Errors
+    /// [`GitError::TooManyEntries`] or [`GitError::TooManyBytes`] past `limits`,
     /// [`GitError::DirectoryNotEmpty`] when `dest` has contents, [`GitError::Inspect`] when it
     /// cannot be read or created or a path cannot be made absolute, [`GitError::Write`] when
     /// the alternates file cannot be written (or this repository's path holds a newline), and
     /// [`GitError`] when a git step cannot run or fails (a commit this repository does not
     /// hold included).
-    pub fn reading_checkout(&self, commit: &CommitSha, dest: &Path) -> Result<(), GitError> {
+    pub fn reading_checkout(
+        &self,
+        commit: &CommitSha,
+        dest: &Path,
+        limits: TreeLimits,
+    ) -> Result<(), GitError> {
         let inspect = |path: &Path| {
             let git_dir = path.to_path_buf();
             move |source| GitError::Inspect { git_dir, source }
         };
+        self.fits(commit, limits)?;
         let dest = path::absolute(dest).map_err(inspect(dest))?;
         empty_destination(&dest)?;
         let git_dir = dest.join(".git");
@@ -69,6 +79,23 @@ impl ObjectRepo {
                 ..self.call(GitOperation::CheckoutIndex, &[])
             },
         )?;
+        Ok(())
+    }
+
+    /// Whether `commit`'s whole tree fits `limits`: [`Self::list_tree`] checks its entries,
+    /// and the listed blob sizes are summed here (a submodule has none and writes no file).
+    fn fits(&self, commit: &CommitSha, limits: TreeLimits) -> Result<(), GitError> {
+        let total = self
+            .list_tree(commit, None, limits)?
+            .iter()
+            .filter_map(|entry| entry.size)
+            .fold(0_u64, u64::saturating_add);
+        if total > limits.max_total_bytes {
+            return Err(GitError::TooManyBytes {
+                max: limits.max_total_bytes,
+                found: total,
+            });
+        }
         Ok(())
     }
 }

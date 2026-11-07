@@ -207,7 +207,9 @@ pub(super) struct OpenItem {
 pub(super) struct Violation {
     /// The journal, relative to the tree; never empty.
     pub(super) path: String,
-    /// The line at fault, when the violation has one.
+    /// The 1-based line at fault, as `ci-check` numbers it: the base line for
+    /// [`Reason::Missing`] and [`Reason::Altered`], the head line for [`Reason::Undecodable`],
+    /// and none for [`Reason::Removed`].
     pub(super) line: Option<NonZeroU64>,
     pub(super) reason: Reason,
 }

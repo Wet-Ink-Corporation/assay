@@ -19,6 +19,8 @@ const MAX_FINDINGS: usize = 1_000;
 /// Where item findings sit: the journal directory, since the report does not say which journal
 /// or line raised an item.
 const JOURNALS: &str = ".kb/_ledger/journal";
+/// Where item findings sit: line 1 of [`JOURNALS`] at head.
+const AT_JOURNALS: (&str, NonZeroU64, Side) = (JOURNALS, NonZeroU64::MIN, Side::Right);
 
 /// Rule of an open, triaged item that blocks (04 §9 rule 1).
 const OPEN_BLOCKING: &str = "weigh-in-open-blocking";
@@ -99,23 +101,37 @@ fn item_standing(item: &OpenItem) -> Standing {
     standing(item.triage, blocks)
 }
 
-/// The warning for a journal that breaks the append-only rule, at its line (line 1 when the
-/// violation has none: a removed journal).
+/// The warning for a journal that breaks the append-only rule, at its line on the side that
+/// line is of: base (left) for a missing or altered line and a removed journal (line 1, since
+/// the violation has none), head (right) for an undecodable line.
 fn rewritten(violation: &Violation) -> Finding {
     let path = plain_name(&violation.path);
     let at = violation
         .line
         .map_or_else(String::new, |line| format!(" at line {line}"));
     let reason = violation.reason.code();
-    let what = match violation.reason {
-        Reason::Removed => "is gone at head",
-        Reason::Missing => "no longer holds the event of a complete base line",
-        Reason::Altered => "holds another event where a complete base line's was",
-        Reason::Undecodable => "holds a complete line that is not a Weigh-In event",
+    let (what, side) = match violation.reason {
+        Reason::Removed => ("is gone at head", Side::Left),
+        Reason::Missing => (
+            "no longer holds the event of a complete base line",
+            Side::Left,
+        ),
+        Reason::Altered => (
+            "holds another event where a complete base line's was",
+            Side::Left,
+        ),
+        Reason::Undecodable => (
+            "holds a complete line that is not a Weigh-In event",
+            Side::Right,
+        ),
     };
     warning(
         (JOURNAL_REWRITTEN, Severity::Major),
-        (&violation.path, violation.line.unwrap_or(NonZeroU64::MIN)),
+        (
+            &violation.path,
+            violation.line.unwrap_or(NonZeroU64::MIN),
+            side,
+        ),
         &Text {
             evidence: format!("{path}{at}: {reason}"),
             title: format!("Weigh-In journal rewritten: `{path}`"),
@@ -138,7 +154,7 @@ fn blocking_item(item: &OpenItem, causes: BlockingCauses) -> Finding {
     });
     warning(
         (OPEN_BLOCKING, Severity::Major),
-        (JOURNALS, NonZeroU64::MIN),
+        AT_JOURNALS,
         &Text {
             evidence: format!(
                 "{id} {status}, door {door}, authority {authority}, blocks {}",
@@ -190,7 +206,7 @@ fn pending_item(item: &OpenItem) -> Finding {
     let status = item.status.code();
     warning(
         (PENDING_TRIAGE, Severity::Minor),
-        (JOURNALS, NonZeroU64::MIN),
+        AT_JOURNALS,
         &Text {
             evidence: format!("{id} {status}, not triaged"),
             title: format!("Weigh-In item `{id}` awaits triage"),
@@ -207,7 +223,7 @@ fn pending_item(item: &OpenItem) -> Finding {
 fn truncated(left: usize) -> Finding {
     warning(
         (TRUNCATED, Severity::Minor),
-        (JOURNALS, NonZeroU64::MIN),
+        AT_JOURNALS,
         &Text {
             evidence: format!("{left} more not listed"),
             title: "Weigh-In findings truncated".to_owned(),
@@ -219,10 +235,10 @@ fn truncated(left: usize) -> Finding {
     )
 }
 
-/// A warning under `rule` at `(file, line)` at head.
+/// A warning under `rule` at `(file, line)` on `side`.
 fn warning(
     (rule, severity): (&str, Severity),
-    (file, line): (&str, NonZeroU64),
+    (file, line, side): (&str, NonZeroU64, Side),
     text: &Text,
 ) -> Finding {
     Finding {
@@ -235,7 +251,7 @@ fn warning(
         file: file.to_owned(),
         line,
         end_line: None,
-        side: Some(Side::Right),
+        side: Some(side),
         evidence: clip_chars(&text.evidence, EVIDENCE_CHARS),
         expected_behavior: None,
         trigger: None,

@@ -115,8 +115,6 @@ pub(super) fn finding(rule: Rule, spot: Spot, title: &str, body: &str) -> Findin
     }
 }
 
-pub(super) use crate::json::json_detail;
-
 #[cfg(test)]
 mod tests {
     use super::*;

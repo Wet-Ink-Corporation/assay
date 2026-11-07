@@ -155,6 +155,31 @@ fn without_weighin_the_weigh_in_gate_does_not_run_and_temper_still_does()
 
 #[test]
 #[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn a_weigh_in_checkout_that_cannot_be_written_fails_only_the_weigh_in_gate()
+-> Result<(), Box<dyn Error>> {
+    let scene = Scene::new(&[])?;
+    scene.fail_git_on("checkout-index")?;
+
+    let output = scene.run(|_| {})?;
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        stdout(&output),
+        "temper pass\nweigh-in gate-error:not-run\n",
+        "the experimental gate never fails the job, nor keeps temper from concluding"
+    );
+    assert_eq!(document(&scene, "temper")?, ["temper", RUN_KEY, "pass"]);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("assay: weigh-in: writing the head checkout weighin ci-check reads: "),
+        "{output:?}"
+    );
+    assert_eq!(scene.recorded("bin/weighin-args")?, "", "weighin never ran");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
 fn a_pr_that_raises_the_baseline_writes_a_failing_temper_document() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new(&[(BASELINE, &baseline(3))])?;
 

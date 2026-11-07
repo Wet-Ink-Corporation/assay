@@ -26,7 +26,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use assay_app::{
-    Adapter, CommitId, GateDocument, GateJob, GateRun, GateRunner, MAX_DOCUMENT_BYTES, Plugin,
+    Adapter, CommitId, GateDocument, GateJob, GateRun, GateRunner, MAX_DOCUMENT_BYTES, Pin, Plugin,
     Termination,
 };
 use assay_domain::{FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind};
@@ -143,6 +143,40 @@ impl<S> WeighInAdapter<S> {
     }
 }
 
+impl<S: CaptureSupervisor> WeighInAdapter<S> {
+    /// The adapter's refusals, which [`GateRunner::run`] makes first, without running
+    /// anything: a caller that must prepare what `ci-check` reads (the reading checkout)
+    /// checks them before it does.
+    ///
+    /// # Errors
+    ///
+    /// [`WeighInError::NotWeighIn`] when `plugin` is not weigh-in, [`WeighInError::Required`]
+    /// when it is required, and [`WeighInError::OutsideStatic`] when `job` is not
+    /// `gates-static`.
+    pub fn admit(plugin: &Plugin, job: GateJob) -> Result<(), WeighInError<S::Error>> {
+        admitted(plugin, job).map(|_| ())
+    }
+}
+
+/// `plugin`'s pin when the adapter runs it in `job`; the refusals of [`WeighInAdapter::admit`]
+/// otherwise.
+fn admitted<E>(plugin: &Plugin, job: GateJob) -> Result<&Pin, WeighInError<E>> {
+    let Adapter::WeighIn { pin } = plugin.adapter() else {
+        return Err(WeighInError::NotWeighIn {
+            plugin: plugin.name().as_str().to_owned(),
+        });
+    };
+    if plugin.required() {
+        return Err(WeighInError::Required {
+            plugin: plugin.name().as_str().to_owned(),
+        });
+    }
+    if job != GateJob::Static {
+        return Err(WeighInError::OutsideStatic { job });
+    }
+    Ok(pin)
+}
+
 impl<S: CaptureSupervisor> GateRunner for WeighInAdapter<S> {
     type Error = WeighInError<S::Error>;
 
@@ -156,19 +190,7 @@ impl<S: CaptureSupervisor> GateRunner for WeighInAdapter<S> {
     /// or `job` is not `gates-static`; when `ci-check` cannot be run, does not exit 0, or
     /// prints a report that is refused.
     fn run(&mut self, plugin: &Plugin, job: GateJob) -> Result<GateRun, Self::Error> {
-        let Adapter::WeighIn { pin } = plugin.adapter() else {
-            return Err(WeighInError::NotWeighIn {
-                plugin: plugin.name().as_str().to_owned(),
-            });
-        };
-        if plugin.required() {
-            return Err(WeighInError::Required {
-                plugin: plugin.name().as_str().to_owned(),
-            });
-        }
-        if job != GateJob::Static {
-            return Err(WeighInError::OutsideStatic { job });
-        }
+        let pin = admitted(plugin, job)?;
         let settings = &self.settings;
         let spec = ProcessSpec {
             program: &settings.program,

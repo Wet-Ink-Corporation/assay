@@ -187,6 +187,17 @@ pub(crate) fn run(
     Ok(adapter.run(&plugin, job))
 }
 
+/// What [`WeighInAdapter::admit`] says of the plugin `name` (required or not) in `job`, for
+/// an adapter over [`FakeCiCheck`].
+pub(crate) fn admit(
+    (required, name): (bool, &str),
+    job: GateJob,
+) -> Result<Result<(), WeighInError<FakeError>>, Box<dyn Error>> {
+    let config = config(required)?;
+    let plugin = plugin(&config, name)?;
+    Ok(WeighInAdapter::<&mut FakeCiCheck>::admit(&plugin, job))
+}
+
 /// Runs `gates-static` through the gate use case with `ci_check` printing `stdout` (temper,
 /// which this adapter refuses, is dropped): the weigh-in outcome and the validated document.
 pub(crate) fn document(

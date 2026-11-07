@@ -8,14 +8,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use assay_app::{BuildJob, GateJob, GateJobOutcome, MAX_DOCUMENT_BYTES, Termination};
-use assay_domain::{GateConclusion, Severity};
+use assay_domain::{GateConclusion, Severity, Side};
 use assay_gates::{
     CiCheck, GateEnvironment, WeighInError, WeighInReportError, WeighInSettings,
     WeighInSettingsError,
 };
 
 use crate::weigh_in_support::{
-    BASE, FakeCiCheck, HEAD, PROGRAM, STORE, Seen, TREE, check, environment, findings, item,
+    BASE, FakeCiCheck, HEAD, PROGRAM, STORE, Seen, TREE, admit, check, environment, findings, item,
     report, run, seen, violation,
 };
 
@@ -211,7 +211,20 @@ fn each_journal_violation_is_a_rewritten_journal_warning_at_its_line() -> Result
     let items = [item("wi-aa4c3b", "raised", UNTRIAGED, "unknown")];
 
     let seen = seen(report(&items, &violations))?;
+    let (_, findings) = findings(report(&items, &violations))?;
 
+    let sides: Vec<Option<Side>> = findings.iter().map(|f| f.side).collect();
+    assert_eq!(
+        sides,
+        [
+            Some(Side::Left),
+            Some(Side::Left),
+            Some(Side::Left),
+            Some(Side::Right),
+            Some(Side::Right),
+        ],
+        "missing, removed and altered at base's line; undecodable and items at head"
+    );
     let rewritten =
         |file: &str, line| (REWRITTEN.to_owned(), file.to_owned(), line, Severity::Major);
     assert_eq!(
@@ -409,6 +422,31 @@ fn a_refused_report_is_an_error_never_a_partial_read() -> Result<(), Box<dyn Err
 }
 
 #[test]
+fn admit_makes_runs_refusals_and_admits_a_non_required_gate() -> Result<(), Box<dyn Error>> {
+    let lint = GateJob::Build(BuildJob::Lint);
+
+    let admitted = admit((false, "weigh-in"), GateJob::Static)?;
+    let required = admit((true, "weigh-in"), GateJob::Static)?;
+    let temper = admit((false, "temper"), GateJob::Static)?;
+    let outside = admit((false, "weigh-in"), lint)?;
+
+    assert!(admitted.is_ok(), "{admitted:?}");
+    assert!(
+        matches!(required, Err(WeighInError::Required { ref plugin }) if plugin == "weigh-in"),
+        "{required:?}"
+    );
+    assert!(
+        matches!(temper, Err(WeighInError::NotWeighIn { ref plugin }) if plugin == "temper"),
+        "{temper:?}"
+    );
+    assert!(
+        matches!(outside, Err(WeighInError::OutsideStatic { job }) if job == lint),
+        "{outside:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn refuses_a_required_weigh_in_plugin_before_running() -> Result<(), Box<dyn Error>> {
     let mut ci_check = FakeCiCheck::printing(report(&[], &[]));
 
@@ -504,6 +542,36 @@ fn refuses_a_relative_program_tree_or_store() -> Result<(), Box<dyn Error>> {
                 path: relative.clone()
             }),
             Some(WeighInSettingsError::RelativeStore { path: relative }),
+        ]
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn refuses_a_tree_or_store_that_is_not_utf8_naming_that_path() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let not_utf8 = |name: &[u8]| Path::new(std::ffi::OsStr::from_bytes(name)).to_path_buf();
+    let bad_tree = not_utf8(b"/scratch/weigh-in-\xff");
+    let bad_store = not_utf8(b"/scratch/store-\xfe/ledger.jsonl");
+    let tree = CiCheck {
+        tree: bad_tree.clone(),
+        ..check()?
+    };
+    let store = CiCheck {
+        store: bad_store.clone(),
+        ..check()?
+    };
+
+    let refused =
+        [tree, store].map(|check| WeighInSettings::new(check, &environment(), "run-1").err());
+
+    assert_eq!(
+        refused,
+        [
+            Some(WeighInSettingsError::NotUtf8 { path: bad_tree }),
+            Some(WeighInSettingsError::NotUtf8 { path: bad_store }),
         ]
     );
     Ok(())

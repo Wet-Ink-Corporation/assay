@@ -236,8 +236,6 @@ pub(crate) enum PinnedError {
     Fetch { side: Side, source: GitError },
     /// The fetched head commit's tree could not be listed or read.
     HeadTree(GitError),
-    /// The reading checkout `weighin ci-check` runs in could not be written (#372).
-    WeighInCheckout(GitError),
     /// The checkout could not be walked, or a file of it read.
     CheckoutRead { path: PathBuf, source: io::Error },
     /// The checkout holds more entries that are not directories than a tree listing may, or
@@ -313,9 +311,6 @@ impl fmt::Display for PinnedError {
                 Side::Head => ("fetching the head commit: ", source),
             },
             Self::HeadTree(source) => ("reading the fetched head commit's tree: ", source),
-            Self::WeighInCheckout(source) => {
-                ("writing the head checkout weighin ci-check reads: ", source)
-            }
         };
         f.write_str(context)?;
         write_chain(f, source)

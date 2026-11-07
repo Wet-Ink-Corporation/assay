@@ -8,10 +8,12 @@
 //! and outside the head tree. The pinned `weighin` is the optional `--weighin` (#372), also
 //! absolute and outside the head tree: when it is given and base config holds a Weigh-In
 //! plugin, the head commit is written as a reading checkout into the job's scratch
-//! (`ObjectRepo::reading_checkout`: head's files, history reaching the base) and `ci-check`
-//! runs there, with its `--store` in the scratch too. Without `--weighin` a Weigh-In gate is
-//! `gate-error:not-run`; nothing else changes. Weigh-In 2.0 keeps its journals in
-//! `refs/redkiln/journal/*`, which this job does not fetch yet.
+//! (`ObjectRepo::reading_checkout`: head's files, history reaching the base, within
+//! [`TreeLimits`]) once the adapter admits the plugin to run, and `ci-check` runs there, with
+//! its `--store` in the scratch too. A checkout that cannot be written, like a missing
+//! `--weighin`, is that gate's `gate-error:not-run`; temper's gate and the job go on.
+//! Weigh-In 2.0 keeps its journals in `refs/redkiln/journal/*`, which this job does not fetch
+//! yet.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -21,7 +23,7 @@ use assay_app::{
     PluginsConfig, run_gates,
 };
 use assay_cli::{ForgeRevisions, ForgeSupervisor};
-use assay_forge::git::{GitError, TreeLimits};
+use assay_forge::git::{CommitSha, GitError, ObjectRepo, TreeLimits};
 use assay_forge::process::{GroupKiller, ProcessError};
 use assay_gates::{
     CiCheck, GateEnvironment, TemperAdapter, TemperError, TemperPaths, TemperSettings,
@@ -126,8 +128,8 @@ struct Inputs {
     weighin: Option<WeighInInputs>,
 }
 
-/// Fetches the pinned commits into an object-only repository under `scratch`, writes the
-/// Weigh-In gate's reading checkout when it runs, and runs the gates over them.
+/// Fetches the pinned commits into an object-only repository under `scratch`, and runs the
+/// gates over them (the Weigh-In gate writing its reading checkout when it runs).
 fn gates_in(
     scratch: &TempDir,
     inputs: Inputs,
@@ -146,21 +148,24 @@ fn gates_in(
     let weigh_in = weighin
         .map(|weighin| {
             let tree = scratch.path().join(WEIGH_IN_TREE);
-            repo.reading_checkout(&head, &tree)
-                .map_err(PinnedError::WeighInCheckout)?;
             let check = CiCheck {
                 program: weighin.program,
-                tree,
+                // The settings run ci-check in the tree; the gate writes the checkout there.
+                tree: tree.clone(),
                 store: scratch.path().join(WEIGH_IN_STORE),
                 base: commit_id(&base, Variable::BaseSha)?,
                 head: commit_id(&head, Variable::HeadSha)?,
             };
             let settings = WeighInSettings::new(check, &weighin.environment, weighin.run_key)
                 .map_err(PinnedError::WeighInSettings)?;
-            Ok::<_, PinnedError>(WeighInAdapter::new(
-                ForgeSupervisor::new(killer.clone()),
-                settings,
-            ))
+            Ok::<_, PinnedError>(WeighInGate {
+                adapter: WeighInAdapter::new(ForgeSupervisor::new(killer.clone()), settings),
+                repo: &repo,
+                // The revisions own the head they read; the deferred checkout keeps its own.
+                head: head.clone(),
+                tree,
+                written: false,
+            })
         })
         .transpose()?;
     let revisions = ForgeRevisions::new(&repo, base, head, TreeLimits::default());
@@ -175,7 +180,36 @@ fn gates_in(
 /// pinned `ci-check` when `--weighin` was given.
 struct StaticGates<'r> {
     temper: TemperAdapter<ForgeSupervisor, &'r ForgeRevisions<'r>>,
-    weigh_in: Option<WeighInAdapter<ForgeSupervisor>>,
+    weigh_in: Option<WeighInGate<'r>>,
+}
+
+/// The Weigh-In gate: its adapter, and the reading checkout of `head` at `tree` it runs in.
+/// The checkout is written only once the adapter admits a plugin to run, so that a checkout
+/// the PR's tree keeps from being written (a path too long, a tree past [`TreeLimits`], a full
+/// disk) is that experimental gate's `gate-error:not-run`, never the job's failure.
+struct WeighInGate<'r> {
+    adapter: WeighInAdapter<ForgeSupervisor>,
+    repo: &'r ObjectRepo,
+    head: CommitSha,
+    tree: PathBuf,
+    /// Whether the checkout was written, for a second Weigh-In plugin to run in.
+    written: bool,
+}
+
+impl WeighInGate<'_> {
+    /// The adapter's refusals, then the checkout when it is not written yet, then `ci-check`.
+    fn run(&mut self, plugin: &Plugin, job: GateJob) -> Result<GateRun, StaticGateError> {
+        WeighInAdapter::<ForgeSupervisor>::admit(plugin, job).map_err(StaticGateError::WeighIn)?;
+        if !self.written {
+            self.repo
+                .reading_checkout(&self.head, &self.tree, TreeLimits::default())
+                .map_err(StaticGateError::WeighInCheckout)?;
+            self.written = true;
+        }
+        self.adapter
+            .run(plugin, job)
+            .map_err(StaticGateError::WeighIn)
+    }
 }
 
 /// Why a gate of `gates-static` did not run.
@@ -183,6 +217,8 @@ struct StaticGates<'r> {
 enum StaticGateError {
     Temper(TemperError<ProcessError, GitError>),
     WeighIn(WeighInError<ProcessError>),
+    /// The reading checkout `weighin ci-check` runs in could not be written (#372).
+    WeighInCheckout(GitError),
     /// A Weigh-In plugin, and the job was not given `--weighin` to run it with.
     NoWeighIn,
     /// An `exec` plugin, which has no work in `gates-static`.
@@ -194,6 +230,12 @@ impl fmt::Display for StaticGateError {
         match self {
             Self::Temper(source) => write!(f, "{source}"),
             Self::WeighIn(source) => write!(f, "{source}"),
+            Self::WeighInCheckout(source) => {
+                write!(
+                    f,
+                    "writing the head checkout weighin ci-check reads: {source}"
+                )
+            }
             Self::NoWeighIn => f.write_str(
                 "the job was not given --weighin, the pinned weighin the Weigh-In gate runs",
             ),
@@ -207,6 +249,7 @@ impl std::error::Error for StaticGateError {
         match self {
             Self::Temper(source) => source.source(),
             Self::WeighIn(source) => source.source(),
+            Self::WeighInCheckout(source) => source.source(),
             Self::NoWeighIn | Self::NotInJob => None,
         }
     }
@@ -222,7 +265,7 @@ impl<'r> GateRunner for StaticGates<'r> {
                 .run(plugin, job)
                 .map_err(StaticGateError::Temper),
             Adapter::WeighIn { .. } => match &mut self.weigh_in {
-                Some(weigh_in) => weigh_in.run(plugin, job).map_err(StaticGateError::WeighIn),
+                Some(weigh_in) => weigh_in.run(plugin, job),
                 None => Err(StaticGateError::NoWeighIn),
             },
             Adapter::Exec { .. } => Err(StaticGateError::NotInJob),
@@ -237,6 +280,7 @@ impl<'r> GateRunner for StaticGates<'r> {
                 &'r ForgeRevisions<'r>,
             > as GateRunner>::gate_error(source),
             StaticGateError::WeighIn(_)
+            | StaticGateError::WeighInCheckout(_)
             | StaticGateError::NoWeighIn
             | StaticGateError::NotInJob => GateError::NotRun,
         }

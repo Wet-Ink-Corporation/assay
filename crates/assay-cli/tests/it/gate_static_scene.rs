@@ -219,6 +219,21 @@ impl Scene {
         })
     }
 
+    /// Makes the stand-in `git` exit 1, running nothing, on any call whose arguments hold
+    /// `operation` (`checkout-index`, say); every other call runs as before. Test setup only.
+    pub(crate) fn fail_git_on(&self, operation: &str) -> Result<(), Box<dyn Error>> {
+        let git = self.path("git-bin/git");
+        let inner = self.path("git-bin/git-inner");
+        fs::rename(&git, &inner)?;
+        let body = format!(
+            "#!/bin/sh\ncase \" $* \" in\n*' {operation} '*) exit 1 ;;\nesac\n\
+             exec '{inner}' \"$@\"\n",
+            inner = inner.display(),
+        );
+        write_executable(&git, &body)?;
+        Ok(())
+    }
+
     /// Whether nothing ran and nothing was written: no git, no node, no weighin, no `--out`, no
     /// output.
     pub(crate) fn untouched(&self) -> Result<bool, Box<dyn Error>> {
