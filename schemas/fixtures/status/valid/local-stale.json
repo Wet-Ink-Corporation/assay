@@ -1,5 +1,5 @@
 {
-  "schema": "assay.status/1",
+  "schema": "review.status/1",
   "source": "local",
   "local_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "tree": "cccccccccccccccccccccccccccccccccccccccc",

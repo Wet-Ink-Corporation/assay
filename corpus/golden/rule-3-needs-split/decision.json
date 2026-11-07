@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-rule-3-needs-split",
   "evidence_key": "run-rule-3-needs-split",
   "conclusion": "failure",

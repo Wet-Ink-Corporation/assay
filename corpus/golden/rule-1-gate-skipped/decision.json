@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-rule-1-gate-skipped",
   "evidence_key": "run-rule-1-gate-skipped",
   "conclusion": "failure",

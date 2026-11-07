@@ -6,18 +6,18 @@ assay is the owner's PR review pipeline: it gates pull requests on mechanical ch
 
 | Crate | Layer | Purpose | Depends on |
 |---|---|---|---|
-| `crates/assay-domain` | domain | findings, severities, fingerprints, rubric, tiers, run state machine, events; no I/O | std; only `serde`, `thiserror`, `sha2` |
-| `crates/assay-app` | application | use cases and the port traits (`ModelRunner`, `Forge`, `EventSink`, `GateRunner`, `Ledger`, `Clock`) | domain |
-| `crates/assay-forge` | adapter | GitHub through `gh`: tokens, diffs, checks, comments, timeline, ledger repo | app, domain |
-| `crates/assay-runner` | adapter | supervises `claude -p`, parses stream-json, accounts for cost | app, domain |
-| `crates/assay-gates` | adapter | `temper`, `weigh-in` and `exec` gate adapters | app, domain |
-| `crates/assay-cli` | binary (`assay`) | composition root: config, wiring, exit codes | everything |
+| `crates/review-domain` | domain | findings, severities, fingerprints, rubric, tiers, run state machine, events; no I/O | std; only `serde`, `thiserror`, `sha2` |
+| `crates/review-app` | application | use cases and the port traits (`ModelRunner`, `Forge`, `EventSink`, `GateRunner`, `Ledger`, `Clock`) | domain |
+| `crates/review-forge` | adapter | GitHub through `gh`: tokens, diffs, checks, comments, timeline, ledger repo | app, domain |
+| `crates/review-runner` | adapter | supervises `claude -p`, parses stream-json, accounts for cost | app, domain |
+| `crates/review-gates` | adapter | `temper`, `weigh-in` and `exec` gate adapters | app, domain |
+| `crates/review-cli` | binary (`assay`) | composition root: config, wiring, exit codes | everything |
 
-Dependencies point inward: domain, then application, then adapters, then the binary (ARC-02, ADR-07). No crate links `weighin-core` or any temper code (P8). `crates/assay-cli/tests/it/architecture.rs` reads `cargo metadata` and fails on any other edge, on a domain dependency outside the three above, on a seventh crate and on a publishable crate. Each crate's `AGENTS.md` is its charter (ARC-08).
+Dependencies point inward: domain, then application, then adapters, then the binary (ARC-02, ADR-07). No crate links `weighin-core` or any temper code (P8). `crates/review-cli/tests/it/architecture.rs` reads `cargo metadata` and fails on any other edge, on a domain dependency outside the three above, on a seventh crate and on a publishable crate. Each crate's `AGENTS.md` is its charter (ARC-08).
 
 ## Repository layout
 
-`docs/architecture/02-architecture.md` §7. `schemas/` holds the contract JSON Schemas and their golden fixtures (its README indexes them). `plugin/prompts/<version>/` holds the reviewer prompt bundles; their hash, computed by `assay_app::PromptBundle`, is part of the evidence key. Directories without content yet (`plugin/`, `workflows/`, `rubric/`, `corpus/`, `docs/decisions/`) carry a README; `crates/assay-cli/tests/it/layout.rs` checks them.
+`docs/architecture/02-architecture.md` §7. `schemas/` holds the contract JSON Schemas and their golden fixtures (its README indexes them). `plugin/prompts/<version>/` holds the reviewer prompt bundles; their hash, computed by `review_app::PromptBundle`, is part of the evidence key. Directories without content yet (`plugin/`, `workflows/`, `rubric/`, `corpus/`, `docs/decisions/`) carry a README; `crates/review-cli/tests/it/layout.rs` checks them.
 
 **Prompt and rubric changes.** A PR that changes `plugin/prompts/**` or `rubric/**` changes what reviewers report. Once M5 exists, such PRs run the corpus replay gate (`docs/architecture/04-pipeline.md` §8, `06-operations.md` F11): k = 3 runs per `dev` case, accepted only when no case flips from detected to missed and the noise rate does not rise beyond its margin. Until then they are trust-path changes reviewed by the owner, and the PR says that the replay gate has not run.
 

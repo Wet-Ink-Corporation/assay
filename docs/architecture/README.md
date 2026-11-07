@@ -8,7 +8,7 @@ assay is a PR review orchestrator for Wet Ink repositories: deterministic gates 
 |---|---|
 | [01 Context, goals, requirements](01-context-goals.md) | Honest assurance scope, actors, goals G1–G7, principles P1–P10, requirements R-nn, quality targets QA-nn, scale and cost assumptions |
 | [02 Architecture](02-architecture.md) | Job topology (open/plan/admit/gates-static/gates-lint/gates-test/review/release/decide, decide-only), trust zones Z0–Z4, components, input provenance, keys and state, local mode, repo layout |
-| [03 Contracts](03-contracts.md) | Base config, gate contract, the verified temper adapter, `assay.findings/1`, run, decision, events, `ModelRunner`, the hardened headless profile |
+| [03 Contracts](03-contracts.md) | Base config, gate contract, the verified temper adapter, `review.findings/1`, run, decision, events, `ModelRunner`, the hardened headless profile |
 | [04 Pipeline](04-pipeline.md) | Stages, tiering and trust paths, reviewer roster and budgets, validation order, rubric v1, publish/dismissal, re-review, eval, Weigh-In checkpoints |
 | [05 Security](05-security.md) | Threat model T1–T23, permission matrix, secrets, prerequisites enforced by `assay doctor` |
 | [06 Operations](06-operations.md) | Auth/quota/cost model, central ledger and semaphore, CI cost and latency, check lifecycle, failure modes F1–F21, fail-open/closed, reports, rollout M0–M6, Path B, kill criteria |
@@ -28,7 +28,7 @@ assay is a PR review orchestrator for Wet Ink repositories: deterministic gates 
 
 ## Changelog
 
-- **v1.2, 2026-10-18 amendment:** ADR-26, a separate `assay-ledger-writer` App writes the ledger; `assay-verdict` stays read-only on code (#40, owner).
+- **v1.2, 2026-10-18 amendment:** ADR-26, a separate `redkiln-review-ledger` App writes the ledger; `redkiln-review` stays read-only on code (#40, owner).
 - **v1.2** (2026-10-11): adversarial round 3 on the v1.1 delta (`admit`, central ledger and semaphore, decide-only commands, approver model), issue #35. Authoritative per-PR state (push records, command records, bundle pointers, requeue counters, retry grants, a per-head publish lock) moves into the App-only ledger repo and the check run becomes a projection of it (ADR-23); `base-not-protected` is `failure`, not `neutral`; slots are released by a `release` job after review with compare-and-set; every privileged job runs on attempt 1 only; privileged identities are never agent-reachable and the approver account is mandatory for M1 (ADR-24; H-06/H-08/H-13 changed with the owner's acceptance). Triage and patch locations: [`../review/03-adversarial-review-round-3.md`](../review/03-adversarial-review-round-3.md).
 - **v1.1** (2026-10-10): regression pass and adversarial round 2 (`../review/02-regression-pass.md`).
 - **v1** (2026-10-10): adversarial round 1 (`../review/01-adversarial-review-round-1.md`).

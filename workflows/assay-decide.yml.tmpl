@@ -17,8 +17,8 @@
 # - No run: holds an expression (T19): every value reaches assay through env:.
 # - Every action is pinned by commit SHA; none uses the Actions cache (ADR-21, 05 T6).
 # - Repository settings: as assay.yml's (environment assay-publish holding secrets
-#   ASSAY_VERDICT_PRIVATE_KEY and ASSAY_LEDGER_PRIVATE_KEY; repository variables
-#   ASSAY_VERDICT_APP_ID, ASSAY_VERDICT_BOT_ID and ASSAY_LEDGER_APP_ID).
+#   REVIEW_VERDICT_PRIVATE_KEY and REVIEW_LEDGER_PRIVATE_KEY; repository variables
+#   REVIEW_VERDICT_APP_ID, REVIEW_VERDICT_BOT_ID and REVIEW_LEDGER_APP_ID).
 name: assay-decide
 
 on:
@@ -34,7 +34,7 @@ permissions: {}
 jobs:
   # The PRs to decide again and why (03 §4a): the comment's or the label's PR, or the poll's
   # selection. Base config is read at the commit whose copy of this file runs. Actions'
-  # startsWith ignores case and the binary's checks (the /assay prefix, ASSAY_LABEL's assay:) do
+  # startsWith ignores case and the binary's checks (the /assay prefix, REVIEW_LABEL's assay:) do
   # not, so where they disagree guard starts and writes prs=[]: the filter fails safe.
   guard:
     if: github.event_name == 'schedule' || (github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/assay ') && github.event.sender.type != 'Bot') || (github.event_name == 'pull_request_target' && startsWith(github.event.label.name, 'assay:') && github.event.sender.type != 'Bot')
@@ -64,9 +64,9 @@ jobs:
       - id: guard
         env:
           # Read only for a comment's PR and the poll (pull-requests, checks: read).
-          ASSAY_RUN_TOKEN: ${{ github.token }}
-          ASSAY_VERDICT_APP_ID: ${{ vars.ASSAY_VERDICT_APP_ID }}
-          ASSAY_VERDICT_BOT_ID: ${{ vars.ASSAY_VERDICT_BOT_ID }}
+          REVIEW_RUN_TOKEN: ${{ github.token }}
+          REVIEW_VERDICT_APP_ID: ${{ vars.REVIEW_VERDICT_APP_ID }}
+          REVIEW_VERDICT_BOT_ID: ${{ vars.REVIEW_VERDICT_BOT_ID }}
         run: bin/assay decide-only guard
 
   # S7-S9 for one PR: decide again, upload the decision bundle, then publish under the per-head
@@ -118,8 +118,8 @@ jobs:
       - id: verdict-token
         uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         with:
-          app-id: ${{ vars.ASSAY_VERDICT_APP_ID }}
-          private-key: ${{ secrets.ASSAY_VERDICT_PRIVATE_KEY }}
+          app-id: ${{ vars.REVIEW_VERDICT_APP_ID }}
+          private-key: ${{ secrets.REVIEW_VERDICT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-checks: write
           permission-contents: read
@@ -127,20 +127,20 @@ jobs:
       - id: ledger-token
         uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         with:
-          app-id: ${{ vars.ASSAY_LEDGER_APP_ID }}
-          private-key: ${{ secrets.ASSAY_LEDGER_PRIVATE_KEY }}
+          app-id: ${{ vars.REVIEW_LEDGER_APP_ID }}
+          private-key: ${{ secrets.REVIEW_LEDGER_PRIVATE_KEY }}
           owner: ${{ steps.ledger.outputs.owner }}
           repositories: ${{ steps.ledger.outputs.name }}
           permission-contents: write
       - id: decide
         env:
-          ASSAY_NEEDS: ${{ toJSON(needs) }}
-          ASSAY_PR: ${{ matrix.pr }}
-          ASSAY_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
-          ASSAY_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
-          ASSAY_RUN_TOKEN: ${{ github.token }}
-          ASSAY_VERDICT_APP_ID: ${{ vars.ASSAY_VERDICT_APP_ID }}
-          ASSAY_VERDICT_BOT_ID: ${{ vars.ASSAY_VERDICT_BOT_ID }}
+          REVIEW_NEEDS: ${{ toJSON(needs) }}
+          REVIEW_PR: ${{ matrix.pr }}
+          REVIEW_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
+          REVIEW_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
+          REVIEW_RUN_TOKEN: ${{ github.token }}
+          REVIEW_VERDICT_APP_ID: ${{ vars.REVIEW_VERDICT_APP_ID }}
+          REVIEW_VERDICT_BOT_ID: ${{ vars.REVIEW_VERDICT_BOT_ID }}
         run: bin/assay decide-only decide --config base/.assay/plugins.toml --out decide-out
       # The decision bundle is uploaded before the lock is taken, under the name decide chose for
       # this PR; publish confirms it by sha256 before it writes the decision pointer (J10).
@@ -154,12 +154,12 @@ jobs:
           if-no-files-found: error
       - if: ${{ !cancelled() && steps.decide.outcome == 'success' }}
         env:
-          ASSAY_NEEDS: ${{ toJSON(needs) }}
-          ASSAY_PR: ${{ matrix.pr }}
-          ASSAY_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
-          ASSAY_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
-          ASSAY_RUN_TOKEN: ${{ github.token }}
-          ASSAY_VERDICT_APP_ID: ${{ vars.ASSAY_VERDICT_APP_ID }}
-          ASSAY_VERDICT_BOT_ID: ${{ vars.ASSAY_VERDICT_BOT_ID }}
-          ASSAY_PERSIST: ${{ steps.persist.outcome }}
+          REVIEW_NEEDS: ${{ toJSON(needs) }}
+          REVIEW_PR: ${{ matrix.pr }}
+          REVIEW_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
+          REVIEW_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
+          REVIEW_RUN_TOKEN: ${{ github.token }}
+          REVIEW_VERDICT_APP_ID: ${{ vars.REVIEW_VERDICT_APP_ID }}
+          REVIEW_VERDICT_BOT_ID: ${{ vars.REVIEW_VERDICT_BOT_ID }}
+          REVIEW_PERSIST: ${{ steps.persist.outcome }}
         run: bin/assay decide-only publish --config base/.assay/plugins.toml --state decide-out

@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-override-llm-on-required-role-degraded",
   "evidence_key": "run-override-llm-on-required-role-degraded",
   "conclusion": "neutral",

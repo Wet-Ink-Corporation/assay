@@ -1,5 +1,5 @@
 {
-  "schema": "assay.status/2",
+  "schema": "review.status/2",
   "source": "ci",
   "repo": "Wet-Ink-Corporation/assay",
   "pr": 42,

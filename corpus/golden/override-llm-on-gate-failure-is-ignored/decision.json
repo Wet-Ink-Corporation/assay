@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-override-llm-on-gate-failure-is-ignored",
   "evidence_key": "run-override-llm-on-gate-failure-is-ignored",
   "conclusion": "failure",

@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-rule-7-majors-over-threshold",
   "evidence_key": "run-rule-7-majors-over-threshold",
   "conclusion": "failure",

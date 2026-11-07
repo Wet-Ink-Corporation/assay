@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:ledger-state:1",
-  "title": "assay.ledger-state/1",
+  "$id": "urn:review:schema:ledger-state:1",
+  "title": "review.ledger-state/1",
   "description": "A PR's authoritative state, `state/<repo_id>/<pr>.json` in the ledger repository (docs/architecture/06-operations.md §1, 02-architecture.md §5, ADR-23, 03-contracts.md §6c), changed only by compare-and-set on the file. `repo_id` and `pr` are the file's; absent parts are omitted. Evidence keys and actors are each listed at most once, which a schema cannot express and the reader enforces. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "repo_id", "pr", "evidence_records", "actor_counters"],
   "properties": {
-    "schema": { "const": "assay.ledger-state/1" },
+    "schema": { "const": "review.ledger-state/1" },
     "repo_id": { "$ref": "#/$defs/id" },
     "pr": { "$ref": "#/$defs/id" },
     "evidence": {

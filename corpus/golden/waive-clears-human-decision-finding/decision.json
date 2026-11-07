@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-waive-clears-human-decision-finding",
   "evidence_key": "run-waive-clears-human-decision-finding",
   "conclusion": "success",

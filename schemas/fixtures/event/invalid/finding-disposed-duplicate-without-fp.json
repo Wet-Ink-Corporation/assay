@@ -1,5 +1,5 @@
 {
-  "schema": "assay.event/1",
+  "schema": "review.event/1",
   "job": "review",
   "idx": 3,
   "ts": "2026-10-14T09:30:01Z",

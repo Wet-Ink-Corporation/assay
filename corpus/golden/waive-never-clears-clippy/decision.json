@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-waive-never-clears-clippy",
   "evidence_key": "run-waive-never-clears-clippy",
   "conclusion": "failure",

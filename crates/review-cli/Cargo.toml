@@ -1,0 +1,30 @@
+[package]
+name = "review-cli"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "assay"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+review-app = { workspace = true }
+review-domain = { workspace = true }
+review-forge = { workspace = true }
+review-gates = { workspace = true }
+review-runner = { workspace = true }
+# Writes the `assay-self` gate's document (#76); pre-approved, a dev-dependency before.
+serde_json = { workspace = true }
+# `assay check --local`'s scratch directory and atomic report write (#107); pre-approved, a
+# dev-dependency before.
+tempfile = { workspace = true }
+
+[dev-dependencies]
+# Property tests: the run-attempt guard and the job-output round-trips (#60 ST-1); pre-approved,
+# already a workspace dependency.
+proptest = { workspace = true }

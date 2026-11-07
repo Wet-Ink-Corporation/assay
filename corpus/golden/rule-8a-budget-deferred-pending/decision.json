@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-rule-8a-budget-deferred-pending",
   "evidence_key": "run-rule-8a-budget-deferred-pending",
   "conclusion": "pending",

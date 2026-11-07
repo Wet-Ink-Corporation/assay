@@ -1,5 +1,5 @@
 {
-  "schema": "assay.findings/2",
+  "schema": "review.findings/2",
   "source": {
     "kind": "reviewer",
     "name": "claude",

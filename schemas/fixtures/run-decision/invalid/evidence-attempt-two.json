@@ -1,5 +1,5 @@
 {
-  "schema": "assay.run-decision/1",
+  "schema": "review.run-decision/1",
   "run_uid": {
     "repo_id": 42,
     "run_id": 99,

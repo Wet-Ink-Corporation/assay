@@ -1,0 +1,69 @@
+{
+  "temper_findings": 1,
+  "at": "2026-10-13T02:53:47.670Z",
+  "commit": "d44a0ad35cf3043fb8e937e22263d093e681fc7b",
+  "toolchain": "1.98.1",
+  "host": "x86_64-unknown-linux-gnu",
+  "sources": [
+    "clippy",
+    "rustdoc",
+    "scan"
+  ],
+  "workspace_root": ".",
+  "crates": [
+    {
+      "name": "review-app",
+      "dir": "crates/review-app",
+      "lints_inherited": true,
+      "charter": true
+    },
+    {
+      "name": "review-cli",
+      "dir": "crates/review-cli",
+      "lints_inherited": true,
+      "charter": true
+    },
+    {
+      "name": "review-domain",
+      "dir": "crates/review-domain",
+      "lints_inherited": true,
+      "charter": true
+    },
+    {
+      "name": "review-forge",
+      "dir": "crates/review-forge",
+      "lints_inherited": true,
+      "charter": true
+    },
+    {
+      "name": "review-gates",
+      "dir": "crates/review-gates",
+      "lints_inherited": true,
+      "charter": true
+    },
+    {
+      "name": "review-runner",
+      "dir": "crates/review-runner",
+      "lints_inherited": true,
+      "charter": true
+    }
+  ],
+  "findings": [],
+  "errors": [],
+  "ratchet": {
+    "ok": true,
+    "mode": "strict",
+    "base": null,
+    "new_code": [],
+    "increases": [],
+    "fixed": [],
+    "fixed_count": 0,
+    "legacy_total": 0,
+    "baseline_total": 0,
+    "raised": [],
+    "errors": [],
+    "notes": [
+      "no baseline: zero findings required"
+    ]
+  }
+}

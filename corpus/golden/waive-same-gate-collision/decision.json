@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-waive-same-gate-collision",
   "evidence_key": "run-waive-same-gate-collision",
   "conclusion": "failure",

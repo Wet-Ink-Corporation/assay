@@ -1,6 +1,6 @@
 # assay decision rubric v1 (docs/architecture/04-pipeline.md §5).
 #
-# Data for the pure `decide` function in crates/assay-domain; the rules themselves are code.
+# Data for the pure `decide` function in crates/review-domain; the rules themselves are code.
 # Every decision records `version` as `rubric_version`. Changing this file changes verdicts:
 # it is a trust path (02 §7) and the golden corpus in corpus/golden/ must be updated with it.
 
