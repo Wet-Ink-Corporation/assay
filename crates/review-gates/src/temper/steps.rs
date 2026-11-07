@@ -5,7 +5,6 @@
 //! `06-operations.md` §4). [`TemperStepSettings`] is what every step needs, and all that
 //! `gates-test` needs.
 
-use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -56,7 +55,7 @@ impl TemperStepSettings {
             Some(parent) if head_tree.is_absolute() => parent.as_os_str().to_owned(),
             _ => return Err(TemperSettingsError::HeadTree { path: head_tree }),
         };
-        if !search_path_is_absolute(environment) {
+        if !environment.search_path_is_absolute() {
             return Err(TemperSettingsError::RelativeSearchPath);
         }
         let run_key = run_key.into();
@@ -110,16 +109,6 @@ impl TemperStepSettings {
             document: GateDocument::Written(bytes),
         })
     }
-}
-
-/// Whether every entry of `environment`'s `PATH` is an absolute directory. An empty entry
-/// means the working directory, here the head tree.
-fn search_path_is_absolute(environment: &GateEnvironment) -> bool {
-    environment
-        .vars()
-        .iter()
-        .filter(|(name, _)| name == "PATH")
-        .all(|(_, value)| env::split_paths(value).all(|entry| entry.is_absolute()))
 }
 
 /// What one clean temper run concludes, as its document states it.

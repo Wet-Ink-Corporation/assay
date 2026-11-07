@@ -21,7 +21,7 @@ use review_app::{
     GateRunner, Plugin, PluginsConfig, run_gates,
 };
 use review_cli::{ForgeRevisions, ForgeSupervisor};
-use review_forge::git::{CommitSha, GitError, TreeLimits};
+use review_forge::git::{GitError, TreeLimits};
 use review_forge::process::{GroupKiller, ProcessError};
 use review_gates::{
     ExecAdapter, ExecError, ExecLimits, ExecSettings, GateEnvironment, RatchetBase, TemperAdapter,
@@ -30,11 +30,11 @@ use review_gates::{
 use tempfile::TempDir;
 
 use super::checkout;
-use super::fetch::{Fetched, PinnedVariables, Source, commit};
+use super::fetch::{Fetched, PinnedVariables, Source, commit, commit_id};
 use super::paths::Programs;
 use super::{
-    Finished, GateCliError, JobInputs, Paths, PinnedError, Prepared, Ran, Variable, closing,
-    finish, prepare, scratch,
+    Finished, GateCliError, JobInputs, Paths, Prepared, Ran, Variable, closing, finish, prepare,
+    scratch,
 };
 
 /// The job.
@@ -45,8 +45,9 @@ pub(super) const LINT: GateJob = GateJob::Build(BuildJob::Lint);
 /// # Errors
 ///
 /// [`GateCliError`] as [`super::run`] says; a merge base that is missing or not a commit id is
-/// [`PinnedError::Missing`] or [`PinnedError::Invalid`] before anything runs, and a checkout
-/// that is not the head commit's tree is [`PinnedError::Checkout`] before any gate runs.
+/// [`super::PinnedError::Missing`] or [`super::PinnedError::Invalid`] before anything runs, and
+/// a checkout that is not the head commit's tree is [`super::PinnedError::Checkout`] before any
+/// gate runs.
 pub(super) fn run(
     paths: &Paths,
     programs: Programs,
@@ -95,13 +96,6 @@ pub(super) fn run(
         finish(finished, reports)
     });
     closing(scratch, ended)
-}
-
-/// `sha` as the app's commit id; both are 40 lowercase hex digits.
-fn commit_id(sha: &CommitSha, variable: Variable) -> Result<CommitId, PinnedError> {
-    sha.as_str()
-        .parse()
-        .map_err(|_not_an_id| PinnedError::Invalid(variable))
 }
 
 /// What the gates need once the job's refusals are behind it.

@@ -7,8 +7,9 @@
 //! concluded gate's validated `review.findings/1` document as `<out>/<plugin>.json`
 //! (`gate/test_job.rs`). In `gates-static`, which also takes `--node <abs> --temper <abs>`
 //! (#60 ST-7), it fetches the pinned base and head into an object-only repository
-//! (`gate/fetch.rs`) and runs the temper Z2s checks and Weigh-In the same way
-//! (`gate/static_job.rs`). In `gates-lint`, which takes the same programs and `REVIEW_MERGE_BASE`
+//! (`gate/fetch.rs`) and runs the temper Z2s checks the same way, and Weigh-In's pinned
+//! `weighin ci-check` when `--weighin <abs>` is given (#372; without it a configured Weigh-In
+//! gate is `gate-error:not-run`) (`gate/static_job.rs`). In `gates-lint`, which takes the same programs and `REVIEW_MERGE_BASE`
 //! as its ratchet base (#60 ST-8), it fetches them the same way, refuses a `--head` checkout
 //! that is not the head commit's tree (`gate/checkout.rs`, #348), and runs temper's declared
 //! `lint` steps, the pinned `baseline --check` and the `exec` gates of `job = "lint"` there
@@ -127,17 +128,20 @@ struct Args {
     out: PathBuf,
     node: Option<PathBuf>,
     temper: Option<PathBuf>,
+    weighin: Option<PathBuf>,
 }
 
-/// `<job> --config <path> --head <path> --out <path> [--node <path>] [--temper <path>]`, the
-/// flags in any order, each once; which job takes `--node` and `--temper` is [`wire`]'s.
+/// `<job> --config <path> --head <path> --out <path> [--node <path>] [--temper <path>]
+/// [--weighin <path>]`, the flags in any order, each once; which job takes `--node` and
+/// `--temper` is [`wire`]'s, and which takes `--weighin` is [`weigh_in`]'s.
 fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, GateCliError> {
     let job = args.next().ok_or(GateCliError::Usage)?;
     let job = [GateJob::Static, LINT, TEST]
         .into_iter()
         .find(|known| job.to_str() == Some(known.to_string().as_str()))
         .ok_or(GateCliError::Usage)?;
-    let (mut config, mut head, mut out, mut node, mut temper) = (None, None, None, None, None);
+    let (mut config, mut head, mut out) = (None, None, None);
+    let (mut node, mut temper, mut weighin) = (None, None, None);
     while let Some(flag) = args.next() {
         let slot = match flag.to_str() {
             Some("--config") => &mut config,
@@ -145,6 +149,7 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, GateCliError>
             Some("--out") => &mut out,
             Some(flag) if flag == Program::Node.flag() => &mut node,
             Some(flag) if flag == Program::Temper.flag() => &mut temper,
+            Some(flag) if flag == Program::Weighin.flag() => &mut weighin,
             _ => return Err(GateCliError::Usage),
         };
         let value = args.next().ok_or(GateCliError::Usage)?;
@@ -160,6 +165,7 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, GateCliError>
             out,
             node,
             temper,
+            weighin,
         }),
         _ => Err(GateCliError::Usage),
     }
@@ -193,6 +199,18 @@ fn wire(
         | (GateJob::Static | GateJob::Build(BuildJob::Lint), _, None)
         | (GateJob::Build(BuildJob::Test), Some(_), _)
         | (GateJob::Build(BuildJob::Test), _, Some(_)) => Err(GateCliError::Usage),
+    }
+}
+
+/// `wired` with `weighin`, which only `gates-static` takes, absolute; without it a Weigh-In
+/// gate does not run (#372).
+fn weigh_in(wired: Wired, weighin: Option<PathBuf>) -> Result<Wired, GateCliError> {
+    match (wired, weighin) {
+        (wired, None) => Ok(wired),
+        (Wired::Static(programs), Some(weighin)) => {
+            Ok(Wired::Static(programs.with_weighin(weighin)?))
+        }
+        (Wired::Test | Wired::Lint(_), Some(_)) => Err(GateCliError::Usage),
     }
 }
 
@@ -235,8 +253,9 @@ pub(crate) fn run(
         out,
         node,
         temper,
+        weighin,
     } = parse(args)?;
-    let wired = wire(job, node, temper)?;
+    let wired = weigh_in(wire(job, node, temper)?, weighin)?;
     let run_key = variables
         .run_key
         .filter(|value| !value.is_empty())

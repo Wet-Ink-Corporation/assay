@@ -99,6 +99,87 @@ fn base_and_head_are_fetched_by_sha_with_the_run_token_only() -> Result<(), Box<
 
 #[test]
 #[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn the_weigh_in_gate_runs_the_pinned_weighin_in_a_scratch_checkout_of_head()
+-> Result<(), Box<dyn Error>> {
+    let scene = Scene::new(&[])?;
+
+    let output = scene.run(|_| {})?;
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    // The stand-in exits 2 unless HEAD is the head commit, the base is in its history and
+    // head's files are there; it passing is that evidence.
+    assert_eq!(document(&scene, "weigh-in")?, ["weigh-in", RUN_KEY, "pass"]);
+    let args = scene.recorded("bin/weighin-args")?;
+    let [_, _, _, base, _, tree, _, store] = args
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .try_into()
+        .map_err(|args| format!("eight arguments, not {args:?}"))?;
+    assert_eq!(base, scene.base_sha);
+    assert!(
+        tree.ends_with("/weigh-in") && !tree.starts_with(&scene.root.display().to_string()),
+        "a checkout in the job's scratch, not in the head checkout: {tree}"
+    );
+    assert!(store.ends_with("/weigh-in-store/ledger.jsonl"), "{store}");
+    let env = scene.recorded("bin/weighin-env")?;
+    assert!(!env.contains(RUN_TOKEN), "no gate sees the token: {env}");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn without_weighin_the_weigh_in_gate_does_not_run_and_temper_still_does()
+-> Result<(), Box<dyn Error>> {
+    let scene = Scene::new(&[])?;
+    let flags: Vec<_> = scene
+        .flags()
+        .into_iter()
+        .filter(|(name, _)| *name != "--weighin")
+        .collect();
+
+    let output = scene.run_flags(&flags)?;
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        stdout(&output),
+        "temper pass\nweigh-in gate-error:not-run\n"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("assay: weigh-in: the job was not given --weighin"),
+        "{output:?}"
+    );
+    assert_eq!(scene.recorded("bin/weighin-args")?, "", "weighin never ran");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn a_weigh_in_checkout_that_cannot_be_written_fails_only_the_weigh_in_gate()
+-> Result<(), Box<dyn Error>> {
+    let scene = Scene::new(&[])?;
+    scene.fail_git_on("checkout-index")?;
+
+    let output = scene.run(|_| {})?;
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        stdout(&output),
+        "temper pass\nweigh-in gate-error:not-run\n",
+        "the experimental gate never fails the job, nor keeps temper from concluding"
+    );
+    assert_eq!(document(&scene, "temper")?, ["temper", RUN_KEY, "pass"]);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("assay: weigh-in: writing the head checkout weighin ci-check reads: "),
+        "{output:?}"
+    );
+    assert_eq!(scene.recorded("bin/weighin-args")?, "", "weighin never ran");
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
 fn a_pr_that_raises_the_baseline_writes_a_failing_temper_document() -> Result<(), Box<dyn Error>> {
     let scene = Scene::new(&[(BASELINE, &baseline(3))])?;
 

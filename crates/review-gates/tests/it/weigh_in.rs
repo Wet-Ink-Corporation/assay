@@ -1,531 +1,325 @@
-//! The Weigh-In adapter in experimental mode (04 §9, #109): the head's journals and decision
-//! atoms, read in their documented formats, reported as warnings that never fail the gate.
+//! The Weigh-In adapter (04 §9, #372): the pinned `weighin ci-check --json` run in a reading
+//! checkout of head, its `weighin.ci-check/1` report read strictly, and 04 §9 rule 1 and the
+//! append-only check reported as warnings that never fail the gate.
 
 use std::error::Error;
-use std::fs;
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use review_app::{BuildJob, GateJob, GateJobOutcome};
-use review_domain::{GateConclusion, Severity};
-use review_gates::{EntryKind, Revision, WeighInAdapter, WeighInError, WeighInSettingsError};
-use serde_json::json;
+use review_app::{BuildJob, GateJob, GateJobOutcome, MAX_DOCUMENT_BYTES, Termination};
+use review_domain::{GateConclusion, Severity, Side};
+use review_gates::{
+    CiCheck, GateEnvironment, WeighInError, WeighInReportError, WeighInSettings,
+    WeighInSettingsError,
+};
 
-use crate::temper_support::FakeRevisions;
-use crate::weigh_in_support::{DECISIONS, Head, JOURNALS, atom, event, lines, raised, triaged};
+use crate::weigh_in_support::{
+    BASE, FakeCiCheck, HEAD, PROGRAM, STORE, Seen, TREE, admit, check, environment, findings, item,
+    report, run, seen, violation,
+};
 
 const NEUTRAL: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Neutral);
 const PASS: GateJobOutcome = GateJobOutcome::Concluded(GateConclusion::Pass);
-const JOURNAL: &str = ".kb/_ledger/journal/s1.jsonl";
-const T0: &str = "2026-10-11T06:00:00Z";
-const T1: &str = "2026-10-11T06:00:01Z";
-const T2: &str = "2026-10-11T06:00:02Z";
+const JOURNALS: &str = ".kb/_ledger/journal";
 const BLOCKING: &str = "weigh-in-open-blocking";
 const PENDING: &str = "weigh-in-pending-triage";
-const UNREADABLE: &str = "weigh-in-unreadable";
+const REWRITTEN: &str = "weigh-in-journal-rewritten";
+const TRIAGED: (Option<&str>, Option<&str>) = (Some("two-way"), Some("judgment"));
+const UNTRIAGED: (Option<&str>, Option<&str>) = (None, None);
 
-/// `(rule, JOURNAL, line, severity)`.
-fn at(rule: &str, line: u64, severity: Severity) -> (String, String, u64, Severity) {
-    (rule.to_owned(), JOURNAL.to_owned(), line, severity)
-}
-
-/// A head whose one journal `s1` holds `events`.
-fn head_with(events: &[serde_json::Value]) -> Head {
-    let mut head = Head::default();
-    head.journal("s1", events);
-    head
+/// `(rule, .kb/_ledger/journal, 1, severity)`: where item findings sit.
+fn at_journals(rule: &str, severity: Severity) -> Seen {
+    (rule.to_owned(), JOURNALS.to_owned(), 1, severity)
 }
 
 #[test]
-fn a_head_without_a_ledger_passes_with_no_findings() -> Result<(), Box<dyn Error>> {
-    let head = Head::default();
+fn runs_ci_check_in_the_tree_with_exactly_the_gate_environment() -> Result<(), Box<dyn Error>> {
+    let mut ci_check = FakeCiCheck::printing(report(&[], &[]));
 
-    let seen = head.seen()?;
+    run(&mut ci_check, (false, "weigh-in"), GateJob::Static)??;
 
-    assert_eq!(seen, (PASS, Vec::new()));
+    let [spec] = ci_check.seen.as_slice() else {
+        return Err(format!("one run, not {:?}", ci_check.seen).into());
+    };
+    assert_eq!(spec.program, Path::new(PROGRAM));
+    assert_eq!(
+        spec.args,
+        [
+            "ci-check", "--json", "--base", BASE, "--dir", TREE, "--store", STORE
+        ]
+    );
+    assert_eq!(spec.cwd, Path::new(TREE));
+    assert_eq!(spec.env, environment().vars(), "no token, nothing added");
+    assert_eq!(spec.timeout, Duration::from_secs(45));
+    assert_eq!(spec.max_output_bytes, MAX_DOCUMENT_BYTES);
     Ok(())
 }
 
 #[test]
-fn a_journal_whose_items_are_all_settled_passes() -> Result<(), Box<dyn Error>> {
-    let head = head_with(&[
-        raised("wi-aa4c3b", T0, None),
-        triaged("wi-aa4c3b", T1, Some("two-way"), Some("judgment")),
-        event("item_defaulted", "wi-aa4c3b", T2),
-        raised("wi-951c9e", T0, None),
-        event("item_dismissed", "wi-951c9e", T1),
-        raised("wi-0a1b", T0, Some("merge")),
-        event("item_decided", "wi-0a1b", T1),
-        event("record_written", "wi-0a1b", T2),
-    ]);
+fn a_report_with_nothing_open_and_clean_journals_passes() -> Result<(), Box<dyn Error>> {
+    let seen = seen(report(&[], &[]))?;
 
-    let seen = head.seen()?;
-
-    assert_eq!(seen, (PASS, Vec::new()));
+    assert_eq!(seen, (PASS, vec![]));
     Ok(())
 }
 
 #[test]
-fn an_untriaged_open_item_is_a_pending_triage_warning_at_its_raise() -> Result<(), Box<dyn Error>> {
-    let head = head_with(&[
-        raised("wi-0a1b", T0, None),
-        event("item_decided", "wi-0a1b", T1),
-        raised("wi-aa4c3b", T1, None),
-    ]);
+fn an_untriaged_open_item_is_a_pending_triage_warning() -> Result<(), Box<dyn Error>> {
+    let seen = seen(report(
+        &[item("wi-aa4c3b", "raised", UNTRIAGED, "unknown")],
+        &[],
+    ))?;
 
-    let seen = head.seen()?;
+    assert_eq!(seen, (NEUTRAL, vec![at_journals(PENDING, Severity::Minor)]));
+    Ok(())
+}
 
-    assert_eq!(seen, (NEUTRAL, vec![at(PENDING, 3, Severity::Minor)]));
+#[test]
+fn a_half_triaged_item_is_pending_triage_not_clear() -> Result<(), Box<dyn Error>> {
+    let items = [
+        item("wi-aa4c3b", "triaged", (Some("two-way"), None), "none"),
+        item("wi-0a1b", "triaged", (None, Some("judgment")), "none"),
+    ];
+
+    let seen = seen(report(&items, &[]))?;
+
+    let pending = at_journals(PENDING, Severity::Minor);
+    assert_eq!(seen, (NEUTRAL, vec![pending.clone(), pending]));
     Ok(())
 }
 
 #[test]
 fn a_triaged_one_way_item_is_open_and_blocking() -> Result<(), Box<dyn Error>> {
-    let head = head_with(&[
-        raised("wi-aa4c3b", T0, None),
-        triaged("wi-aa4c3b", T1, Some("one-way"), Some("judgment")),
-    ]);
+    let items = [item(
+        "wi-aa4c3b",
+        "triaged",
+        (Some("one-way"), Some("authority")),
+        "merge",
+    )];
 
-    let seen = head.seen()?;
+    let (outcome, findings) = findings(report(&items, &[]))?;
 
-    assert_eq!(seen, (NEUTRAL, vec![at(BLOCKING, 1, Severity::Major)]));
+    assert_eq!(outcome, NEUTRAL);
+    let [finding] = findings.as_slice() else {
+        return Err(format!("one finding, not {findings:?}").into());
+    };
+    assert_eq!(
+        (
+            finding.rule.as_deref(),
+            finding.file.as_str(),
+            finding.line.get()
+        ),
+        (Some(BLOCKING), JOURNALS, 1)
+    );
+    assert_eq!(finding.severity, Severity::Major);
+    assert_eq!(
+        finding.title,
+        "Weigh-In item `wi-aa4c3b` is open and blocking"
+    );
+    assert!(
+        finding.body.starts_with(
+            "`wi-aa4c3b` is triaged, and blocks because its door is `one-way`, not `two-way`, \
+             its authority is `authority`, not `judgment`, and it blocks `merge`, not `none` \
+             (04 §9 rule 1)"
+        ),
+        "{}",
+        finding.body
+    );
     Ok(())
 }
 
 #[test]
-fn a_triaged_item_blocks_on_blocks_authority_or_any_other_value() -> Result<(), Box<dyn Error>> {
+fn a_triaged_item_blocks_on_its_blocks_door_or_authority_alone() -> Result<(), Box<dyn Error>> {
     let cases = [
-        (Some("merge"), "two-way", "judgment"),
-        (None, "two-way", "authority"),
-        (None, "unsure", "judgment"),
-        (None, "two-way", "Judgment"),
+        (TRIAGED, "merge", "it blocks `merge`, not `none`"),
+        (TRIAGED, "release", "it blocks `release`, not `none`"),
+        (TRIAGED, "unknown", "it blocks `unknown`, not `none`"),
+        (
+            (Some("unsure"), Some("judgment")),
+            "none",
+            "its door is `unsure`, not `two-way`",
+        ),
+        (
+            (Some("two-way"), Some("authority")),
+            "none",
+            "its authority is `authority`, not `judgment`",
+        ),
     ];
-    for (blocks, door, authority) in cases {
-        let head = head_with(&[
-            raised("wi-aa4c3b", T0, blocks),
-            triaged("wi-aa4c3b", T1, Some(door), Some(authority)),
-        ]);
+    for (triage, blocks, because) in cases {
+        let (_, findings) = findings(report(&[item("wi-aa4c3b", "triaged", triage, blocks)], &[]))?;
 
-        let seen = head.seen()?;
-
+        let [finding] = findings.as_slice() else {
+            return Err(format!("{triage:?} {blocks}: one finding, not {findings:?}").into());
+        };
         assert_eq!(
-            seen,
-            (NEUTRAL, vec![at(BLOCKING, 1, Severity::Major)]),
-            "{blocks:?} {door} {authority}"
+            finding.rule.as_deref(),
+            Some(BLOCKING),
+            "{triage:?} {blocks}"
+        );
+        assert!(
+            finding
+                .body
+                .contains(&format!("blocks because {because} (04 §9 rule 1)")),
+            "{triage:?} {blocks}: {}",
+            finding.body
         );
     }
-    Ok(())
-}
-
-#[test]
-fn a_triaged_item_with_no_raise_blocks_on_unknown_blocks() -> Result<(), Box<dyn Error>> {
-    let head = head_with(&[triaged("wi-aa4c3b", T1, Some("two-way"), Some("judgment"))]);
-
-    let seen = head.seen()?;
-
-    assert_eq!(seen, (NEUTRAL, vec![at(BLOCKING, 1, Severity::Major)]));
-    Ok(())
-}
-
-#[test]
-fn a_raise_without_a_blocks_field_blocks_once_triaged() -> Result<(), Box<dyn Error>> {
-    let mut raise = raised("wi-aa4c3b", T0, None);
-    if let Some(object) = raise.as_object_mut() {
-        object.remove("blocks");
-    }
-    let head = head_with(&[
-        raise,
-        triaged("wi-aa4c3b", T1, Some("two-way"), Some("judgment")),
-    ]);
-
-    let seen = head.seen()?;
-
-    assert_eq!(seen, (NEUTRAL, vec![at(BLOCKING, 1, Severity::Major)]));
     Ok(())
 }
 
 #[test]
 fn a_two_way_judgment_item_blocking_nothing_is_not_reported() -> Result<(), Box<dyn Error>> {
-    let head = head_with(&[
-        raised("wi-aa4c3b", T0, None),
-        triaged("wi-aa4c3b", T1, Some("two-way"), Some("judgment")),
-        event("item_presented", "wi-aa4c3b", T2),
-    ]);
+    let seen = seen(report(
+        &[item("wi-aa4c3b", "triaged", TRIAGED, "none")],
+        &[],
+    ))?;
 
-    let seen = head.seen()?;
-
-    assert_eq!(seen, (PASS, Vec::new()));
+    assert_eq!(seen, (PASS, vec![]));
     Ok(())
 }
 
 #[test]
-fn a_re_triage_to_two_way_judgment_settles_a_one_way_item() -> Result<(), Box<dyn Error>> {
-    let head = head_with(&[
-        raised("wi-aa4c3b", T0, None),
-        triaged("wi-aa4c3b", T1, Some("one-way"), Some("authority")),
-        triaged("wi-aa4c3b", T2, Some("two-way"), Some("judgment")),
-    ]);
+fn every_open_status_is_reported_with_its_status() -> Result<(), Box<dyn Error>> {
+    let statuses = ["raised", "triaged", "grounded", "presented", "deferred"];
+    let items: Vec<_> = statuses
+        .iter()
+        .zip(["wi-0001", "wi-0002", "wi-0003", "wi-0004", "wi-0005"])
+        .map(|(status, id)| item(id, status, UNTRIAGED, "unknown"))
+        .collect();
 
-    let seen = head.seen()?;
+    let (_, findings) = findings(report(&items, &[]))?;
 
-    assert_eq!(seen, (PASS, Vec::new()));
+    let said: Vec<bool> = findings
+        .iter()
+        .zip(statuses)
+        .map(|(finding, status)| finding.body.contains(&format!(" is {status} and")))
+        .collect();
+    assert_eq!(said, [true; 5], "{findings:?}");
     Ok(())
 }
 
 #[test]
-fn a_second_raise_that_blocks_decides_blocks_and_where_it_is_reported() -> Result<(), Box<dyn Error>>
+fn each_journal_violation_is_a_rewritten_journal_warning_at_its_line() -> Result<(), Box<dyn Error>>
 {
-    let head = head_with(&[
-        raised("wi-aa4c3b", T0, None),
-        triaged("wi-aa4c3b", T1, Some("two-way"), Some("judgment")),
-        raised("wi-aa4c3b", T2, Some("merge")),
-        triaged(
-            "wi-aa4c3b",
-            "2026-10-11T06:00:03Z",
-            Some("two-way"),
-            Some("judgment"),
-        ),
-    ]);
+    let violations = [
+        violation(".kb/_ledger/journal/s1.jsonl", Some(3), "missing"),
+        violation(".kb/_ledger/journal/s2.jsonl", None, "removed"),
+        violation(".kb/_ledger/journal/s3.jsonl", Some(7), "altered"),
+        violation(".kb/_ledger/journal/s4.jsonl", Some(2), "undecodable"),
+    ];
+    let items = [item("wi-aa4c3b", "raised", UNTRIAGED, "unknown")];
 
-    let seen = head.seen()?;
+    let seen = seen(report(&items, &violations))?;
+    let (_, findings) = findings(report(&items, &violations))?;
 
-    assert_eq!(seen, (NEUTRAL, vec![at(BLOCKING, 3, Severity::Major)]));
-    Ok(())
-}
-
-#[test]
-fn a_null_or_absent_triaged_door_or_authority_is_pending_triage() -> Result<(), Box<dyn Error>> {
-    let mut absent = triaged("wi-aa4c3b", T1, Some("one-way"), None);
-    if let Some(object) = absent.as_object_mut() {
-        object.remove("authority");
-    }
-    for triage in [
-        triaged("wi-aa4c3b", T1, None, Some("authority")),
-        triaged("wi-aa4c3b", T1, Some("one-way"), None),
-        absent,
-    ] {
-        let head = head_with(&[raised("wi-aa4c3b", T0, None), triage]);
-
-        let seen = head.seen()?;
-
-        assert_eq!(seen, (NEUTRAL, vec![at(PENDING, 1, Severity::Minor)]));
-    }
-    Ok(())
-}
-
-#[test]
-fn grounded_presented_and_deferred_items_stay_open() -> Result<(), Box<dyn Error>> {
-    for kind in ["item_grounded", "item_presented", "item_deferred"] {
-        let head = head_with(&[
-            raised("wi-aa4c3b", T0, None),
-            triaged("wi-aa4c3b", T1, Some("one-way"), Some("authority")),
-            event(kind, "wi-aa4c3b", T2),
-        ]);
-
-        let seen = head.seen()?;
-
-        assert_eq!(
-            seen,
-            (NEUTRAL, vec![at(BLOCKING, 1, Severity::Major)]),
-            "{kind}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn a_deferral_after_a_decision_reopens_the_item() -> Result<(), Box<dyn Error>> {
-    let head = head_with(&[
-        raised("wi-aa4c3b", T0, None),
-        event("item_decided", "wi-aa4c3b", T1),
-        event("item_deferred", "wi-aa4c3b", T2),
-    ]);
-
-    let seen = head.seen()?;
-
-    assert_eq!(seen, (NEUTRAL, vec![at(PENDING, 1, Severity::Minor)]));
-    Ok(())
-}
-
-#[test]
-fn events_are_ordered_by_time_across_journals() -> Result<(), Box<dyn Error>> {
-    let mut head = Head::default();
-    head.journal("a-later-session", &[event("item_decided", "wi-aa4c3b", T2)]);
-    head.journal("s1", &[raised("wi-aa4c3b", T0, None)]);
-    head.journal("z-earlier", &[raised("wi-0a1b", T1, None)]);
-    head.journal("y-later", &[event("item_dismissed", "wi-0a1b", T0)]);
-
-    let seen = head.seen()?;
-
+    let sides: Vec<Option<Side>> = findings.iter().map(|f| f.side).collect();
     assert_eq!(
-        seen,
-        (
-            NEUTRAL,
-            vec![(
-                PENDING.to_owned(),
-                ".kb/_ledger/journal/z-earlier.jsonl".to_owned(),
-                1,
-                Severity::Minor
-            )]
-        ),
-        "wi-aa4c3b is decided later elsewhere; wi-0a1b was dismissed before it was raised again"
-    );
-    Ok(())
-}
-
-#[test]
-fn an_unknown_event_type_refuses_the_journal_but_not_the_others() -> Result<(), Box<dyn Error>> {
-    let mut head = Head::default();
-    head.journal(
-        "s1",
-        &[
-            raised("wi-aa4c3b", T0, None),
-            event("item_reopened", "wi-aa4c3b", T1),
+        sides,
+        [
+            Some(Side::Left),
+            Some(Side::Left),
+            Some(Side::Left),
+            Some(Side::Right),
+            Some(Side::Right),
         ],
+        "missing, removed and altered at base's line; undecodable and items at head"
     );
-    head.journal("s2", &[raised("wi-0a1b", T0, None)]);
-
-    let seen = head.seen()?;
-
+    let rewritten =
+        |file: &str, line| (REWRITTEN.to_owned(), file.to_owned(), line, Severity::Major);
     assert_eq!(
         seen,
         (
             NEUTRAL,
             vec![
-                at(UNREADABLE, 2, Severity::Minor),
-                (
-                    PENDING.to_owned(),
-                    ".kb/_ledger/journal/s2.jsonl".to_owned(),
-                    1,
-                    Severity::Minor
-                ),
+                rewritten(".kb/_ledger/journal/s1.jsonl", 3),
+                rewritten(".kb/_ledger/journal/s2.jsonl", 1),
+                rewritten(".kb/_ledger/journal/s3.jsonl", 7),
+                rewritten(".kb/_ledger/journal/s4.jsonl", 2),
+                at_journals(PENDING, Severity::Minor),
             ]
-        )
-    );
-    Ok(())
-}
-
-#[test]
-fn a_journal_not_exactly_in_the_documented_form_is_refused_at_its_line()
--> Result<(), Box<dyn Error>> {
-    let good = lines(&[raised("wi-aa4c3b", T0, None)]);
-    let mut bad_ts = event("item_decided", "wi-aa4c3b", T1);
-    bad_ts["ts"] = json!("2026-10-11T06:00:01.5Z");
-    let mut bad_blocks = raised("wi-0a1b", T1, None);
-    bad_blocks["blocks"] = json!(true);
-    let mut bad_door = triaged("wi-0a1b", T1, None, None);
-    bad_door["door"] = json!(["one-way"]);
-    let mut no_type = event("item_decided", "wi-aa4c3b", T1);
-    if let Some(object) = no_type.as_object_mut() {
-        object.remove("type");
-    }
-    let cases = [
-        (format!("{good}\n"), 2),
-        (format!("{good}not json\n"), 2),
-        (format!("{good}[1]\n"), 2),
-        (
-            format!("{good}{{\"type\":\"record_written\",\"type\":\"x\"}}\n"),
-            2,
         ),
-        (lines(&[event("item_decided", "wi-AA4C3B", T1)]), 1),
-        (lines(&[event("item_decided", "wi-aa4c3b ", T1)]), 1),
-        (format!("{good}{bad_ts}\n"), 2),
-        (format!("{good}{bad_blocks}\n"), 2),
-        (format!("{good}{bad_door}\n"), 2),
-        (format!("{good}{no_type}\n"), 2),
-    ];
-    for (text, line) in cases {
-        let mut head = Head::default();
-        head.file(JOURNAL, &text);
-
-        let seen = head.seen()?;
-
-        assert_eq!(
-            seen,
-            (NEUTRAL, vec![at(UNREADABLE, line, Severity::Minor)]),
-            "{text:?}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn a_journal_ending_without_its_newline_is_refused_whole() -> Result<(), Box<dyn Error>> {
-    let mut head = Head::default();
-    let text = lines(&[raised("wi-aa4c3b", T0, None)]);
-    head.file(JOURNAL, text.trim_end());
-
-    let seen = head.seen()?;
-
-    assert_eq!(seen, (NEUTRAL, vec![at(UNREADABLE, 1, Severity::Minor)]));
-    Ok(())
-}
-
-#[test]
-fn only_regular_jsonl_files_directly_in_the_journal_directory_are_read()
--> Result<(), Box<dyn Error>> {
-    let open = lines(&[raised("wi-aa4c3b", T0, None)]);
-    let mut head = Head::default();
-    head.file(&format!("{JOURNALS}/notes.md"), &open);
-    head.file(&format!("{JOURNALS}/old/s0.jsonl"), &open);
-    head.file(&format!("{JOURNALS}.jsonl"), &open);
-    head.entry(
-        &format!("{JOURNALS}/linked.jsonl"),
-        EntryKind::Symlink,
-        "../s.jsonl",
-    );
-    head.entry(&format!("{JOURNALS}/sub.jsonl"), EntryKind::Submodule, "");
-
-    let seen = head.seen()?;
-
-    let refused = |name: &str| {
-        (
-            UNREADABLE.to_owned(),
-            format!("{JOURNALS}/{name}"),
-            1,
-            Severity::Minor,
-        )
-    };
-    assert_eq!(
-        seen,
-        (NEUTRAL, vec![refused("linked.jsonl"), refused("sub.jsonl")])
+        "violations first, a removed journal at line 1"
     );
     Ok(())
 }
 
 #[test]
-fn a_ledger_ancestor_that_is_not_a_directory_is_refused() -> Result<(), Box<dyn Error>> {
-    let cases = [
-        (".kb", EntryKind::File),
-        (".kb", EntryKind::Symlink),
-        (".kb/_ledger", EntryKind::Symlink),
-        (".kb/_ledger", EntryKind::Submodule),
-        (".kb/_intake", EntryKind::Symlink),
-        (DECISIONS, EntryKind::File),
-    ];
-    for (path, kind) in cases {
-        let mut head = Head::default();
-        head.entry(path, kind, "elsewhere");
+fn a_violation_path_cannot_break_out_of_its_code_span() -> Result<(), Box<dyn Error>> {
+    let violations = [violation(
+        ".kb/x`\n[l](https://e).jsonl",
+        Some(1),
+        "missing",
+    )];
 
-        let seen = head.seen()?;
+    let (_, findings) = findings(report(&[], &violations))?;
 
-        assert_eq!(
-            seen,
-            (
-                NEUTRAL,
-                vec![(UNREADABLE.to_owned(), path.to_owned(), 1, Severity::Minor)]
-            ),
-            "{path} {kind:?}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn a_journal_directory_that_is_a_file_is_refused() -> Result<(), Box<dyn Error>> {
-    let mut head = Head::default();
-    head.file(JOURNALS, "");
-
-    let seen = head.seen()?;
-
-    assert_eq!(
-        seen,
-        (
-            NEUTRAL,
-            vec![(
-                UNREADABLE.to_owned(),
-                JOURNALS.to_owned(),
-                1,
-                Severity::Minor
-            )]
-        )
-    );
-    Ok(())
-}
-
-#[test]
-fn an_atom_not_exactly_in_the_documented_form_is_refused() -> Result<(), Box<dyn Error>> {
-    let mut head = Head::default();
-    let bad = format!("{DECISIONS}/wi-aa4c3b-ship.md");
-    head.file(
-        &bad,
-        &atom("wi-aa4c3b").replace("\"wi-aa4c3b\"", "wi-aa4c3b"),
-    );
-    head.file(
-        &format!("{DECISIONS}/kb-decision-other.md"),
-        "---\ntitle: x\n---\n",
-    );
-    head.file(&format!("{DECISIONS}/wi-0a1b-ok.md"), &atom("wi-0a1b"));
-    head.file(&format!("{DECISIONS}/README.txt"), "not an atom");
-
-    let seen = head.seen()?;
-
-    assert_eq!(
-        seen,
-        (
-            NEUTRAL,
-            vec![(UNREADABLE.to_owned(), bad, 1, Severity::Minor)]
-        )
-    );
-    Ok(())
-}
-
-#[test]
-fn a_symlinked_atom_is_refused() -> Result<(), Box<dyn Error>> {
-    let mut head = Head::default();
-    let linked = format!("{DECISIONS}/wi-aa4c3b-ship.md");
-    head.entry(&linked, EntryKind::Symlink, "../../elsewhere.md");
-
-    let seen = head.seen()?;
-
-    assert_eq!(
-        seen,
-        (
-            NEUTRAL,
-            vec![(UNREADABLE.to_owned(), linked, 1, Severity::Minor)]
-        )
-    );
-    Ok(())
-}
-
-#[test]
-fn an_open_item_with_an_atom_says_the_atom_proves_nothing() -> Result<(), Box<dyn Error>> {
-    let mut head = head_with(&[raised("wi-aa4c3b", T0, None)]);
-    head.file(
-        &format!("{DECISIONS}/wi-aa4c3b-ship-it.md"),
-        &atom("wi-aa4c3b"),
-    );
-
-    let (_, findings) = head.findings()?;
-
-    let bodies: Vec<&str> = findings.iter().map(|f| f.body.as_str()).collect();
-    assert_eq!(bodies.len(), 1);
+    let texts: Vec<(&str, &str)> = findings
+        .iter()
+        .map(|f| (f.title.as_str(), f.body.as_str()))
+        .collect();
     assert!(
-        bodies.iter().all(|body| body
-            .contains("`.kb/_intake/decisions/wi-aa4c3b-ship-it.md` names it")
-            && body.contains("an atom alone proves nothing")),
-        "{bodies:?}"
+        texts.len() == 1
+            && texts.iter().all(
+                |(title, body)| title.contains("`.kb/x???l??https?e?.jsonl`")
+                    && !body.contains("https://")
+            ),
+        "{texts:?}"
     );
     Ok(())
 }
 
 #[test]
-fn every_warning_says_g2_is_enforced_by_cp1_until_d_wi() -> Result<(), Box<dyn Error>> {
-    let mut head = head_with(&[
-        raised("wi-aa4c3b", T0, None),
-        raised("wi-0a1b", T0, None),
-        triaged("wi-0a1b", T1, Some("one-way"), Some("authority")),
-    ]);
-    head.journal("s2", &[event("item_reopened", "wi-aa4c3b", T1)]);
+fn the_question_and_deadline_are_never_quoted() -> Result<(), Box<dyn Error>> {
+    let items = [
+        item("wi-aa4c3b", "raised", UNTRIAGED, "unknown"),
+        item(
+            "wi-0a1b",
+            "triaged",
+            (Some("one-way"), Some("judgment")),
+            "merge",
+        ),
+    ];
 
-    let (_, findings) = head.findings()?;
+    let (_, findings) = findings(report(&items, &[]))?;
+
+    assert_eq!(findings.len(), 2);
+    for finding in findings {
+        let text = [finding.evidence, finding.title, finding.body].concat();
+        assert!(!text.contains("SECRET"), "{text}");
+    }
+    Ok(())
+}
+
+#[test]
+fn every_warning_says_the_gate_is_experimental_and_g2_is_enforced_by_cp1()
+-> Result<(), Box<dyn Error>> {
+    let items = [
+        item("wi-aa4c3b", "raised", UNTRIAGED, "unknown"),
+        item(
+            "wi-0a1b",
+            "triaged",
+            (Some("one-way"), Some("authority")),
+            "merge",
+        ),
+    ];
+    let violations = [violation(
+        ".kb/_ledger/journal/s1.jsonl",
+        Some(1),
+        "missing",
+    )];
+
+    let (_, findings) = findings(report(&items, &violations))?;
 
     assert_eq!(findings.len(), 3);
     for finding in findings {
         assert!(
             finding
                 .body
-                .contains("G2 is enforced by CP1 (`assay check --local`)")
-                && finding.body.contains("D-WI"),
+                .contains("this gate is experimental and never fails")
+                && finding
+                    .body
+                    .contains("G2 is enforced by CP1 (`assay check --local`)"),
             "{}",
             finding.body
         );
@@ -534,115 +328,12 @@ fn every_warning_says_g2_is_enforced_by_cp1_until_d_wi() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn a_triaged_value_cannot_break_out_of_its_code_span() -> Result<(), Box<dyn Error>> {
-    let head = head_with(&[
-        raised("wi-aa4c3b", T0, None),
-        triaged(
-            "wi-aa4c3b",
-            T1,
-            Some("x`\n[l](https://e)"),
-            Some("judgment"),
-        ),
-    ]);
-
-    let (_, findings) = head.findings()?;
-
-    let texts: Vec<(&str, &str)> = findings
-        .iter()
-        .map(|f| (f.evidence.as_str(), f.body.as_str()))
-        .collect();
-    assert_eq!(texts.len(), 1);
-    assert!(
-        texts.iter().all(|(evidence, body)| {
-            evidence.contains("door x???l??https?e?")
-                && body.contains("its door is `x???l??https?e?`")
-                && !body.contains("https://")
-        }),
-        "{texts:?}"
-    );
-    Ok(())
-}
-
-#[test]
-fn a_ledger_past_the_byte_cap_is_reported_and_not_read() -> Result<(), Box<dyn Error>> {
-    let mut head = Head::default();
-    let big = "x".repeat(16 << 20);
-    head.file(&format!("{DECISIONS}/wi-aa4c3b-big.md"), &big);
-    head.journal("s1", &[raised("wi-aa4c3b", T0, None)]);
-    head.revisions.failing_read = Some(JOURNAL.to_owned());
-
-    let seen = head.seen()?;
-
-    assert_eq!(
-        seen,
-        (
-            NEUTRAL,
-            vec![(UNREADABLE.to_owned(), ".kb".to_owned(), 1, Severity::Minor)]
-        ),
-        "nothing is read: a read would fail"
-    );
-    Ok(())
-}
-
-#[test]
-fn a_ledger_at_the_byte_cap_is_read() -> Result<(), Box<dyn Error>> {
-    let mut head = Head::default();
-    let journal = lines(&[raised("wi-aa4c3b", T0, None)]);
-    let padding = (16 << 20) - journal.len();
-    head.file(JOURNAL, &journal);
-    head.file(
-        &format!("{DECISIONS}/pad.md"),
-        &format!("---\n{}", "x".repeat(padding - 4)),
-    );
-
-    let seen = head.seen()?;
-
-    assert_eq!(
-        seen,
-        (
-            NEUTRAL,
-            vec![
-                (
-                    UNREADABLE.to_owned(),
-                    format!("{DECISIONS}/pad.md"),
-                    1,
-                    Severity::Minor
-                ),
-                at(PENDING, 1, Severity::Minor),
-            ]
-        ),
-        "the padding atom never closes its front matter"
-    );
-    Ok(())
-}
-
-#[test]
-fn a_ledger_past_the_file_cap_is_reported_and_not_read() -> Result<(), Box<dyn Error>> {
-    let mut head = Head::default();
-    for index in 0..=10_000 {
-        head.file(&format!("{JOURNALS}/s{index}.jsonl"), "");
-    }
-
-    let seen = head.seen()?;
-
-    assert_eq!(
-        seen,
-        (
-            NEUTRAL,
-            vec![(UNREADABLE.to_owned(), ".kb".to_owned(), 1, Severity::Minor)]
-        )
-    );
-    Ok(())
-}
-
-#[test]
 fn more_than_a_thousand_findings_end_with_one_truncation_note() -> Result<(), Box<dyn Error>> {
-    let events: Vec<_> = (0..1_005)
-        .map(|index| raised(&format!("wi-{index:04x}"), T0, None))
+    let items: Vec<_> = (0..1_005)
+        .map(|index| item(&format!("wi-{index:04x}"), "raised", UNTRIAGED, "unknown"))
         .collect();
-    let head = head_with(&events);
 
-    let (outcome, findings) = head.findings()?;
+    let (outcome, findings) = findings(report(&items, &[]))?;
 
     let rules: Vec<&str> = findings.iter().filter_map(|f| f.rule.as_deref()).collect();
     assert_eq!(outcome, NEUTRAL);
@@ -660,26 +351,130 @@ fn more_than_a_thousand_findings_end_with_one_truncation_note() -> Result<(), Bo
 }
 
 #[test]
-fn refuses_a_required_weigh_in_plugin_before_reading() -> Result<(), Box<dyn Error>> {
-    let mut head = Head::default();
-    head.revisions.failing = Some(JOURNALS.to_owned());
+fn a_run_that_does_not_exit_zero_is_an_error_never_a_pass() -> Result<(), Box<dyn Error>> {
+    let ended = [
+        Termination::Exited(1),
+        Termination::Exited(2),
+        Termination::Signalled,
+        Termination::TimedOut,
+        Termination::OutputTooLarge,
+    ];
+    for termination in ended {
+        let mut ci_check = FakeCiCheck {
+            termination,
+            ..FakeCiCheck::printing(report(&[], &[]))
+        };
 
-    let ran = head.run(true, "weigh-in", GateJob::Static)?;
+        let ran = run(&mut ci_check, (false, "weigh-in"), GateJob::Static)?;
+
+        assert!(
+            matches!(ran, Err(WeighInError::Ended { termination: ended }) if ended == termination),
+            "{termination:?}: {ran:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_supervisor_failure_is_an_error() -> Result<(), Box<dyn Error>> {
+    let mut ci_check = FakeCiCheck {
+        fails: true,
+        ..FakeCiCheck::printing(Vec::new())
+    };
+
+    let ran = run(&mut ci_check, (false, "weigh-in"), GateJob::Static)?;
+
+    assert!(matches!(ran, Err(WeighInError::Supervisor(_))), "{ran:?}");
+    Ok(())
+}
+
+#[test]
+fn a_refused_report_is_an_error_never_a_partial_read() -> Result<(), Box<dyn Error>> {
+    let mut other = FakeCiCheck::printing(
+        String::from_utf8(report(&[], &[]))?
+            .replace("weighin.ci-check/1", "weighin.ci-check/2")
+            .into_bytes(),
+    );
+    let mut wrong_head = FakeCiCheck::printing(
+        String::from_utf8(report(&[], &[]))?
+            .replace(
+                &format!("\"head\":\"{HEAD}\""),
+                &format!("\"head\":\"{BASE}\""),
+            )
+            .into_bytes(),
+    );
+
+    let other = run(&mut other, (false, "weigh-in"), GateJob::Static)?;
+    let wrong_head = run(&mut wrong_head, (false, "weigh-in"), GateJob::Static)?;
 
     assert!(
-        matches!(ran, Err(WeighInError::Required { ref plugin }) if plugin == "weigh-in"),
-        "{ran:?}"
+        matches!(other, Err(WeighInError::Report(WeighInReportError::Schema))),
+        "{other:?}"
+    );
+    assert!(
+        matches!(
+            wrong_head,
+            Err(WeighInError::Report(WeighInReportError::Head))
+        ),
+        "{wrong_head:?}"
     );
     Ok(())
 }
 
 #[test]
-fn refuses_another_adapter_and_any_job_but_gates_static() -> Result<(), Box<dyn Error>> {
-    let head = Head::default();
+fn admit_makes_runs_refusals_and_admits_a_non_required_gate() -> Result<(), Box<dyn Error>> {
+    let lint = GateJob::Build(BuildJob::Lint);
 
-    let temper = head.run(false, "temper", GateJob::Static)?;
-    let lint = head.run(false, "weigh-in", GateJob::Build(BuildJob::Lint))?;
-    let test = head.run(false, "weigh-in", GateJob::Build(BuildJob::Test))?;
+    let admitted = admit((false, "weigh-in"), GateJob::Static)?;
+    let required = admit((true, "weigh-in"), GateJob::Static)?;
+    let temper = admit((false, "temper"), GateJob::Static)?;
+    let outside = admit((false, "weigh-in"), lint)?;
+
+    assert!(admitted.is_ok(), "{admitted:?}");
+    assert!(
+        matches!(required, Err(WeighInError::Required { ref plugin }) if plugin == "weigh-in"),
+        "{required:?}"
+    );
+    assert!(
+        matches!(temper, Err(WeighInError::NotWeighIn { ref plugin }) if plugin == "temper"),
+        "{temper:?}"
+    );
+    assert!(
+        matches!(outside, Err(WeighInError::OutsideStatic { job }) if job == lint),
+        "{outside:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn refuses_a_required_weigh_in_plugin_before_running() -> Result<(), Box<dyn Error>> {
+    let mut ci_check = FakeCiCheck::printing(report(&[], &[]));
+
+    let ran = run(&mut ci_check, (true, "weigh-in"), GateJob::Static)?;
+
+    assert!(
+        matches!(ran, Err(WeighInError::Required { ref plugin }) if plugin == "weigh-in"),
+        "{ran:?}"
+    );
+    assert!(ci_check.seen.is_empty(), "nothing ran");
+    Ok(())
+}
+
+#[test]
+fn refuses_another_adapter_and_any_job_but_gates_static() -> Result<(), Box<dyn Error>> {
+    let mut ci_check = FakeCiCheck::printing(report(&[], &[]));
+
+    let temper = run(&mut ci_check, (false, "temper"), GateJob::Static)?;
+    let lint = run(
+        &mut ci_check,
+        (false, "weigh-in"),
+        GateJob::Build(BuildJob::Lint),
+    )?;
+    let test = run(
+        &mut ci_check,
+        (false, "weigh-in"),
+        GateJob::Build(BuildJob::Test),
+    )?;
 
     assert!(
         matches!(temper, Err(WeighInError::NotWeighIn { ref plugin }) if plugin == "temper"),
@@ -703,81 +498,97 @@ fn refuses_another_adapter_and_any_job_but_gates_static() -> Result<(), Box<dyn 
         ),
         "{test:?}"
     );
+    assert!(ci_check.seen.is_empty(), "nothing ran");
     Ok(())
 }
 
 #[test]
-fn a_listing_or_read_failure_is_an_error_never_a_pass() -> Result<(), Box<dyn Error>> {
-    let mut listing = Head::default();
-    listing.revisions.failing = Some(".kb".to_owned());
-    let mut reading = head_with(&[raised("wi-aa4c3b", T0, None)]);
-    reading.revisions.failing_read = Some(JOURNAL.to_owned());
-
-    let listed = listing.run(false, "weigh-in", GateJob::Static)?;
-    let read = reading.run(false, "weigh-in", GateJob::Static)?;
+fn refuses_an_empty_run_key() -> Result<(), Box<dyn Error>> {
+    let settings = WeighInSettings::new(check()?, &environment(), "");
 
     assert!(
-        matches!(listed, Err(WeighInError::Revision { path: ".kb", .. })),
-        "{listed:?}"
-    );
-    assert!(
-        matches!(read, Err(WeighInError::Revision { path: ".kb", .. })),
-        "{read:?}"
+        matches!(settings, Err(WeighInSettingsError::EmptyRunKey)),
+        "{settings:?}"
     );
     Ok(())
 }
 
 #[test]
-fn a_reader_returning_fewer_blobs_is_an_error() -> Result<(), Box<dyn Error>> {
-    let mut head = head_with(&[raised("wi-aa4c3b", T0, None)]);
-    head.revisions.short_read = true;
+fn refuses_a_relative_program_tree_or_store() -> Result<(), Box<dyn Error>> {
+    let relative = PathBuf::from("weighin");
+    let program = CiCheck {
+        program: relative.clone(),
+        ..check()?
+    };
+    let tree = CiCheck {
+        tree: relative.clone(),
+        ..check()?
+    };
+    let store = CiCheck {
+        store: relative.clone(),
+        ..check()?
+    };
 
-    let ran = head.run(false, "weigh-in", GateJob::Static)?;
+    let refused = [program, tree, store]
+        .map(|check| WeighInSettings::new(check, &environment(), "run-1").err());
 
-    assert!(
-        matches!(ran, Err(WeighInError::BlobCount { asked: 1, read: 0 })),
-        "{ran:?}"
+    assert_eq!(
+        refused,
+        [
+            Some(WeighInSettingsError::RelativeProgram {
+                path: relative.clone()
+            }),
+            Some(WeighInSettingsError::RelativeTree {
+                path: relative.clone()
+            }),
+            Some(WeighInSettingsError::RelativeStore { path: relative }),
+        ]
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn refuses_a_tree_or_store_that_is_not_utf8_naming_that_path() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let not_utf8 = |name: &[u8]| Path::new(std::ffi::OsStr::from_bytes(name)).to_path_buf();
+    let bad_tree = not_utf8(b"/scratch/weigh-in-\xff");
+    let bad_store = not_utf8(b"/scratch/store-\xfe/ledger.jsonl");
+    let tree = CiCheck {
+        tree: bad_tree.clone(),
+        ..check()?
+    };
+    let store = CiCheck {
+        store: bad_store.clone(),
+        ..check()?
+    };
+
+    let refused =
+        [tree, store].map(|check| WeighInSettings::new(check, &environment(), "run-1").err());
+
+    assert_eq!(
+        refused,
+        [
+            Some(WeighInSettingsError::NotUtf8 { path: bad_tree }),
+            Some(WeighInSettingsError::NotUtf8 { path: bad_store }),
+        ]
     );
     Ok(())
 }
 
 #[test]
-fn refuses_an_empty_run_key() {
-    let revisions = FakeRevisions::default();
+fn refuses_a_search_path_with_a_relative_entry() -> Result<(), Box<dyn Error>> {
+    for path in ["/usr/bin::/bin", "bin:/usr/bin", "/usr/bin:."] {
+        let environment =
+            GateEnvironment::from_vars([(OsString::from("PATH"), OsString::from(path))]);
 
-    let adapter = WeighInAdapter::new(&revisions, "");
+        let settings = WeighInSettings::new(check()?, &environment, "run-1");
 
-    assert!(
-        matches!(adapter, Err(WeighInSettingsError::EmptyRunKey)),
-        "{adapter:?}"
-    );
-}
-
-#[test]
-fn reads_this_repositorys_own_ledger_without_refusing_a_file() -> Result<(), Box<dyn Error>> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut head = Head::default();
-    for dir in [JOURNALS, DECISIONS] {
-        for entry in fs::read_dir(root.join(dir))? {
-            let entry = entry?;
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_name| "a UTF-8 name")?;
-            let bytes = fs::read(entry.path())?;
-            let path = format!("{dir}/{name}");
-            head.revisions
-                .insert((Revision::Head, &path), EntryKind::File, &bytes);
-        }
+        assert!(
+            matches!(settings, Err(WeighInSettingsError::RelativeSearchPath)),
+            "{path}: {settings:?}"
+        );
     }
-
-    let (_, findings) = head.findings()?;
-
-    let refused: Vec<&str> = findings
-        .iter()
-        .filter(|f| f.rule.as_deref() == Some(UNREADABLE))
-        .map(|f| f.file.as_str())
-        .collect();
-    assert_eq!(refused, Vec::<&str>::new());
     Ok(())
 }

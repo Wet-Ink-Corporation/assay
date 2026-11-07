@@ -23,6 +23,9 @@ pub(crate) enum Program {
     Node,
     /// `--temper`: the pinned temper copy fetch-by-digest prepared from the base's pin (D8 A).
     Temper,
+    /// `--weighin`: the pinned `weighin` binary the Weigh-In gate runs (`gates-static` only,
+    /// optional; #372).
+    Weighin,
 }
 
 impl Program {
@@ -31,6 +34,7 @@ impl Program {
         match self {
             Self::Node => "--node",
             Self::Temper => "--temper",
+            Self::Weighin => "--weighin",
         }
     }
 }
@@ -93,7 +97,8 @@ pub(crate) enum Side {
 #[derive(Debug)]
 pub(crate) enum GateCliError {
     /// Not the job's flags, each once: `--config`, `--head` and `--out`, plus `--node` and
-    /// `--temper` for `gates-static` and `gates-lint` only.
+    /// `--temper` for `gates-static` and `gates-lint` only, and `--weighin` for `gates-static`
+    /// only.
     Usage,
     /// `REVIEW_RUN_KEY` is unset or empty.
     RunKey,
@@ -156,7 +161,8 @@ impl fmt::Display for GateCliError {
             Self::Usage => f.write_str(
                 "usage: assay gate gates-test --config <plugins-toml> --head <dir> --out <dir>, \
                  or assay gate <gates-static|gates-lint> --config <plugins-toml> --head <dir> \
-                 --out <dir> --node <absolute path> --temper <absolute path>",
+                 --out <dir> --node <absolute path> --temper <absolute path>, gates-static also \
+                 taking --weighin <absolute path>",
             ),
             Self::RunKey => write!(f, "{RUN_KEY} is not set"),
             Self::RunKeyNotUnicode => write!(f, "{RUN_KEY} is not valid Unicode"),

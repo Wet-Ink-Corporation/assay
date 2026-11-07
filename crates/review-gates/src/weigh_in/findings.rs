@@ -1,27 +1,33 @@
-//! The adapter's warnings. None decides anything: the gate is not required until D-WI (04 §9),
-//! and `decide` reads only required gates (rubric rule 1). Ids are validated hex; every other
-//! PR-controlled name (a path, a triaged value) goes through [`plain_name`] into a code span.
-//! Questions and other free text are never quoted.
+//! The adapter's warnings over a `weighin.ci-check/1` report. None decides anything: the gate is
+//! not required (04 §9), and `decide` reads only required gates (rubric rule 1). Ids are
+//! validated hex and statuses and triaged values are closed sets; a journal path goes through
+//! [`plain_name`] into a code span. Questions and deadlines are never read into a finding.
 
-use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 use review_app::{clip_chars, plain_name};
-use review_domain::{Class, Finding, FindingKind, Severity, Side};
+use review_domain::{
+    Authority, BlockingCause, BlockingCauses, Class, Door, Finding, FindingKind, Severity, Side,
+    Standing, standing,
+};
 
-use super::id::ItemId;
-use super::journal::Blocks;
-use super::ledger::{Item, JUDGMENT, Standing, TWO_WAY};
+use super::report::{Blocks, OpenItem, Reason, Report, Violation};
 
-/// Most item and file findings in one document; one more says how many were left out.
+/// Most item and violation findings in one document; one more says how many were left out.
 const MAX_FINDINGS: usize = 1_000;
+
+/// Where item findings sit: the journal directory, since the report does not say which journal
+/// or line raised an item.
+const JOURNALS: &str = ".kb/_ledger/journal";
+/// Where item findings sit: line 1 of [`JOURNALS`] at head.
+const AT_JOURNALS: (&str, NonZeroU64, Side) = (JOURNALS, NonZeroU64::MIN, Side::Right);
 
 /// Rule of an open, triaged item that blocks (04 §9 rule 1).
 const OPEN_BLOCKING: &str = "weigh-in-open-blocking";
 /// Rule of an open item not triaged yet (the reason 04 §9 names).
 const PENDING_TRIAGE: &str = "weigh-in-pending-triage";
-/// Rule of a journal or atom refused whole.
-const UNREADABLE: &str = "weigh-in-unreadable";
+/// Rule of a journal that breaks the append-only rule (04 §9 rule 5).
+const JOURNAL_REWRITTEN: &str = "weigh-in-journal-rewritten";
 /// Rule of the note that findings were left out.
 const TRUNCATED: &str = "weigh-in-truncated";
 
@@ -31,19 +37,11 @@ const TITLE_CHARS: usize = 100;
 const BODY_CHARS: usize = 1200;
 
 /// What every warning ends with.
-const EXPERIMENTAL: &str = "Reported only: until Weigh-In ships `ci-check` (D-WI, #44) this \
-     gate is experimental and never fails, and G2 is enforced by CP1 (`assay check --local`) \
-     and by convention (settle Weigh-In before the session ends).";
-
-/// A file the adapter refused, and why.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Refused<'a> {
-    pub(super) path: &'a str,
-    /// The line at fault, when one is.
-    pub(super) line: Option<NonZeroU64>,
-    /// Completes "the file ...".
-    pub(super) why: &'static str,
-}
+const EXPERIMENTAL: &str = "Reported only: this gate is experimental and never fails until \
+     owner policy makes it required. `weighin ci-check` reports the open items (04 §9 rule 1) and \
+     the journals' append-only check (rule 5); decision corroboration (rule 2) and the evidence \
+     rule (rule 3) are not checked, and G2 is enforced by CP1 (`assay check --local`) and by \
+     convention (settle Weigh-In before the session ends).";
 
 /// A warning's text, clipped to the schema's caps when it becomes a finding.
 struct Text {
@@ -52,40 +50,38 @@ struct Text {
     body: String,
 }
 
-/// The document's findings: refused files, then blocking items, then items pending triage,
-/// at most [`MAX_FINDINGS`] and a note for the rest. `atoms` maps an item to the atom that
-/// names it. Only the findings listed are built.
-pub(super) fn warnings(
-    refused: &[Refused<'_>],
-    items: &[Item<'_>],
-    atoms: &HashMap<&ItemId, &str>,
-) -> Vec<Finding> {
-    let standings: Vec<(&Item<'_>, Standing<'_>)> =
-        items.iter().map(|item| (item, item.standing())).collect();
+/// The document's findings: journal violations, then blocking items, then items pending
+/// triage, at most [`MAX_FINDINGS`] and a note for the rest. Only the findings listed are built.
+pub(super) fn warnings(report: &Report) -> Vec<Finding> {
+    let standings: Vec<(&OpenItem, Standing)> = report
+        .open_items
+        .iter()
+        .map(|item| (item, item_standing(item)))
+        .collect();
     let reported = standings
         .iter()
-        .filter(|(_, standing)| *standing != Standing::Settled)
+        .filter(|(_, standing)| *standing != Standing::Clear)
         .count();
     let blocking = standings
         .iter()
-        .filter_map(|(item, standing)| match *standing {
-            Standing::Blocking { door, authority } => {
-                Some(blocking_item(item, door, authority, atoms))
-            }
-            Standing::PendingTriage | Standing::Settled => None,
+        .filter_map(|(item, standing)| match standing {
+            Standing::Blocking(causes) => Some(blocking_item(item, *causes)),
+            Standing::PendingTriage | Standing::Clear => None,
         });
     let pending = standings
         .iter()
         .filter(|(_, standing)| *standing == Standing::PendingTriage)
-        .map(|(item, _)| pending_item(item, atoms));
-    let mut findings: Vec<Finding> = refused
+        .map(|(item, _)| pending_item(item));
+    let mut findings: Vec<Finding> = report
+        .violations
         .iter()
-        .map(unreadable)
+        .map(rewritten)
         .chain(blocking)
         .chain(pending)
         .take(MAX_FINDINGS)
         .collect();
-    let left = refused
+    let left = report
+        .violations
         .len()
         .saturating_add(reported)
         .saturating_sub(MAX_FINDINGS);
@@ -95,82 +91,129 @@ pub(super) fn warnings(
     findings
 }
 
-/// The warning for a file refused whole, or for a ledger past the adapter's limits.
-fn unreadable(refused: &Refused<'_>) -> Finding {
-    let path = plain_name(refused.path);
-    let at = refused
+/// Where `item` stands by 04 §9 rule 1: `blocks: none` (a date deadline only) is the only
+/// value that holds up nothing; `unknown` blocks, never reads as none.
+fn item_standing(item: &OpenItem) -> Standing {
+    let blocks = match item.blocks {
+        Blocks::None => review_domain::Blocks::Unstated,
+        Blocks::Merge | Blocks::Release | Blocks::Unknown => review_domain::Blocks::Stated,
+    };
+    standing(item.triage, blocks)
+}
+
+/// The warning for a journal that breaks the append-only rule, at its line on the side that
+/// line is of: base (left) for a missing or altered line and a removed journal (line 1, since
+/// the violation has none), head (right) for an undecodable line.
+fn rewritten(violation: &Violation) -> Finding {
+    let path = plain_name(&violation.path);
+    let at = violation
         .line
-        .map_or_else(String::new, |line| format!(" (line {line})"));
+        .map_or_else(String::new, |line| format!(" at line {line}"));
+    let reason = violation.reason.code();
+    let (what, side) = match violation.reason {
+        Reason::Removed => ("is gone at head", Side::Left),
+        Reason::Missing => (
+            "no longer holds the event of a complete base line",
+            Side::Left,
+        ),
+        Reason::Altered => (
+            "holds another event where a complete base line's was",
+            Side::Left,
+        ),
+        Reason::Undecodable => (
+            "holds a complete line that is not a Weigh-In event",
+            Side::Right,
+        ),
+    };
     warning(
-        (UNREADABLE, Severity::Minor),
-        (refused.path, refused.line.unwrap_or(NonZeroU64::MIN)),
+        (JOURNAL_REWRITTEN, Severity::Major),
+        (
+            &violation.path,
+            violation.line.unwrap_or(NonZeroU64::MIN),
+            side,
+        ),
         &Text {
-            evidence: format!("not read: {path}"),
-            title: format!("Weigh-In file not read: `{path}`"),
+            evidence: format!("{path}{at}: {reason}"),
+            title: format!("Weigh-In journal rewritten: `{path}`"),
             body: format!(
-                "`{path}` {}{at}, so the adapter refused it whole rather than guess \
-                 (wi-b5affa): the items it records are missing from this report. {EXPERIMENTAL}",
-                refused.why
+                "`{path}` {what}{at} (`{reason}`): Weigh-In journals are append-only, so every \
+                 complete line a journal held at base must still be there at head (04 §9 rule \
+                 5). {EXPERIMENTAL}"
             ),
         },
     )
 }
 
-/// The warning for an open, triaged item that blocks.
-fn blocking_item(
-    item: &Item<'_>,
-    door: &str,
-    authority: &str,
-    atoms: &HashMap<&ItemId, &str>,
-) -> Finding {
-    let (shown_door, shown_authority) = (plain_name(door), plain_name(authority));
-    let mut reasons = Vec::new();
-    match item.blocks {
-        Blocks::Nothing => {}
-        Blocks::Set => reasons.push("its `blocks` is set".to_owned()),
-        Blocks::Unknown => reasons.push("no `item_raised` says what it blocks".to_owned()),
-    }
-    if door != TWO_WAY {
-        reasons.push(format!("its door is `{shown_door}`, not `{TWO_WAY}`"));
-    }
-    if authority != JUDGMENT {
-        reasons.push(format!(
-            "its authority is `{shown_authority}`, not `{JUDGMENT}`"
-        ));
-    }
-    let id = item.id;
-    let status = status(item);
+/// The warning for an open, triaged item that blocks, naming each cause.
+fn blocking_item(item: &OpenItem, causes: BlockingCauses) -> Finding {
+    let id = item.id.as_str();
+    let status = item.status.code();
+    let reasons: Vec<String> = causes.iter().map(|cause| reason(cause, item)).collect();
+    let (door, authority) = item.triage.map_or(("-", "-"), |triage| {
+        (triage.door.code(), triage.authority.code())
+    });
     warning(
         (OPEN_BLOCKING, Severity::Major),
-        (item.path, item.line),
+        AT_JOURNALS,
         &Text {
-            evidence: format!("{id} {status}, door {shown_door}, authority {shown_authority}"),
+            evidence: format!(
+                "{id} {status}, door {door}, authority {authority}, blocks {}",
+                item.blocks.code()
+            ),
             title: format!("Weigh-In item `{id}` is open and blocking"),
             body: format!(
-                "`{id}` is {status} and triaged, and blocks because {} (04 §9 rule 1): it \
-                 needs a decision before merge.{} {EXPERIMENTAL}",
-                reasons.join(" and "),
-                atom_note(id, atoms)
+                "`{id}` is {status}, and blocks because {} (04 §9 rule 1): it needs a decision \
+                 before merge. {EXPERIMENTAL}",
+                joined(&reasons)
             ),
         },
     )
+}
+
+/// How `cause` reads in a blocking item's body.
+fn reason(cause: BlockingCause, item: &OpenItem) -> String {
+    match cause {
+        BlockingCause::Door(door) => format!(
+            "its door is `{}`, not `{}`",
+            door.code(),
+            Door::TwoWay.code()
+        ),
+        BlockingCause::Authority => format!(
+            "its authority is `{}`, not `{}`",
+            Authority::Authority.code(),
+            Authority::Judgment.code()
+        ),
+        BlockingCause::Blocks => format!(
+            "it blocks `{}`, not `{}`",
+            item.blocks.code(),
+            Blocks::None.code()
+        ),
+    }
+}
+
+/// `parts` as a list: `a`, `a and b`, `a, b, and c`.
+fn joined(parts: &[String]) -> String {
+    match parts {
+        [first, second] => format!("{first} and {second}"),
+        [rest @ .., last] if rest.len() > 1 => format!("{}, and {last}", rest.join(", ")),
+        _ => parts.concat(),
+    }
 }
 
 /// The warning for an open item whose door or authority is not triaged yet.
-fn pending_item(item: &Item<'_>, atoms: &HashMap<&ItemId, &str>) -> Finding {
-    let id = item.id;
-    let status = status(item);
+fn pending_item(item: &OpenItem) -> Finding {
+    let id = item.id.as_str();
+    let status = item.status.code();
     warning(
         (PENDING_TRIAGE, Severity::Minor),
-        (item.path, item.line),
+        AT_JOURNALS,
         &Text {
             evidence: format!("{id} {status}, not triaged"),
             title: format!("Weigh-In item `{id}` awaits triage"),
             body: format!(
                 "`{id}` is {status} and its triaged door or authority is still null: an \
                  untriaged item is never treated as non-blocking (04 §9 rule 1); run \
-                 `/weigh-in` to triage it.{} {EXPERIMENTAL}",
-                atom_note(id, atoms)
+                 `/weigh-in` to triage it. {EXPERIMENTAL}"
             ),
         },
     )
@@ -180,7 +223,7 @@ fn pending_item(item: &Item<'_>, atoms: &HashMap<&ItemId, &str>) -> Finding {
 fn truncated(left: usize) -> Finding {
     warning(
         (TRUNCATED, Severity::Minor),
-        (super::JOURNALS, NonZeroU64::MIN),
+        AT_JOURNALS,
         &Text {
             evidence: format!("{left} more not listed"),
             title: "Weigh-In findings truncated".to_owned(),
@@ -192,27 +235,10 @@ fn truncated(left: usize) -> Finding {
     )
 }
 
-/// The item's status as the findings say it.
-fn status(item: &Item<'_>) -> &'static str {
-    item.status
-        .map_or("open (status unknown)", |status| status.word())
-}
-
-/// A sentence naming the atom that records a decision for `id`, if there is one.
-fn atom_note(id: &ItemId, atoms: &HashMap<&ItemId, &str>) -> String {
-    atoms.get(id).map_or_else(String::new, |path| {
-        format!(
-            " The decision atom `{}` names it, but the journal does not record the decision, \
-             and an atom alone proves nothing (04 §9 rule 2).",
-            plain_name(path)
-        )
-    })
-}
-
-/// A warning under `rule` at `(file, line)` at head.
+/// A warning under `rule` at `(file, line)` on `side`.
 fn warning(
     (rule, severity): (&str, Severity),
-    (file, line): (&str, NonZeroU64),
+    (file, line, side): (&str, NonZeroU64, Side),
     text: &Text,
 ) -> Finding {
     Finding {
@@ -225,7 +251,7 @@ fn warning(
         file: file.to_owned(),
         line,
         end_line: None,
-        side: Some(Side::Right),
+        side: Some(side),
         evidence: clip_chars(&text.evidence, EVIDENCE_CHARS),
         expected_behavior: None,
         trigger: None,

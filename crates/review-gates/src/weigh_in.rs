@@ -1,111 +1,216 @@
 //! The `builtin:weigh-in` adapter in experimental mode (`docs/architecture/04-pipeline.md` §9,
-//! 03 §2.2, #109). Until Weigh-In ships `weighin ci-check` (D-WI, #44) it reads the head's
-//! journals and decision atoms in their documented formats (`docs/decisions/0003`), never links
-//! or runs Weigh-In (P8), and reports 04 §9 rule 1's two sets as warnings: open, triaged items
-//! that block (`weigh-in-open-blocking`) and open items not triaged yet
-//! (`weigh-in-pending-triage`). It runs non-required only and never fails the gate: G2 is
-//! enforced by CP1 and by convention meanwhile.
+//! 03 §2.2, #109, #372). It runs the base's pinned `weighin ci-check --json` (D-WI's command,
+//! Weigh-In 1.1.0 and later) and never links Weigh-In (P8), reads its `weighin.ci-check/1`
+//! report strictly (`weigh_in/report.rs`), and reports as warnings 04 §9 rule 1's two sets, open
+//! triaged items that block (`weigh-in-open-blocking`) and open items not triaged yet
+//! (`weigh-in-pending-triage`), and each journal line rule 5's append-only check found removed,
+//! missing, altered or undecodable (`weigh-in-journal-rewritten`). It runs non-required only and
+//! never fails the gate; rule 2's corroboration and rule 3's evidence rule are not implemented,
+//! and G2 is enforced by CP1 and by convention meanwhile.
 //!
-//! Journals are the regular `*.jsonl` files directly under `.kb/_ledger/journal/`; atoms the
-//! regular `*.md` files directly under `.kb/_intake/decisions/`. Both come from the PR, so they
-//! are read through [`RevisionFiles`] in one batch whose listed size is capped first (H-13). A
-//! file that is not exactly the documented form is refused whole and reported
-//! (`weigh-in-unreadable`), never read in part (wi-b5affa).
+//! `ci-check` reads the journals from the working tree and the history (the range's commits,
+//! trailers, atoms) from git, so it runs in a reading checkout of the head commit whose history
+//! reaches the base (`review_forge::git::ObjectRepo::reading_checkout`), as
+//! `ci-check --json --base <base> --dir <tree> --store <store>` with the tree as working
+//! directory and exactly the gate environment. `--store` names a path in the job's scratch, so
+//! the PR's `.kb/_ledger/config.json` cannot choose the ledger file. `ci-check` exits 0
+//! whenever it wrote its report (CLI-06); any other ending, and a report assay does not read,
+//! is a [`WeighInError`] (`gate-error:not-run`), never a partial read (wi-b5affa).
 
-mod atom;
 mod error;
 mod findings;
 mod id;
-mod journal;
-mod ledger;
+mod report;
 
-use std::collections::HashMap;
+use std::ffi::OsString;
+use std::path::PathBuf;
 
-use review_app::{Adapter, GateDocument, GateJob, GateRun, GateRunner, Plugin, Termination};
-use review_domain::{
-    Finding, FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind,
+use review_app::{
+    Adapter, CommitId, GateDocument, GateJob, GateRun, GateRunner, MAX_DOCUMENT_BYTES, Pin, Plugin,
+    Termination,
 };
+use review_domain::{FindingsDocument, FindingsSchema, GateConclusion, Source, SourceKind};
 
 pub use error::{WeighInError, WeighInSettingsError};
+pub use report::WeighInReportError;
 
-use self::findings::Refused;
-use self::id::ItemId;
-use self::ledger::Journal;
-use crate::revision::{EntryKind, Revision, RevisionFiles, TreeEntry};
+use crate::capture::CaptureSupervisor;
+use crate::environment::GateEnvironment;
+use crate::exec::ProcessSpec;
 
-/// The journal directory.
-const JOURNALS: &str = ".kb/_ledger/journal";
-/// The decision atom directory.
-const DECISIONS: &str = ".kb/_intake/decisions";
-/// The directory listed once for both (and how [`WeighInError::Revision`] names the listing and
-/// the batch read, and where a ledger past the limits is reported).
-const LEDGER: &str = ".kb";
-/// `.kb` and every directory on the way to [`JOURNALS`] and [`DECISIONS`]. A tree entry at one
-/// of them (a file, symlink or submodule) hides everything below it, so it is refused rather
-/// than read as an empty ledger (wi-b5affa).
-const DIRECTORIES: [&str; 5] = [LEDGER, ".kb/_ledger", ".kb/_intake", JOURNALS, DECISIONS];
-/// Most journal and atom files read.
-const MAX_LEDGER_FILES: usize = 10_000;
-/// Most bytes of journals and atoms read, by listed size, before anything is read.
-const MAX_LEDGER_BYTES: u64 = 16 << 20;
-
-/// What a file under one of the two directories is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Journal,
-    Atom,
+/// What the pinned `weighin ci-check` runs on in this job. Every path is absolute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CiCheck {
+    /// The pinned `weighin` binary; never looked up on `PATH`.
+    pub program: PathBuf,
+    /// The reading checkout of the head commit, `ci-check`'s working directory and `--dir`.
+    pub tree: PathBuf,
+    /// `--store`: a ledger file path in the job's scratch (it need not exist), so the PR's
+    /// ledger config cannot choose one.
+    pub store: PathBuf,
+    /// The PR's pinned base commit, `--base`; the report must be about it.
+    pub base: CommitId,
+    /// The PR's pinned head commit, checked out in `tree`; the report must be about it.
+    pub head: CommitId,
 }
 
-/// The Weigh-In adapter, generic over the reader of the PR's trees.
-#[derive(Debug)]
-pub struct WeighInAdapter<R> {
-    revisions: R,
+/// Where and how the Weigh-In adapter runs in this job.
+#[derive(Debug, Clone)]
+pub struct WeighInSettings {
+    program: PathBuf,
+    tree: PathBuf,
+    args: Vec<String>,
+    env: Vec<(OsString, OsString)>,
+    base: CommitId,
+    head: CommitId,
     run_key: String,
 }
 
-impl<R> WeighInAdapter<R> {
-    /// An adapter that reads the PR head through `revisions` (pass `&revisions` to keep it) and
-    /// writes documents for run `run_key`.
+impl WeighInSettings {
+    /// Settings that run `<program> ci-check --json --base <base> --dir <tree> --store <store>`
+    /// in `tree` with exactly `environment`, and write documents for run `run_key`.
     ///
     /// # Errors
     ///
-    /// [`WeighInSettingsError::EmptyRunKey`] when `run_key` is empty.
-    pub fn new(revisions: R, run_key: impl Into<String>) -> Result<Self, WeighInSettingsError> {
+    /// [`WeighInSettingsError`] when the program, the tree or the store is relative, the tree or
+    /// the store is not UTF-8, `environment`'s `PATH` has an empty or relative entry (which
+    /// `ci-check`'s own git would resolve from the PR's tree), or `run_key` is empty.
+    pub fn new(
+        check: CiCheck,
+        environment: &GateEnvironment,
+        run_key: impl Into<String>,
+    ) -> Result<Self, WeighInSettingsError> {
+        let CiCheck {
+            program,
+            tree,
+            store,
+            base,
+            head,
+        } = check;
+        if !program.is_absolute() {
+            return Err(WeighInSettingsError::RelativeProgram { path: program });
+        }
+        if !tree.is_absolute() {
+            return Err(WeighInSettingsError::RelativeTree { path: tree });
+        }
+        if !store.is_absolute() {
+            return Err(WeighInSettingsError::RelativeStore { path: store });
+        }
+        if !environment.search_path_is_absolute() {
+            return Err(WeighInSettingsError::RelativeSearchPath);
+        }
         let run_key = run_key.into();
         if run_key.is_empty() {
             return Err(WeighInSettingsError::EmptyRunKey);
         }
-        Ok(Self { revisions, run_key })
+        let (Some(dir), Some(store_arg)) = (tree.to_str(), store.to_str()) else {
+            let path = if tree.to_str().is_none() { tree } else { store };
+            return Err(WeighInSettingsError::NotUtf8 { path });
+        };
+        let args = ["ci-check", "--json", "--base", base.as_str(), "--dir", dir]
+            .into_iter()
+            .chain(["--store", store_arg])
+            .map(str::to_owned)
+            .collect();
+        Ok(Self {
+            program,
+            tree,
+            args,
+            env: environment.vars().to_vec(),
+            base,
+            head,
+            run_key,
+        })
     }
 }
 
-impl<R: RevisionFiles> GateRunner for WeighInAdapter<R> {
-    type Error = WeighInError<R::Error>;
+/// The Weigh-In adapter, generic over the supervisor that runs `ci-check` and keeps its stdout.
+#[derive(Debug)]
+pub struct WeighInAdapter<S> {
+    supervisor: S,
+    settings: WeighInSettings,
+}
 
-    /// Reads the head's journals and atoms and reports the blocking and pending-triage sets,
-    /// and every file it refused, as one `review.findings/1` document that concludes `pass` when
+impl<S> WeighInAdapter<S> {
+    /// An adapter that runs `ci-check` through `supervisor` (pass `&mut supervisor` to keep it)
+    /// with `settings`.
+    #[must_use]
+    pub const fn new(supervisor: S, settings: WeighInSettings) -> Self {
+        Self {
+            supervisor,
+            settings,
+        }
+    }
+}
+
+impl<S: CaptureSupervisor> WeighInAdapter<S> {
+    /// The adapter's refusals, which [`GateRunner::run`] makes first, without running
+    /// anything: a caller that must prepare what `ci-check` reads (the reading checkout)
+    /// checks them before it does.
+    ///
+    /// # Errors
+    ///
+    /// [`WeighInError::NotWeighIn`] when `plugin` is not weigh-in, [`WeighInError::Required`]
+    /// when it is required, and [`WeighInError::OutsideStatic`] when `job` is not
+    /// `gates-static`.
+    pub fn admit(plugin: &Plugin, job: GateJob) -> Result<(), WeighInError<S::Error>> {
+        admitted(plugin, job).map(|_| ())
+    }
+}
+
+/// `plugin`'s pin when the adapter runs it in `job`; the refusals of [`WeighInAdapter::admit`]
+/// otherwise.
+fn admitted<E>(plugin: &Plugin, job: GateJob) -> Result<&Pin, WeighInError<E>> {
+    let Adapter::WeighIn { pin } = plugin.adapter() else {
+        return Err(WeighInError::NotWeighIn {
+            plugin: plugin.name().as_str().to_owned(),
+        });
+    };
+    if plugin.required() {
+        return Err(WeighInError::Required {
+            plugin: plugin.name().as_str().to_owned(),
+        });
+    }
+    if job != GateJob::Static {
+        return Err(WeighInError::OutsideStatic { job });
+    }
+    Ok(pin)
+}
+
+impl<S: CaptureSupervisor> GateRunner for WeighInAdapter<S> {
+    type Error = WeighInError<S::Error>;
+
+    /// Runs `ci-check` and reports the blocking and pending-triage sets and every journal
+    /// violation of its report as one `review.findings/1` document that concludes `pass` when
     /// it reports nothing and `neutral` otherwise; never `fail`.
     ///
     /// # Errors
     ///
-    /// [`WeighInError`] without reading anything when `plugin` is not weigh-in, is required, or
-    /// `job` is not `gates-static`; when the head cannot be listed or read, or the reader
-    /// returns another number of blobs than asked for.
+    /// [`WeighInError`] without running anything when `plugin` is not weigh-in, is required,
+    /// or `job` is not `gates-static`; when `ci-check` cannot be run, does not exit 0, or
+    /// prints a report that is refused.
     fn run(&mut self, plugin: &Plugin, job: GateJob) -> Result<GateRun, Self::Error> {
-        let Adapter::WeighIn { pin } = plugin.adapter() else {
-            return Err(WeighInError::NotWeighIn {
-                plugin: plugin.name().as_str().to_owned(),
-            });
+        let pin = admitted(plugin, job)?;
+        let settings = &self.settings;
+        let spec = ProcessSpec {
+            program: &settings.program,
+            args: &settings.args,
+            cwd: &settings.tree,
+            env: &settings.env,
+            timeout: plugin.timeout(),
+            max_output_bytes: MAX_DOCUMENT_BYTES,
         };
-        if plugin.required() {
-            return Err(WeighInError::Required {
-                plugin: plugin.name().as_str().to_owned(),
+        let run = self
+            .supervisor
+            .capture(&spec)
+            .map_err(WeighInError::Supervisor)?;
+        if run.termination != Termination::Exited(0) {
+            return Err(WeighInError::Ended {
+                termination: run.termination,
             });
         }
-        if job != GateJob::Static {
-            return Err(WeighInError::OutsideStatic { job });
-        }
-        let findings = self.warnings()?;
+        let report = report::read(&run.stdout, &settings.base, &settings.head)?;
+        let findings = findings::warnings(&report);
         let conclusion = if findings.is_empty() {
             GateConclusion::Pass
         } else {
@@ -118,8 +223,8 @@ impl<R: RevisionFiles> GateRunner for WeighInAdapter<R> {
                 name: plugin.name().as_str().to_owned(),
                 version: pin.to_string(),
                 role: None,
-                // The adapter keeps the key for the next run; the document owns its copy.
-                run_key: self.run_key.clone(),
+                // The settings keep the key for the next run; the document owns its copy.
+                run_key: settings.run_key.clone(),
             },
             conclusion: Some(conclusion),
             findings,
@@ -133,165 +238,4 @@ impl<R: RevisionFiles> GateRunner for WeighInAdapter<R> {
             document: GateDocument::Written(bytes),
         })
     }
-}
-
-impl<R: RevisionFiles> WeighInAdapter<R> {
-    /// The head's journals and atoms, read and folded into the document's findings.
-    fn warnings(&self) -> Result<Vec<Finding>, WeighInError<R::Error>> {
-        let entries = self.list()?;
-        let mut refused: Vec<Refused<'_>> = entries
-            .iter()
-            .filter(|entry| DIRECTORIES.contains(&entry.path.as_str()))
-            .map(|entry| Refused {
-                path: &entry.path,
-                line: None,
-                why: "is not a directory (a file, symlink or submodule), so nothing below it \
-                      was read",
-            })
-            .collect();
-        let mut wanted = select(JOURNALS, &entries, Kind::Journal, &mut refused);
-        wanted.extend(select(DECISIONS, &entries, Kind::Atom, &mut refused));
-        if !within_limits(&wanted) {
-            refused.push(Refused {
-                path: LEDGER,
-                line: None,
-                why: "holds more journal and atom files or bytes than this adapter reads \
-                      (10,000 files, 16 MiB), so none was read",
-            });
-            return Ok(findings::warnings(&refused, &[], &HashMap::new()));
-        }
-        let blobs = self.read(&wanted)?;
-        let (journals, atoms) = parse(&wanted, &blobs, &mut refused);
-        let mut named: HashMap<&ItemId, &str> = HashMap::new();
-        for (id, path) in &atoms {
-            named.entry(id).or_insert(path);
-        }
-        Ok(findings::warnings(
-            &refused,
-            &ledger::items(&journals),
-            &named,
-        ))
-    }
-
-    /// The bytes of each of `wanted`, in one read.
-    fn read(&self, wanted: &[(&TreeEntry, Kind)]) -> Result<Vec<Vec<u8>>, WeighInError<R::Error>> {
-        let entries: Vec<&TreeEntry> = wanted.iter().map(|(entry, _)| *entry).collect();
-        let blobs = self
-            .revisions
-            .read(&entries)
-            .map_err(|source| WeighInError::Revision {
-                path: LEDGER,
-                source,
-            })?;
-        if blobs.len() == entries.len() {
-            Ok(blobs)
-        } else {
-            Err(WeighInError::BlobCount {
-                asked: entries.len(),
-                read: blobs.len(),
-            })
-        }
-    }
-
-    /// The head's entries at or under `.kb`, in one listing: an entry at `.kb` itself or at any
-    /// directory on the way to the journals or atoms is one that is not a directory.
-    fn list(&self) -> Result<Vec<TreeEntry>, WeighInError<R::Error>> {
-        self.revisions
-            .list(Revision::Head, Some(LEDGER))
-            .map_err(|source| WeighInError::Revision {
-                path: LEDGER,
-                source,
-            })
-    }
-}
-
-/// The regular files directly under `dir` in `entries` whose name ends in the suffix of
-/// `kind`, tagged with it. Such a name that is a symlink or a submodule goes to `refused`;
-/// anything else is not Weigh-In's and is skipped.
-fn select<'a>(
-    dir: &str,
-    entries: &'a [TreeEntry],
-    kind: Kind,
-    refused: &mut Vec<Refused<'a>>,
-) -> Vec<(&'a TreeEntry, Kind)> {
-    let suffix = match kind {
-        Kind::Journal => ".jsonl",
-        Kind::Atom => ".md",
-    };
-    let mut wanted = Vec::new();
-    for entry in entries {
-        let path = entry.path.as_str();
-        let Some(name) = path
-            .strip_prefix(dir)
-            .and_then(|rest| rest.strip_prefix('/'))
-        else {
-            continue;
-        };
-        if name.contains('/') || !name.ends_with(suffix) {
-            continue;
-        }
-        match entry.kind {
-            EntryKind::File => wanted.push((entry, kind)),
-            EntryKind::Symlink | EntryKind::Submodule => refused.push(Refused {
-                path,
-                line: None,
-                why: "is a symlink or a submodule, not a regular file",
-            }),
-        }
-    }
-    wanted
-}
-
-/// The journals and Weigh-In atoms among `wanted`, whose bytes are `blobs`; each file that is
-/// not exactly its documented form goes to `refused` instead.
-fn parse<'a>(
-    wanted: &[(&'a TreeEntry, Kind)],
-    blobs: &[Vec<u8>],
-    refused: &mut Vec<Refused<'a>>,
-) -> (Vec<Journal<'a>>, Vec<(ItemId, &'a str)>) {
-    let mut journals = Vec::new();
-    let mut atoms = Vec::new();
-    for ((entry, kind), bytes) in wanted.iter().zip(blobs) {
-        let path = entry.path.as_str();
-        match kind {
-            Kind::Journal => match journal::parse(bytes) {
-                Ok(events) => journals.push(Journal { path, events }),
-                Err(refusal) => refused.push(Refused {
-                    path,
-                    line: refusal.line,
-                    why: refusal.fault.text(),
-                }),
-            },
-            Kind::Atom => match atom::item(file_name(path), bytes) {
-                Ok(Some(id)) => atoms.push((id, path)),
-                Ok(None) => {}
-                Err(fault) => refused.push(Refused {
-                    path,
-                    line: None,
-                    why: fault.text(),
-                }),
-            },
-        }
-    }
-    (journals, atoms)
-}
-
-/// Whether `wanted` is within [`MAX_LEDGER_FILES`] and [`MAX_LEDGER_BYTES`] by listed size; a
-/// file with no listed size is past them.
-fn within_limits(wanted: &[(&TreeEntry, Kind)]) -> bool {
-    wanted.len() <= MAX_LEDGER_FILES
-        && wanted
-            .iter()
-            .try_fold(0_u64, |total, (entry, _)| {
-                entry
-                    .size
-                    .and_then(|size| total.checked_add(size))
-                    .filter(|total| *total <= MAX_LEDGER_BYTES)
-            })
-            .is_some()
-}
-
-/// The last segment of `path`.
-fn file_name(path: &str) -> &str {
-    path.rsplit_once('/').map_or(path, |(_, name)| name)
 }

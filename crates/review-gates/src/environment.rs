@@ -1,5 +1,6 @@
 //! The environment a gate process may see (`docs/architecture/03-contracts.md` §2).
 
+use std::env;
 use std::ffi::{OsStr, OsString};
 
 /// The names passed through from the inherited environment (03 §2). The assay variables are
@@ -38,6 +39,15 @@ impl GateEnvironment {
     #[must_use]
     pub fn vars(&self) -> &[(OsString, OsString)] {
         &self.vars
+    }
+
+    /// Whether every entry of `PATH` is an absolute directory. An empty or relative entry
+    /// resolves against the working directory, which for a gate tool is the PR's tree.
+    pub(crate) fn search_path_is_absolute(&self) -> bool {
+        self.vars
+            .iter()
+            .filter(|(name, _)| name == "PATH")
+            .all(|(_, value)| env::split_paths(value).all(|entry| entry.is_absolute()))
     }
 }
 

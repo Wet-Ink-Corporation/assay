@@ -52,6 +52,7 @@ mod numstat;
 mod patch;
 mod push;
 mod range;
+mod reading;
 mod repository;
 mod sha;
 mod tree;
@@ -135,8 +136,9 @@ pub enum GitError {
         /// Entries listed.
         found: usize,
     },
-    /// The listed sizes of the blobs asked for add up past the limit; nothing was read.
-    #[error("the blobs asked for total {found} bytes, over the limit of {max}")]
+    /// The listed sizes of the blobs asked for, or of a commit's files to be checked out, add
+    /// up past the limit; nothing was read or written.
+    #[error("the blobs total {found} bytes, over the limit of {max}")]
     TooManyBytes {
         /// The limit.
         max: u64,
