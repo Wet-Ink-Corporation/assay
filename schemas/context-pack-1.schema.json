@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:context-pack:1",
-  "title": "assay.context-pack/1",
+  "$id": "urn:review:schema:context-pack:1",
+  "title": "review.context-pack/1",
   "description": "The Z4 half of the context pack `admit` builds for the review job (docs/architecture/04-pipeline.md §1 S1a and §3, 02-architecture.md §2, 03-contracts.md §6d): the base suppress text, the owner-valid dismissals read from the ledger's command records, and the prior findings read from the previous run's bundle through the ledger's evidence pointer. Nothing in it comes from PR comment text. `admit` publishes its sha256 in its outputs. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "run_uid", "run_key", "suppress", "dismissals", "prior"],
   "properties": {
     "schema": {
-      "const": "assay.context-pack/1"
+      "const": "review.context-pack/1"
     },
     "run_uid": {
       "description": "The workflow run that admitted, (repo_id, run_id, run_attempt) (03 §4).",
@@ -48,7 +48,7 @@
       }
     },
     "prior": {
-      "description": "The previous completed run's open findings, as its `assay.run-inputs/1` bundle carries them (03 §6a `carry.findings`), when the carry-over is kept; empty otherwise.",
+      "description": "The previous completed run's open findings, as its `review.run-inputs/1` bundle carries them (03 §6a `carry.findings`), when the carry-over is kept; empty otherwise.",
       "type": "array",
       "maxItems": 256,
       "items": { "$ref": "#/$defs/carriedFinding" }
@@ -64,7 +64,7 @@
       "minimum": 1
     },
     "carriedFinding": {
-      "description": "A finding open into this run, as `assay.run-inputs/1` writes it.",
+      "description": "A finding open into this run, as `review.run-inputs/1` writes it.",
       "type": "object",
       "additionalProperties": false,
       "required": ["fp", "file", "line", "class", "severity", "title", "evidence"],

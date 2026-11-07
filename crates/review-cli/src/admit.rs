@@ -1,0 +1,309 @@
+//! The pipeline's `admit` job (#60 ST-11, S1a, 04 §1): plan's `run.json`, authenticated by
+//! plan's `run_digest`, admitted through [`review_app::admit`], with the admitted `run.json` and,
+//! for a spend, `context-pack.json` written into `--out` and admit's outputs (03 §4a) read off
+//! what was written.
+//!
+//! A run with no LLM stage reads nothing ([`review_app::plan_stage`]). Otherwise, in order: the
+//! pinned base and head are fetched; the base P10 lists and `.assay/suppress.toml` are read at
+//! the base; the range's identities through [`review_app::range_identities`], decide's one range
+//! reading; the previous completed run's head from its bundle through the ledger's evidence
+//! pointer (D6 A, [`review_app::prior_head`]) and with it the carry through
+//! [`review_app::review_target`]. The binary builds the ports; [`run_admit`] does the rest over
+//! them, so it is tested with fakes.
+
+mod error;
+
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::PathBuf;
+
+use review_app::{
+    AdmitPorts, AdmitRequest, Admitted, BundleSource, Clock, CommandComments, CommitId,
+    ContractValidator, EntryKind, Forge, Ledger, LedgerRefs, MAX_SUPPRESS_BYTES, NoEvents,
+    PlanStage, PullRequestObjects, RangeRequest, Sha256Digest, admit, base_identities, plan_stage,
+    range_identities, read_pushes,
+};
+
+pub use self::error::{AdmitRunError, AdmitRunFailure, FetchedSide, StageError, SuppressError};
+use crate::ci::{FirstAttempt, OutDir};
+use crate::outputs::{AdmitOutputs, Identity, PlanOutputs};
+use crate::plan::RUN_FILE;
+use crate::prior::{Prior, prior};
+use crate::pull_request::ForgePullRequest;
+
+/// The context pack's file name in `--out`, beside [`RUN_FILE`]; written for a spend only.
+pub const PACK_FILE: &str = "context-pack.json";
+
+/// The base suppress rules, carried in the pack as they are (03 §1).
+const SUPPRESS: &str = ".assay/suppress.toml";
+
+/// Fetches a commit, with its history, into the object repository the job reads.
+pub trait FetchCommits {
+    /// Why the commit could not be fetched.
+    type Error: std::error::Error + 'static;
+
+    /// Fetches `commit`.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::Error`] when the commit could not be fetched.
+    fn fetch(&self, commit: &CommitId) -> Result<(), Self::Error>;
+}
+
+/// What `admit` is given besides its ports.
+#[derive(Debug, Clone, Copy)]
+pub struct AdmitJob<'a> {
+    /// The run, checked to be its first attempt.
+    pub run: &'a FirstAttempt,
+    /// guard's identity of the PR (I2).
+    pub identity: &'a Identity,
+    /// plan's outputs.
+    pub plan: &'a PlanOutputs,
+    /// The bytes of the `run.json` in plan's artifact, not yet authenticated.
+    pub document: &'a [u8],
+    /// The contract validator the documents are checked with.
+    pub validator: &'a ContractValidator,
+}
+
+/// What `admit` reads and writes through, borrowed for one call.
+#[derive(Debug)]
+pub struct AdmitJobPorts<'p, 'r, L, R, B, C, F, H, K> {
+    /// Fetches the pinned commits into [`Self::objects`]' repository.
+    pub fetch: &'p H,
+    /// The PR's objects.
+    pub objects: &'p ForgePullRequest<'r>,
+    /// GitHub, for the range's commit identities.
+    pub forge: &'p F,
+    /// The ledger's files.
+    pub ledger: &'p L,
+    /// The ledger's refs.
+    pub refs: &'p R,
+    /// The run artifacts, for the previous run's bundle.
+    pub bundles: &'p B,
+    /// The PR's issue comments, to void a command record.
+    pub comments: &'p C,
+    /// The wall clock, and the slot wait.
+    pub clock: &'p mut K,
+}
+
+/// What [`stage_admit`] made of a job before any port, token or base config is read.
+#[derive(Debug)]
+pub enum AdmitStage<'a> {
+    /// The run has no LLM stage (a draft, `trivial`, `needs-split`): its plan document is
+    /// written into `out` unchanged, and these are admit's outputs for it.
+    Written(AdmitOutputs),
+    /// The run's LLM stage would spend: [`admit_spending`] admits it over the ports.
+    Spends(Spending<'a>),
+}
+
+/// A job whose plan document is plan's `run_digest` and whose LLM stage would spend. Only
+/// [`stage_admit`] makes one, so [`admit_spending`] never admits a document it has not checked.
+#[derive(Debug, Clone, Copy)]
+pub struct Spending<'a> {
+    job: AdmitJob<'a>,
+}
+
+/// Admits `job`'s run through `ports` and writes the admitted documents into `out`:
+/// [`stage_admit`], then [`admit_spending`] for a run that spends.
+///
+/// It creates `out` and writes the admitted `run.json` into it as [`RUN_FILE`] (the plan's
+/// unchanged for a run that does not spend) and, for a spend, the context pack as
+/// [`PACK_FILE`], and returns admit's outputs for what it wrote.
+///
+/// # Errors
+///
+/// As [`stage_admit`] and [`admit_spending`].
+pub fn run_admit<L, R, B, C, F, H, K>(
+    job: AdmitJob<'_>,
+    ports: AdmitJobPorts<'_, '_, L, R, B, C, F, H, K>,
+    out: &OutDir,
+) -> Result<AdmitOutputs, AdmitRunFailure<L, R, B, C, F, H>>
+where
+    L: Ledger,
+    R: LedgerRefs,
+    B: BundleSource,
+    C: CommandComments,
+    F: Forge,
+    H: FetchCommits,
+    K: Clock,
+{
+    match stage_admit(job, out).map_err(AdmitRunError::from)? {
+        AdmitStage::Written(outputs) => Ok(outputs),
+        AdmitStage::Spends(spending) => admit_spending(spending, ports, out),
+    }
+}
+
+/// Authenticates `job`'s plan document and, for a run with no LLM stage, admits it and writes
+/// it into `out`, reading no port: the no-spend shortcut, before any token is read (#347, T8
+/// option B).
+///
+/// The plan document's sha256 must be plan's `run_digest` before anything else; then
+/// [`plan_stage`] applies admit's own spend rule. A run that spends is handed back as
+/// [`AdmitStage::Spends`], with nothing written.
+///
+/// # Errors
+///
+/// [`StageError::PlanDigest`] before anything is read, [`StageError::Plan`] for a refused plan
+/// document, [`StageError::Write`] when `out` or the document cannot be written.
+pub fn stage_admit<'a>(job: AdmitJob<'a>, out: &OutDir) -> Result<AdmitStage<'a>, StageError> {
+    if Sha256Digest::of(job.document) != *job.plan.run_digest() {
+        return Err(StageError::PlanDigest);
+    }
+    let run_uid = job.run.run_env().run_uid;
+    let admitted =
+        match plan_stage(job.validator, job.document, run_uid).map_err(StageError::Plan)? {
+            PlanStage::NoSpend(admitted) => admitted,
+            PlanStage::Spends => return Ok(AdmitStage::Spends(Spending { job })),
+        };
+    let outputs = AdmitOutputs::new(&admitted, job.plan.tier());
+    write_admitted(out, &admitted).map_err(|(path, source)| StageError::Write { path, source })?;
+    Ok(AdmitStage::Written(outputs))
+}
+
+/// Admits a run that spends through `ports` and writes the admitted `run.json` and context pack
+/// into `out`.
+///
+/// # Errors
+///
+/// [`AdmitRunError`] for every failure before or inside the admission. A failure to write
+/// `out` once a slot is held is [`AdmitRunError::Write`] with the slot, so the job can still
+/// report it for release.
+pub fn admit_spending<L, R, B, C, F, H, K>(
+    spending: Spending<'_>,
+    mut ports: AdmitJobPorts<'_, '_, L, R, B, C, F, H, K>,
+    out: &OutDir,
+) -> Result<AdmitOutputs, AdmitRunFailure<L, R, B, C, F, H>>
+where
+    L: Ledger,
+    R: LedgerRefs,
+    B: BundleSource,
+    C: CommandComments,
+    F: Forge,
+    H: FetchCommits,
+    K: Clock,
+{
+    let job = spending.job;
+    let admitted = spend(job, &mut ports)?;
+    let outputs = AdmitOutputs::new(&admitted, job.plan.tier());
+    write_admitted(out, &admitted).map_err(|(path, source)| AdmitRunError::Write {
+        path,
+        source,
+        held: outputs.held(),
+    })?;
+    Ok(outputs)
+}
+
+/// Reads what the admission needs and admits a run whose LLM stage would spend.
+fn spend<L, R, B, C, F, H, K>(
+    job: AdmitJob<'_>,
+    ports: &mut AdmitJobPorts<'_, '_, L, R, B, C, F, H, K>,
+) -> Result<Admitted, AdmitRunFailure<L, R, B, C, F, H>>
+where
+    L: Ledger,
+    R: LedgerRefs,
+    B: BundleSource,
+    C: CommandComments,
+    F: Forge,
+    H: FetchCommits,
+    K: Clock,
+{
+    let identity = job.identity;
+    for (side, commit) in [
+        (FetchedSide::Base, &identity.base_sha),
+        (FetchedSide::Head, &identity.head_sha),
+    ] {
+        ports
+            .fetch
+            .fetch(commit)
+            .map_err(|source| AdmitRunError::Fetch { side, source })?;
+    }
+    let objects = ports.objects;
+    let identities =
+        base_identities(objects, &identity.base_sha).map_err(AdmitRunError::Identities)?;
+    let suppress = base_suppress(objects, &identity.base_sha).map_err(AdmitRunError::Suppress)?;
+    let run_uid = job.run.run_env().run_uid;
+    let pushes =
+        read_pushes(ports.ledger, run_uid.repo_id, identity.pr).map_err(AdmitRunError::Pushes)?;
+    let range = range_identities(
+        objects,
+        ports.forge,
+        &RangeRequest {
+            base_sha: &identity.base_sha,
+            head_sha: &identity.head_sha,
+            pushes: &pushes,
+        },
+    )
+    .map_err(AdmitRunError::Range)?;
+    // The previous bundle is dropped here: admit reads its carry set itself (#347 follow-up).
+    let Prior {
+        carry,
+        state,
+        bundle: _,
+    } = prior(
+        (job.run.run_env(), identity),
+        objects,
+        ports.ledger,
+        ports.bundles,
+    )
+    .map_err(AdmitRunError::from)?;
+    let request = AdmitRequest {
+        run_uid,
+        plan: job.document,
+        carry,
+        prior: state.evidence.as_ref(),
+        identities: &identities,
+        author: identity.author,
+        range: &range,
+        suppress: suppress.as_deref(),
+    };
+    let ports = AdmitPorts {
+        ledger: ports.ledger,
+        refs: ports.refs,
+        bundles: ports.bundles,
+        comments: ports.comments,
+        clock: &mut *ports.clock,
+        // D7 is open: admit's events are not part of its artifact yet.
+        events: &mut NoEvents,
+    };
+    admit(ports, &request, job.validator).map_err(|error| AdmitRunError::Admit(Box::new(error)))
+}
+
+/// The text of base `.assay/suppress.toml` at `base`, or `None` when the base has none.
+fn base_suppress(
+    objects: &ForgePullRequest<'_>,
+    base: &CommitId,
+) -> Result<Option<String>, SuppressError> {
+    let entries = objects
+        .list(base, Some(SUPPRESS))
+        .map_err(SuppressError::Objects)?;
+    let entry = match entries.as_slice() {
+        [] => return Ok(None),
+        [entry] if entry.path == SUPPRESS && entry.kind == EntryKind::File => entry,
+        // A directory lists what is under it; a symlink or submodule is not followed.
+        _ => return Err(SuppressError::NotARegularFile),
+    };
+    let size = entry.size.ok_or(SuppressError::NotARegularFile)?;
+    if usize::try_from(size).map_or(true, |size| size > MAX_SUPPRESS_BYTES) {
+        return Err(SuppressError::TooLarge { size });
+    }
+    let blobs = objects.read(&[entry]).map_err(SuppressError::Objects)?;
+    let [bytes] = <[Vec<u8>; 1]>::try_from(blobs).map_err(|_not_one| SuppressError::Unread)?;
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_not_utf8| SuppressError::NotUtf8)
+}
+
+/// Creates `out` (refusing one that exists by now) and writes the admitted documents into it.
+fn write_admitted(out: &OutDir, admitted: &Admitted) -> Result<(), (PathBuf, std::io::Error)> {
+    fs::create_dir(out.path()).map_err(|source| (out.path().to_path_buf(), source))?;
+    let pack = admitted.pack().map(|pack| (PACK_FILE, pack.json()));
+    for (name, bytes) in [(RUN_FILE, admitted.run_json())].into_iter().chain(pack) {
+        let path = out.path().join(name);
+        if let Err(source) = File::create_new(&path)
+            .and_then(|mut file| file.write_all(bytes).and_then(|()| file.flush()))
+        {
+            return Err((path, source));
+        }
+    }
+    Ok(())
+}

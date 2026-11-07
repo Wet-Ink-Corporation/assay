@@ -1,0 +1,30 @@
+[package]
+name = "review-gates"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Workspace edges allowed: review-app and review-domain (02 §2). Added by the story that first uses them.
+[dependencies]
+review-app = { workspace = true }
+# The temper adapter (#63) builds its `review.findings/1` document from the domain's types, parses
+# temper's JSON (baseline, temper.json, scan output) with serde_json and base
+# `.assay/exceptions.toml` with toml. All pre-approved and already workspace dependencies.
+review-domain = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The forbid backstop's own target directory, created fresh beside the head tree and removed
+# after the build (#172). Pre-approved and already a workspace dependency.
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+# Property tests: path resolution and line quotes against their reference readings (#184).
+proptest = { workspace = true }
+# The lexer's token boundaries against proc-macro2's (src/temper/corpus.rs).
+syn = { workspace = true }

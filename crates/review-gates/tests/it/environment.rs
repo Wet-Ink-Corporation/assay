@@ -1,0 +1,121 @@
+//! The gate environment allowlist (`docs/architecture/03-contracts.md` §2).
+
+use std::ffi::OsString;
+
+use review_gates::GateEnvironment;
+
+fn vars(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+    pairs
+        .iter()
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+        .collect()
+}
+
+#[test]
+fn keeps_only_path_home_ci_and_assay_variables() {
+    let inherited = vars(&[
+        ("GITHUB_TOKEN", "ghs_secret"),
+        ("PATH", "/usr/bin:/bin"),
+        ("ACTIONS_RUNTIME_TOKEN", "secret"),
+        ("HOME", "/home/runner"),
+        ("CI", "true"),
+        ("REVIEW_RUN_KEY", "k"),
+        ("CARGO_HOME", "/cargo"),
+        ("REVIEW_BASE_SHA", "abc"),
+    ]);
+
+    let environment = GateEnvironment::from_vars(inherited);
+
+    assert_eq!(
+        environment.vars(),
+        vars(&[
+            ("PATH", "/usr/bin:/bin"),
+            ("HOME", "/home/runner"),
+            ("CI", "true"),
+            ("REVIEW_RUN_KEY", "k"),
+            ("REVIEW_BASE_SHA", "abc"),
+        ])
+    );
+}
+
+/// The forbid backstop (#172) sets these after the gate environment; none may come from the
+/// runner, where it could cap or strip the forbidden lints before the backstop's own values.
+#[test]
+fn drops_every_variable_that_steers_rustc_flags_or_the_compiler() {
+    let inherited = vars(&[
+        ("RUSTFLAGS", "--cap-lints=allow"),
+        ("CARGO_ENCODED_RUSTFLAGS", "-Aunsafe_code"),
+        ("CARGO_BUILD_RUSTFLAGS", "-Aunsafe_code"),
+        (
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+            "-Aunsafe_code",
+        ),
+        ("RUSTC_WRAPPER", "/bin/strip"),
+        ("RUSTC_WORKSPACE_WRAPPER", "/bin/strip"),
+        ("CARGO_BUILD_RUSTC_WRAPPER", "/bin/strip"),
+        ("RUSTC", "/bin/fake"),
+        ("CARGO_TARGET_DIR", "/poisoned"),
+        ("CLIPPY_ARGS", "--cap-lints__CLIPPY_HACKERY__allow"),
+        ("CLIPPY_CONF_DIR", "/elsewhere"),
+        ("RUSTUP_TOOLCHAIN", "nightly"),
+        ("PATH", "/usr/bin"),
+    ]);
+
+    let environment = GateEnvironment::from_vars(inherited);
+
+    assert_eq!(environment.vars(), vars(&[("PATH", "/usr/bin")]));
+}
+
+#[test]
+fn matches_names_exactly_and_case_sensitively() {
+    let inherited = vars(&[
+        ("path", "/tmp"),
+        ("PATHEXT", "x"),
+        ("CI_JOB_TOKEN", "secret"),
+        ("REVIEW", "x"),
+        ("REVIEW_", "x"),
+        ("review_run_key", "x"),
+        ("XREVIEW_RUN_KEY", "x"),
+    ]);
+
+    let environment = GateEnvironment::from_vars(inherited);
+
+    assert_eq!(environment.vars(), []);
+}
+
+#[test]
+fn keeps_only_the_three_assay_variables_of_the_gate_contract() {
+    // 03 §2 names three; a future REVIEW_* secret must not reach PR-controlled code.
+    let inherited = vars(&[
+        ("REVIEW_BASE_SHA", "abc"),
+        ("REVIEW_APP_PRIVATE_KEY", "secret"),
+        ("REVIEW_HEAD_SHA", "def"),
+        ("REVIEW_FINDINGS_OUT", "/tmp/elsewhere.json"),
+        ("REVIEW_RUN_KEY", "k"),
+        ("REVIEW_RUN_KEYS", "x"),
+    ]);
+
+    let environment = GateEnvironment::from_vars(inherited);
+
+    assert_eq!(
+        environment.vars(),
+        vars(&[
+            ("REVIEW_BASE_SHA", "abc"),
+            ("REVIEW_HEAD_SHA", "def"),
+            ("REVIEW_RUN_KEY", "k"),
+        ])
+    );
+}
+
+#[test]
+fn drops_names_that_are_not_unicode() {
+    use std::os::unix::ffi::OsStringExt;
+    let inherited = vec![(
+        OsString::from_vec(b"REVIEW_\xff".to_vec()),
+        OsString::from("x"),
+    )];
+
+    let environment = GateEnvironment::from_vars(inherited);
+
+    assert_eq!(environment.vars(), []);
+}

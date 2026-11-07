@@ -1,5 +1,5 @@
 {
-  "schema": "assay.run/1",
+  "schema": "review.run/1",
   "run_key": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
   "run_uid": {
     "repo_id": 840213377,
@@ -47,7 +47,7 @@
     "excluded": []
   },
   "artifact_names": {
-    "gates-lint": "assay-gates-lint-0123456789abcdef0123456789abcdef"
+    "gates-lint": "review-gates-lint-0123456789abcdef0123456789abcdef"
   },
   "draft": true
 }

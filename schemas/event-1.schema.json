@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:event:1",
-  "title": "assay.event/1",
+  "$id": "urn:review:schema:event:1",
+  "title": "review.event/1",
   "description": "One line of a job's JSONL event stream (docs/architecture/03-contracts.md §6). The envelope rejects unknown fields; `data` is closed for every kind whose fields 03 §6 lists and an object for the others. Unreleased, so changed in place rather than versioned: `FindingDisposed.fp` was added by #170 and required for `duplicate` and `verifier-rejected-downgraded` by #263.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "job", "idx", "ts", "run_key", "run_uid", "stage", "kind", "data"],
   "properties": {
-    "schema": { "const": "assay.event/1" },
+    "schema": { "const": "review.event/1" },
     "job": { "$ref": "#/$defs/nonEmpty" },
     "idx": { "$ref": "#/$defs/count" },
     "ts": { "type": "string", "format": "date-time" },

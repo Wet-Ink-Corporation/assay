@@ -4,13 +4,13 @@ Development eval cases: labelled changes used while tuning prompts and threshold
 
 ## Case format
 
-`assay_app::read_eval_corpus` reads a split (`crates/assay-app/src/eval/corpus.rs`); `crates/assay-app/tests/it/eval_corpus.rs` checks that every split in this repository reads. A split holds this README and one directory per case, named by its id (1 to 64 bytes of `a-z`, `0-9`, `-`). A case directory holds exactly:
+`review_app::read_eval_corpus` reads a split (`crates/review-app/src/eval/corpus.rs`); `crates/review-app/tests/it/eval_corpus.rs` checks that every split in this repository reads. A split holds this README and one directory per case, named by its id (1 to 64 bytes of `a-z`, `0-9`, `-`). A case directory holds exactly:
 
 - `case.json` (at most 64 KiB), read strictly (no unknown or repeated key):
 
   ```json
   {
-    "schema": "assay.eval-case/1",
+    "schema": "review.eval-case/1",
     "authoring_model": "human",
     "source": "real-defect",
     "labels": [{ "file": "src/lib.rs", "start_line": 40, "end_line": 44, "class": "logic" }]
@@ -29,7 +29,7 @@ Anything else, and anything past a cap, refuses the whole split. The format has 
 
 ## Scoring
 
-A finding matches a label when it is in the same file, its lines overlap the hunk widened by 10 lines on each side, and its class maps to the label's (identity unless the run's class map adds an alias). A defect case is detected in a run when any finding matches any label; every finding on a case without labels is noise. A run that cannot be scored counts as a miss on a defect case and as noise on a true-negative case; a runner failure or the usage limit stops the evaluation instead. `compare` refuses a baseline holding an unscorable run, and reports whose cases differ in id or in content (`case.json`, `change.diff`, and every `tree/` path and file's bytes). Each case runs 3 times; `assay_app::compare` accepts a change when no case flips from at least 2 of 3 detected to at most 1 of 3, and the candidate's true-negative noise rate is at most the baseline's 95% Wilson upper bound (reported with n).
+A finding matches a label when it is in the same file, its lines overlap the hunk widened by 10 lines on each side, and its class maps to the label's (identity unless the run's class map adds an alias). A defect case is detected in a run when any finding matches any label; every finding on a case without labels is noise. A run that cannot be scored counts as a miss on a defect case and as noise on a true-negative case; a runner failure or the usage limit stops the evaluation instead. `compare` refuses a baseline holding an unscorable run, and reports whose cases differ in id or in content (`case.json`, `change.diff`, and every `tree/` path and file's bytes). Each case runs 3 times; `review_app::compare` accepts a change when no case flips from at least 2 of 3 detected to at most 1 of 3, and the candidate's true-negative noise rate is at most the baseline's 95% Wilson upper bound (reported with n).
 
 ## Cases
 

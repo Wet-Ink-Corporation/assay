@@ -9,7 +9,7 @@
 # `git config core.hooksPath /path/to/assay/plugin/hooks` also works, but it replaces every
 # hook the repository has (.git/hooks is no longer read), so use it only where there are none.
 #
-# ASSAY names the assay program (default: `assay` on PATH). ASSAY_WEIGHIN names the weighin
+# ASSAY names the assay program (default: `assay` on PATH). REVIEW_WEIGHIN names the weighin
 # program, absolute (default: `weighin` on PATH); without one, `assay pre-push` says it did not
 # check and lets the push through. The full advisory check is `assay check --local`
 # (/assay:check), which reports the same Weigh-In items.

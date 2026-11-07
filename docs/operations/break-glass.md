@@ -1,12 +1,12 @@
 # Break-glass: merging when assay cannot decide
 
-`assay / verdict` is the only required check on a protected base (`docs/architecture/05-security.md` §7). When the pipeline cannot produce a verdict at all, the owner merges through the ruleset bypass. This runbook says when that is allowed, how to do it and how it is recorded. The check lifecycle that leads here is `06-operations.md` §4, step 5.
+`review / verdict` is the only required check on a protected base (`docs/architecture/05-security.md` §7). When the pipeline cannot produce a verdict at all, the owner merges through the ruleset bypass. This runbook says when that is allowed, how to do it and how it is recorded. The check lifecycle that leads here is `06-operations.md` §4, step 5.
 
 ## Bypass or `/assay override`?
 
 | Situation | What the PR shows | Use |
 |---|---|---|
-| The workflow never started (Actions outage, workflows disabled, the App uninstalled) | "Expected, waiting for status" on `assay / verdict` | **Ruleset bypass** (this runbook) |
+| The workflow never started (Actions outage, workflows disabled, the App uninstalled) | "Expected, waiting for status" on `review / verdict` | **Ruleset bypass** (this runbook) |
 | The verdict check exists but is stuck `in_progress` with no live run | `in_progress` for longer than 2 × the tier p95 | Wait for **reconcile** (every 6 hours) to mark it `failure publish-error`, then `/assay recheck`. Bypass only if reconcile cannot run either |
 | assay ran and failed on LLM findings, or on findings the owner accepts | `failure` with reasons | **`/assay override llm`** (or `all`) with the reasons digest from the check summary (`04 §5`) |
 | A human-decision gate finding the owner accepts | `failure` naming the finding | **`/assay waive <finding-id>`** |
@@ -22,7 +22,7 @@ The break-glass account is decided together with the approver account (#41, defe
 
 ## How to bypass
 
-1. Confirm the case. Open the PR's checks: `assay / verdict` must be "Expected, waiting for status" (or stuck with reconcile also down). Check the GitHub status page for an Actions incident.
+1. Confirm the case. Open the PR's checks: `review / verdict` must be "Expected, waiting for status" (or stuck with reconcile also down). Check the GitHub status page for an Actions incident.
 2. Open the record **before** merging: an issue in the assay repository titled `break-glass: <repo>#<pr>`, labelled `break-glass`, with:
    - the PR link and the head SHA you are merging;
    - why assay could not decide (incident link, error);

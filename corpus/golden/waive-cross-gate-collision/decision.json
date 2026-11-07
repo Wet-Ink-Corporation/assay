@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-waive-cross-gate-collision",
   "evidence_key": "run-waive-cross-gate-collision",
   "conclusion": "failure",
@@ -24,5 +24,5 @@
   "waived": [],
   "degraded": [],
   "rubric_version": "1",
-  "inputs_digest": "sha256:94bbb95ac79c7af7a31cddb9da8848d5e47bd8845e05fe2fe3e70a406090e732"
+  "inputs_digest": "sha256:aa119785c5ca7b3140d0187d1faa2641115f5e996cdac4cd5a9ee5d06d9bebcc"
 }

@@ -42,7 +42,7 @@ pre-seed under the base scope so that a poisoned entry outlives the merge (ADR-2
 
 ## The Actions cache rule
 
-`crates/assay-cli/tests/it/workflow_cache.rs` enforces the rule over every workflow and composite
+`crates/review-cli/tests/it/workflow_cache.rs` enforces the rule over every workflow and composite
 action, with two allowlists: a job is decision-bearing unless it is exempted by name (today only
 `rust.yml`'s `gate`, `aarch64` and `miri`, which are developer feedback that no assay decision
 reads), and decision-bearing jobs and composite actions may only use `actions/checkout`,

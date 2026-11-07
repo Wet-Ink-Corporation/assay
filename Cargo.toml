@@ -12,14 +12,14 @@
 [workspace]
 resolver = "3"
 # Six crates (ADR-07). Dependencies point inward: domain <- app <- {forge, runner, gates} <- cli
-# (02 §2). crates/assay-cli/tests/it/architecture.rs fails `cargo test` on any other edge.
+# (02 §2). crates/review-cli/tests/it/architecture.rs fails `cargo test` on any other edge.
 members = [
-  "crates/assay-domain",
-  "crates/assay-app",
-  "crates/assay-forge",
-  "crates/assay-runner",
-  "crates/assay-gates",
-  "crates/assay-cli",
+  "crates/review-domain",
+  "crates/review-app",
+  "crates/review-forge",
+  "crates/review-runner",
+  "crates/review-gates",
+  "crates/review-cli",
 ]
 
 [workspace.package]
@@ -38,35 +38,35 @@ publish = false                # members inherit it (publish.workspace = true); 
 # Layer edges are added by the story that first uses them (cargo machete rejects unused ones).
 
 # Workspace crates, innermost first (ARC-02).
-assay-domain = { path = "crates/assay-domain" }
-assay-app = { path = "crates/assay-app" }
-assay-forge = { path = "crates/assay-forge" }
-assay-runner = { path = "crates/assay-runner" }
-assay-gates = { path = "crates/assay-gates" }
+review-domain = { path = "crates/review-domain" }
+review-app = { path = "crates/review-app" }
+review-forge = { path = "crates/review-forge" }
+review-runner = { path = "crates/review-runner" }
+review-gates = { path = "crates/review-gates" }
 
-# Errors in library crates (H-09, ERR-01): assay-forge, assay-app.
+# Errors in library crates (H-09, ERR-01): review-forge, review-app.
 thiserror = { version = "2.0.12", default-features = false, features = ["std"] }
 
-# Anonymous spool files for child-process stdio (assay-forge), and test scratch directories.
+# Anonymous spool files for child-process stdio (review-forge), and test scratch directories.
 tempfile = { version = "3.0.0", default-features = false }
 
-# Contract validation in assay-app (Story #47): JSON parsing and JSON Schema checking; also used by tests.
+# Contract validation in review-app (Story #47): JSON parsing and JSON Schema checking; also used by tests.
 # jsonschema without default features: no HTTP or file resolution, every schema is embedded.
 jsonschema = { version = "0.58.6", default-features = false }
 serde_json = { version = "1.0.140", default-features = false, features = ["std"] }
 
-# Derives on the versioned contract types in assay-domain (Story #48, 02 §2), and the
-# `.assay/plugins.toml` DTOs in assay-app (Story #62).
+# Derives on the versioned contract types in review-domain (Story #48, 02 §2), and the
+# `.assay/plugins.toml` DTOs in review-app (Story #62).
 serde = { version = "1.0.219", default-features = false, features = ["std", "derive"] }
-# `.assay/plugins.toml` (Story #62): parsed in-process into DTOs in assay-app, then validated.
+# `.assay/plugins.toml` (Story #62): parsed in-process into DTOs in review-app, then validated.
 toml = { version = "1.1.0", default-features = false, features = ["std", "parse", "serde"] }
 
 # Finding fingerprints (#49, 03 §3) and the decision's inputs and reasons digests (#51) in
-# assay-domain (02 §2). No `alloc`/`oid`: one-shot digests only.
+# review-domain (02 §2). No `alloc`/`oid`: one-shot digests only.
 sha2 = { version = "0.11.0", default-features = false }
 
 # Property tests (TST-06), dev-dependency only: fingerprint stability (#49) and decide (#51) in
-# assay-domain. (`toml`, above, also reads rubric/v1.toml in tests.)
+# review-domain. (`toml`, above, also reads rubric/v1.toml in tests.)
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 
 # Dev-dependency only (#63 review): the temper adapter's Rust lexer is checked against

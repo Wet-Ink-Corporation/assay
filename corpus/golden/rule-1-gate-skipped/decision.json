@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-rule-1-gate-skipped",
   "evidence_key": "run-rule-1-gate-skipped",
   "conclusion": "failure",
@@ -20,5 +20,5 @@
   "waived": [],
   "degraded": [],
   "rubric_version": "1",
-  "inputs_digest": "sha256:545f8b0a1f86caf02a7865e78f1a4943303ffce5f296b66fb9893dc293c4f989"
+  "inputs_digest": "sha256:0534b2db094e318ccd3f0bbacdb3a777890038eb53b4e41e87073d603432864b"
 }

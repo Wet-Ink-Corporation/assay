@@ -1,5 +1,5 @@
 {
-  "schema": "assay.eval-case/1",
+  "schema": "review.eval-case/1",
   "authoring_model": "claude-opus-5-5",
   "source": "cross-file",
   "labels": [

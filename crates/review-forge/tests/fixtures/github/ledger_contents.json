@@ -1,0 +1,18 @@
+{
+  "type": "file",
+  "encoding": "base64",
+  "size": 394,
+  "name": "2026-10.jsonl",
+  "path": "ledger/2026-10.jsonl",
+  "content": "eyJzY2hlbWEiOiJyZXZpZXcubGVkZ2VyLWNvc3QvMSIsInJ1bl91aWQiOnsi\ncmVwb19pZCI6NDIsInJ1bl9pZCI6NzAwMSwicnVuX2F0dGVtcHQiOjF9LCJy\ndW5fa2V5Ijoic2hhMjU2OmFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh\nYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJyZXBvIjoi\nYWNtZS93aWRnZXRzIiwicHIiOjcsImhlYWRfc2hhIjoiYmJiYmJiYmJiYmJi\nYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYiIsInRpZXIiOiJsaXRlIiwi\ncm9sZXMiOlt7InJvbGUiOiJjb21iaW5lZCIsImFldSI6IjAuNzQifV0sImFl\ndSI6IjAuNzQiLCJraW5kIjoicmVzZXJ2ZWQiLCJjYW5jZWxsZWQiOmZhbHNl\nLCJhdCI6IjIwMjYtMTAtMTJUMDk6MzA6MDAuMDAwWiJ9Cg==\n",
+  "sha": "3d21ec53a331a6f037a91c368710b99387d012c1",
+  "url": "https://api.github.com/repos/Wet-Ink-Corporation/assay-ledger/contents/ledger/2026-10.jsonl?ref=main",
+  "html_url": "https://github.com/Wet-Ink-Corporation/assay-ledger/blob/main/ledger/2026-10.jsonl",
+  "git_url": "https://api.github.com/repos/Wet-Ink-Corporation/assay-ledger/git/blobs/3d21ec53a331a6f037a91c368710b99387d012c1",
+  "download_url": "https://raw.githubusercontent.com/Wet-Ink-Corporation/assay-ledger/main/ledger/2026-10.jsonl",
+  "_links": {
+    "git": "https://api.github.com/repos/Wet-Ink-Corporation/assay-ledger/git/blobs/3d21ec53a331a6f037a91c368710b99387d012c1",
+    "self": "https://api.github.com/repos/Wet-Ink-Corporation/assay-ledger/contents/ledger/2026-10.jsonl?ref=main",
+    "html": "https://github.com/Wet-Ink-Corporation/assay-ledger/blob/main/ledger/2026-10.jsonl"
+  }
+}

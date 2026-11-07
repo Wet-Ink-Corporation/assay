@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-rule-2a-ambiguous-head",
   "evidence_key": "run-rule-2a-ambiguous-head",
   "conclusion": "failure",
@@ -20,5 +20,5 @@
   "waived": [],
   "degraded": [],
   "rubric_version": "1",
-  "inputs_digest": "sha256:fed2b692874704d6aa92d4860a06d8bc93f4d0aaf7c62586954d9988be10fa3b"
+  "inputs_digest": "sha256:64497e70a38f23eee2b3e49dcca093cf7d586e69d586c5dc490e5f39d7881289"
 }

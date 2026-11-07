@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-rule-8a-requeues-exhausted",
   "evidence_key": "run-rule-8a-requeues-exhausted",
   "conclusion": "failure",
@@ -20,5 +20,5 @@
   "waived": [],
   "degraded": [],
   "rubric_version": "1",
-  "inputs_digest": "sha256:b850f7fb1f09e40a8eda7d568a5e67b4a930a5e73f1ea0616578ab12cc90c70c"
+  "inputs_digest": "sha256:c2089b81d663f2a376effa6f0d0ba4845128d0525f58cbba59708911ebacd313"
 }

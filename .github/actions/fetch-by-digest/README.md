@@ -66,5 +66,5 @@ grant that repository read access (`docs/operations/release.md`, A-20).
 `fetch-by-digest.sh` holds all the logic and runs without GitHub: `digest-from-config` reads a pin
 from `plugins.toml` (python3 >= 3.11 `tomllib`), and `fetch` pulls and verifies (`oras`, `jq`,
 `sha256sum`). Its usage, environment and exit codes are in its header.
-`crates/assay-cli/tests/it/fetch_by_digest.rs` runs it against a fake `oras`, including a pinned
+`crates/review-cli/tests/it/fetch_by_digest.rs` runs it against a fake `oras`, including a pinned
 digest the registry does not honour, a tampered layer, tag pins and a path-escaping title.

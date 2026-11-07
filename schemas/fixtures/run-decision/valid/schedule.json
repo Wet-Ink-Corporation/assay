@@ -1,5 +1,5 @@
 {
-  "schema": "assay.run-decision/1",
+  "schema": "review.run-decision/1",
   "run_uid": {
     "repo_id": 840213377,
     "run_id": 99,
@@ -106,7 +106,7 @@
   },
   "rubric_version": "1",
   "decision": {
-    "schema": "assay.decision/1",
+    "schema": "review.decision/1",
     "decision_key": "sha256:c148957b82dbfe50f8cab2efe2c6e6319232245617cc328603749be933eb1b22",
     "evidence_key": "sha256:ed30d0fb61bccd95c8a99a7386a7112c4e386c7c4f5576a336efcce56655b35f",
     "conclusion": "neutral",
@@ -145,7 +145,7 @@
   },
   "events": [
     {
-      "schema": "assay.event/1",
+      "schema": "review.event/1",
       "job": "redecide",
       "idx": 0,
       "ts": "2026-11-01T10:00:00Z",
@@ -163,7 +163,7 @@
       }
     },
     {
-      "schema": "assay.event/1",
+      "schema": "review.event/1",
       "job": "redecide",
       "idx": 1,
       "ts": "2026-11-01T10:00:00Z",
@@ -181,7 +181,7 @@
       }
     },
     {
-      "schema": "assay.event/1",
+      "schema": "review.event/1",
       "job": "redecide",
       "idx": 2,
       "ts": "2026-11-01T10:00:00Z",

@@ -1,5 +1,5 @@
 {
-  "schema": "assay.event/1",
+  "schema": "review.event/1",
   "job": "decide-only",
   "idx": 1,
   "ts": "2026-10-11T06:16:00Z",

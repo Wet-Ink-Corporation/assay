@@ -1,5 +1,5 @@
 {
-  "schema": "assay.run/1",
+  "schema": "review.run/1",
   "run_key": "run-42-1",
   "repo": "Wet-Ink-Corporation/assay",
   "pr": 42,

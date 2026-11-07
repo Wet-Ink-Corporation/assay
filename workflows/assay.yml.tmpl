@@ -11,11 +11,11 @@
 # - Every job holding a secret, an environment or a write token runs only on the first attempt;
 #   recovery is /assay recheck or a new push (02 §1, T22).
 # - No run: holds an expression (T19): every value reaches assay through env:. Each job reads its
-#   upstream outputs only through ASSAY_NEEDS (03 §4a).
+#   upstream outputs only through REVIEW_NEEDS (03 §4a).
 # - Every action is pinned by commit SHA; none uses the Actions cache (ADR-21, 05 T6).
 # - Repository settings: environment assay-publish (deployment branches: default branch only)
-#   holds secrets ASSAY_VERDICT_PRIVATE_KEY and ASSAY_LEDGER_PRIVATE_KEY; repository variables
-#   ASSAY_VERDICT_APP_ID, ASSAY_VERDICT_BOT_ID and ASSAY_LEDGER_APP_ID. `assay doctor` checks them.
+#   holds secrets REVIEW_VERDICT_PRIVATE_KEY and REVIEW_LEDGER_PRIVATE_KEY; repository variables
+#   REVIEW_VERDICT_APP_ID, REVIEW_VERDICT_BOT_ID and REVIEW_LEDGER_APP_ID. `assay doctor` checks them.
 name: assay
 
 on:
@@ -68,7 +68,7 @@ jobs:
       - id: guard
         env:
           # Read only for a dispatch, to resolve the PR (pull-requests: read).
-          ASSAY_RUN_TOKEN: ${{ github.event_name == 'workflow_dispatch' && github.token || '' }}
+          REVIEW_RUN_TOKEN: ${{ github.event_name == 'workflow_dispatch' && github.token || '' }}
         run: bin/assay guard
 
   # S0: the verdict check in_progress under the publish lock, and the push record.
@@ -110,8 +110,8 @@ jobs:
       - id: verdict-token
         uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         with:
-          app-id: ${{ vars.ASSAY_VERDICT_APP_ID }}
-          private-key: ${{ secrets.ASSAY_VERDICT_PRIVATE_KEY }}
+          app-id: ${{ vars.REVIEW_VERDICT_APP_ID }}
+          private-key: ${{ secrets.REVIEW_VERDICT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-actions: read
           permission-checks: write
@@ -119,17 +119,17 @@ jobs:
       - id: ledger-token
         uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         with:
-          app-id: ${{ vars.ASSAY_LEDGER_APP_ID }}
-          private-key: ${{ secrets.ASSAY_LEDGER_PRIVATE_KEY }}
+          app-id: ${{ vars.REVIEW_LEDGER_APP_ID }}
+          private-key: ${{ secrets.REVIEW_LEDGER_PRIVATE_KEY }}
           owner: ${{ steps.ledger.outputs.owner }}
           repositories: ${{ steps.ledger.outputs.name }}
           permission-contents: write
       - env:
-          ASSAY_NEEDS: ${{ toJSON(needs) }}
-          ASSAY_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
-          ASSAY_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
-          ASSAY_VERDICT_APP_ID: ${{ vars.ASSAY_VERDICT_APP_ID }}
-          ASSAY_VERDICT_BOT_ID: ${{ vars.ASSAY_VERDICT_BOT_ID }}
+          REVIEW_NEEDS: ${{ toJSON(needs) }}
+          REVIEW_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
+          REVIEW_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
+          REVIEW_VERDICT_APP_ID: ${{ vars.REVIEW_VERDICT_APP_ID }}
+          REVIEW_VERDICT_BOT_ID: ${{ vars.REVIEW_VERDICT_BOT_ID }}
         run: bin/assay open --config base/.assay/plugins.toml
 
   # S1: run.json and the per-job artifact names. No secret, no ledger.
@@ -171,8 +171,8 @@ jobs:
           out-dir: bin
       - id: plan
         env:
-          ASSAY_NEEDS: ${{ toJSON(needs) }}
-          ASSAY_RUN_TOKEN: ${{ github.token }}
+          REVIEW_NEEDS: ${{ toJSON(needs) }}
+          REVIEW_RUN_TOKEN: ${{ github.token }}
         run: bin/assay plan --out plan-out
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -225,13 +225,13 @@ jobs:
         run: printf 'path=%s\n' "$(command -v node)" >> "$GITHUB_OUTPUT"
       - id: gates
         env:
-          ASSAY_RUN_KEY: ${{ needs.plan.outputs.run_key }}
-          ASSAY_BASE_SHA: ${{ needs.guard.outputs.base_sha }}
-          ASSAY_HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
-          ASSAY_RUN_TOKEN: ${{ github.token }}
-          ASSAY_NODE: ${{ steps.node.outputs.path }}
-          ASSAY_TEMPER: ${{ steps.temper.outputs.dir }}
-        run: bin/assay gate gates-static --config base/.assay/plugins.toml --head pr --out gates-out --node "$ASSAY_NODE" --temper "$ASSAY_TEMPER"
+          REVIEW_RUN_KEY: ${{ needs.plan.outputs.run_key }}
+          REVIEW_BASE_SHA: ${{ needs.guard.outputs.base_sha }}
+          REVIEW_HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
+          REVIEW_RUN_TOKEN: ${{ github.token }}
+          REVIEW_NODE: ${{ steps.node.outputs.path }}
+          REVIEW_TEMPER: ${{ steps.temper.outputs.dir }}
+        run: bin/assay gate gates-static --config base/.assay/plugins.toml --head pr --out gates-out --node "$REVIEW_NODE" --temper "$REVIEW_TEMPER"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ needs.plan.outputs.artifact_gates_static }}
@@ -284,14 +284,14 @@ jobs:
         run: printf 'path=%s\n' "$(command -v node)" >> "$GITHUB_OUTPUT"
       - id: gates
         env:
-          ASSAY_RUN_KEY: ${{ needs.plan.outputs.run_key }}
-          ASSAY_BASE_SHA: ${{ needs.guard.outputs.base_sha }}
-          ASSAY_HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
-          ASSAY_MERGE_BASE: ${{ needs.plan.outputs.merge_base }}
-          ASSAY_RUN_TOKEN: ${{ github.token }}
-          ASSAY_NODE: ${{ steps.node.outputs.path }}
-          ASSAY_TEMPER: ${{ steps.temper.outputs.dir }}
-        run: bin/assay gate gates-lint --config base/.assay/plugins.toml --head pr --out gates-out --node "$ASSAY_NODE" --temper "$ASSAY_TEMPER"
+          REVIEW_RUN_KEY: ${{ needs.plan.outputs.run_key }}
+          REVIEW_BASE_SHA: ${{ needs.guard.outputs.base_sha }}
+          REVIEW_HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
+          REVIEW_MERGE_BASE: ${{ needs.plan.outputs.merge_base }}
+          REVIEW_RUN_TOKEN: ${{ github.token }}
+          REVIEW_NODE: ${{ steps.node.outputs.path }}
+          REVIEW_TEMPER: ${{ steps.temper.outputs.dir }}
+        run: bin/assay gate gates-lint --config base/.assay/plugins.toml --head pr --out gates-out --node "$REVIEW_NODE" --temper "$REVIEW_TEMPER"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ needs.plan.outputs.artifact_gates_lint }}
@@ -331,9 +331,9 @@ jobs:
           out-dir: bin
       - id: gates
         env:
-          ASSAY_RUN_KEY: ${{ needs.plan.outputs.run_key }}
-          ASSAY_BASE_SHA: ${{ needs.guard.outputs.base_sha }}
-          ASSAY_HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
+          REVIEW_RUN_KEY: ${{ needs.plan.outputs.run_key }}
+          REVIEW_BASE_SHA: ${{ needs.guard.outputs.base_sha }}
+          REVIEW_HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
         run: bin/assay gate gates-test --config base/.assay/plugins.toml --head pr --out gates-out
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -396,8 +396,8 @@ jobs:
         if: needs.plan.outputs.review == 'true'
         uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         with:
-          app-id: ${{ vars.ASSAY_VERDICT_APP_ID }}
-          private-key: ${{ secrets.ASSAY_VERDICT_PRIVATE_KEY }}
+          app-id: ${{ vars.REVIEW_VERDICT_APP_ID }}
+          private-key: ${{ secrets.REVIEW_VERDICT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-checks: read
           permission-pull-requests: read
@@ -405,8 +405,8 @@ jobs:
         if: needs.plan.outputs.review == 'true'
         uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         with:
-          app-id: ${{ vars.ASSAY_LEDGER_APP_ID }}
-          private-key: ${{ secrets.ASSAY_LEDGER_PRIVATE_KEY }}
+          app-id: ${{ vars.REVIEW_LEDGER_APP_ID }}
+          private-key: ${{ secrets.REVIEW_LEDGER_PRIVATE_KEY }}
           owner: ${{ steps.ledger.outputs.owner }}
           repositories: ${{ steps.ledger.outputs.name }}
           permission-contents: write
@@ -418,10 +418,10 @@ jobs:
           path: artifacts
       - id: admit
         env:
-          ASSAY_NEEDS: ${{ toJSON(needs) }}
-          ASSAY_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
-          ASSAY_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
-          ASSAY_RUN_TOKEN: ${{ github.token }}
+          REVIEW_NEEDS: ${{ toJSON(needs) }}
+          REVIEW_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
+          REVIEW_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
+          REVIEW_RUN_TOKEN: ${{ github.token }}
         run: bin/assay admit --config base/.assay/plugins.toml --artifacts artifacts --out admit-out
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -465,7 +465,7 @@ jobs:
         run: bin/assay review --placeholder
 
   # S10: releases the slot admit holds and writes the final cost record, for cancelled and
-  # superseded runs too. ASSAY_NEEDS holds exactly admit and review (03 §4a).
+  # superseded runs too. REVIEW_NEEDS holds exactly admit and review (03 §4a).
   release:
     needs: [guard, admit, review]
     if: always() && needs.guard.outputs.run == 'true' && needs.admit.outputs.slot != '' && github.run_attempt == 1
@@ -504,14 +504,14 @@ jobs:
       - id: ledger-token
         uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         with:
-          app-id: ${{ vars.ASSAY_LEDGER_APP_ID }}
-          private-key: ${{ secrets.ASSAY_LEDGER_PRIVATE_KEY }}
+          app-id: ${{ vars.REVIEW_LEDGER_APP_ID }}
+          private-key: ${{ secrets.REVIEW_LEDGER_PRIVATE_KEY }}
           owner: ${{ steps.ledger.outputs.owner }}
           repositories: ${{ steps.ledger.outputs.name }}
           permission-contents: write
       - env:
-          ASSAY_NEEDS: ${{ format('{{"admit":{0},"review":{1}}}', toJSON(needs.admit), toJSON(needs.review)) }}
-          ASSAY_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
+          REVIEW_NEEDS: ${{ format('{{"admit":{0},"review":{1}}}', toJSON(needs.admit), toJSON(needs.review)) }}
+          REVIEW_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
         run: bin/assay release --config base/.assay/plugins.toml
 
   # S7-S9: authenticate every artifact, decide, persist the bundle, then publish under the
@@ -556,8 +556,8 @@ jobs:
       - id: verdict-token
         uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         with:
-          app-id: ${{ vars.ASSAY_VERDICT_APP_ID }}
-          private-key: ${{ secrets.ASSAY_VERDICT_PRIVATE_KEY }}
+          app-id: ${{ vars.REVIEW_VERDICT_APP_ID }}
+          private-key: ${{ secrets.REVIEW_VERDICT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-checks: write
           permission-contents: read
@@ -565,8 +565,8 @@ jobs:
       - id: ledger-token
         uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         with:
-          app-id: ${{ vars.ASSAY_LEDGER_APP_ID }}
-          private-key: ${{ secrets.ASSAY_LEDGER_PRIVATE_KEY }}
+          app-id: ${{ vars.REVIEW_LEDGER_APP_ID }}
+          private-key: ${{ secrets.REVIEW_LEDGER_PRIVATE_KEY }}
           owner: ${{ steps.ledger.outputs.owner }}
           repositories: ${{ steps.ledger.outputs.name }}
           permission-contents: write
@@ -576,12 +576,12 @@ jobs:
           path: artifacts
       - id: decide
         env:
-          ASSAY_NEEDS: ${{ toJSON(needs) }}
-          ASSAY_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
-          ASSAY_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
-          ASSAY_RUN_TOKEN: ${{ github.token }}
-          ASSAY_VERDICT_APP_ID: ${{ vars.ASSAY_VERDICT_APP_ID }}
-          ASSAY_VERDICT_BOT_ID: ${{ vars.ASSAY_VERDICT_BOT_ID }}
+          REVIEW_NEEDS: ${{ toJSON(needs) }}
+          REVIEW_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
+          REVIEW_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
+          REVIEW_RUN_TOKEN: ${{ github.token }}
+          REVIEW_VERDICT_APP_ID: ${{ vars.REVIEW_VERDICT_APP_ID }}
+          REVIEW_VERDICT_BOT_ID: ${{ vars.REVIEW_VERDICT_BOT_ID }}
         run: bin/assay decide --config base/.assay/plugins.toml --artifacts artifacts --out decide-out
       # The bundle is uploaded before the lock is taken; publish confirms it by sha256 before it
       # writes the evidence pointer, and fails closed on a trust-path PR when it did not land (S9).
@@ -595,11 +595,11 @@ jobs:
           if-no-files-found: error
       - if: ${{ !cancelled() && steps.decide.outcome == 'success' }}
         env:
-          ASSAY_NEEDS: ${{ toJSON(needs) }}
-          ASSAY_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
-          ASSAY_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
-          ASSAY_RUN_TOKEN: ${{ github.token }}
-          ASSAY_VERDICT_APP_ID: ${{ vars.ASSAY_VERDICT_APP_ID }}
-          ASSAY_VERDICT_BOT_ID: ${{ vars.ASSAY_VERDICT_BOT_ID }}
-          ASSAY_PERSIST: ${{ steps.persist.outcome }}
+          REVIEW_NEEDS: ${{ toJSON(needs) }}
+          REVIEW_GITHUB_TOKEN: ${{ steps.verdict-token.outputs.token }}
+          REVIEW_LEDGER_TOKEN: ${{ steps.ledger-token.outputs.token }}
+          REVIEW_RUN_TOKEN: ${{ github.token }}
+          REVIEW_VERDICT_APP_ID: ${{ vars.REVIEW_VERDICT_APP_ID }}
+          REVIEW_VERDICT_BOT_ID: ${{ vars.REVIEW_VERDICT_BOT_ID }}
+          REVIEW_PERSIST: ${{ steps.persist.outcome }}
         run: bin/assay publish --config base/.assay/plugins.toml --state decide-out

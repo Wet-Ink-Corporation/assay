@@ -54,12 +54,12 @@ jobs:
             exit 1
           fi
           version=$(cargo metadata --locked --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "assay-cli") | .version')
+            | jq -r '.packages[] | select(.name == "review-cli") | .version')
           if [ "$TAG" != "v$version" ]; then
             echo "::error::tag $TAG does not match the workspace version $version"
             exit 1
           fi
-      - run: cargo build --locked --release -p assay-cli --bin assay
+      - run: cargo build --locked --release -p review-cli --bin assay
       - name: Stage the binary
         id: stage
         shell: bash

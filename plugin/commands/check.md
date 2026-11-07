@@ -20,7 +20,7 @@ When you report:
   push; list pending items and suggest triaging them. Do not decide, triage or dismiss an item
   yourself.
 - Exit 2 means the check could not run: show the `assay:` line it printed.
-- If it says `weigh-in: not checked`, say why (no `weighin` found: set `ASSAY_WEIGHIN` to its
+- If it says `weigh-in: not checked`, say why (no `weighin` found: set `REVIEW_WEIGHIN` to its
   absolute path; or a detached `HEAD`).
 
 For the Weigh-In items alone, without the snapshot or the model, run `assay pre-push`: it is

@@ -32,85 +32,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
-name = "assay-app"
-version = "0.1.0"
-dependencies = [
- "assay-domain",
- "jsonschema",
- "proptest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "toml",
-]
-
-[[package]]
-name = "assay-cli"
-version = "0.1.0"
-dependencies = [
- "assay-app",
- "assay-domain",
- "assay-forge",
- "assay-gates",
- "assay-runner",
- "proptest",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "assay-domain"
-version = "0.1.0"
-dependencies = [
- "proptest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "toml",
-]
-
-[[package]]
-name = "assay-forge"
-version = "0.1.0"
-dependencies = [
- "assay-app",
- "assay-domain",
- "proptest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "assay-gates"
-version = "0.1.0"
-dependencies = [
- "assay-app",
- "assay-domain",
- "proptest",
- "serde",
- "serde_json",
- "syn 2.0.119",
- "tempfile",
- "thiserror",
- "toml",
-]
-
-[[package]]
-name = "assay-runner"
-version = "0.1.0"
-dependencies = [
- "assay-app",
- "assay-domain",
- "serde_json",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -718,6 +639,85 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "review-app"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "proptest",
+ "review-domain",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "review-cli"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "review-app",
+ "review-domain",
+ "review-forge",
+ "review-gates",
+ "review-runner",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "review-domain"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "review-forge"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "review-app",
+ "review-domain",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "review-gates"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "review-app",
+ "review-domain",
+ "serde",
+ "serde_json",
+ "syn 2.0.119",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "review-runner"
+version = "0.1.0"
+dependencies = [
+ "review-app",
+ "review-domain",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "rustix"
