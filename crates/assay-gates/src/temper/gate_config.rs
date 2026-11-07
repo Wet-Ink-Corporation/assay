@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 
 use super::exceptions::Allowlist;
 use super::ratchet::Tool;
-use super::report::json_detail;
+use crate::json::json_detail;
 
 /// The config's path in a repository.
 pub(super) const PATH: &str = ".claude/temper.json";

@@ -9,7 +9,9 @@
 //! a test sees what the binary sent without any network. The stand-in `node` records its
 //! environment and arguments, and exits 2 unless invoked from the head tree as the pinned scan
 //! (it prints an empty scan) or as the pinned `baseline --check` against the base (it writes a
-//! clean findings document whose ratchet base is the base, the merge base here).
+//! clean findings document whose ratchet base is the base, the merge base here). The stand-in
+//! `weighin` (gates-static's `--weighin`, #372) prints a clean `ci-check` report only when run
+//! in a checkout of the head commit whose history holds the base.
 
 use std::env;
 use std::error::Error;
@@ -132,6 +134,7 @@ impl Scene {
         fs::write(root.join("output"), "")?;
         stand_in_node(&root, &work, &base_sha)?;
         stand_in_git(&root, &work)?;
+        stand_in_weighin(&root, &base_sha, &head_sha)?;
         Ok(Self {
             _dir: dir,
             job,
@@ -153,15 +156,19 @@ impl Scene {
     }
 
     /// The job's arguments as the workflow passes them, as `(flag, value)` pairs after
-    /// `gate <job>`.
+    /// `gate <job>`, with the stand-in `weighin` for gates-static.
     pub(crate) fn flags(&self) -> Vec<(&'static str, PathBuf)> {
-        vec![
+        let mut flags = vec![
             ("--config", self.path("plugins.toml")),
             ("--head", self.head.clone()),
             ("--out", self.path("out")),
             ("--node", self.path("bin/node")),
             ("--temper", self.path("pinned")),
-        ]
+        ];
+        if self.job == "gates-static" {
+            flags.push(("--weighin", self.path("bin/weighin")));
+        }
+        flags
     }
 
     /// The job with `flags`, every variable set; `ASSAY_MERGE_BASE` (plan's `merge_base`) is the
@@ -212,10 +219,27 @@ impl Scene {
         })
     }
 
-    /// Whether nothing ran and nothing was written: no git, no node, no `--out`, no output.
+    /// Makes the stand-in `git` exit 1, running nothing, on any call whose arguments hold
+    /// `operation` (`checkout-index`, say); every other call runs as before. Test setup only.
+    pub(crate) fn fail_git_on(&self, operation: &str) -> Result<(), Box<dyn Error>> {
+        let git = self.path("git-bin/git");
+        let inner = self.path("git-bin/git-inner");
+        fs::rename(&git, &inner)?;
+        let body = format!(
+            "#!/bin/sh\ncase \" $* \" in\n*' {operation} '*) exit 1 ;;\nesac\n\
+             exec '{inner}' \"$@\"\n",
+            inner = inner.display(),
+        );
+        write_executable(&git, &body)?;
+        Ok(())
+    }
+
+    /// Whether nothing ran and nothing was written: no git, no node, no weighin, no `--out`, no
+    /// output.
     pub(crate) fn untouched(&self) -> Result<bool, Box<dyn Error>> {
         Ok(self.recorded("git-bin/calls")?.is_empty()
             && self.recorded("bin/node-env")?.is_empty()
+            && self.recorded("bin/weighin-env")?.is_empty()
             && !self.path("out").exists()
             && self.recorded("output")?.is_empty())
     }
@@ -257,6 +281,31 @@ fn stand_in_node(root: &Path, head: &Path, base: &str) -> Result<(), Box<dyn Err
     );
     fs::create_dir_all(root.join("bin"))?;
     write_executable(&root.join("bin/node"), &body)?;
+    Ok(())
+}
+
+/// Writes `bin/weighin`: it records its environment in `bin/weighin-env` and its arguments in
+/// `bin/weighin-args`, and exits 2 unless run as `ci-check --json --base <base> --dir <cwd>
+/// --store <path>` in a checkout whose `HEAD` is `head`, whose history holds `base` and whose
+/// tree holds head's `src/lib.rs`, where it prints a clean `weighin.ci-check/1` report.
+fn stand_in_weighin(root: &Path, base: &str, head: &str) -> Result<(), Box<dyn Error>> {
+    let report = format!(
+        "{{\"schema\":\"weighin.ci-check/1\",\"base\":\"{base}\",\"head\":\"{head}\",\
+         \"open_items\":[],\"decisions\":[],\"journal\":{{\"ok\":true,\"violations\":[]}}}}"
+    );
+    let body = format!(
+        "#!/bin/sh\n/usr/bin/env > \"${{0%/*}}/weighin-env\"\n\
+         printf '%s\\n' \"$*\" >> \"${{0%/*}}/weighin-args\"\n\
+         [ \"$#\" = 8 ] && [ \"$1\" = ci-check ] && [ \"$2\" = --json ] && [ \"$3\" = --base ] \
+         && [ \"$4\" = '{base}' ] && [ \"$5\" = --dir ] && [ \"$6\" = \"$(pwd)\" ] \
+         && [ \"$7\" = --store ] || exit 2\n\
+         [ \"$(git rev-parse HEAD)\" = '{head}' ] || exit 2\n\
+         git merge-base --is-ancestor '{base}' HEAD || exit 2\n\
+         [ -f src/lib.rs ] || exit 2\n\
+         printf '%s' '{report}'\n"
+    );
+    fs::create_dir_all(root.join("bin"))?;
+    write_executable(&root.join("bin/weighin"), &body)?;
     Ok(())
 }
 

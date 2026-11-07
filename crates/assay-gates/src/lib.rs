@@ -8,8 +8,10 @@
 //! `gates-static`, reading the PR through [`RevisionFiles`] and running the pinned temper scan
 //! through a [`CaptureSupervisor`].
 //!
-//! The [`WeighInAdapter`] reads the head's Weigh-In journals and decision atoms in
-//! `gates-static`, in experimental mode: non-required, reporting only (04 §9, #109).
+//! The [`WeighInAdapter`] runs the pinned `weighin ci-check --json` in a reading checkout of
+//! the head in `gates-static`, through a [`CaptureSupervisor`], and reads its
+//! `weighin.ci-check/1` report, in experimental mode: non-required, reporting only (04 §9,
+//! #109, #372).
 //!
 //! [`PinnedCargo`] runs the pinned base cargo on a sanitised manifest-only copy in
 //! `gates-static`, through a [`CaptureSupervisor`], for exec-surface detection (#65).
@@ -18,6 +20,7 @@ mod capture;
 mod cargo;
 mod environment;
 mod exec;
+mod json;
 mod revision;
 mod temper;
 mod weigh_in;
@@ -37,4 +40,7 @@ pub use temper::{
     CompileTimeReach, RatchetBase, RatchetDegradation, TemperAdapter, TemperError, TemperPaths,
     TemperSettings, TemperSettingsError, TemperStepSettings, TemperTestAdapter, compile_time_reach,
 };
-pub use weigh_in::{WeighInAdapter, WeighInError, WeighInSettingsError};
+pub use weigh_in::{
+    CiCheck, WeighInAdapter, WeighInError, WeighInReportError, WeighInSettings,
+    WeighInSettingsError,
+};

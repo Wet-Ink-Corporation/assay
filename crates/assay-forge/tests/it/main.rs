@@ -11,6 +11,8 @@ mod manifest_copy;
 mod patch;
 mod push;
 mod range;
+#[cfg(unix)] // symlinks in fixtures
+mod reading_checkout;
 mod repository;
 mod single_constructor;
 #[cfg(test)] // lets clippy's allow-*-in-tests cover helpers, not only #[test] fns

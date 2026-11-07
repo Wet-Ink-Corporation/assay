@@ -252,27 +252,7 @@ impl ObjectRepo {
     /// [`GitError::DirectoryNotEmpty`] when `dest` has contents, [`GitError::Inspect`] when it
     /// cannot be read or created, and [`GitError`] when a git step cannot run or fails.
     pub fn checkout(&self, snapshot: &Snapshot, dest: &Path) -> Result<(), GitError> {
-        match fs::read_dir(dest) {
-            Ok(mut entries) => {
-                if entries.next().is_some() {
-                    return Err(GitError::DirectoryNotEmpty {
-                        git_dir: dest.to_path_buf(),
-                    });
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir_all(dest).map_err(|source| GitError::Inspect {
-                    git_dir: dest.to_path_buf(),
-                    source,
-                })?;
-            }
-            Err(source) => {
-                return Err(GitError::Inspect {
-                    git_dir: dest.to_path_buf(),
-                    source,
-                });
-            }
-        }
+        empty_destination(dest)?;
         let index = self.git_dir().join(CHECKOUT_INDEX);
         let scope = Scope {
             work_tree: Some(dest),
@@ -341,6 +321,34 @@ impl ObjectRepo {
     }
 }
 
+/// Makes sure `dest` is an empty directory: creates it (and its parents) when absent.
+///
+/// # Errors
+/// [`GitError::DirectoryNotEmpty`] when it has contents, [`GitError::Inspect`] when it cannot
+/// be read or created.
+pub(super) fn empty_destination(dest: &Path) -> Result<(), GitError> {
+    match fs::read_dir(dest) {
+        Ok(mut entries) => {
+            if entries.next().is_some() {
+                return Err(GitError::DirectoryNotEmpty {
+                    git_dir: dest.to_path_buf(),
+                });
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir_all(dest).map_err(|source| GitError::Inspect {
+                git_dir: dest.to_path_buf(),
+                source,
+            })
+        }
+        Err(source) => Err(GitError::Inspect {
+            git_dir: dest.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 /// The exclude rules at `path`: empty when it does not exist or is `/dev/null`, `None` when
 /// over `cap` bytes.
 ///
@@ -380,7 +388,7 @@ fn not_a_regular_file() -> io::Error {
 
 /// The `objects/info/alternates` line naming `objects`; `None` when the path holds a newline,
 /// which would end the line early and name another store.
-fn alternates_line(objects: &Path) -> Option<Vec<u8>> {
+pub(super) fn alternates_line(objects: &Path) -> Option<Vec<u8>> {
     let bytes = objects.as_os_str().as_bytes();
     if bytes.contains(&b'\n') {
         return None;

@@ -11,7 +11,7 @@ use std::num::NonZeroU64;
 
 use serde::Deserialize;
 
-use super::report::json_detail;
+use crate::json::json_detail;
 
 /// The key of the hit temper reports for each `#[expect(..)]` attribute; its `exception` is
 /// the attribute's first lint only.

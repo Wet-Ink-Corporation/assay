@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use super::report::json_detail;
+use crate::json::json_detail;
 
 /// The baseline's path in a repository.
 pub(super) const PATH: &str = ".claude/temper-baseline.json";
