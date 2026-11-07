@@ -46,11 +46,11 @@ The recorded expiry and the monthly canary are the early warnings.
    Or in the web UI: Settings, Environments, `assay-review`, Environment secrets,
    `CLAUDE_CODE_OAUTH_TOKEN`, Update. Do the same for the environment the monthly canary
    workflow uses, if it is a different one.
-3. **Record the new expiry** as the `ASSAY_TOKEN_EXPIRES_ON` variable of the same environment, as
+3. **Record the new expiry** as the `REVIEW_TOKEN_EXPIRES_ON` variable of the same environment, as
    `YYYY-MM-DD` (a UTC date). It is a variable, not a secret, so doctor can read it:
 
    ```sh
-   gh variable set ASSAY_TOKEN_EXPIRES_ON --env assay-review --repo <owner>/<repo> --body 2027-10-13
+   gh variable set REVIEW_TOKEN_EXPIRES_ON --env assay-review --repo <owner>/<repo> --body 2027-10-13
    ```
 
    doctor treats the token as expired from that date on. Anything other than exactly
@@ -68,10 +68,10 @@ any of them (06 §1).
 
 ## The expiry date
 
-The expiry is recorded when the token is created (05 §5) as `ASSAY_TOKEN_EXPIRES_ON` in the
+The expiry is recorded when the token is created (05 §5) as `REVIEW_TOKEN_EXPIRES_ON` in the
 `assay-review` environment, next to the secret it describes, so one rotation updates both.
 `assay doctor` reads it from its environment: the job running doctor passes
-`ASSAY_TOKEN_EXPIRES_ON: ${{ vars.ASSAY_TOKEN_EXPIRES_ON }}`. Unset or empty, doctor prints no
+`REVIEW_TOKEN_EXPIRES_ON: ${{ vars.REVIEW_TOKEN_EXPIRES_ON }}`. Unset or empty, doctor prints no
 expiry line. With 31 or more days left it prints nothing, from 30 days to 1 day it prints
 `warn token-expiry: …` and still exits 0, and from the date on it prints `FAIL token-expiry: …`
 and exits 1.

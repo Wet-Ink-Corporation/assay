@@ -1,5 +1,5 @@
 {
-  "schema": "assay.run-decision/1",
+  "schema": "review.run-decision/1",
   "run_uid": {
     "repo_id": 840213377,
     "run_id": 99,
@@ -92,7 +92,7 @@
   },
   "rubric_version": "1",
   "decision": {
-    "schema": "assay.decision/1",
+    "schema": "review.decision/1",
     "decision_key": "sha256:44af6bfc4320e4f9f8f473d0ce72bbf32f8310bd4a0743474d52c5e987da0fae",
     "evidence_key": "sha256:ed30d0fb61bccd95c8a99a7386a7112c4e386c7c4f5576a336efcce56655b35f",
     "conclusion": "success",

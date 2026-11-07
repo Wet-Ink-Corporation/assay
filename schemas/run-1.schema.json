@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:run:1",
-  "title": "assay.run/1",
+  "$id": "urn:review:schema:run:1",
+  "title": "review.run/1",
   "description": "Run description written by `plan`, extended with `budget` by `admit` (docs/architecture/03-contracts.md §4). Informational for Z3 and recomputed by Z4. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
@@ -11,7 +11,7 @@
     "trust_paths_changed", "exec_surface_changed", "filtered_stats", "artifact_names", "draft"
   ],
   "properties": {
-    "schema": { "const": "assay.run/1" },
+    "schema": { "const": "review.run/1" },
     "run_key": { "$ref": "#/$defs/nonEmpty" },
     "run_uid": { "$ref": "#/$defs/runUid" },
     "repo": { "$ref": "#/$defs/nonEmpty" },

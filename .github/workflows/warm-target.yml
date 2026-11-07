@@ -7,7 +7,7 @@
 #
 # Never the Actions cache, here or in any decision-bearing job: it can be pre-seeded under the
 # base scope with a run's runtime token, and a poisoned entry outlives the merge (T6). This
-# workflow restores nothing and builds cold; crates/assay-cli/tests/it/workflow_cache.rs holds
+# workflow restores nothing and builds cold; crates/review-cli/tests/it/workflow_cache.rs holds
 # every decision-bearing job to an allowlist of cache-free actions.
 #
 # A-29: cargo fingerprints hold absolute paths, so the build runs at the fixed path $WORKSPACE,

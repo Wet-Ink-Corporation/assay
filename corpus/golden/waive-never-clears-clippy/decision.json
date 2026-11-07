@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-waive-never-clears-clippy",
   "evidence_key": "run-waive-never-clears-clippy",
   "conclusion": "failure",
@@ -30,5 +30,5 @@
   ],
   "degraded": [],
   "rubric_version": "1",
-  "inputs_digest": "sha256:12a639e7ab25a0b476105a5a5321a529eb5e28e2032f7b6f585f4c5fdde5b5ba"
+  "inputs_digest": "sha256:87f934704a269da58bf2ddade89f8ab563a85077fada4dce94c828be5f5d7d6a"
 }

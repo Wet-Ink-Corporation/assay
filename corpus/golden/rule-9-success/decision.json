@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-rule-9-success",
   "evidence_key": "run-rule-9-success",
   "conclusion": "success",
@@ -15,5 +15,5 @@
   "waived": [],
   "degraded": [],
   "rubric_version": "1",
-  "inputs_digest": "sha256:8a7c608f5c5789b1e3c3580e69b47ae9fe7690f6ce47e6b3440fbef0bc36a0ef"
+  "inputs_digest": "sha256:44fc357543b4e2a837e2b8d46157465362e0e25ad96c28a835edad410b4e8c85"
 }

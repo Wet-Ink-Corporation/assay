@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:run-decision:1",
-  "title": "assay.run-decision/1",
+  "$id": "urn:review:schema:run-decision:1",
+  "title": "review.run-decision/1",
   "description": "The decision bundle decide-only persists as `run-decision.json` in its artifact `assay-decision-<pr>-<nonce>`, one per PR it re-decides, the one the decision pointer's sha256 names (docs/architecture/02-architecture.md §5, 03-contracts.md §6e, #61 D5): the evidence pointer it was decided from, what triggered it, the decision inputs, the rubric version, the decision, its events and its GitHub state snapshot. At most 8 MiB. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "run_uid", "evidence", "trigger", "inputs", "rubric_version", "decision", "events", "github"],
   "properties": {
-    "schema": { "const": "assay.run-decision/1" },
+    "schema": { "const": "review.run-decision/1" },
     "run_uid": {
       "description": "The decide-only workflow run that re-decided, (repo_id, run_id, run_attempt) (03 §4); attempt 1 only (R3-05).",
       "type": "object",
@@ -20,7 +20,7 @@
       }
     },
     "evidence": {
-      "description": "The evidence pointer (`assay.ledger-state/1` `evidence`, R3-08) whose `assay.run-inputs/1` bundle the decision was re-decided from, so replay follows the decision to its evidence (J10).",
+      "description": "The evidence pointer (`review.ledger-state/1` `evidence`, R3-08) whose `review.run-inputs/1` bundle the decision was re-decided from, so replay follows the decision to its evidence (J10).",
       "type": "object",
       "additionalProperties": false,
       "required": ["run_id", "run_attempt", "sha256"],
@@ -66,11 +66,11 @@
     },
     "rubric_version": { "$ref": "#/$defs/nonEmpty" },
     "decision": {
-      "description": "The decision, an assay.decision/1 document (validated against its own schema on read).",
+      "description": "The decision, an review.decision/1 document (validated against its own schema on read).",
       "type": "object"
     },
     "events": {
-      "description": "The re-decision's events (assay.event/1) of job `redecide`, in order: the triggering comment's `CommandRecorded` or `CommandRejected`, one `CommandVoided` per void command record, one `WaiverApplied` per waiver the decision applied, then `OverrideApplied`.",
+      "description": "The re-decision's events (review.event/1) of job `redecide`, in order: the triggering comment's `CommandRecorded` or `CommandRejected`, one `CommandVoided` per void command record, one `WaiverApplied` per waiver the decision applied, then `OverrideApplied`.",
       "type": "array",
       "maxItems": 1024,
       "items": {

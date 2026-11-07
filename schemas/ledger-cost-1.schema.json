@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:ledger-cost:1",
-  "title": "assay.ledger-cost/1",
+  "$id": "urn:review:schema:ledger-cost:1",
+  "title": "review.ledger-cost/1",
   "description": "One line of a cost file `ledger/YYYY-MM.jsonl` in the ledger repository (docs/architecture/06-operations.md §1, 03-contracts.md §6c): a run's `reserved` record, written by `admit` at slot acquisition, or its `final` record, written by `release` or back-filled by the ledger reconcile. Keyed by `run_uid` and `kind`; `at` lies in the file's month. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
@@ -10,7 +10,7 @@
     "cancelled", "at"
   ],
   "properties": {
-    "schema": { "const": "assay.ledger-cost/1" },
+    "schema": { "const": "review.ledger-cost/1" },
     "run_uid": { "$ref": "#/$defs/runUid" },
     "run_key": { "$ref": "#/$defs/digest" },
     "repo": { "$ref": "#/$defs/repository" },

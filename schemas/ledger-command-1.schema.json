@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:ledger-command:1",
-  "title": "assay.ledger-command/1",
+  "$id": "urn:review:schema:ledger-command:1",
+  "title": "review.ledger-command/1",
   "description": "One line of a command file `commands/<repo_id>/<pr>.jsonl` in the ledger repository (docs/architecture/06-operations.md §1, 05-security.md T21, 03-contracts.md §6c), appended by decide-only from the triggering `issue_comment.created` payload. One record per `comment_id`; `run_uid.repo_id` and `pr` are the file's. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
@@ -10,7 +10,7 @@
     "created_at", "at"
   ],
   "properties": {
-    "schema": { "const": "assay.ledger-command/1" },
+    "schema": { "const": "review.ledger-command/1" },
     "run_uid": { "$ref": "#/$defs/runUid" },
     "pr": { "$ref": "#/$defs/id" },
     "comment_id": { "$ref": "#/$defs/id" },

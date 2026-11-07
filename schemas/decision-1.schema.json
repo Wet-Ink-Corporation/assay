@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:decision:1",
-  "title": "assay.decision/1",
+  "$id": "urn:review:schema:decision:1",
+  "title": "review.decision/1",
   "description": "The decision `decide` publishes (docs/architecture/03-contracts.md §5). Reason and disposition codes are closed enums. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
@@ -10,7 +10,7 @@
     "advisory_blockers", "dispositions", "waived", "degraded", "rubric_version", "inputs_digest"
   ],
   "properties": {
-    "schema": { "const": "assay.decision/1" },
+    "schema": { "const": "review.decision/1" },
     "decision_key": { "$ref": "#/$defs/nonEmpty" },
     "evidence_key": { "$ref": "#/$defs/nonEmpty" },
     "conclusion": { "enum": ["success", "failure", "neutral", "pending"] },

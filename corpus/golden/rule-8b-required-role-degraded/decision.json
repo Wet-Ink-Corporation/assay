@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-rule-8b-required-role-degraded",
   "evidence_key": "run-rule-8b-required-role-degraded",
   "conclusion": "failure",
@@ -25,5 +25,5 @@
     }
   ],
   "rubric_version": "1",
-  "inputs_digest": "sha256:4ede698f6865a0ec2ea955a7502fc309e84c8a4ee52b7dea7529d6aa2588c6e8"
+  "inputs_digest": "sha256:f3a996e2b9ababfe690689546fbaad581a4550fa85091fb20b30c7c4b0ee5843"
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:run-inputs:1",
-  "title": "assay.run-inputs/1",
+  "$id": "urn:review:schema:run-inputs:1",
+  "title": "review.run-inputs/1",
   "description": "The bundle `decide` persists as `run-inputs.json` in its own artifact, the one the evidence pointer's sha256 names (docs/architecture/02-architecture.md §5, 03-contracts.md §6a): every authenticated input document as its job published it, the decision inputs, the decision, the run's events, the findings it carries into the next run and the GitHub state snapshot. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
@@ -10,7 +10,7 @@
     "carry", "github"
   ],
   "properties": {
-    "schema": { "const": "assay.run-inputs/1" },
+    "schema": { "const": "review.run-inputs/1" },
     "run_uid": {
       "description": "The workflow run that decided, (repo_id, run_id, run_attempt) (03 §4).",
       "type": "object",
@@ -44,11 +44,11 @@
     },
     "rubric_version": { "$ref": "#/$defs/nonEmpty" },
     "decision": {
-      "description": "The decision, an assay.decision/1 document (validated against its own schema on read).",
+      "description": "The decision, an review.decision/1 document (validated against its own schema on read).",
       "type": "object"
     },
     "events": {
-      "description": "The run's events (assay.event/1), ordered by job, then index.",
+      "description": "The run's events (review.event/1), ordered by job, then index.",
       "type": "array",
       "items": { "type": "object" }
     },

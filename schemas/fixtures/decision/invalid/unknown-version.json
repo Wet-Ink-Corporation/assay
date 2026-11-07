@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/7",
+  "schema": "review.decision/7",
   "decision_key": "dec-42-1",
   "evidence_key": "run-42-1",
   "conclusion": "failure",

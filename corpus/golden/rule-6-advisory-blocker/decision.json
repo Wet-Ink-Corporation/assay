@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-rule-6-advisory-blocker",
   "evidence_key": "run-rule-6-advisory-blocker",
   "conclusion": "success",
@@ -17,5 +17,5 @@
   "waived": [],
   "degraded": [],
   "rubric_version": "1",
-  "inputs_digest": "sha256:ec99a14df0b6f10eac40865406d64aa0bc138acca4800742ab5b780f28a66608"
+  "inputs_digest": "sha256:08f10922d0d4cfb238671d8d3c94e303d4e529aa33d670c7be1f9c65ef87f0f0"
 }

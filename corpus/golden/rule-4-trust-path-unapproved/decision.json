@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-rule-4-trust-path-unapproved",
   "evidence_key": "run-rule-4-trust-path-unapproved",
   "conclusion": "failure",
@@ -20,5 +20,5 @@
   "waived": [],
   "degraded": [],
   "rubric_version": "1",
-  "inputs_digest": "sha256:a01d6fb3f549ae08beaccc56655f4eb092741a645a3ed68a83b4efab2f8c47a1"
+  "inputs_digest": "sha256:114ece1088d1bb47b7d0455f0d87b76ab909577020ef82db0ce73fc0c6e572a3"
 }

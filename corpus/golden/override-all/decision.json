@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-override-all",
   "evidence_key": "run-override-all",
   "conclusion": "neutral",
@@ -28,5 +28,5 @@
   "waived": [],
   "degraded": [],
   "rubric_version": "1",
-  "inputs_digest": "sha256:6fa26232048ee0083d26398a0f7a6cc91c2631cbc59c1af7d6b86e694f7ad356"
+  "inputs_digest": "sha256:2c155aadc5f3f06910c2c865cc2d31851c65eb24b6f0addf9ccaf526e05f785d"
 }

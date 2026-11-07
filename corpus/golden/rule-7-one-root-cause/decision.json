@@ -1,5 +1,5 @@
 {
-  "schema": "assay.decision/1",
+  "schema": "review.decision/1",
   "decision_key": "dec-rule-7-one-root-cause",
   "evidence_key": "run-rule-7-one-root-cause",
   "conclusion": "success",
@@ -15,5 +15,5 @@
   "waived": [],
   "degraded": [],
   "rubric_version": "1",
-  "inputs_digest": "sha256:b134c37d8f8fcdf5c1ccb4b6a1a8e4feee49455eb39fb5ceb01eb8d207ed4833"
+  "inputs_digest": "sha256:fad77581411cf039e2375dc2c7f81c52fa617a657e0ef8185a1c58a267e73efa"
 }

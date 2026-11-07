@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:status:1",
-  "title": "assay.status/1",
+  "$id": "urn:review:schema:status:1",
+  "title": "review.status/1",
   "description": "A PR's assay state as `assay status --json` renders it (docs/architecture/03-contracts.md §6b): the App's verdict check, the decision its evidence pointer names, the per-gate checks, the decision's findings and the viewer. Every text is one assay already published, sanitised (04 §6, T8); nothing is raw model text. With `source: local` (`assay status --json --local`, #130) it is instead the advisory local check of the working tree: no PR, no App check, no viewer, nothing waivable, and finding text cleaned onto one line as the terminal report shows it. Unknown fields are rejected.",
   "type": "object",
   "additionalProperties": false,
@@ -11,7 +11,7 @@
   ],
   "allOf": [{ "$ref": "#/$defs/whenCi" }, { "$ref": "#/$defs/whenLocal" }],
   "properties": {
-    "schema": { "const": "assay.status/1" },
+    "schema": { "const": "review.status/1" },
     "source": {
       "description": "Where the state was read: `ci`, the published verdict; `local`, the advisory result of `assay check --local` (02 §6), which CI never reads.",
       "enum": ["ci", "local"]
@@ -49,7 +49,7 @@
       "type": "boolean"
     },
     "check": {
-      "description": "The `assay-verdict` App's verdict check on `head_sha`, or null when it has none yet. A same-named check from any other app is ignored. `local`: the local result as a check would show it (no `url`), or null when there is no local result.",
+      "description": "The `redkiln-review` App's verdict check on `head_sha`, or null when it has none yet. A same-named check from any other app is ignored. `local`: the local result as a check would show it (no `url`), or null when there is no local result.",
       "oneOf": [
         {
           "type": "object",
@@ -65,7 +65,7 @@
       ]
     },
     "decision": {
-      "description": "The decision the check's evidence pointer names (assay.decision/1, 03 §5). Null only when there is none to read: no App verdict check, a check carrying `open`'s `pending:<run>:<seq>` stamp (a run in progress), or a decided check whose run persisted no bundle (a refused run persists none, and its status says why in `refused`). A decided `pending` verdict (its check stays `in_progress`), such as a budget deferral, carries its decision. `local`: the local decision, null when there is no local result.",
+      "description": "The decision the check's evidence pointer names (review.decision/1, 03 §5). Null only when there is none to read: no App verdict check, a check carrying `open`'s `pending:<run>:<seq>` stamp (a run in progress), or a decided check whose run persisted no bundle (a refused run persists none, and its status says why in `refused`). A decided `pending` verdict (its check stays `in_progress`), such as a budget deferral, carries its decision. `local`: the local decision, null when there is no local result.",
       "oneOf": [
         {
           "type": "object",
@@ -145,7 +145,7 @@
       ]
     },
     "gates": {
-      "description": "The App's `assay / gate: <plugin>` checks on `head_sha`, by plugin name.",
+      "description": "The App's `review / gate: <plugin>` checks on `head_sha`, by plugin name.",
       "type": "array",
       "maxItems": 1000,
       "items": {

@@ -1,5 +1,5 @@
 {
-  "schema": "assay.findings/1",
+  "schema": "review.findings/1",
   "source": {
     "kind": "gate",
     "name": "temper",

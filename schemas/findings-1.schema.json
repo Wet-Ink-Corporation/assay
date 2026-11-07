@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:findings:1",
-  "title": "assay.findings/1",
+  "$id": "urn:review:schema:findings:1",
+  "title": "review.findings/1",
   "description": "Findings from one gate or one reviewer role (docs/architecture/03-contracts.md §3). Unknown fields are rejected; producers never supply `fp` or `group_id`; reviewers never supply `conclusion` or `failed_steps`. `failed_steps` (#153) is a gate's attestation of the steps that failed without a finding: absent when the adapter does not attest, empty when every failure cause is a finding, and non-empty only on a failed gate.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "source", "findings"],
   "properties": {
-    "schema": { "const": "assay.findings/1" },
+    "schema": { "const": "review.findings/1" },
     "source": { "$ref": "#/$defs/source" },
     "conclusion": { "enum": ["pass", "fail", "neutral"] },
     "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },

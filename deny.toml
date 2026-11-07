@@ -37,7 +37,7 @@ deny = [
   { name = "failure", reason = "unmaintained; use thiserror" },
   { name = "error-chain", reason = "unmaintained; use thiserror" },
   # P8: assay consumes Weigh-In through its documented contract and never links its crates.
-  # The architecture test (crates/assay-cli/tests/it/architecture.rs) also rejects temper code.
+  # The architecture test (crates/review-cli/tests/it/architecture.rs) also rejects temper code.
   { name = "weighin-core", reason = "P8: consume Weigh-In through contracts, never link it" },
 ]
 
