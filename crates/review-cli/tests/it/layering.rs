@@ -197,7 +197,7 @@ pub(crate) fn workspace_packages() -> Result<Vec<Package>, Box<dyn Error>> {
         let manifest = string_field(value, "manifest_path")?;
         let relative = Path::new(&manifest)
             .strip_prefix(root)
-            .map_err(|_| format!("member manifest {manifest} is outside {root}"))?;
+            .map_err(|error| format!("member manifest {manifest} is outside {root}: {error}"))?;
         let relative = relative
             .to_str()
             .ok_or_else(|| format!("member manifest {manifest} is not UTF-8"))?
