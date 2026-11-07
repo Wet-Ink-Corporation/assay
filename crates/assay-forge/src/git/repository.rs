@@ -408,6 +408,12 @@ impl ObjectRepo {
         run_in(&self.git_dir, &self.environment, self.limits, call)
     }
 
+    /// Runs `call` against the repository at `git_dir` (a reading checkout's) with this
+    /// repository's environment and limits; a non-zero exit is an error.
+    pub(super) fn run_in_repo(&self, git_dir: &Path, call: Call<'_>) -> Result<Captured, GitError> {
+        run_in(git_dir, &self.environment, self.limits, call)
+    }
+
     /// Runs `call` in this repository within its timeout and the output cap, whatever its exit
     /// status.
     pub(super) fn run_to_exit(&self, call: Call<'_>) -> Result<Captured, GitError> {

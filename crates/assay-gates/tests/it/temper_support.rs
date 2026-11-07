@@ -133,19 +133,6 @@ pub(crate) struct FakeRevisions {
     pub(crate) short_read: bool,
 }
 
-impl FakeRevisions {
-    /// Sets `path` on `revision` to an entry of `kind` whose blob is `bytes`.
-    pub(crate) fn insert(
-        &mut self,
-        (revision, path): (Revision, &str),
-        kind: EntryKind,
-        bytes: &[u8],
-    ) {
-        self.files
-            .insert((revision, path.to_owned()), (kind, bytes.to_vec()));
-    }
-}
-
 /// Why the fake would not answer.
 #[derive(Debug)]
 pub(crate) struct FakeError;

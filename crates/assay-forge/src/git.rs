@@ -52,6 +52,7 @@ mod numstat;
 mod patch;
 mod push;
 mod range;
+mod reading;
 mod repository;
 mod sha;
 mod tree;

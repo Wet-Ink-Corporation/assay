@@ -94,6 +94,11 @@ pub enum GitOperation {
     CommitTree,
     /// `git checkout-index --all`: write a scratch index out, symlinks as plain files.
     CheckoutIndex,
+    /// `git init --quiet`: a non-bare repository for a reading checkout (#372), given its git
+    /// directory and work tree.
+    InitReading,
+    /// `git update-ref --no-deref HEAD`: detach a reading checkout's `HEAD` at a commit.
+    DetachHead,
     /// `git config --null --path --get`: one path-valued setting of a developer's repository,
     /// with their system and user config read too (local mode's excludes file).
     ConfigPath,
@@ -149,6 +154,8 @@ impl GitOperation {
             Self::WriteTree => &["write-tree"],
             Self::CommitTree => &["commit-tree"],
             Self::CheckoutIndex => &["checkout-index", "--all"],
+            Self::InitReading => &["init", "--quiet"],
+            Self::DetachHead => &["update-ref", "--no-deref", "HEAD"],
             Self::ConfigPath => &["config", "--null", "--path", "--get"],
             Self::ConfigBool => &["config", "--null", "--bool", "--get"],
             Self::ListIndex => &["ls-files", "-t", "-z"],
@@ -214,7 +221,7 @@ const SNAPSHOT_IDENTITY: [(&str, &str); 6] = [
 impl fmt::Display for GitOperation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
-            Self::Init => "init",
+            Self::Init | Self::InitReading => "init",
             Self::Fetch | Self::FetchAuthorized => "fetch",
             Self::VerifyCommit => "cat-file",
             Self::Diff => "diff",
@@ -235,6 +242,7 @@ impl fmt::Display for GitOperation {
             Self::WriteTree => "write-tree",
             Self::CommitTree => "commit-tree",
             Self::CheckoutIndex => "checkout-index",
+            Self::DetachHead => "update-ref",
             Self::ConfigPath | Self::ConfigBool | Self::ConfigValue => "config",
             Self::ListIndex => "ls-files",
         };
@@ -427,7 +435,7 @@ mod tests {
     use crate::process::{Limits, run};
 
     /// Every operation.
-    const ALL: [GitOperation; 27] = [
+    const ALL: [GitOperation; 29] = [
         GitOperation::Init,
         GitOperation::Fetch,
         GitOperation::FetchAuthorized,
@@ -449,6 +457,8 @@ mod tests {
         GitOperation::WriteTree,
         GitOperation::CommitTree,
         GitOperation::CheckoutIndex,
+        GitOperation::InitReading,
+        GitOperation::DetachHead,
         GitOperation::ConfigPath,
         GitOperation::ConfigBool,
         GitOperation::ListIndex,
@@ -777,7 +787,7 @@ mod tests {
     ];
 
     /// Each operation's subcommand and fixed flags, in [`ALL`]'s order.
-    const LEADING: [(GitOperation, &[&str]); 27] = [
+    const LEADING: [(GitOperation, &[&str]); 29] = [
         (GitOperation::Init, &["init", "--bare", "--quiet"]),
         (GitOperation::Fetch, FETCH_ARGS),
         (GitOperation::FetchAuthorized, FETCH_ARGS),
@@ -817,6 +827,11 @@ mod tests {
         (GitOperation::WriteTree, &["write-tree"]),
         (GitOperation::CommitTree, &["commit-tree"]),
         (GitOperation::CheckoutIndex, &["checkout-index", "--all"]),
+        (GitOperation::InitReading, &["init", "--quiet"]),
+        (
+            GitOperation::DetachHead,
+            &["update-ref", "--no-deref", "HEAD"],
+        ),
         (
             GitOperation::ConfigPath,
             &["config", "--null", "--path", "--get"],

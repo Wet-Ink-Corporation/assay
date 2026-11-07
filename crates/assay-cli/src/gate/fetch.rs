@@ -11,6 +11,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use assay_app::CommitId;
 use assay_forge::git::{
     Authorization, CommitSha, GitEnvironment, GitLimits, HttpsRemote, ObjectRepo,
 };
@@ -121,6 +122,13 @@ pub(super) struct Fetched {
     pub(super) repo: ObjectRepo,
     pub(super) base: CommitSha,
     pub(super) head: CommitSha,
+}
+
+/// `sha` as the app's commit id; both are 40 lowercase hex digits.
+pub(super) fn commit_id(sha: &CommitSha, variable: Variable) -> Result<CommitId, PinnedError> {
+    sha.as_str()
+        .parse()
+        .map_err(|_not_an_id| PinnedError::Invalid(variable))
 }
 
 /// `value`, which must be set.

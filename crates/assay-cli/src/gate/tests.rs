@@ -13,7 +13,7 @@ fn the_job_and_the_flags_parse_in_any_order() {
     assert!(
         matches!(
             args,
-            Ok(Args { job: TEST, ref config, ref head, ref out, node: None, temper: None })
+            Ok(Args { job: TEST, ref config, ref head, ref out, node: None, temper: None, weighin: None })
                 if config == Path::new("c") && head == Path::new("h") && out == Path::new("o")
         ),
         "{args:?}"
@@ -108,10 +108,79 @@ fn gates_static_takes_both_programs_by_absolute_path() {
     assert!(
         matches!(
             wired,
-            Ok(Wired::Static(Programs { ref node, ref temper }))
+            Ok(Wired::Static(Programs { ref node, ref temper, weighin: None }))
                 if node == Path::new("/bin/node") && temper == Path::new("/opt/temper")
         ),
         "{wired:?}"
+    );
+}
+
+#[test]
+fn the_weighin_flag_parses_once() {
+    let flags = ["--config", "c", "--head", "h", "--out", "o"];
+    let weighin = ["--weighin", "/w"];
+
+    let args = parsed(&[&["gates-static"][..], &flags, &weighin].concat());
+    let repeated = parsed(&[&["gates-static"][..], &flags, &weighin, &weighin].concat());
+
+    assert!(
+        matches!(args, Ok(Args { weighin: Some(ref path), .. }) if path == Path::new("/w")),
+        "{args:?}"
+    );
+    assert!(matches!(repeated, Err(GateCliError::Usage)), "{repeated:?}");
+}
+
+/// `gates-static` with both programs, then `--weighin` as given.
+fn with_weighin(job: GateJob, weighin: Option<&str>) -> Result<Wired, GateCliError> {
+    let wired = wired(job, Some("/bin/node"), Some("/opt/temper"))
+        .or_else(|_usage| wired(job, None, None))?;
+    weigh_in(wired, weighin.map(PathBuf::from))
+}
+
+#[test]
+fn gates_static_takes_an_optional_weighin_by_absolute_path() {
+    let given = with_weighin(GateJob::Static, Some("/opt/weighin"));
+    let absent = with_weighin(GateJob::Static, None);
+
+    assert!(
+        matches!(
+            given,
+            Ok(Wired::Static(Programs { weighin: Some(ref path), .. }))
+                if path == Path::new("/opt/weighin")
+        ),
+        "{given:?}"
+    );
+    assert!(
+        matches!(absent, Ok(Wired::Static(Programs { weighin: None, .. }))),
+        "{absent:?}"
+    );
+}
+
+#[test]
+fn a_weighin_for_another_job_is_a_usage_error() {
+    for job in [LINT, TEST] {
+        let wired = with_weighin(job, Some("/opt/weighin"));
+
+        assert!(
+            matches!(wired, Err(GateCliError::Usage)),
+            "{job}: {wired:?}"
+        );
+    }
+}
+
+#[test]
+fn a_relative_weighin_is_refused_by_its_flag() {
+    let refused = with_weighin(GateJob::Static, Some("bin/weighin"));
+
+    assert!(
+        matches!(
+            refused,
+            Err(GateCliError::Pinned(PinnedError::RelativeProgram {
+                program: Program::Weighin,
+                ref path
+            })) if path == Path::new("bin/weighin")
+        ),
+        "{refused:?}"
     );
 }
 
@@ -166,7 +235,7 @@ fn gates_lint_takes_both_programs_by_absolute_path() {
     assert!(
         matches!(
             wired,
-            Ok(Wired::Lint(Programs { ref node, ref temper }))
+            Ok(Wired::Lint(Programs { ref node, ref temper, weighin: None }))
                 if node == Path::new("/bin/node") && temper == Path::new("/opt/temper")
         ),
         "{wired:?}"
