@@ -78,32 +78,45 @@ pub(super) fn refuse_paths(config: &Path, head: &Path, out: &Path) -> Result<Pla
 }
 
 /// `gates-static`'s and `gates-lint`'s programs: `node` and the pinned temper copy, each named
-/// absolute.
+/// absolute, and `gates-static`'s optional pinned `weighin` (#372).
 #[derive(Debug)]
 pub(super) struct Programs {
     pub(super) node: PathBuf,
     pub(super) temper: PathBuf,
+    /// `--weighin`, when given; without it a Weigh-In gate does not run.
+    pub(super) weighin: Option<PathBuf>,
+}
+
+/// `path` as given, refused unless absolute: a relative one would be resolved against the
+/// working directory, which the job does not choose.
+fn absolute_program(program: Program, path: PathBuf) -> Result<PathBuf, PinnedError> {
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Err(PinnedError::RelativeProgram { program, path })
+    }
 }
 
 impl Programs {
-    /// `node` and `temper` as given, refused unless each is absolute: a relative one would be
-    /// resolved against the working directory, which the job does not choose.
+    /// `node` and `temper` as given, refused unless each is absolute, with no `weighin`.
     pub(super) fn absolute(node: PathBuf, temper: PathBuf) -> Result<Self, PinnedError> {
-        let absolute = |program: Program, path: PathBuf| {
-            if path.is_absolute() {
-                Ok(path)
-            } else {
-                Err(PinnedError::RelativeProgram { program, path })
-            }
-        };
         Ok(Self {
-            node: absolute(Program::Node, node)?,
-            temper: absolute(Program::Temper, temper)?,
+            node: absolute_program(Program::Node, node)?,
+            temper: absolute_program(Program::Temper, temper)?,
+            weighin: None,
         })
     }
 
-    /// The programs with every symlink resolved, refused when either resolves inside `head`
-    /// (resolved): the PR would choose what runs as the pinned temper.
+    /// These programs with `weighin`, refused unless absolute.
+    pub(super) fn with_weighin(self, weighin: PathBuf) -> Result<Self, PinnedError> {
+        Ok(Self {
+            weighin: Some(absolute_program(Program::Weighin, weighin)?),
+            ..self
+        })
+    }
+
+    /// The programs with every symlink resolved, refused when any resolves inside `head`
+    /// (resolved): the PR would choose what runs as the pinned temper or weighin.
     pub(super) fn outside(self, head: &Path) -> Result<Self, GateCliError> {
         let resolve = |program: Program, path: &Path| -> Result<PathBuf, GateCliError> {
             let path = canonical(path)?;
@@ -115,6 +128,11 @@ impl Programs {
         Ok(Self {
             node: resolve(Program::Node, &self.node)?,
             temper: resolve(Program::Temper, &self.temper)?,
+            weighin: self
+                .weighin
+                .as_deref()
+                .map(|weighin| resolve(Program::Weighin, weighin))
+                .transpose()?,
         })
     }
 }

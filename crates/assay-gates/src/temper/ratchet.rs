@@ -16,7 +16,7 @@ use std::num::NonZeroU64;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 
-use super::report::json_detail;
+use crate::json::json_detail;
 
 /// The only collection format this adapter reads (`"temper_findings": 1`).
 const FORMAT: u64 = 1;

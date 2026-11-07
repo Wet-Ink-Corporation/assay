@@ -1,5 +1,6 @@
-//! What `assay gate gates-static` (#60 ST-7) refuses before anything runs: a relative `--node`
-//! or `--temper`, either inside `--head`, either missing, and a missing or invalid pinned
+//! What `assay gate gates-static` (#60 ST-7) refuses before anything runs: a relative `--node`,
+//! `--temper` or `--weighin` (#372), any inside `--head`, `--node` or `--temper` missing,
+//! `--weighin` given to gates-lint, and a missing or invalid pinned
 //! commit, run token, repository or `PATH`. Every case exits 2 with no git or node started and
 //! nothing written, and a variable is named but never echoed. A valid pinned commit the
 //! repository does not hold is a failed fetch: exit 2 after git ran, with no gate run and
@@ -87,6 +88,33 @@ fn gates_static_without_node_or_temper_is_a_usage_error() -> Result<(), Box<dyn 
         refused(&scene, &flags, "assay: usage: ")?;
     }
     Ok(())
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn a_relative_weighin_or_one_inside_the_head_tree_is_refused() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::new(&[])?;
+
+    refused(
+        &scene,
+        &with(&scene, "--weighin", "bin/weighin"),
+        "assay: --weighin bin/weighin is not absolute",
+    )?;
+    refused(
+        &scene,
+        &with(&scene, "--weighin", scene.head.join("src/lib.rs")),
+        "assay: --weighin ",
+    )
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns the `assay` binary; Miri cannot run processes")]
+fn gates_lint_given_weighin_is_a_usage_error() -> Result<(), Box<dyn Error>> {
+    let scene = Scene::lint(&[], "")?;
+    let mut flags = scene.flags();
+    flags.push(("--weighin", scene.path("bin/weighin")));
+
+    refused(&scene, &flags, "assay: usage: ")
 }
 
 /// Runs the job with `name` set to `value`, or unset when `None`: it must exit 2 naming
