@@ -129,7 +129,13 @@ fn assert_quotes_no_producer_text(
     declared: &BTreeSet<&str>,
     error: &ReadContractError,
 ) {
-    let display = error.to_string();
+    // The message names the contract (`review.event document is invalid`), which is assay's own
+    // text, so a producer text such as the job name `review` is looked for around it.
+    let display = Contract::ALL
+        .iter()
+        .fold(error.to_string(), |shown, contract| {
+            shown.replace(contract.name(), "")
+        });
     let debug = format!("{error:?}");
     for text in producer_texts(document, declared) {
         assert!(

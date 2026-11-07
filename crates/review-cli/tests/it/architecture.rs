@@ -1,8 +1,66 @@
 //! The crate graph follows ADR-07 and `docs/architecture/02-architecture.md` §2: six crates,
 //! dependencies pointing inward, a domain that depends only on serde, thiserror and sha2, no
-//! weighin-core or temper code, and nothing publishable.
+//! weighin-core or temper code, and nothing publishable. Only Review's own crates are checked
+//! (`crates/review-*/` here, `crates/review/*/` in the redkiln monorepo), so a sibling plugin's
+//! crates in a shared workspace neither fail nor escape the check.
 
-use crate::layering::{Dependency, Kind, Package, Violation, violations, workspace_packages};
+use crate::layering::{
+    Dependency, Kind, Package, Violation, is_review_member, violations, workspace_packages,
+};
+
+#[test]
+fn reviews_crates_are_members_here_and_in_the_monorepo() {
+    for manifest in [
+        "crates/review-domain/Cargo.toml",
+        "crates/review-cli/Cargo.toml",
+        "crates/review/review-domain/Cargo.toml",
+        "crates/review/review-contract/Cargo.toml",
+    ] {
+        assert!(is_review_member(manifest), "{manifest} is Review's");
+    }
+}
+
+#[test]
+fn sibling_and_nested_manifests_are_not_reviews_members() {
+    for manifest in [
+        "crates/core/redkiln-core/Cargo.toml",
+        "crates/weigh-in/weighin/Cargo.toml",
+        "crates/reviewer/Cargo.toml",
+        "crates/review/Cargo.toml",
+        "crates/review-/Cargo.toml",
+        "crates/review-app/fixtures/nested/Cargo.toml",
+        "tools/xtask/Cargo.toml",
+        "Cargo.toml",
+    ] {
+        assert!(!is_review_member(manifest), "{manifest} is not Review's");
+    }
+}
+
+/// Base `.assay/globs.toml` makes every one of Review's crates a trust path (T16), here and at
+/// its monorepo path, and leaves a sibling plugin's crates out, so their PRs are not
+/// owner-approved trust-path changes.
+#[test]
+fn trust_paths_cover_reviews_crates_and_no_sibling() -> Result<(), Box<dyn std::error::Error>> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let text = std::fs::read_to_string(root.join(".assay/globs.toml"))?;
+    let trust = review_app::parse_globs(&text)?.trust;
+    let trusted = |path: &str| trust.iter().any(|glob| glob.matches(path));
+
+    for package in workspace_packages()? {
+        let here = format!("crates/{}/src/lib.rs", package.name);
+        let imported = format!("crates/review/{}/Cargo.toml", package.name);
+        assert!(trusted(&here), "{here} is a trust path");
+        assert!(trusted(&imported), "{imported} is a trust path");
+    }
+    for sibling in [
+        "crates/core/redkiln-core/src/lib.rs",
+        "crates/weigh-in/weighin/src/main.rs",
+        "crates/reviewer/src/lib.rs",
+    ] {
+        assert!(!trusted(sibling), "{sibling} is not Review's trust path");
+    }
+    Ok(())
+}
 
 fn package(name: &str, dependencies: &[(&str, Kind)]) -> Package {
     Package {

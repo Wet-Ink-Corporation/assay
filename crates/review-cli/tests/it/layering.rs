@@ -39,6 +39,12 @@ const FORBIDDEN_FAMILIES: [&str; 3] = ["weighin", "weigh-in", "temper"];
 
 const WORKSPACE_PREFIX: &str = "review-";
 
+/// Where Review's crates live, relative to the workspace root: `crates/review-<x>/` in this
+/// repository and `crates/review/<pkg>/` once imported into the redkiln monorepo. Only members
+/// under these are checked, so a sibling plugin's crates in the same workspace are neither
+/// unknown members here nor Review's to police; a seventh crate of Review's own still is.
+const REVIEW_ROOTS: [&str; 2] = ["crates/review-", "crates/review/"];
+
 /// How a package uses a dependency, as `cargo metadata` reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -146,9 +152,22 @@ fn is_forbidden(dependency: &str) -> bool {
     })
 }
 
-/// The workspace members of this repository, read from `cargo metadata --no-deps`.
+/// Whether a member whose manifest is at `manifest`, relative to the workspace root and with `/`
+/// separators, is one of Review's crates.
+pub(crate) fn is_review_member(manifest: &str) -> bool {
+    REVIEW_ROOTS.iter().any(|root| {
+        manifest
+            .strip_prefix(root)
+            .and_then(|rest| rest.split_once('/'))
+            .is_some_and(|(dir, file)| !dir.is_empty() && file == "Cargo.toml")
+    })
+}
+
+/// Review's workspace members, read from `cargo metadata --no-deps` and kept by
+/// [`is_review_member`]. The workspace is found from this crate's own manifest, so the check
+/// works wherever the crates sit under the workspace root.
 pub(crate) fn workspace_packages() -> Result<Vec<Package>, Box<dyn Error>> {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = Command::new(env!("CARGO"))
         .args([
             "metadata",
@@ -165,13 +184,29 @@ pub(crate) fn workspace_packages() -> Result<Vec<Package>, Box<dyn Error>> {
         return Err(format!("cargo metadata failed: {stderr}").into());
     }
     let metadata: Value = serde_json::from_slice(&output.stdout)?;
-    metadata
+    let root = metadata
+        .get("workspace_root")
+        .and_then(Value::as_str)
+        .ok_or("cargo metadata has no `workspace_root`")?;
+    let mut packages = Vec::new();
+    for value in metadata
         .get("packages")
         .and_then(Value::as_array)
         .ok_or("cargo metadata has no `packages` array")?
-        .iter()
-        .map(parse_package)
-        .collect()
+    {
+        let manifest = string_field(value, "manifest_path")?;
+        let relative = Path::new(&manifest)
+            .strip_prefix(root)
+            .map_err(|_| format!("member manifest {manifest} is outside {root}"))?;
+        let relative = relative
+            .to_str()
+            .ok_or_else(|| format!("member manifest {manifest} is not UTF-8"))?
+            .replace('\\', "/");
+        if is_review_member(&relative) {
+            packages.push(parse_package(value)?);
+        }
+    }
+    Ok(packages)
 }
 
 fn parse_package(value: &Value) -> Result<Package, Box<dyn Error>> {
