@@ -1,5 +1,5 @@
-//! The assay repository's own trust paths (02 §7, 05 T16): base `.assay/globs.toml` makes all
-//! of `crates/**`, the rubric, the plugin and the mod's own plugin (ADR-25), the schemas, the
+//! The assay repository's own trust paths (02 §7, 05 T16): base `.assay/globs.toml` makes
+//! Review's crates (`crates/review-*/**`, and `crates/review/**` in the monorepo), the rubric, the plugin and the mod's own plugin (ADR-25), the schemas, the
 //! workflow templates, the release workflow, `.assay/`, `deny.toml`, the golden snapshots and the
 //! eval splits (#230) trust paths, so changing any of them (an `assay-self` snapshot update or an
 //! eval case included) needs owner approval under rubric rule 4.

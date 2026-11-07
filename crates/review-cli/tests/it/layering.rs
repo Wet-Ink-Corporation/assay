@@ -2,7 +2,7 @@
 //! workspace's `cargo metadata` against it.
 
 use std::error::Error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
@@ -163,10 +163,38 @@ pub(crate) fn is_review_member(manifest: &str) -> bool {
     })
 }
 
-/// Review's workspace members, read from `cargo metadata --no-deps` and kept by
-/// [`is_review_member`]. The workspace is found from this crate's own manifest, so the check
-/// works wherever the crates sit under the workspace root.
+/// The workspace as far as Review is concerned: its root and Review's members.
+#[derive(Debug)]
+pub(crate) struct Workspace {
+    /// Cargo's `workspace_root`.
+    pub(crate) root: PathBuf,
+    /// Review's members, in `cargo metadata` order.
+    pub(crate) members: Vec<Member>,
+}
+
+/// One of Review's members and where it sits.
+#[derive(Debug)]
+pub(crate) struct Member {
+    /// The member's directory relative to the workspace root, with `/` separators.
+    pub(crate) dir: String,
+    pub(crate) package: Package,
+}
+
+/// Review's workspace members, as [`workspace`] reads them.
 pub(crate) fn workspace_packages() -> Result<Vec<Package>, Box<dyn Error>> {
+    Ok(workspace()?
+        .members
+        .into_iter()
+        .map(|member| member.package)
+        .collect())
+}
+
+/// The workspace, read from `cargo metadata --no-deps`, keeping the members [`is_review_member`]
+/// places under Review's roots and any member whose package name has Review's prefix wherever it
+/// sits, so a misplaced Review crate is still checked (and reported if it is a seventh). The
+/// workspace is found from this crate's own manifest, so the check works wherever the crates sit
+/// under the workspace root.
+pub(crate) fn workspace() -> Result<Workspace, Box<dyn Error>> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = Command::new(env!("CARGO"))
         .args([
@@ -188,7 +216,7 @@ pub(crate) fn workspace_packages() -> Result<Vec<Package>, Box<dyn Error>> {
         .get("workspace_root")
         .and_then(Value::as_str)
         .ok_or("cargo metadata has no `workspace_root`")?;
-    let mut packages = Vec::new();
+    let mut members = Vec::new();
     for value in metadata
         .get("packages")
         .and_then(Value::as_array)
@@ -202,11 +230,19 @@ pub(crate) fn workspace_packages() -> Result<Vec<Package>, Box<dyn Error>> {
             .to_str()
             .ok_or_else(|| format!("member manifest {manifest} is not UTF-8"))?
             .replace('\\', "/");
-        if is_review_member(&relative) {
-            packages.push(parse_package(value)?);
+        let package = parse_package(value)?;
+        if is_review_member(&relative) || package.name.starts_with(WORKSPACE_PREFIX) {
+            let dir = relative
+                .strip_suffix("/Cargo.toml")
+                .ok_or_else(|| format!("member manifest {manifest} is not a Cargo.toml"))?
+                .to_owned();
+            members.push(Member { dir, package });
         }
     }
-    Ok(packages)
+    Ok(Workspace {
+        root: PathBuf::from(root),
+        members,
+    })
 }
 
 fn parse_package(value: &Value) -> Result<Package, Box<dyn Error>> {

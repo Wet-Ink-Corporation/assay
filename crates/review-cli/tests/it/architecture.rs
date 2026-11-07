@@ -5,7 +5,8 @@
 //! crates in a shared workspace neither fail nor escape the check.
 
 use crate::layering::{
-    Dependency, Kind, Package, Violation, is_review_member, violations, workspace_packages,
+    Dependency, Kind, Package, Violation, is_review_member, violations, workspace,
+    workspace_packages,
 };
 
 #[test]
@@ -41,17 +42,22 @@ fn sibling_and_nested_manifests_are_not_reviews_members() {
 /// owner-approved trust-path changes.
 #[test]
 fn trust_paths_cover_reviews_crates_and_no_sibling() -> Result<(), Box<dyn std::error::Error>> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let text = std::fs::read_to_string(root.join(".assay/globs.toml"))?;
+    let workspace = workspace()?;
+    let text = std::fs::read_to_string(workspace.root.join(".assay/globs.toml"))?;
     let trust = review_app::parse_globs(&text)?.trust;
     let trusted = |path: &str| trust.iter().any(|glob| glob.matches(path));
 
-    for package in workspace_packages()? {
-        let here = format!("crates/{}/src/lib.rs", package.name);
-        let imported = format!("crates/review/{}/Cargo.toml", package.name);
+    for member in &workspace.members {
+        let here = format!("{}/src/lib.rs", member.dir);
+        let imported = format!("crates/review/{}/Cargo.toml", member.package.name);
         assert!(trusted(&here), "{here} is a trust path");
         assert!(trusted(&imported), "{imported} is a trust path");
     }
+    assert_eq!(
+        workspace.members.len(),
+        6,
+        "every one of Review's six crates was checked"
+    );
     for sibling in [
         "crates/core/redkiln-core/src/lib.rs",
         "crates/weigh-in/weighin/src/main.rs",
@@ -327,12 +333,12 @@ fn rejects_publishable_crate() {
 
 #[test]
 fn rejects_unknown_workspace_member() {
-    let workspace = replace(fully_wired_workspace(), package("assay-events", &[]));
+    let workspace = replace(fully_wired_workspace(), package("review-events", &[]));
 
     assert_eq!(
         violations(&workspace),
         vec![Violation::UnknownMember {
-            package: "assay-events"
+            package: "review-events"
         }],
         "a seventh crate is a crate-boundary change (ADR-07, H-16)"
     );

@@ -122,20 +122,27 @@ fn value_texts<'a>(value: &'a Value, declared: &BTreeSet<&str>, texts: &mut BTre
     }
 }
 
-/// Asserts that `error`, the rejection of `document`, quotes none of its producer texts.
+/// A reader's rejection of a document of `contract`.
+struct Rejection<'e> {
+    contract: Contract,
+    error: &'e ReadContractError,
+}
+
+/// Asserts that `rejection`, of `document`, quotes none of its producer texts.
 fn assert_quotes_no_producer_text(
     label: &str,
     document: &Value,
     declared: &BTreeSet<&str>,
-    error: &ReadContractError,
+    Rejection { contract, error }: Rejection<'_>,
 ) {
-    // The message names the contract (`review.event document is invalid`), which is assay's own
-    // text, so a producer text such as the job name `review` is looked for around it.
-    let display = Contract::ALL
-        .iter()
-        .fold(error.to_string(), |shown, contract| {
-            shown.replace(contract.name(), "")
-        });
+    // The message opens with the contract's own name (`review.event document is invalid`), which
+    // is the reader's text, so a producer text such as the job name `review` is looked for in the
+    // rest. Only that leading label is set aside; a message without it is checked whole.
+    let shown = error.to_string();
+    let display = shown
+        .strip_prefix(contract.name())
+        .and_then(|rest| rest.strip_prefix(" document"))
+        .unwrap_or(&shown);
     let debug = format!("{error:?}");
     for text in producer_texts(document, declared) {
         assert!(
@@ -183,7 +190,15 @@ fn no_rejection_of_an_invalid_fixture_quotes_producer_text() -> Result<(), Box<d
                 .ok_or_else(|| format!("{contract} fixture {name} must be rejected"))?;
 
             let label = format!("{contract} fixture {name}");
-            assert_quotes_no_producer_text(&label, &document, &declared, &error);
+            assert_quotes_no_producer_text(
+                &label,
+                &document,
+                &declared,
+                Rejection {
+                    contract,
+                    error: &error,
+                },
+            );
             checked += 1;
         }
     }
@@ -319,7 +334,15 @@ fn rejections_by_format_pattern_one_of_unique_items_and_minimum_quote_no_produce
         assert_eq!(violation.keyword(), breach.keyword);
         assert_never_quoted(&error, breach.secret);
         let label = format!("the {} breach", breach.keyword);
-        assert_quotes_no_producer_text(&label, &document, &declared, &error);
+        assert_quotes_no_producer_text(
+            &label,
+            &document,
+            &declared,
+            Rejection {
+                contract: breach.contract,
+                error: &error,
+            },
+        );
     }
     Ok(())
 }
